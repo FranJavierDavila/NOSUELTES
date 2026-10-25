@@ -18,7 +18,7 @@ import { LIMB_IDS } from "../types";
 import { ContentRepository, browserJsonLoader, type ContentBundle } from "../content/repository";
 import { EventBus } from "../gameplay/events";
 import { GameStateMachine } from "../gameplay/state-machine";
-import { InteractionController, type InteractionWorld } from "../gameplay/interaction";
+import { InteractionController, postureRulesForTone, type InteractionWorld, type PostureRules } from "../gameplay/interaction";
 import { BiomechanicsSystem, computeStability } from "../domain/biomechanics";
 import { ChallengeEvaluator } from "../domain/challenge";
 import { PbdSolver } from "../physics/pbd/solver";
@@ -71,7 +71,9 @@ const REJECT_LABELS: Record<string, string> = {
   alcance_insuficiente: "la extremidad no llego a la presa",
   objetivo_invalido: "objetivo invalido",
   objetivo_libre: "objetivo libre no permitido",
-  presa_inexistente: "presa inexistente"
+  presa_inexistente: "presa inexistente",
+  cruce_imposible: "el cruce de mano es imposible (postura imposible)",
+  a_traves_del_cuerpo: "la extremidad atravesaría el torso (postura imposible)"
 };
 
 /** Etiquetas legibles de extremidad para avisos (el HUD tiene las suyas). */
@@ -170,6 +172,9 @@ export class GameApp {
   private tune: BalanceTuning = { jointLimitStiffness: 1.0, foldStrength: 0.85, postureTone: 0.75, toneFloor: 0.12, stretchTolerance: 1.1 };
   /** Cuenta atras de fallo por extremidad (sobrecarga continua), refrescada cada frame. */
   private readonly limbOverload = new Map<LimbId, { seconds: number; frac: number }>();
+  /** Reglas de postura imposible vigentes (derivadas del tono postural). Objeto
+   * vivo: se recalcula en setTune/applyPreset y la interaccion lo lee cada uso. */
+  private postureRules: PostureRules = postureRulesForTone(0.75);
   /** Presion de fallo maxima 0..1 (alimenta latidos/gruñidos de panico del audio). */
   private overloadPressure = 0;
   /** Ultimo aviso de sobrecarga (con memoria 0.6 s: el pendulo hace oscilar la
@@ -263,6 +268,7 @@ export class GameApp {
       if (this.eventLog.length > 40) this.eventLog.shift();
     });
     this.loadTune();
+    this.postureRules = postureRulesForTone(this.tune.postureTone);
     this.attachInput();
     this.hud.setPresetActive(this.presetName);
 
@@ -423,6 +429,8 @@ export class GameApp {
       toneFloor: clamp01(patch.toneFloor ?? this.tune.toneFloor),
       stretchTolerance: clampRange(patch.stretchTolerance ?? this.tune.stretchTolerance, 1.02, 1.35)
     };
+    // Las reglas de postura imposible siguen al tono: preset realista = estricto.
+    this.postureRules = postureRulesForTone(this.tune.postureTone);
     // Un ajuste manual (sliders F3 o __NS.setTune) deja de corresponder al preset.
     this.presetName = null;
     try {
@@ -508,7 +516,8 @@ export class GameApp {
         if (!this.rig) return 0.6;
         const base = limb.startsWith("hand") ? this.rig.armChain : this.rig.legChain;
         return base * this.character.physical.reachScale;
-      }
+      },
+      postureRules: () => this.postureRules
     };
     this.interaction = new InteractionController(world, {
       onSelectChanged: () => undefined,
@@ -741,15 +750,20 @@ export class GameApp {
     this.scene.syncRagdoll(this.solver, alpha);
     this.scene.syncJointDebug(this.solver);
 
-    // Anillo de seleccion: extremidad arrastrada (firm) o bajo el cursor (iman sutil).
+    // Anillo de seleccion + enfasis de etiqueta: extremidad arrastrada (firm) o bajo
+    // el cursor (iman sutil). La etiqueta IZQ/DER crece: siempre sabes QUE mueves.
+    let emphasisLimb: LimbId | null = null;
     if (this.interaction?.dragging) {
       this.scene.setSelectionRing(this.interaction.selected, this.solver, "grab");
+      emphasisLimb = this.interaction.selected;
     } else {
       const hover = this.pointerInside && (state === "READY" || state === "PLAYING")
         ? this.scene.pickLimb(this.pointerX, this.pointerY, this.solver)
         : null;
       this.scene.setSelectionRing(hover, this.solver, "hover");
+      emphasisLimb = hover;
     }
+    this.scene.setLimbLabelEmphasis(emphasisLimb);
 
     // Preview de arrastre y alcance.
     const preview = this.interaction?.getPreview() ?? null;
@@ -766,6 +780,21 @@ export class GameApp {
       this.scene.showReachPreview(preview.limb, this.solver, preview.validity !== "invalid");
     } else {
       this.scene.showReachPreview(null, this.solver, true);
+    }
+
+    // Motivo de rechazo EN VIVO durante el arrastre: el jugador ve POR QUE una presa
+    // no es posible antes de soltar (control determinista: nada "al azar").
+    if (this.interaction?.dragging) {
+      if (preview?.snappedHoldId && preview.validity === "invalid") {
+        const reason = this.interaction.pendingRejectReason() ?? this.interaction.rejectReason(preview.limb, preview.snappedHoldId);
+        this.hud.setRejectHint(reason ? `✕ ${REJECT_LABELS[reason] ?? reason}` : "Movimiento no posible");
+      } else if (preview && !preview.snappedHoldId && !this.challenge.rules.allowFreeTarget) {
+        this.hud.setRejectHint("Suelta sobre una presa resaltada");
+      } else {
+        this.hud.setRejectHint(null);
+      }
+    } else {
+      this.hud.setRejectHint(null);
     }
 
     // Tutorial: resaltados y avance de pasos.
@@ -1287,7 +1316,7 @@ export class GameApp {
     dragging: () => boolean;
     preview: () => { limb: LimbId; snap: string | null; validity: string; target: { x: number; y: number } } | null;
     anchors: () => { limb: LimbId; hold: string; load: number }[];
-    reject: (limb: LimbId, holdId: string) => string;
+    reject: (limb: LimbId, holdId: string) => string | null;
     chainInfo: (limb: LimbId) => { root: { x: number; y: number; z: number } };
     pickAt: (x: number, y: number) => LimbId | null;
     pickNearest: (x: number, y: number) => { name: string; dist: number } | null;
@@ -1295,6 +1324,7 @@ export class GameApp {
     renderSize: () => { w: number; h: number; cssW: number; cssH: number };
     project: (x: number, y: number, z: number) => { x: number; y: number };
     limbScreen: () => { limb: string; x: number; y: number }[];
+    labels: () => { limb: LimbId; x: number; y: number }[];
     events: () => string[];
     pelvisY: () => number;
     joints: () => { id: string; angle: number; utilization: number; min: number; max: number }[];
@@ -1326,7 +1356,7 @@ export class GameApp {
       renderSize: () => this.scene.renderSizeDebug(),
       project: (x: number, y: number, z: number) => this.scene.projectToScreen(x, y, z),
       anchors: () => this.solver.anchorHoldIds().map((a) => ({ limb: a.limb, hold: a.holdId, load: Math.round(a.loadN) })),
-      reject: (limb: LimbId, holdId: string) => this.interaction?.rejectReason(limb, holdId) ?? "sin-interaccion",
+      reject: (limb: LimbId, holdId: string) => (this.interaction ? this.interaction.rejectReason(limb, holdId) : "sin-interaccion"),
       chainInfo: (limb: LimbId) => {
         const root = this.interaction ? this.interaction["world" as keyof object] : null;
         const shoulder = limb === "hand_l" ? this.solver.getParticle(2) : limb === "hand_r" ? this.solver.getParticle(3) : limb === "foot_l" ? this.solver.getParticle(5) : this.solver.getParticle(6);
@@ -1341,6 +1371,7 @@ export class GameApp {
         }
         return out;
       },
+      labels: () => this.scene.limbLabelDebug(),
       pelvisY: () => this.solver.getParticle(P.pelvisC).pos.y,
       joints: () => this.solver.debugJoints(),
       folds: () => this.solver.debugFolds(),

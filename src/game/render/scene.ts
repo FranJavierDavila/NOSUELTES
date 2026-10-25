@@ -21,6 +21,7 @@ import "@babylonjs/core/Meshes/Builders/groundBuilder";
 import "@babylonjs/core/Meshes/Builders/sphereBuilder";
 import "@babylonjs/core/Meshes/Builders/capsuleBuilder";
 import "@babylonjs/core/Meshes/Builders/torusBuilder";
+import "@babylonjs/core/Meshes/Builders/planeBuilder";
 import "@babylonjs/core/Meshes/Builders/linesBuilder";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
@@ -65,8 +66,25 @@ const ZONE_COLORS: Record<string, Color3> = {
 
 // Marcas de orientacion corporal: la mochila senala la espalda (-z, hacia la
 // camara) y los marcadores teca la cara frontal (+z, hacia la pared).
-const BAG_COLOR = "#7a5a3a";
+const BAG_COLOR = "#8a5f38";
 const MARKER_COLOR = "#2fb8b0";
+// Identidad de lados: etiquetas IZQ/DER flotantes y chips del HUD comparten paleta.
+// Azul = lado izquierdo del personaje, rosa = lado derecho (nunca verde/ambar/rojo,
+// reservados a la zona de carga).
+const SIDE_L_COLOR = "#58a6ff";
+const SIDE_R_COLOR = "#ff6f91";
+const LIMB_SIDE_COLOR: Record<LimbId, string> = {
+  hand_l: SIDE_L_COLOR,
+  foot_l: SIDE_L_COLOR,
+  hand_r: SIDE_R_COLOR,
+  foot_r: SIDE_R_COLOR
+};
+const LIMB_SIDE_TEXT: Record<LimbId, string> = {
+  hand_l: "IZQ",
+  foot_l: "IZQ",
+  hand_r: "DER",
+  foot_r: "DER"
+};
 const HAND_BASE = "#dfe4ea";
 const FOOT_BASE = "#b9c0ca";
 const SEG_BASE = "#5d6672";
@@ -85,7 +103,9 @@ export class GameScene {
   private tutorialLimbId: LimbId | null = null;
   private tutorialLimbMesh: Mesh | null = null;
   private occupiedHolds = new Set<string>();
-  private boneMeshes: { a: number; b: number; mesh: Mesh; rest: number; offZ?: number }[] = [];
+  private boneMeshes: { a: number; b: number; mesh: Mesh; rest: number; offZ?: number; offX?: number; offY?: number }[] = [];
+  /** Etiquetas IZQ/DER flotantes (una por extremidad): identidad visual de lado. */
+  private limbLabels = new Map<LimbId, Mesh>();
   private limbVisual: Record<LimbId, { hand: Mesh; segments: Mesh[]; base: Color3; segBase: Color3 }> = {
     hand_l: { hand: null as unknown as Mesh, segments: [], base: Color3.FromHexString(HAND_BASE), segBase: Color3.FromHexString(SEG_BASE) },
     hand_r: { hand: null as unknown as Mesh, segments: [], base: Color3.FromHexString(HAND_BASE), segBase: Color3.FromHexString(SEG_BASE) },
@@ -328,32 +348,49 @@ export class GameScene {
     // El cuerpo vive en un plano paralelo a la pared: espalda = -z (hacia la
     // camara), frente = +z (hacia la pared). La mochila (grande, en -z) es la
     // referencia de espalda; el visor facial y los discos de rodilla/codo (+z)
-    // marcan el frente. La sincronizacion aplica offZ en z del mundo.
+    // marcan el frente. La sincronizacion aplica offZ/offX/offY en el mundo.
     const torsoLen = dist(1, 4);
-    const bag = MeshBuilder.CreateBox("backpack", { width: 0.2, height: torsoLen * 0.78, depth: 0.09 }, scene);
+    const bag = MeshBuilder.CreateBox("backpack", { width: 0.26, height: torsoLen * 0.84, depth: 0.105 }, scene);
     bag.material = bagMat;
     bag.isPickable = false;
     bag.rotationQuaternion = Quaternion.Identity();
-    this.boneMeshes.push({ a: 1, b: 4, mesh: bag, rest: torsoLen, offZ: -0.21 });
+    this.boneMeshes.push({ a: 1, b: 4, mesh: bag, rest: torsoLen, offZ: -0.225 });
     this.ragdollRoot.push(bag);
-    // Banda vertical clara sobre la cara externa de la mochila.
-    const bagStripe = MeshBuilder.CreateBox("backpackStripe", { width: 0.045, height: torsoLen * 0.74, depth: 0.02 }, scene);
+    // Banda vertical clara sobre la cara externa de la mochila (refleja el turquesa
+    // de los marcadores frontales: mismo color = lados opuestos del mismo eje).
+    const bagStripe = MeshBuilder.CreateBox("backpackStripe", { width: 0.06, height: torsoLen * 0.78, depth: 0.02 }, scene);
     bagStripe.material = markMat;
     bagStripe.isPickable = false;
     bagStripe.rotationQuaternion = Quaternion.Identity();
-    this.boneMeshes.push({ a: 1, b: 4, mesh: bagStripe, rest: torsoLen, offZ: -0.262 });
+    this.boneMeshes.push({ a: 1, b: 4, mesh: bagStripe, rest: torsoLen, offZ: -0.283 });
     this.ragdollRoot.push(bagStripe);
+    // Tirantes sobre los hombros: refuerzan la lectura "esto es la espalda" incluso
+    // en silueta (se ven desde detras, a diferencia de las marcas frontales).
+    const strapMat = sharedMaterial("strapMat", "#33281e", scene);
+    for (const [idx, nm] of [[2, "strapL"], [3, "strapR"]] as const) {
+      const strap = MeshBuilder.CreateBox(nm, { width: 0.07, height: 0.13, depth: 0.05 }, scene);
+      strap.material = strapMat;
+      strap.isPickable = false;
+      strap.rotationQuaternion = Quaternion.Identity();
+      this.boneMeshes.push({ a: idx, b: idx, mesh: strap, rest: 1, offZ: -0.1, offY: 0.015 });
+      this.ragdollRoot.push(strap);
+    }
 
-    const marker = (name: string, idx: number, offZ: number, d: number, zScale: number): void => {
+    const eyeMat = sharedMaterial("eyeMat", "#141821", scene);
+    const marker = (name: string, idx: number, offZ: number, d: number, zScale: number, offX = 0, offY = 0, mat: StandardMaterial = markMat): void => {
       const disc = MeshBuilder.CreateSphere(name, { diameter: d, segments: 8 }, scene);
-      disc.material = markMat;
+      disc.material = mat;
       disc.scaling.z = zScale;
       disc.isPickable = false;
-      // Punto anclado (a === b): la sincronizacion solo copia posicion (+offZ).
-      this.boneMeshes.push({ a: idx, b: idx, mesh: disc, rest: 1, offZ });
+      // Punto anclado (a === b): la sincronizacion solo copia posicion (+offsets).
+      this.boneMeshes.push({ a: idx, b: idx, mesh: disc, rest: 1, offZ, offX, offY });
       this.ragdollRoot.push(disc);
     };
-    marker("faceVisor", 0, 0.115, 0.16, 0.35);
+    // Cara: visor amplio + dos ojos oscuros. Al girar la cabeza (ragdoll) el frente
+    // se reconoce al instante; de frente a la pared, la mochila cubre el papel inverso.
+    marker("faceVisor", 0, 0.125, 0.19, 0.32);
+    marker("eyeL", 0, 0.13, 0.05, 0.5, -0.04, 0.025, eyeMat);
+    marker("eyeR", 0, 0.13, 0.05, 0.5, 0.04, 0.025, eyeMat);
     marker("kneeMarkL", 11, 0.05, 0.09, 0.3);
     marker("kneeMarkR", 12, 0.05, 0.09, 0.3);
     marker("elbowMarkL", 7, 0.055, 0.075, 0.35);
@@ -382,6 +419,19 @@ export class GameScene {
       this.ragdollRoot.push(mesh);
     }
 
+    // --- Etiquetas de lado (IZQ/DER) ---
+    // Carteles flotantes SIEMPRE visibles sobre cada mano y bajo cada pie: eliminan
+    // la ambiguedad izquierda/derecha del muneco visto de espaldas. renderingGroupId
+    // 1 = se dibujan sobre el cuerpo (nunca ocultas); billboard = siempre de cara.
+    const LIMB_LABEL_IDX: Record<LimbId, number> = { hand_l: 9, hand_r: 10, foot_l: 13, foot_r: 14 };
+    const LIMB_LABEL_DY: Record<LimbId, number> = { hand_l: 0.185, hand_r: 0.185, foot_l: -0.21, foot_r: -0.21 };
+    for (const limb of LIMB_IDS) {
+      const label = this.makeSideLabel(`limbLabel_${limb}`, LIMB_SIDE_TEXT[limb], LIMB_SIDE_COLOR[limb]);
+      this.boneMeshes.push({ a: LIMB_LABEL_IDX[limb], b: LIMB_LABEL_IDX[limb], mesh: label, rest: 1, offZ: -0.07, offY: LIMB_LABEL_DY[limb] });
+      this.limbLabels.set(limb, label);
+      this.ragdollRoot.push(label);
+    }
+
     // Esferas de depuracion por particula.
     this.jointSpheres = [];
     for (let i = 0; i < P.length; i++) {
@@ -393,11 +443,71 @@ export class GameScene {
     }
   }
 
+  /** Cartel de lado (IZQ/DER): plano billboard con texto en DynamicTexture. */
+  private makeSideLabel(name: string, text: string, color: string): Mesh {
+    const tex = new DynamicTexture(`${name}Tex`, { width: 128, height: 64 }, this.scene, false);
+    const ctx = tex.getContext() as CanvasRenderingContext2D;
+    ctx.clearRect(0, 0, 128, 64);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = "bold 46px Arial, sans-serif";
+    // Halo oscuro: legible tanto sobre la pared clara como sobre el colchon oscuro.
+    ctx.fillStyle = "rgba(8,10,14,0.85)";
+    ctx.fillText(text, 66, 37);
+    ctx.fillText(text, 62, 33);
+    ctx.fillStyle = color;
+    ctx.fillText(text, 64, 35);
+    tex.update();
+    tex.hasAlpha = true;
+    const plane = MeshBuilder.CreatePlane(name, { width: 0.24, height: 0.12 }, this.scene);
+    const mat = new StandardMaterial(`${name}Mat`, this.scene);
+    mat.disableLighting = true;
+    mat.emissiveColor = Color3.FromHexString(color);
+    mat.opacityTexture = tex;
+    mat.backFaceCulling = false;
+    plane.material = mat;
+    plane.billboardMode = Mesh.BILLBOARDMODE_ALL;
+    plane.renderingGroupId = 1;
+    plane.isPickable = false;
+    plane.applyFog = false;
+    return plane;
+  }
+
+  /** Enfatiza la etiqueta de la extremidad apuntada/arrastrada (el resto a tamano normal). */
+  setLimbLabelEmphasis(limb: LimbId | null): void {
+    for (const [id, mesh] of this.limbLabels) {
+      if (mesh.isDisposed()) continue;
+      const active = id === limb;
+      mesh.scaling.setAll(active ? 1.5 : 1);
+      (mesh.material as StandardMaterial).alpha = active ? 1 : 0.92;
+    }
+  }
+
+  /** Diagnostico E2E: pantalla (px) de cada etiqueta de lado. */
+  limbLabelDebug(): { limb: LimbId; x: number; y: number }[] {
+    const out: { limb: LimbId; x: number; y: number }[] = [];
+    for (const [limb, mesh] of this.limbLabels) {
+      if (mesh.isDisposed() || !mesh.isEnabled()) continue;
+      const s = this.projectToScreenCss(mesh.position.x, mesh.position.y, mesh.position.z);
+      out.push({ limb, x: s.x, y: s.y });
+    }
+    return out;
+  }
+
   despawnRagdollVisuals(): void {
+    // Las etiquetas de lado llevan material y textura PROPIOS (DynamicTexture con
+    // el texto): se liberan aqui para no filtrar por cada respawn; el resto de
+    // boneMeshes comparte materiales y se libera solo como malla.
+    const labelSet = new Set(this.limbLabels.values());
+    for (const label of labelSet) {
+      if (!label.isDisposed()) label.dispose(false, true);
+    }
+    this.boneMeshes = this.boneMeshes.filter((b) => !labelSet.has(b.mesh));
     for (const b of this.boneMeshes) b.mesh.dispose();
     for (const m of this.jointSpheres) m.dispose();
     this.boneMeshes = [];
     this.jointSpheres = [];
+    this.limbLabels.clear();
     this.ragdollRoot = [];
     this.currentRig = null;
   }
@@ -414,8 +524,10 @@ export class GameScene {
       if (bone.a === bone.b) {
         tmpA.set(pa.pos.x, pa.pos.y, pa.pos.z);
         bone.mesh.position.copyFrom(tmpA);
-        // Marcas puntuales (visor, discos): desplazamiento en el eje pared-camara.
+        // Marcas puntuales (visor, ojos, etiquetas): desplazamiento pared-camara y lateral.
         if (bone.offZ) bone.mesh.position.z += bone.offZ;
+        if (bone.offX) bone.mesh.position.x += bone.offX;
+        if (bone.offY) bone.mesh.position.y += bone.offY;
         continue;
       }
       const ax = pa.prev.x + (pa.pos.x - pa.prev.x) * alpha;
@@ -427,7 +539,7 @@ export class GameScene {
       tmpA.set(ax, ay, az);
       tmpB.set(bx, by, bz);
       const mesh = bone.mesh;
-      mesh.position.set((ax + bx) / 2, (ay + by) / 2, (az + bz) / 2 + (bone.offZ ?? 0));
+      mesh.position.set((ax + bx) / 2 + (bone.offX ?? 0), (ay + by) / 2 + (bone.offY ?? 0), (az + bz) / 2 + (bone.offZ ?? 0));
       const dir = tmpB.subtract(tmpA);
       const len = Math.max(dir.length(), 1e-5);
       const d = dir.scale(1 / len);

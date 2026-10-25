@@ -2,8 +2,13 @@ import { describe, it, expect } from "vitest";
 import { GameStateMachine } from "../../src/game/gameplay/state-machine";
 import { ChallengeEvaluator } from "../../src/game/domain/challenge";
 import { EventBus } from "../../src/game/gameplay/events";
-import { InteractionController, type InteractionWorld } from "../../src/game/gameplay/interaction";
-import type { ChallengeDefinition, GameEvent, LimbId } from "../../src/game/types";
+import {
+  InteractionController,
+  postureRulesForTone,
+  type InteractionWorld,
+  type PostureRules
+} from "../../src/game/gameplay/interaction";
+import type { ChallengeDefinition, GameEvent, HoldDefinition, LimbId } from "../../src/game/types";
 import { v3 } from "../../src/game/physics/pbd/math";
 
 describe("Maquina de estados (10.3)", () => {
@@ -276,5 +281,124 @@ describe("Interaccion: validacion de presas (7.2, 8)", () => {
       onSelectChanged: () => undefined, onAccept: () => undefined, onReject: () => undefined, onArrival: () => undefined
     });
     expect(ic.rejectReason("hand_l", "top")).toBe("fuera_de_alcance");
+  });
+});
+
+describe("Posturas imposibles: cruce total de mano", () => {
+  const challenge: ChallengeDefinition = {
+    schemaVersion: 1,
+    id: "t",
+    type: "reach_top",
+    characterId: "c",
+    wallId: "w",
+    instruction: "i",
+    timeLimitSeconds: 10,
+    start: { stance: "hanging", requiredAnchors: [], autoStart: false },
+    rules: {
+      allowFreeTarget: false, allowHandsOnFootHolds: false, allowFeetOnHandHolds: true,
+      minSupportCount: 2, fallPlaneY: -0.25, fallDropDistance: 0.35, fallGraceSeconds: 0.35
+    },
+    completion: { holdIds: ["top"], requiredLimbs: ["hand_l", "hand_r"], stabilityThreshold: 0.65, stableDurationSeconds: 0.5 }
+  };
+
+  const REALISTA: PostureRules = postureRulesForTone(0.95);
+  const RAGDOLL: PostureRules = postureRulesForTone(0.5);
+
+  function postureWorld(rules: PostureRules | null, shLx = -0.22, shRx = 0.22): InteractionWorld {
+    const w: InteractionWorld = {
+      holdById: new Map<string, HoldDefinition>(),
+      challenge,
+      character: {
+        schemaVersion: 1, id: "c", displayName: "C", bodyProfileId: "p",
+        virtues: { strength: 0.55, endurance: 0.6, flexibility: 0.5 },
+        physical: { massScale: 1, reachScale: 1, baseGripForce: 420 },
+        control: { gripAssist: 0.7, targetFollowStrength: 0.8, holdSnapRadius: 0.22 }
+      },
+      profile: {
+        schemaVersion: 1, id: "p",
+        units: { length: "m", mass: "kg", force: "N" },
+        segments: {
+          torso: { size: [0.45, 0.65, 0.25], mass: 20 }, pelvis: { size: [0.3, 0.25, 0.22], mass: 16 },
+          head: { radius: 0.11, mass: 5 }, upperArm: { length: 0.3, mass: 2.5 }, forearm: { length: 0.28, mass: 1.5 },
+          hand: { radius: 0.05, mass: 1 }, thigh: { length: 0.38, mass: 5 }, shin: { length: 0.38, mass: 3 }, foot: { radius: 0.05, mass: 1 }
+        },
+        reach: { comfortRatio: 0.92, hardLimitRatio: 1.12 },
+        joints: {
+          elbow: { minAngle: 0.44, maxAngle: 3.1, stiffness: 1 }, knee: { minAngle: 0.61, maxAngle: 3.11, stiffness: 1 },
+          shoulder: { minAngle: 0.05, maxAngle: 3.05, stiffness: 0.8 }, hip: { minAngle: 0.96, maxAngle: 3.14, stiffness: 0.8 },
+          neck: { minAngle: 2.44, maxAngle: 3.14, stiffness: 0.6 }
+        },
+        biomech: {
+          comfortableLoadRatio: 0.6, overloadRatio: 1, overloadGraceSeconds: 2.5, overloadAccumRate: 1, overloadDecayRate: 2,
+          effortRate: { thresholdLow: 0.3, slopeLow: 0.12, thresholdHigh: 0.9, slopeHigh: 0.3, postureWeight: 0.08 },
+          recoveryRate: 0.06, recoveryLoadRatio: 0.25, strengthFactorMin: 0.55, strengthFactorMax: 1.45,
+          fatigueFactorMin: 0.55, posturePenalty: 0.45, loadEstimatorGain: 0.67,
+          stabilityWeights: { support: 0.3, spread: 0.2, com: 0.3, load: 0.2 },
+          comSpreadReference: 0.45, comDistanceReference: 0.8
+        },
+        sim: { gravity: [0, -9.81, 0], damping: 0.988, iterations: 10, fixedDeltaSeconds: 1 / 60, resetSettleSeconds: 0.5, tremorAmplitude: 0.0025 }
+      },
+      wall: {
+        schemaVersion: 1, id: "w",
+        dimensions: { width: 5, height: 5, depth: 0.25 },
+        transform: { position: [0, 2.5, 0], rotationEuler: [0, 0, 0] },
+        bounds: { minX: -2.3, maxX: 2.3, minY: 0.15, maxY: 4.85 },
+        holds: [], collisionProfile: "x"
+      },
+      anchorHoldOf: () => undefined,
+      holdOccupancy: () => 0,
+      // chainRootOf para manos devuelve el hombro VIVO: el validador lo usa como
+      // referencia del "hombro contrario". Para pies, la cadera (sin regla de cruce).
+      chainRootOf: (limb) => {
+        if (limb === "hand_l") return v3(shLx, 2.2, -0.3);
+        if (limb === "hand_r") return v3(shRx, 2.2, -0.3);
+        return v3(0, 1.0, -0.3);
+      },
+      limbPositionOf: (limb) => (limb.startsWith("hand") ? v3(0, 2.0, -0.18) : v3(0, 0.8, -0.18)),
+      chainLengthOf: (limb) => (limb.startsWith("hand") ? 0.58 : 0.76),
+      postureRules: () => rules
+    };
+    const extras: HoldDefinition[] = [
+      { id: "cross_far", type: "standard", position: [0.5, 2.2, -0.18], radius: 0.13, allowedLimbs: ["hand_l", "hand_r", "foot_l", "foot_r"], maxOccupants: 1 },
+      { id: "cross_near", type: "standard", position: [0.31, 2.2, -0.18], radius: 0.13, allowedLimbs: ["hand_l", "hand_r"], maxOccupants: 1 },
+      { id: "chest_hold", type: "standard", position: [0.02, 2.0, -0.18], radius: 0.13, allowedLimbs: ["hand_l", "hand_r", "foot_l", "foot_r"], maxOccupants: 1 },
+      { id: "foot_cross", type: "standard", position: [0.5, 1.3, -0.18], radius: 0.13, allowedLimbs: ["hand_l", "hand_r", "foot_l", "foot_r"], maxOccupants: 1 }
+    ];
+    for (const h of extras) w.holdById.set(h.id, h);
+    return w;
+  }
+
+  const ic = (w: InteractionWorld): InteractionController =>
+    new InteractionController(w, { onSelectChanged: () => undefined, onAccept: () => undefined, onReject: () => undefined, onArrival: () => undefined });
+
+  it("reglas derivadas del tono: realista estricto, equilibrado permisible, ragdoll libre", () => {
+    expect(REALISTA).toEqual({ overCrossMaxM: 0.14 });
+    expect(postureRulesForTone(0.75)).toEqual({ overCrossMaxM: 0.24 });
+    expect(RAGDOLL).toEqual({ overCrossMaxM: null });
+  });
+
+  it("cruce total de mano se rechaza; el cruce moderado y la presa frente al pecho pasan", () => {
+    const w = postureWorld(REALISTA);
+    // cross_far (x=0.5) queda 0.28 m mas alla del hombro derecho: mas que 0.14 -> imposible.
+    expect(ic(w).rejectReason("hand_l", "cross_far")).toBe("cruce_imposible");
+    // cross_near (x=0.31) solo 0.09 m: cruce legal (como en escalada real).
+    expect(ic(w).rejectReason("hand_l", "cross_near")).toBeNull();
+    // Una presa justo delante del pecho NO es "imposible": el cuerpo cuelga separado
+    // de la pared y todas las presas estan delante del torso (geometria 2.5D).
+    expect(ic(w).rejectReason("hand_r", "chest_hold")).toBeNull();
+    // La mano derecha hacia su propio lado nunca cruza.
+    expect(ic(w).rejectReason("hand_r", "cross_far")).toBeNull();
+  });
+
+  it("con el torso volcado (hombro izquierdo a la derecha) no se aplica la nocion de cruce", () => {
+    const w = postureWorld(REALISTA, 0.1, -0.1);
+    expect(ic(w).rejectReason("hand_l", "cross_far")).toBeNull();
+  });
+
+  it("los pies no estan sometidos al cruce; en ragdoll el cuerpo es libre; sin reglas tampoco", () => {
+    expect(ic(postureWorld(REALISTA)).rejectReason("foot_l", "foot_cross")).toBeNull();
+    expect(ic(postureWorld(RAGDOLL)).rejectReason("hand_l", "cross_far")).toBeNull();
+    // Defensiva: mundo sin reglas posturales -> sin comprobacion.
+    expect(ic(postureWorld(null)).rejectReason("hand_l", "cross_far")).toBeNull();
   });
 });

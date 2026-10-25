@@ -115,9 +115,10 @@ export function buildTutorialSteps(): TutorialStepDef[] {
       id: "bienvenida",
       title: "Este eres tú",
       body:
-        "Tu cuerpo **cuelga de la pared**: la **mochila** te marca su espalda y los **discos turquesa** " +
-        "(cara, rodillas, codos) su frente. Cada mano y cada pie se controla por separado con el " +
-        "raton: no hay teletransporte y el peso se reparte **de verdad** entre tus apoyos.",
+        "Tu cuerpo **cuelga de la pared**: la **mochila con tirantes** marca su espalda y la **cara con ojos** " +
+        "sus discos turquesa, el frente. Los carteles **IZQ azul** y **DER rosa** nombran el lado de cada " +
+        "mano y pie (igual que en el panel lateral). Cada extremidad se controla por separado con el raton: " +
+        "no hay teletransporte y el peso se reparte **de verdad** entre tus apoyos.",
       highlightCharacter: true,
       advance: "manual",
       cta: "Entendido"

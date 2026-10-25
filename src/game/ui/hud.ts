@@ -43,6 +43,15 @@ const ZONE_COLOR: Record<LoadZone, string> = {
   ERROR_GUARD: "#e05252"
 };
 
+// Identidad de lado (misma paleta que las etiquetas flotantes de la escena):
+// azul = lado izquierdo del personaje, rosa = lado derecho.
+const LIMB_SIDE_COLOR: Record<LimbId, string> = {
+  hand_l: "#58a6ff",
+  foot_l: "#58a6ff",
+  hand_r: "#ff6f91",
+  foot_r: "#ff6f91"
+};
+
 interface ChallengeOption {
   id: string;
   label: string;
@@ -64,6 +73,8 @@ export class Hud {
   private overloadChip: HTMLElement;
   private overloadMain: HTMLElement;
   private overloadSub: HTMLElement;
+  private rejectEl: HTMLElement;
+  private lastRejectText: string | null = null;
   private banner: HTMLElement;
   private progressWrap: HTMLElement;
   private progressBar: HTMLElement;
@@ -120,7 +131,7 @@ export class Hud {
               <span class="ml-1 inline-block h-2 w-2 rounded-full" style="background:#e05252"></span><span>Sobrecarga</span>
             </div>
             <div class="mt-1">La extremidad fijada y el <b class="text-zinc-400">anillo de su presa</b> toman el color de su zona de carga.</div>
-            <div class="mt-1"><b class="text-zinc-400">Mochila</b> = espalda · <b class="text-zinc-400">marcadores turquesa</b> = frente.</div>
+            <div class="mt-1"><b class="text-zinc-400">Mochila</b> = espalda (la cara mira a la pared) · <b style="color:#58a6ff">IZQ</b>/<b style="color:#ff6f91">DER</b> = tu lado, en cada extremidad.</div>
             <div class="mt-1">Presas: <span class="font-semibold" style="color:#3fb26f">salida</span> · <span class="font-semibold" style="color:#8a97a8">mano</span> · <span class="font-semibold" style="color:#d97b2f">pie</span> · <span class="font-semibold" style="color:#e0b13e">cima</span></div>
           </div>
         </div>
@@ -139,6 +150,8 @@ export class Hud {
           <div id="hud-overload-sub" class="text-[11px] text-zinc-400"></div>
         </div>
 
+        <div id="hud-reject" class="absolute bottom-44 left-1/2 hidden -translate-x-1/2 rounded-lg border border-red-500/60 bg-zinc-950/85 px-4 py-1.5 text-[12px] font-semibold text-red-300 backdrop-blur"></div>
+
         <div id="hud-banner" class="absolute left-1/2 top-1/3 hidden -translate-x-1/2 rounded-xl bg-zinc-950/85 px-8 py-5 text-center backdrop-blur border border-zinc-700"></div>
 
         <div id="hud-toasts" class="absolute left-1/2 top-24 flex w-max -translate-x-1/2 flex-col items-center gap-1"></div>
@@ -155,12 +168,13 @@ export class Hud {
               <li><b>Mover cursor</b>: el objetivo se proyecta sobre el plano de la pared; las presas compatibles se resaltan.</li>
               <li><b>Soltar el boton</b> sobre una presa valida: la extremidad se ancla; sobre un punto invalido, se conserva el estado anterior.</li>
               <li><b>Clic derecho o Esc</b>: cancelar el arrastre.</li>
-              <li><b>Colores de carga</b>: la extremidad fijada y el anillo de su presa se tiñen — <b style="color:#3fb26f">verde</b> normal, <b style="color:#e0b13e">ámbar</b> tensión, <b style="color:#e05252">rojo</b> sobrecarga (parpadea). La mochila marca la espalda; los marcadores turquesa, el frente (cara, rodillas, codos).</li>
+              <li><b>Colores de carga</b>: la extremidad fijada y el anillo de su presa se tiñen — <b style="color:#3fb26f">verde</b> normal, <b style="color:#e0b13e">ámbar</b> tensión, <b style="color:#e05252">rojo</b> sobrecarga (parpadea).</li>
+              <li><b>Orientación</b>: la <b>mochila con tirantes y banda turquesa</b> es la espalda; la cara (ojos + visor) y los discos turquesa de rodillas/codos, el frente. Cada mano y pie lleva su cartel flotante <b style="color:#58a6ff">IZQ</b> (azul) o <b style="color:#ff6f91">DER</b> (rosa) — el mismo color tiñe su chip del panel lateral, y el cartel se agranda al señalarla o arrastrarla.</li>
+              <li><b>Lo posible y lo imposible, en vivo</b>: mientras arrastras, si una presa se marca en rojo el aviso central dice el motivo (fuera de alcance, ocupada, cruce imposible…). En Realista/Equilibrado se rechaza el cruce total de una mano por detrás del hombro contrario (el cruce moderado de escalada es legal); en Ragdoll el cuerpo es libre.</li>
               <li><b>Tipos de presa</b>: <b style="color:#3fb26f">verde</b> salida, <b style="color:#8a97a8">gris</b> manos, <b style="color:#d97b2f">naranja</b> pies, <b style="color:#e0b13e">ámbar</b> cima.</li>
               <li><b>R</b>: reiniciar la prueba. <b>Espacio</b>: pausa. <b>T</b>: tutorial guiado. <b>F3</b>: overlay de depuracion. <b>C</b>: recentrar camara. <b>F4</b>: vista ortografica. <b>M</b>: sonido.</li>
               <li><b>Flujo</b>: encadena movimientos en menos de 6 s para multiplicar la puntuación (chip FLUJO). Las caídas y el tiempo restan: la rapidez con control da las 3 estrellas.</li>
               <li><b>Sobrecarga con cuenta atras</b>: en rojo, el panel marca cuántos segundos aguanta el agarre (<b style="color:#e05252">cede en X,s</b>); el chip central avisa de la extremidad más comprometida. Si la carga no baja cuando llega a 0, el agarre se abre solo.</li>
-              <li><b>Posturas imposibles no existen</b>: brazos y piernas tienen tope de estiramiento (el cuerpo es arrastrado hacia la presa, y la carga se dispara). El preset Realista es el más estricto; se ajusta en F3.</li>
               <li><b>Balance físico</b>: los presets del menú (Realista / Equilibrado / Ragdoll) ajustan tono postural, límites articulares y pliegue; se pueden refinar en F3.</li>
             </ul>
             <div class="mt-3 text-[12px] leading-relaxed text-zinc-500">
@@ -211,6 +225,7 @@ export class Hud {
     this.overloadChip = root.querySelector("#hud-overload")!;
     this.overloadMain = root.querySelector("#hud-overload-main")!;
     this.overloadSub = root.querySelector("#hud-overload-sub")!;
+    this.rejectEl = root.querySelector("#hud-reject")!;
     this.toasts = root.querySelector("#hud-toasts")!;
     this.help = root.querySelector("#hud-help")!;
     this.intro = root.querySelector("#hud-intro")!;
@@ -220,7 +235,7 @@ export class Hud {
     for (const limb of LIMB_IDS) {
       const chip = document.createElement("div");
       chip.className = "rounded bg-zinc-800/80 px-2 py-1 text-[10px]";
-      chip.innerHTML = `<div class="flex items-center justify-between gap-1"><span class="text-zinc-400">${LIMB_LABEL[limb]}</span><span class="font-mono font-bold" data-dot>·</span></div><div data-bar class="mt-0.5 hidden h-1 overflow-hidden rounded bg-zinc-900"><div data-bar-fill class="h-full bg-red-500" style="width:100%"></div></div>`;
+      chip.innerHTML = `<div class="flex items-center justify-between gap-1"><span class="font-semibold" style="color:${LIMB_SIDE_COLOR[limb]}">${LIMB_LABEL[limb]}</span><span class="font-mono font-bold" data-dot>·</span></div><div data-bar class="mt-0.5 hidden h-1 overflow-hidden rounded bg-zinc-900"><div data-bar-fill class="h-full bg-red-500" style="width:100%"></div></div>`;
       limbsRoot.appendChild(chip);
       this.limbChips.set(limb, chip.querySelector("[data-dot]") as HTMLElement);
       this.limbBars.set(limb, {
@@ -357,6 +372,19 @@ export class Hud {
       "absolute bottom-28 left-1/2 -translate-x-1/2 rounded-lg border bg-zinc-950/85 px-5 py-2 text-center backdrop-blur " +
       (critical ? "border-red-400 ns-critical" : urgent ? "border-red-500/70" : "border-amber-500/70");
     this.overloadMain.className = "text-sm font-black tracking-wide " + (critical ? "text-red-300" : urgent ? "text-red-400" : "text-amber-300");
+  }
+
+  /** Motivo de rechazo EN VIVO durante el arrastre (lo posible y lo imposible,
+   * sin sorpresas). Con cache: solo toca el DOM cuando cambia el texto. */
+  setRejectHint(text: string | null): void {
+    if (text === this.lastRejectText) return;
+    this.lastRejectText = text;
+    if (!text) {
+      this.rejectEl.classList.add("hidden");
+      return;
+    }
+    this.rejectEl.textContent = text;
+    this.rejectEl.classList.remove("hidden");
   }
 
   showBanner(text: string | null, tone: "ok" | "bad" | "info" = "info"): void {

@@ -16,6 +16,27 @@ import { V3, v3, vLen, vSub } from "../physics/pbd/math";
 
 export type TargetValidity = "none" | "valid" | "invalid";
 
+/** Reglas de postura fisicamente imposible (se activan por preset de balance).
+ * overCrossMaxM: metros que una mano puede pasar del hombro CONTRARIO (cruce
+ * moderado permitido, como en escalada real; cruzar TODO el cuerpo enredaria los
+ * brazos en el plano de la pared). null = desactivado (Ragdoll).
+ * NOTA: no hay regla de "presa dentro del torso": en esta geometria el cuerpo
+ * cuelga separado de la pared (eje z) y TODAS las presas estan delante del torso;
+ * medir distancias al eje de la columna en el plano x/y rechazaria apoyos
+ * legitimisimos (presas frente al pecho). El cruce fisico lo impiden los topes de
+ * cadena y los pliegues (ADR-008). */
+export interface PostureRules {
+  overCrossMaxM: number | null;
+}
+
+/** Reglas posturales derivadas del tono postural (preset o slider F3 "tono").
+ * Realista (0.9+): estricto; Equilibrado (0.65-0.9): permisible; Ragdoll: libre. */
+export function postureRulesForTone(postureTone: number): PostureRules {
+  if (postureTone >= 0.9) return { overCrossMaxM: 0.14 };
+  if (postureTone >= 0.65) return { overCrossMaxM: 0.24 };
+  return { overCrossMaxM: null };
+}
+
 export interface InteractionWorld {
   holdById: Map<string, HoldDefinition>;
   challenge: ChallengeDefinition;
@@ -32,6 +53,8 @@ export interface InteractionWorld {
   limbPositionOf(limb: LimbId): V3;
   /** Longitud de la cadena (brazo o pierna) escalada. */
   chainLengthOf(limb: LimbId): number;
+  /** Reglas de postura imposible vigentes (opcionales: sin ellas no se aplican). */
+  postureRules?: () => PostureRules | null;
 }
 
 export interface InteractionCallbacks {
@@ -253,7 +276,23 @@ export class InteractionController {
     if (verdict === "rejected") {
       return "fuera_de_alcance";
     }
-    return null;
+    return this.postureReject(limb, point);
+  }
+
+  /** Posturas imposibles (peticion del jugador: "deben poder distinguirse lo posible
+   * de lo imposible"): el cruce total de mano por detras del hombro contrario. Solo
+   * con la barra de hombros bien orientada (shL a la izquierda de shR y con anchura
+   * sana): si el torso esta volcado/vuelto, la nocion de "hombro contrario" pierde
+   * sentido y no se aplica. */
+  private postureReject(limb: LimbId, point: V3): string | null {
+    const rules = this.world.postureRules?.() ?? null;
+    if (!rules || rules.overCrossMaxM === null || !limb.startsWith("hand")) return null;
+    const shL = this.world.chainRootOf("hand_l");
+    const shR = this.world.chainRootOf("hand_r");
+    if (shR.x - shL.x < 0.06) return null;
+    const otherX = limb === "hand_l" ? shR.x : shL.x;
+    const over = limb === "hand_l" ? point.x - otherX : otherX - point.x;
+    return over > rules.overCrossMaxM ? "cruce_imposible" : null;
   }
 
   /** Veredicto de alcance puro para pintar el preview (comodo/extendido/rechazado). */
@@ -268,5 +307,10 @@ export class InteractionController {
   /** Utilizado por el orquestador para resolver razon de rechazo antes de emitir. */
   setRejectReason(reason: string | null): void {
     this.lastRejectReason = reason;
+  }
+
+  /** Motivo de rechazo pendiente del preview actual (para el chip en vivo del HUD). */
+  pendingRejectReason(): string | null {
+    return this.lastRejectReason;
   }
 }
