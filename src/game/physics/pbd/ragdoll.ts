@@ -4,7 +4,7 @@
  * dimensiones, masas y limites articulares provienen de datos (seccion 5 y 6).
  */
 import { BodyProfileDefinition, CharacterDefinition, ChallengeDefinition, HoldDefinition, LimbId, Vec3Tuple, WallDefinition } from "../../types";
-import { AngleConstraint, BodyTopology, FoldConstraint, Particle, PbdSolver, Stick } from "./solver";
+import { AngleConstraint, BodyTopology, FoldConstraint, Particle, PbdSolver, Stick, TwistConstraint } from "./solver";
 import { V3, v3, vAdd, vSub, vScale, vLen, vDot, vClone } from "./math";
 
 /** Indices fijos de particulas (contrato interno para render y biomecanica). */
@@ -38,6 +38,7 @@ export interface RagdollRig {
   sticks: Stick[];
   angles: AngleConstraint[];
   folds: FoldConstraint[];
+  twists: TwistConstraint[];
   limbParticle: Map<LimbId, number>;
   armChain: number;
   legChain: number;
@@ -113,13 +114,20 @@ export function buildRagdollRig(profile: BodyProfileDefinition, character: Chara
   // Columna simplificada: torax-pelvis + riostras cruzadas (torso rigido, seccion 6).
   // El torax esta a spineLen sobre pelvisC; las caderas a pelvisRise bajo pelvisC:
   // distancia torax-cadera = spineLen + pelvisRise.
+  // IMPORTANTE (anti-"cadera girada"): los brazos laterales y cruzados deben medirse
+  // con la GEOMETRIA REAL de la semilla: hombros a ±halfTorsoW y caderas a
+  // ±halfPelvisW. Con el dx equivocado (halfTorsoW / anchoTorso-halfPelvis) las 4
+  // riostras nacen violadas ~5%, y como el guinada de la pelvis solo encuentra
+  // resistencia de segundo orden, el settle resuelve la tension GIRANDO la cadera 90°.
+  const sideSpan = halfTorsoW - halfPelvisW;
+  const crossSpan = halfTorsoW + halfPelvisW;
   stick(P.chest, P.pelvisC, spineLen);
   stick(P.chest, P.hipL, Math.hypot(halfPelvisW, spineLen + pelvisRise));
   stick(P.chest, P.hipR, Math.hypot(halfPelvisW, spineLen + pelvisRise));
-  stick(P.shL, P.hipL, Math.hypot(halfTorsoW, spineLen + pelvisRise - shoulderDip));
-  stick(P.shR, P.hipR, Math.hypot(halfTorsoW, spineLen + pelvisRise - shoulderDip));
-  stick(P.shL, P.hipR, Math.hypot(s.torso.size[0] - halfPelvisW, spineLen + pelvisRise - shoulderDip), 0.9);
-  stick(P.shR, P.hipL, Math.hypot(s.torso.size[0] - halfPelvisW, spineLen + pelvisRise - shoulderDip), 0.9);
+  stick(P.shL, P.hipL, Math.hypot(sideSpan, spineLen + pelvisRise - shoulderDip));
+  stick(P.shR, P.hipR, Math.hypot(sideSpan, spineLen + pelvisRise - shoulderDip));
+  stick(P.shL, P.hipR, Math.hypot(crossSpan, spineLen + pelvisRise - shoulderDip), 0.9);
+  stick(P.shR, P.hipL, Math.hypot(crossSpan, spineLen + pelvisRise - shoulderDip), 0.9);
   // Cuello.
   stick(P.chest, P.head, s.head.radius + 0.08);
   // Brazos.
@@ -165,6 +173,23 @@ export function buildRagdollRig(profile: BodyProfileDefinition, character: Chara
     { id: "fold_knee_r", j: P.kneeR, a: P.hipR, b: P.footR, dir: v3(0, 0, 1), minSide: 0.012, strength: 1, side: 0 }
   ];
 
+  // Guinada de pelvis limitada (anti-"cadera girada"): la barra de caderas sigue a la
+  // de hombros; el tope vivo vive en balance.twistLimitRad (presets/F3).
+  const twists: TwistConstraint[] = [
+    {
+      id: "twist_pelvis",
+      a1: P.shL,
+      a2: P.shR,
+      b1: P.hipL,
+      b2: P.hipR,
+      pivot: P.pelvisC,
+      axisFrom: P.chest,
+      maxAngle: 0.45,
+      stiffness: 1,
+      currentAngle: 0
+    }
+  ];
+
   const limbParticle = new Map<LimbId, number>([
     ["hand_l", P.handL],
     ["hand_r", P.handR],
@@ -175,7 +200,7 @@ export function buildRagdollRig(profile: BodyProfileDefinition, character: Chara
   const armChain = s.upperArm.length + s.forearm.length;
   const legChain = s.thigh.length + s.shin.length;
 
-  return { particles, sticks, angles, folds, limbParticle, armChain, legChain };
+  return { particles, sticks, angles, folds, twists, limbParticle, armChain, legChain };
 }
 
 /**
@@ -356,7 +381,7 @@ export function spawnRagdoll(
     legChain: rig.legChain,
     spineLen: s.torso.size[1] * 0.95
   };
-  solver.setRagdoll(rig.particles, rig.sticks, rig.angles, rig.limbParticle, topology, rig.folds);
+  solver.setRagdoll(rig.particles, rig.sticks, rig.angles, rig.limbParticle, topology, rig.folds, rig.twists);
   // Anclajes iniciales requeridos por el desafio (8.1) antes de la relajacion.
   for (const req of challenge.start.requiredAnchors) {
     const hold = holdById.get(req.holdId);

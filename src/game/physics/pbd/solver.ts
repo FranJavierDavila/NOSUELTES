@@ -69,6 +69,36 @@ export interface FoldConstraint {
   side: number;
 }
 
+/**
+ * Restriccion de GIRO DE PELVIS (anti-"cadera girada", peticion del jugador):
+ * en PBD clasico la pelvis puede rotar libremente alrededor del eje de la columna
+ * (todas las riostras hombro-cadera cambian su longitud en SEGUNDO orden al girar),
+ * con lo que el mas minimo sesgo del settle la deja cruzada 90 grados y ahi se queda.
+ * Este constraint limita el angulo de guinada de la barra de caderas respecto a la
+ * barra de hombros, medido alrededor del eje columna (axisFrom->pivot). La correccion
+ * rota SOLO las caderas alrededor del eje que pasa por el pivote (pelvisC): conserva
+ * exactamente la longitud cadera-cadera y las riostras pelvisC-cadera (correccion
+ * minimamente invasiva, anatomia pasiva como los limites articulares).
+ */
+export interface TwistConstraint {
+  id: string;
+  /** Barra de referencia (hombros: shL, shR). */
+  a1: number;
+  a2: number;
+  /** Barra corregida (caderas: hipL, hipR). */
+  b1: number;
+  b2: number;
+  /** Pivote de la correccion (pelvisC). */
+  pivot: number;
+  /** Origen del eje de guinada (pecho: eje columna pecho->pelvis). */
+  axisFrom: number;
+  /** Tope de guinada (rad); el solver lo sustituye por balance.twistLimitRad en vivo. */
+  maxAngle: number;
+  stiffness: number;
+  /** Lectura de diagnostico: guinada actual (rad). */
+  currentAngle: number;
+}
+
 export interface AnchorState {
   limb: LimbId;
   particle: number;
@@ -153,6 +183,9 @@ export interface BalanceTuning {
   postureTone: number;
   toneFloor: number;
   stretchTolerance: number;
+  /** Tope de guinada de la pelvis (rad): 0.30 = realista (cadera cuadrada),
+   *  0.85 = ragdoll (giro libre casi total). 0 desactiva el tope. */
+  twistLimitRad: number;
 }
 
 /**
@@ -235,7 +268,10 @@ export class PbdSolver {
   private sticks: Stick[] = [];
   private angles: AngleConstraint[] = [];
   private folds: FoldConstraint[] = [];
+  private twists: TwistConstraint[] = [];
   private chainCaps: ChainCap[] = [];
+  /** Duracion del ultimo paso (velocityOfLimb). */
+  private lastStepDt = 1 / 60;
   private anchors = new Map<LimbId, AnchorState>();
   private targets = new Map<LimbId, TargetState>();
   private limbParticle = new Map<LimbId, number>();
@@ -283,7 +319,8 @@ export class PbdSolver {
         foldStrength: env.balance?.foldStrength ?? 0.85,
         postureTone: env.balance?.postureTone ?? 0.75,
         toneFloor: env.balance?.toneFloor ?? 0.12,
-        stretchTolerance: env.balance?.stretchTolerance ?? 1.1
+        stretchTolerance: env.balance?.stretchTolerance ?? 1.1,
+        twistLimitRad: env.balance?.twistLimitRad ?? 0.45
       }
     };
     this.tone = this.env.balance.postureTone;
@@ -296,12 +333,14 @@ export class PbdSolver {
     angles: AngleConstraint[],
     limbParticle: Map<LimbId, number>,
     topology?: BodyTopology,
-    folds: FoldConstraint[] = []
+    folds: FoldConstraint[] = [],
+    twists: TwistConstraint[] = []
   ): void {
     this.particles = particles;
     this.sticks = sticks;
     this.angles = angles;
     this.folds = folds;
+    this.twists = twists;
     this.limbParticle = limbParticle;
     this.topology = topology ?? null;
     this.anchors.clear();
@@ -355,6 +394,12 @@ export class PbdSolver {
     return this.folds.map((f) => ({ id: f.id, side: f.side, minSide: f.minSide }));
   }
 
+  /** Lecturas de diagnostico del guinada de pelvis (rad y tope vigente). */
+  debugTwists(): { id: string; angle: number; max: number }[] {
+    const max = this.env.balance.twistLimitRad;
+    return this.twists.map((t) => ({ id: t.id, angle: t.currentAngle, max }));
+  }
+
   /** Reactiva el impulso de subida (llamado al consolidar un anclaje nuevo). */
   pulseClimbDrive(): void {
     this.climbDrive = 1;
@@ -389,6 +434,15 @@ export class PbdSolver {
   positionOfLimb(limb: LimbId): V3 {
     const idx = this.limbParticle.get(limb);
     return idx === undefined ? v3() : vClone(this.particles[idx].pos);
+  }
+
+  /** Velocidad estimada de la extremidad (m/s): para el iman predictivo del picking
+   * (coger una extremidad en movimento: apunta a donde VA a estar). */
+  velocityOfLimb(limb: LimbId): V3 {
+    const idx = this.limbParticle.get(limb);
+    if (idx === undefined || this.lastStepDt <= 1e-6) return v3();
+    const p = this.particles[idx];
+    return vScale(vSub(p.pos, p.prev), 1 / this.lastStepDt);
   }
 
   hasAnchor(limb: LimbId): boolean {
@@ -463,6 +517,7 @@ export class PbdSolver {
   relax(sweeps = 80): void {
     for (let i = 0; i < sweeps; i++) {
       this.solveSticks();
+      this.solveTwists();
       this.solveAngles();
       this.solveFolds();
       this.solveChainCaps();
@@ -474,6 +529,11 @@ export class PbdSolver {
       // presas; si esa recolocacion deja una cadena sobre su maximo, se corta YA
       // (si no, la relajacion convergeria con los brazos estirados).
       this.solveChainCaps();
+      // Cierre de la iteracion con los limites articulares: los otros constraints
+      // (pliegues, topes, pines) pueden re-violentar un angulo ya corregido; asi el
+      // rango anatomico queda garantizado EN EL ESTADO FINAL (el cuello, el mas
+      // flexible, era el que se colaba en caidas violentas).
+      this.solveAngles();
       this.solveCollisions();
     }
     for (const p of this.particles) {
@@ -508,6 +568,7 @@ export class PbdSolver {
 
   step(dt: number): StepResult {
     const K = this.env.iterations;
+    if (dt > 1e-6) this.lastStepDt = dt;
     const forces = new Map<number, V3>();
     const anchorLoads: Partial<Record<LimbId, number>> = {};
     const anchorStretch: Partial<Record<LimbId, number>> = {};
@@ -579,6 +640,9 @@ export class PbdSolver {
     const pinCorrection = new Map<LimbId, V3>();
     for (let iter = 0; iter < K; iter++) {
       this.solveSticks();
+      // El giro ANTES de los limites articulares: los angulos se miden/corrigen sobre
+      // la geometria ya cuadrada (lecturas coherentes y sin latigazos al cuello).
+      this.solveTwists();
       this.solveAngles();
       this.solveFolds();
       this.solveChainCaps();
@@ -601,6 +665,8 @@ export class PbdSolver {
       // el cuerpo es arrastrado hacia la presa y la carga del pin se dispara (9.2):
       // la biomecanica lee esa lucha como SOBRECARGA y abre el agarre con cuenta atras.
       this.solveChainCaps();
+      // Cierre de iteracion: limites articulares sobre el estado final (ver relax).
+      this.solveAngles();
       this.solveCollisions();
     }
     // NOTA: la correccion del pin genera momento "fantasma" en Verlet; ya no se
@@ -929,6 +995,58 @@ export class PbdSolver {
       pj.pos = vAdd(pj.pos, vScale(f.dir, corr * 0.7));
       pa.pos = vSub(pa.pos, vScale(f.dir, corr * 0.15));
       pb.pos = vSub(pb.pos, vScale(f.dir, corr * 0.15));
+    }
+  }
+
+  /**
+   * Guinada de pelvis limitada (anti-"cadera girada"). Anatomia pasiva: la dureza
+   * sigue jointLimitStiffness. Mide el angulo de la barra de caderas respecto a la
+   * de hombros alrededor del eje columna y, si excede el tope, rota las caderas de
+   * vuelta alrededor del eje que pasa por pelvisC (sin tocar longitudes al pivote).
+   */
+  private solveTwists(): void {
+    const max = Math.max(0, this.env.balance.twistLimitRad);
+    if (max <= 0) return;
+    // Ganancia moderada por iteracion: convergencia geometrica rapida ((1-g)^12 ~ 0)
+    // sin inyectar un latigazo de momentum en caidas violentas (el tope es anatomia
+    // pasiva, no un servo duro).
+    const g = 0.6 * clamp(this.env.balance.jointLimitStiffness, 0, 1);
+    for (const t of this.twists) {
+      const pivot = this.particles[t.pivot];
+      const origin = this.particles[t.axisFrom];
+      const axisRaw = vSub(pivot.pos, origin.pos);
+      const alen = vLen(axisRaw);
+      if (alen < 1e-9) continue;
+      const axis = vScale(axisRaw, 1 / alen);
+      const p1 = this.particles[t.a1];
+      const p2 = this.particles[t.a2];
+      const q1 = this.particles[t.b1];
+      const q2 = this.particles[t.b2];
+      const rd = vSub(p2.pos, p1.pos);
+      const cd = vSub(q2.pos, q1.pos);
+      // Ambas barras proyectadas en el plano perpendicular al eje de la columna.
+      const rdPerp = vSub(rd, vScale(axis, vDot(rd, axis)));
+      const cdPerp = vSub(cd, vScale(axis, vDot(cd, axis)));
+      const rl = vLen(rdPerp);
+      const cl = vLen(cdPerp);
+      if (rl < 1e-9 || cl < 1e-9) continue;
+      const rn = vScale(rdPerp, 1 / rl);
+      const cn = vScale(cdPerp, 1 / cl);
+      const sinA = clamp(vDot(vCross(rn, cn), axis), -1, 1);
+      const cosA = clamp(vDot(rn, cn), -1, 1);
+      const ang = Math.atan2(sinA, cosA);
+      t.currentAngle = ang;
+      // El tope VIGENTE es el del tune en vivo (presets/F3), no el almacenado en el rig.
+      const over = ang - clamp(ang, -max, max);
+      if (Math.abs(over) < 1e-5) continue;
+      const corr = -over * t.stiffness * g;
+      const rotate = (idx: number): void => {
+        const p = this.particles[idx];
+        const r = vSub(p.pos, pivot.pos);
+        p.pos = vAdd(pivot.pos, rotateAroundAxis(r, axis, corr));
+      };
+      rotate(t.b1);
+      rotate(t.b2);
     }
   }
 

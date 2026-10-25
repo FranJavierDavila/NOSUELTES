@@ -289,6 +289,7 @@ describe("Topes de longitud de cadena (anti-muneco de goma)", () => {
       solver.createAnchor(limb, "imposible_" + holdId, v3(h.position[0], h.position[1] + 0.9, h.position[2]), maxF * 3);
     }
     let worst = 0;
+    let worstLoad = 0;
     for (let i = 0; i < 240; i++) {
       const r = solver.step(dt);
       expect(r.nanError).toBe(false);
@@ -299,6 +300,9 @@ describe("Topes de longitud de cadena (anti-muneco de goma)", () => {
         if (c.limb === "spine") continue;
         worst = Math.max(worst, c.ratio);
       }
+      // La lucha oscila: el pico de carga es la senal de sobrecarga (una muestra
+      // instantanea depende del equilibrio exacto del paso final).
+      worstLoad = Math.max(worstLoad, solver.getAnchor("hand_l")?.loadN ?? 0, solver.getAnchor("hand_r")?.loadN ?? 0);
     }
     // El cuerpo subio hacia las presas (no hay brazos de 1.5 m) y las cadenas
     // quedan en el tope, no al doble.
@@ -306,8 +310,7 @@ describe("Topes de longitud de cadena (anti-muneco de goma)", () => {
     expect(worst, `ratio de cadena maximo ${worst.toFixed(3)}`).toBeLessThanOrEqual(1.08);
     // La carga medida del pin se dispara en la lucha: la biomecanica lo leeria
     // como SOBRECARGA y la cuenta atras abriria el agarre.
-    const loads = ["hand_l", "hand_r"].map((l) => solver.getAnchor(l as "hand_l")!.loadN);
-    expect(Math.max(...loads)).toBeGreaterThan(250);
+    expect(worstLoad).toBeGreaterThan(250);
   }, 60000);
 
   it("La columna tampoco se estira: el tope de pelvis-pecho aguanta un colgon sacudido", async () => {

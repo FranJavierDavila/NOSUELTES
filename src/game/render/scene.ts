@@ -996,9 +996,16 @@ export class GameScene {
 
   // --- Picking ---
 
-  /** Radio de iman en pixeles CSS por tipo de extremidad: los pies, mas grandes
-   * (son los mas dificiles de clicar: queja del usuario de agilidad). */
-  private static readonly PICK_MAGNET_PX: Record<string, number> = { hand: 46, foot: 60 };
+  /** Radio base de iman en pixeles CSS por tipo de extremidad: los pies, mas grandes
+   * (son los mas dificiles de clicar: queja del usuario de agilidad). El radio real
+   * crece con la VELOCIDAD de la extremidad (abajo): en pendulo se hace mas facil de
+   * coger, no mas dificil. */
+  private static readonly PICK_MAGNET_PX: Record<string, number> = { hand: 54, foot: 68 };
+  /** Adelanto del iman predictivo (s): proyecta tambien donde VA a estar la extremidad. */
+  private static readonly PICK_LEAD_S = 0.12;
+  /** Ganancia del radio por velocidad (m/s): 1.5 m/s => +33% de radio; tope +90%. */
+  private static readonly PICK_SPEED_GAIN = 0.22;
+  private static readonly PICK_SPEED_MAX_BONUS = 0.9;
 
   /** Posicion de picking/visual de una extremidad: cuando mano y pie comparten presa
    * (maxOccupants 2) coinciden en el mundo y seria imposible elegir; el pie se marca
@@ -1013,10 +1020,13 @@ export class GameScene {
     return { x: p.x, y: p.y + dy, z: p.z };
   }
 
-  /** Seleccion de extremidad (7): 1) raycast exacto contra el mesh; 2) iman en espacio
-   * de pantalla: la extremidad proyectada mas cercana al cursor dentro de su radio.
-   * La pared bloquea el raycast directo (AT-03); el iman solo alcanza extremidades
-   * visibles delante del plano frontal. */
+  /** Seleccion de extremidad (7): 1) raycast exacto contra el mesh; 2) iman PREDICTIVO
+   * en espacio de pantalla: por cada extremidad se acepta la MAS CERCANA de dos
+   * candidatas — su posicion actual y donde VA A ESTAR dentro de PICK_LEAD_S (velocidad
+   * del solver) — dentro de un radio que crece con su velocidad. Asi coger una
+   * extremidad en pleno pendulo es tan facil como coger una parada (peticion del
+   * jugador: "complicado seleccionar cuando se mueve mucho"). La pared bloquea el
+   * raycast directo (AT-03); el iman solo alcanza extremidades visibles. */
   pickLimb(x: number, y: number, solver?: PbdSolver): LimbId | null {
     const pick = this.scene.pick(
       x,
@@ -1033,15 +1043,28 @@ export class GameScene {
       }
     }
     if (!solver) return null;
-    // Iman: proyecta las 4 extremidades y elige la mas cercana al cursor (px CSS).
+    // Iman predictivo: proyecta posicion actual y futura de las 4 extremidades y
+    // elige la mas cercana al cursor (px CSS), con radio escalado por velocidad.
     let best: LimbId | null = null;
     let bestDist = Infinity;
     for (const limb of LIMB_IDS) {
       const pp = this.limbPickPos(limb, solver);
-      const s = this.projectToScreenCss(pp.x, pp.y, pp.z);
+      const vel = solver.velocityOfLimb(limb);
+      const speed = Math.hypot(vel.x, vel.y, vel.z);
       const kind = limb.startsWith("hand") ? "hand" : "foot";
-      const radius = GameScene.PICK_MAGNET_PX[kind];
-      const d = Math.hypot(s.x - x, s.y - y);
+      const radius = GameScene.PICK_MAGNET_PX[kind] * (1 + Math.min(speed * GameScene.PICK_SPEED_GAIN, GameScene.PICK_SPEED_MAX_BONUS));
+      const sNow = this.projectToScreenCss(pp.x, pp.y, pp.z);
+      let d = Math.hypot(sNow.x - x, sNow.y - y);
+      // Si el cursor no alcanza la posicion actual, prueba donde VA a estar
+      // (adelanto corto): un pendulo se "coge" adelantandose a su arco.
+      if (d > radius && speed > 1e-6) {
+        const sNext = this.projectToScreenCss(
+          pp.x + vel.x * GameScene.PICK_LEAD_S,
+          pp.y + vel.y * GameScene.PICK_LEAD_S,
+          pp.z + vel.z * GameScene.PICK_LEAD_S
+        );
+        d = Math.hypot(sNext.x - x, sNext.y - y);
+      }
       if (d <= radius && d < bestDist) {
         bestDist = d;
         best = limb;

@@ -157,14 +157,15 @@ export class Hud {
         <div id="hud-toasts" class="absolute left-1/2 top-24 flex w-max -translate-x-1/2 flex-col items-center gap-1"></div>
 
         <div id="hud-keys" class="absolute bottom-3 left-4 rounded bg-zinc-950/60 px-3 py-1.5 text-[11px] text-zinc-500 backdrop-blur">
-          Arrastrar: clic izq. sobre mano/pie · Cancelar: clic der./Esc · Reiniciar: R · Pausa: Espacio · Tutorial: T · Ayuda: H · Debug: F3 · <span id="hud-backend-mini">motor…</span>
+          Agarrar sin ratón: <b>1-4</b> (repite para soltar) · Arrastrar: clic izq. sobre mano/pie · Cancelar: clic der./Esc · Reiniciar: R · Pausa: Espacio · Tutorial: T · Ayuda: H · Debug: F3 · <span id="hud-backend-mini">motor…</span>
         </div>
 
         <div id="hud-help" class="pointer-events-auto absolute inset-0 hidden items-center justify-center bg-zinc-950/80 backdrop-blur">
           <div class="max-w-md rounded-xl border border-zinc-800 bg-zinc-950 p-6 text-sm text-zinc-300">
             <div class="mb-3 text-lg font-bold text-amber-400">Controles</div>
             <ul class="space-y-1.5 text-[13px]">
-              <li><b>Clic izquierdo</b> sobre una mano o pie: seleccionar y arrastrar su objetivo.</li>
+              <li><b>Clic izquierdo</b> sobre una mano o pie: seleccionar y arrastrar su objetivo. El imán es <b>predictivo</b>: si la extremidad se balancea, cógela apuntando a donde va a estar (y su radio crece con la velocidad).</li>
+              <li><b>Teclas 1-4</b>: agarra sin puntería la Mano izq./Mano der./Pie izq./Pie der. — muévela con el ratón y <b>repite la misma tecla para soltarla</b> (Esc cancela). Nada salta al agarrar.</li>
               <li><b>Mover cursor</b>: el objetivo se proyecta sobre el plano de la pared; las presas compatibles se resaltan.</li>
               <li><b>Soltar el boton</b> sobre una presa valida: la extremidad se ancla; sobre un punto invalido, se conserva el estado anterior.</li>
               <li><b>Clic derecho o Esc</b>: cancelar el arrastre.</li>

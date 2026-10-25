@@ -57,9 +57,9 @@ const CHALLENGE_META: Record<string, { label: string; description: string }> = {
 
 /** Presets de balance fisico (ADR-008) seleccionables en el menu. */
 const PRESET_TUNES: Record<BalancePresetName, BalanceTuning> = {
-  realista: { postureTone: 0.95, jointLimitStiffness: 1.0, foldStrength: 1.0, toneFloor: 0.08, stretchTolerance: 1.05 },
-  equilibrado: { postureTone: 0.75, jointLimitStiffness: 1.0, foldStrength: 0.85, toneFloor: 0.12, stretchTolerance: 1.1 },
-  ragdoll: { postureTone: 0.5, jointLimitStiffness: 0.85, foldStrength: 0.6, toneFloor: 0.25, stretchTolerance: 1.2 }
+  realista: { postureTone: 0.95, jointLimitStiffness: 1.0, foldStrength: 1.0, toneFloor: 0.08, stretchTolerance: 1.05, twistLimitRad: 0.3 },
+  equilibrado: { postureTone: 0.75, jointLimitStiffness: 1.0, foldStrength: 0.85, toneFloor: 0.12, stretchTolerance: 1.1, twistLimitRad: 0.45 },
+  ragdoll: { postureTone: 0.5, jointLimitStiffness: 0.85, foldStrength: 0.6, toneFloor: 0.25, stretchTolerance: 1.2, twistLimitRad: 0.85 }
 };
 
 const REJECT_LABELS: Record<string, string> = {
@@ -169,7 +169,7 @@ export class GameApp {
   private peakFatigue = 0;
   private fallAutoReset = -1;
   /** Balance realismo/ragdoll (ADR-008), persistido y calibrable en F3. */
-  private tune: BalanceTuning = { jointLimitStiffness: 1.0, foldStrength: 0.85, postureTone: 0.75, toneFloor: 0.12, stretchTolerance: 1.1 };
+  private tune: BalanceTuning = { jointLimitStiffness: 1.0, foldStrength: 0.85, postureTone: 0.75, toneFloor: 0.12, stretchTolerance: 1.1, twistLimitRad: 0.45 };
   /** Cuenta atras de fallo por extremidad (sobrecarga continua), refrescada cada frame. */
   private readonly limbOverload = new Map<LimbId, { seconds: number; frac: number }>();
   /** Reglas de postura imposible vigentes (derivadas del tono postural). Objeto
@@ -190,6 +190,10 @@ export class GameApp {
   private pointerX = -1;
   private pointerY = -1;
   private pointerInside = false;
+  /** Agarre por TECLADO (1-4): seleccion directa sin punteria. La extremidad queda
+   * "en la mano" con un offset respecto al cursor para que nada salte al agarrar. */
+  private keyboardLimb: LimbId | null = null;
+  private grabOffset: { x: number; y: number } | null = null;
   private readonly eventLog: string[] = [];
 
   private lastSnapshot = {
@@ -253,7 +257,7 @@ export class GameApp {
     }, (key, value) => {
       this.setTune({ [key]: value });
     });
-    this.debug.setTuneValues({ postureTone: this.tune.postureTone, jointLimitStiffness: this.tune.jointLimitStiffness, foldStrength: this.tune.foldStrength, stretchTolerance: this.tune.stretchTolerance });
+    this.debug.setTuneValues({ postureTone: this.tune.postureTone, jointLimitStiffness: this.tune.jointLimitStiffness, foldStrength: this.tune.foldStrength, stretchTolerance: this.tune.stretchTolerance, twistLimitRad: this.tune.twistLimitRad });
     this.hud.setBackend(this.scene.backend);
     this.tutorialUi = new TutorialOverlay(
       this.opts.hudRoot,
@@ -319,6 +323,8 @@ export class GameApp {
     const holdById = new Map(this.wall.holds.map((h) => [h.id, h]));
     this.interaction?.cancelDrag();
     this.interaction?.cancelAssistAll();
+    this.keyboardLimb = null;
+    this.grabOffset = null;
     this.scene.clearHoldHighlights();
     for (const hold of this.wall.holds) this.scene.setHoldOccupied(hold.id, false);
 
@@ -381,7 +387,7 @@ export class GameApp {
       /* sin persistencia */
     }
     this.hud.setPresetActive(name);
-    this.debug.setTuneValues({ postureTone: this.tune.postureTone, jointLimitStiffness: this.tune.jointLimitStiffness, foldStrength: this.tune.foldStrength, stretchTolerance: this.tune.stretchTolerance });
+    this.debug.setTuneValues({ postureTone: this.tune.postureTone, jointLimitStiffness: this.tune.jointLimitStiffness, foldStrength: this.tune.foldStrength, stretchTolerance: this.tune.stretchTolerance, twistLimitRad: this.tune.twistLimitRad });
     this.events.emit({ type: "Message", text: `Balance ${name}: tono ${this.tune.postureTone.toFixed(2)}, límites ${this.tune.jointLimitStiffness.toFixed(2)}, pliegue ${this.tune.foldStrength.toFixed(2)}, estiramiento ×${this.tune.stretchTolerance.toFixed(2)}`, tone: "info" });
   }
 
@@ -405,7 +411,8 @@ export class GameApp {
           foldStrength: clamp01(t.foldStrength ?? 0.85),
           postureTone: clamp01(t.postureTone ?? 0.75),
           toneFloor: clamp01(t.toneFloor ?? 0.12),
-          stretchTolerance: clampRange(t.stretchTolerance ?? 1.1, 1.02, 1.35)
+          stretchTolerance: clampRange(t.stretchTolerance ?? 1.1, 1.02, 1.35),
+          twistLimitRad: clampRange(t.twistLimitRad ?? 0.45, 0, 1.2)
         };
       }
     } catch {
@@ -427,7 +434,8 @@ export class GameApp {
       foldStrength: clamp01(patch.foldStrength ?? this.tune.foldStrength),
       postureTone: clamp01(patch.postureTone ?? this.tune.postureTone),
       toneFloor: clamp01(patch.toneFloor ?? this.tune.toneFloor),
-      stretchTolerance: clampRange(patch.stretchTolerance ?? this.tune.stretchTolerance, 1.02, 1.35)
+      stretchTolerance: clampRange(patch.stretchTolerance ?? this.tune.stretchTolerance, 1.02, 1.35),
+      twistLimitRad: clampRange(patch.twistLimitRad ?? this.tune.twistLimitRad, 0, 1.2)
     };
     // Las reglas de postura imposible siguen al tono: preset realista = estricto.
     this.postureRules = postureRulesForTone(this.tune.postureTone);
@@ -451,6 +459,7 @@ export class GameApp {
     this.solver.env.balance.postureTone = this.tune.postureTone;
     this.solver.env.balance.toneFloor = this.tune.toneFloor;
     this.solver.env.balance.stretchTolerance = this.tune.stretchTolerance;
+    this.solver.env.balance.twistLimitRad = this.tune.twistLimitRad;
     // En FALLEN el tono objetivo sigue siendo el flacido; en el resto, el calibrado.
     this.solver.setToneTarget(this.machine.state === "FALLEN" ? this.tune.toneFloor : this.tune.postureTone);
   }
@@ -1064,7 +1073,9 @@ export class GameApp {
       this.pointerInside = true;
       if (!this.interaction?.dragging) return;
       const point = this.scene.wallPlanePoint(e.clientX - rect.left, e.clientY - rect.top, zPlane());
-      this.interaction.updateDrag(point ? v3(point.x, point.y, point.z) : null);
+      // Agarre por teclado: el objetivo conserva el offset inicial (agarrar no salta).
+      const target = point && this.keyboardLimb && this.grabOffset ? { x: point.x + this.grabOffset.x, y: point.y + this.grabOffset.y, z: point.z } : point;
+      this.interaction.updateDrag(target ? v3(target.x, target.y, target.z) : null);
       const preview = this.interaction.getPreview();
       if (preview?.snappedHoldId) {
         this.interaction.setRejectReason(this.interaction.rejectReason(preview.limb, preview.snappedHoldId));
@@ -1079,6 +1090,9 @@ export class GameApp {
 
     this.on(canvas, "pointerup", (e) => {
       if (e.button !== 0) return;
+      // El agarre por TECLADO no se suelta con el raton: se suelta repitiendo 1-4
+      // (o Esc para cancelar). Asi el cursor puede pasar por el lienzo sin soltar.
+      if (this.keyboardLimb) return;
       if (this.interaction?.dragging) {
         this.interaction.endDrag();
         this.scene.clearHoldHighlights();
@@ -1122,7 +1136,20 @@ export class GameApp {
         case "KeyT":
           this.startTutorial();
           break;
+        case "Digit1":
+          this.toggleKeyboardGrab("hand_l");
+          break;
+        case "Digit2":
+          this.toggleKeyboardGrab("hand_r");
+          break;
+        case "Digit3":
+          this.toggleKeyboardGrab("foot_l");
+          break;
+        case "Digit4":
+          this.toggleKeyboardGrab("foot_r");
+          break;
         case "Escape":
+          this.cancelKeyboardGrab();
           this.interaction?.cancelDrag();
           break;
         default:
@@ -1142,6 +1169,61 @@ export class GameApp {
     } else if (this.machine.state === "PAUSED") {
       this.machine.transition("PLAYING");
     }
+  }
+
+  // --- Agarre por teclado (seleccion sin punteria) ---
+
+  private static readonly KEY_OF_LIMB: Record<LimbId, string> = { hand_l: "1", hand_r: "2", foot_l: "3", foot_r: "4" };
+
+  /**
+   * Teclas 1-4: agarrar/soltar la extremidad directamente (peticion del jugador:
+   * "complicado seleccionar una extremidad cuando se mueve mucho"). Al agarrar, el
+   * objetivo nace EN la extremidad (offset respecto al cursor): nada salta. Al
+   * repetir la tecla, se suelta con la validacion normal (asistencia de viaje).
+   */
+  toggleKeyboardGrab(limb: LimbId): void {
+    if (!(this.machine.state === "READY" || this.machine.state === "PLAYING")) return;
+    if (this.interaction?.dragging) {
+      // Solo suelta si es la misma extremidad la agarrada por teclado; un arrastre
+      // de raton en curso no se interrumpe con las teclas.
+      if (this.keyboardLimb === limb) this.endKeyboardDrag();
+      return;
+    }
+    if (this.interaction!.isAssisting(limb)) return;
+    this.interaction!.beginDrag(limb);
+    if (this.machine.state === "READY") this.machine.transition("PLAYING");
+    this.keyboardLimb = limb;
+    // Offset inicial: objetivo = posicion actual de la extremidad (limbPos - cursor),
+    // asi agarrar NO salta: la extremidad solo responde al MOVIMIENTO del cursor.
+    const zPlane = this.wall.holds[0]?.position[2] ?? -0.18;
+    const limbPos = this.solver.positionOfLimb(limb);
+    const cursor = this.scene.wallPlanePoint(this.pointerX, this.pointerY, zPlane);
+    this.grabOffset = cursor ? { x: limbPos.x - cursor.x, y: limbPos.y - cursor.y } : { x: 0, y: 0 };
+    this.applyKeyboardDragTarget(zPlane);
+    this.hud.toast(`${LIMB_LABEL_ES[limb]} agarrada (tecla ${GameApp.KEY_OF_LIMB[limb]}): muévela con el ratón y pulsa ${GameApp.KEY_OF_LIMB[limb]} para soltar`, "info");
+  }
+
+  /** Suelta normal (con validacion y asistencia de viaje) del agarre por teclado. */
+  private endKeyboardDrag(): void {
+    this.interaction?.endDrag();
+    this.scene.clearHoldHighlights();
+    this.keyboardLimb = null;
+    this.grabOffset = null;
+  }
+
+  /** Cancela el estado de teclado sin validar (Esc/respawn). */
+  private cancelKeyboardGrab(): void {
+    this.keyboardLimb = null;
+    this.grabOffset = null;
+  }
+
+  /** Re-proyecta el objetivo del agarre por teclado (cursor + offset) al plano. */
+  private applyKeyboardDragTarget(zPlane: number): void {
+    if (!this.interaction?.dragging || !this.keyboardLimb) return;
+    const point = this.scene.wallPlanePoint(this.pointerX, this.pointerY, zPlane);
+    const base = point ?? { x: this.solver.positionOfLimb(this.keyboardLimb).x, y: this.solver.positionOfLimb(this.keyboardLimb).y, z: zPlane };
+    const target = this.grabOffset ? { x: base.x + this.grabOffset.x, y: base.y + this.grabOffset.y, z: base.z } : base;
+    this.interaction.updateDrag(v3(target.x, target.y, target.z));
   }
 
   // --- Tutorial (onboarding interactivo) ---
@@ -1328,6 +1410,8 @@ export class GameApp {
     events: () => string[];
     pelvisY: () => number;
     joints: () => { id: string; angle: number; utilization: number; min: number; max: number }[];
+    twists: () => { id: string; angle: number; max: number }[];
+    grab: (limb: LimbId) => boolean;
     folds: () => { id: string; side: number; minSide: number }[];
     chains: () => { limb: string; len: number; max: number; ratio: number }[];
     tone: () => number;
@@ -1374,6 +1458,19 @@ export class GameApp {
       labels: () => this.scene.limbLabelDebug(),
       pelvisY: () => this.solver.getParticle(P.pelvisC).pos.y,
       joints: () => this.solver.debugJoints(),
+      twists: () => this.solver.debugTwists(),
+      grab: (limb) => {
+        if (!(this.machine.state === "READY" || this.machine.state === "PLAYING")) return false;
+        if (this.interaction?.dragging) {
+          if (this.keyboardLimb === limb) {
+            this.endKeyboardDrag();
+            return false;
+          }
+          return false;
+        }
+        this.toggleKeyboardGrab(limb);
+        return this.interaction?.dragging ?? false;
+      },
       folds: () => this.solver.debugFolds(),
       chains: () => this.solver.debugChains(),
       tone: () => this.solver.toneLevel(),

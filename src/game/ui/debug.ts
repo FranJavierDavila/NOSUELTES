@@ -37,6 +37,7 @@ export interface TuneValues {
   jointLimitStiffness: number;
   foldStrength: number;
   stretchTolerance: number;
+  twistLimitRad: number;
 }
 
 export type TuneKey = keyof TuneValues;
@@ -108,7 +109,8 @@ export class DebugOverlay {
       ["postureTone", "tono", 0, 1],
       ["jointLimitStiffness", "limites", 0.3, 1],
       ["foldStrength", "pliegue", 0.2, 1],
-      ["stretchTolerance", "estirar", 1.02, 1.35]
+      ["stretchTolerance", "estirar", 1.02, 1.35],
+      ["twistLimitRad", "giro", 0, 1.2]
     ] as const) {
       const wrap = document.createElement("div");
       wrap.className = "flex items-center gap-2";
