@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "id": "championship_stage_1",
+  "type": "reach_top",
+  "characterId": "prototype_climber",
+  "wallId": "wall_champ_01",
+  "instruction": "Campeonato, etapa 1 de 5 - LA ESCALERA (6.0 m): sube desde las presas de salida y lleva ambas manos a la presa cima.",
+  "timeLimitSeconds": 260,
+  "start": {
+    "stance": "hanging",
+    "requiredAnchors": [
+      {
+        "limb": "hand_l",
+        "holdId": "start_l"
+      },
+      {
+        "limb": "hand_r",
+        "holdId": "start_r"
+      }
+    ],
+    "autoStart": false,
+    "impulse": [
+      0,
+      0,
+      0
+    ]
+  },
+  "rules": {
+    "allowFreeTarget": false,
+    "allowHandsOnFootHolds": false,
+    "allowFeetOnHandHolds": true,
+    "minSupportCount": 2,
+    "fallPlaneY": -0.25,
+    "fallDropDistance": 0.35,
+    "fallGraceSeconds": 0.35
+  },
+  "completion": {
+    "holdIds": [
+      "top"
+    ],
+    "requiredLimbs": [
+      "hand_l",
+      "hand_r"
+    ],
+    "stableDurationSeconds": 0.5,
+    "stabilityThreshold": 0.65
+  }
+}

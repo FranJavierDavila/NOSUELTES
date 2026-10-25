@@ -129,6 +129,10 @@ export class GameScene {
   private debugFlags: DebugFlags = { axes: false, joints: false, reach: false, raycast: false };
   private ortho = false;
   private camTargetBase = new Vector3(0, 2.4, -0.2);
+  /** Topo de la pared cargada (para que la camara siga subiendo en paredes altas). */
+  private wallTopY = 4.85;
+  /** Semiancho de la pared cargada (travesias hasta el borde quedan en cuadro). */
+  private wallHalfWidth = 2.5;
   private lastReachRadius = 0.58;
   /** Textura radial blanca compartida (tiza, polvo, confeti usa colores propios). */
   private readonly spriteTex: DynamicTexture;
@@ -252,6 +256,10 @@ export class GameScene {
 
     const d = wall.dimensions;
     const t = wall.transform.position;
+    // La camara debe poder seguir al escalador hasta cerca de la cima (campeonato:
+    // paredes de 6 a 10,5 m) y encuadrar travesias hasta el borde de la pared.
+    this.wallTopY = t[1] + d.height / 2;
+    this.wallHalfWidth = d.width / 2;
     const wallMesh = MeshBuilder.CreateBox("wall", { width: d.width, height: d.height, depth: d.depth }, this.scene);
     wallMesh.position = new Vector3(t[0], t[1], t[2]);
     wallMesh.isPickable = true;
@@ -868,12 +876,14 @@ export class GameScene {
     if (recenter) {
       target.copyFrom(this.camTargetBase);
     } else if (pelvis) {
-      const desiredY = Math.min(4.2, Math.max(1.0, pelvis.y));
+      const yCap = Math.max(4.2, this.wallTopY - 1.2);
+      const xCap = Math.max(1.6, this.wallHalfWidth - 0.45);
+      const desiredY = Math.min(yCap, Math.max(1.0, pelvis.y));
       const dy = desiredY - target.y;
       if (Math.abs(dy) > deadzoneHalf) {
         target.y += (dy - Math.sign(dy) * deadzoneHalf) * Math.min(1, dt * 3);
       }
-      const desiredX = Math.min(1.6, Math.max(-1.6, pelvis.x));
+      const desiredX = Math.min(xCap, Math.max(-xCap, pelvis.x));
       const dx = desiredX - target.x;
       if (Math.abs(dx) > deadzoneHalf) {
         target.x += (dx - Math.sign(dx) * deadzoneHalf) * Math.min(1, dt * 3);

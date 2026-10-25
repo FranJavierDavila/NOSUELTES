@@ -52,14 +52,25 @@ const LIMB_SIDE_COLOR: Record<LimbId, string> = {
   foot_r: "#ff6f91"
 };
 
-interface ChallengeOption {
+export interface ChallengeOption {
   id: string;
   label: string;
   description: string;
+  /** Etiqueta compacta para el selector lateral. */
+  short: string;
   best?: BestRecord | null;
+  group: "campeonato" | "entrenamiento";
+  locked: boolean;
+  /** 1..5 para etapas del campeonato. */
+  stageIndex?: number;
+  heightM?: number;
 }
 
 export class Hud {
+  private rootEl!: HTMLElement;
+  private onPickChallengeFn!: (id: string) => void;
+  private champStatusEl!: HTMLElement;
+  private currentChallengeId: string | null = null;
   private challengeTitle: HTMLElement;
   private instruction: HTMLElement;
   private stateBadge: HTMLElement;
@@ -105,6 +116,7 @@ export class Hud {
             <span id="hud-challenge" class="text-sm font-bold text-zinc-100">Prototipo</span>
           </div>
           <div id="hud-instruction" class="mt-1 text-xs leading-relaxed text-zinc-400"></div>
+          <div id="hud-champ" class="mt-1 hidden text-[11px] font-semibold text-amber-300/90"></div>
           <div class="mt-2 flex items-center gap-2">
             <span id="hud-state" class="rounded bg-zinc-800 px-2 py-0.5 text-[11px] font-semibold text-zinc-300">Cargando</span>
             <span id="hud-timer" class="font-mono text-sm tabular-nums text-zinc-300">--:--</span>
@@ -113,12 +125,13 @@ export class Hud {
         </div>
 
         <div class="pointer-events-auto absolute right-4 top-4 flex flex-col items-end gap-2">
-          <div id="hud-challenges" class="flex flex-col gap-1 rounded-lg bg-zinc-950/70 p-2 backdrop-blur border border-zinc-800">
+          <div id="hud-challenges" class="flex flex-col rounded-lg bg-zinc-950/70 p-2 backdrop-blur border border-zinc-800 max-h-[46vh] overflow-y-auto">
             <div class="px-1 pb-1 text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Pruebas</div>
+            <div id="hud-switch-list" class="grid grid-cols-2 gap-1"></div>
           </div>
         </div>
 
-        <div id="hud-vitals" class="absolute right-4 top-40 w-48 rounded-lg bg-zinc-950/70 p-3 backdrop-blur border border-zinc-800">
+        <div id="hud-vitals" class="absolute bottom-4 right-4 w-48 rounded-lg bg-zinc-950/70 p-3 backdrop-blur border border-zinc-800">
           <div class="mb-1 flex justify-between text-[11px] text-zinc-400"><span>Estabilidad</span><span id="hud-stab-v" class="font-mono tabular-nums">0%</span></div>
           <div class="h-2 overflow-hidden rounded bg-zinc-800"><div id="hud-stab" class="h-full rounded bg-emerald-500 transition-[width] duration-150" style="width:0%"></div></div>
           <div class="mb-1 mt-3 flex justify-between text-[11px] text-zinc-400"><span>Fatiga max.</span><span id="hud-fat-v" class="font-mono tabular-nums">0%</span></div>
@@ -175,6 +188,7 @@ export class Hud {
               <li><b>Tipos de presa</b>: <b style="color:#3fb26f">verde</b> salida, <b style="color:#8a97a8">gris</b> manos, <b style="color:#d97b2f">naranja</b> pies, <b style="color:#e0b13e">ámbar</b> cima.</li>
               <li><b>R</b>: reiniciar la prueba. <b>Espacio</b>: pausa. <b>T</b>: tutorial guiado. <b>F3</b>: overlay de depuracion. <b>C</b>: recentrar camara. <b>F4</b>: vista ortografica. <b>M</b>: sonido.</li>
               <li><b>Flujo</b>: encadena movimientos en menos de 6 s para multiplicar la puntuación (chip FLUJO). Las caídas y el tiempo restan: la rapidez con control da las 3 estrellas.</li>
+              <li><b>Campeonato</b>: cinco paredes (6 a 10,5 m) de complejidad creciente. Supera una etapa para desbloquear la siguiente; estrellas y récords se guardan solos. El botón <b>Siguiente etapa</b> aparece al superar cada pared.</li>
               <li><b>Sobrecarga con cuenta atras</b>: en rojo, el panel marca cuántos segundos aguanta el agarre (<b style="color:#e05252">cede en X,s</b>); el chip central avisa de la extremidad más comprometida. Si la carga no baja cuando llega a 0, el agarre se abre solo.</li>
               <li><b>Balance físico</b>: los presets del menú (Realista / Equilibrado / Ragdoll) ajustan tono postural, límites articulares y pliegue; se pueden refinar en F3.</li>
             </ul>
@@ -192,8 +206,17 @@ export class Hud {
             <p class="mt-3 text-sm leading-relaxed text-zinc-400">
               Control fisico de un personaje ragdoll: mueve, fija y estabiliza extremidades para resolver la pared.
               El cuerpo se simula con fisica real: no hay teletransporte, y soltar el raton en un punto malo puede costarte la prueba.
+              Los modos de entrenamiento te enseñan los controles; el <b class="text-amber-300">campeonato</b> te enfrenta a cinco paredes cada vez mas altas y exigentes.
             </p>
-            <div id="hud-intro-challenges" class="mt-5 grid gap-2"></div>
+            <div class="mt-4">
+              <div class="flex items-baseline justify-between">
+                <div class="text-[10px] font-semibold uppercase tracking-widest text-amber-400">Campeonato · 5 paredes</div>
+                <div id="hud-intro-champ-status" class="text-[11px] text-zinc-500"></div>
+              </div>
+              <div id="hud-intro-champ" class="mt-1.5 grid grid-cols-5 gap-1.5"></div>
+              <div class="mt-3 text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Entrenamiento</div>
+              <div id="hud-intro-training" class="mt-1.5 grid grid-cols-2 gap-2"></div>
+            </div>
             <div class="mt-4">
               <div class="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Balance físico (ADR-008)</div>
               <div id="hud-intro-presets" class="mt-1.5 grid grid-cols-3 gap-1.5"></div>
@@ -245,25 +268,10 @@ export class Hud {
       });
     }
 
-    const introChallenges = root.querySelector("#hud-intro-challenges")!;
-    const switcher = root.querySelector("#hud-challenges")!;
-    for (const c of challenges) {
-      const card = document.createElement("button");
-      card.className =
-        "rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-left transition hover:border-amber-500/60 hover:bg-zinc-900/70";
-      card.innerHTML = `<div class="text-sm font-bold text-zinc-100">${c.label}</div><div class="mt-0.5 text-[12px] leading-snug text-zinc-500">${c.description}</div>${c.best ? `<div class="mt-1 text-[11px] font-semibold text-amber-400/90" data-best>Mejor: ${c.best.stars >= 1 ? STAR_FULL.repeat(Math.max(1, Math.min(3, c.best.stars))) : ""} · ${c.best.score} pts · ${Math.round(c.best.timeS)} s</div>` : ""}`;
-      card.addEventListener("click", () => onPickChallenge(c.id));
-      introChallenges.appendChild(card);
-      this.challengeCards.set(c.id, card);
-
-      const btn = document.createElement("button");
-      btn.className =
-        "w-full rounded bg-zinc-800/80 px-3 py-1.5 text-left text-[11px] font-semibold text-zinc-300 transition hover:bg-zinc-700";
-      btn.textContent = c.label;
-      btn.addEventListener("click", () => onPickChallenge(c.id));
-      switcher.appendChild(btn);
-      this.challengeButtons.set(c.id, btn);
-    }
+    this.rootEl = root;
+    this.onPickChallengeFn = onPickChallenge;
+    this.champStatusEl = root.querySelector("#hud-champ")!;
+    this.renderChallengeLists(challenges);
 
     root.querySelector("#hud-help-close")!.addEventListener("click", () => this.showHelp(false));
     root.querySelector("#hud-intro-dismiss")!.addEventListener("click", () => {
@@ -291,10 +299,94 @@ export class Hud {
   setChallenge(challenge: ChallengeDefinition, label: string): void {
     this.challengeTitle.textContent = label;
     this.instruction.textContent = challenge.instruction;
+    this.currentChallengeId = challenge.id;
     for (const [id, btn] of this.challengeButtons) {
       btn.classList.toggle("ring-1", id === challenge.id);
       btn.classList.toggle("ring-amber-400", id === challenge.id);
     }
+  }
+
+  /**
+   * Reconstruye el menu inicial y el selector lateral (nuevos records y candados
+   * tras superar una etapa del campeonato). Los listeners usan el callback original.
+   */
+  setChallengeList(challenges: ChallengeOption[]): void {
+    this.renderChallengeLists(challenges);
+    for (const [id, btn] of this.challengeButtons) {
+      btn.classList.toggle("ring-1", id === this.currentChallengeId);
+      btn.classList.toggle("ring-amber-400", id === this.currentChallengeId);
+    }
+  }
+
+  private renderChallengeLists(challenges: ChallengeOption[]): void {
+    const root = this.rootEl;
+    const champIntro = root.querySelector("#hud-intro-champ")!;
+    const trainingIntro = root.querySelector("#hud-intro-training")!;
+    const switchList = root.querySelector("#hud-switch-list")!;
+    champIntro.innerHTML = "";
+    trainingIntro.innerHTML = "";
+    switchList.innerHTML = "";
+    this.challengeCards.clear();
+    this.challengeButtons.clear();
+    for (const c of challenges) {
+      const isChamp = c.group === "campeonato";
+      const starsHtml = c.best
+        ? `<span class="text-amber-400">${STAR_FULL.repeat(Math.max(1, Math.min(3, c.best.stars)))}</span><span class="text-zinc-600">${STAR_EMPTY.repeat(3 - Math.max(1, Math.min(3, c.best.stars)))}</span>`
+        : "";
+
+      // Tarjeta del menu (etapa compacta en fila de 5 / tarjeta de entrenamiento con descripcion).
+      const card = document.createElement("button");
+      if (isChamp) {
+        card.className =
+          "rounded-lg border px-2 py-2 text-left transition " +
+          (c.locked
+            ? "border-zinc-800 bg-zinc-900/50 opacity-55 hover:border-zinc-600"
+            : "border-zinc-700 bg-zinc-900 hover:border-amber-500/60 hover:bg-zinc-900/70");
+        card.innerHTML = `
+          <div class="flex items-center justify-between text-[10px] font-bold ${c.locked ? "text-zinc-500" : "text-amber-300"}">E${c.stageIndex}${c.locked ? " · BLOQUEADA" : ""}</div>
+          <div class="text-[11px] font-bold leading-tight ${c.locked ? "text-zinc-400" : "text-zinc-100"}">${c.label.replace(/^ETAPA \d+ · /, "")}</div>
+          <div class="text-[10px] text-zinc-500">${c.heightM ?? ""} m</div>
+          <div class="text-[11px] leading-none">${c.locked ? '<span class="text-[9px] font-semibold text-zinc-600">supera la anterior</span>' : c.best ? starsHtml : '<span class="text-[9px] text-zinc-600">sin completar</span>'}</div>`;
+      } else {
+        card.className =
+          "rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-2.5 text-left transition hover:border-amber-500/60 hover:bg-zinc-900/70";
+        card.innerHTML = `<div class="text-sm font-bold text-zinc-100">${c.label}</div><div class="mt-0.5 text-[12px] leading-snug text-zinc-500">${c.description}</div>${c.best ? `<div class="mt-1 text-[11px] font-semibold text-amber-400/90" data-best>Mejor: ${STAR_FULL.repeat(Math.max(1, Math.min(3, c.best.stars)))} · ${c.best.score} pts · ${Math.round(c.best.timeS)} s</div>` : ""}`;
+      }
+      card.addEventListener("click", () => this.onPickChallengeFn(c.id));
+      (isChamp ? champIntro : trainingIntro).appendChild(card);
+      this.challengeCards.set(c.id, card);
+
+      // Boton compacto del selector lateral.
+      const btn = document.createElement("button");
+      btn.className =
+        "rounded px-2 py-1 text-left text-[10px] font-semibold transition " +
+        (c.locked
+          ? "bg-zinc-900/70 text-zinc-600 hover:bg-zinc-900"
+          : "bg-zinc-800/80 text-zinc-300 hover:bg-zinc-700");
+      btn.textContent = c.locked ? `E${c.stageIndex} · bloqueada` : c.short;
+      btn.title = c.label + " — " + c.description;
+      btn.addEventListener("click", () => this.onPickChallengeFn(c.id));
+      switchList.appendChild(btn);
+      this.challengeButtons.set(c.id, btn);
+    }
+    // Estado del campeonato en el menu (linea superior de la seccion).
+    const done = challenges.filter((c) => c.group === "campeonato" && c.best && c.best.stars >= 1).length;
+    const stars = challenges.reduce((n, c) => n + (c.group === "campeonato" && c.best ? Math.max(0, Math.min(3, c.best.stars)) : 0), 0);
+    const statusText = done === 5
+      ? `¡CAMPEÓN! ${done}/5 etapas · ${stars}/15 estrellas`
+      : `${done}/5 etapas superadas · ${stars}/15 estrellas`;
+    const champStatus = root.querySelector("#hud-intro-champ-status");
+    if (champStatus) champStatus.textContent = statusText;
+  }
+
+  /** Chip permanente de campeonato en el panel superior izquierdo (null = oculto). */
+  setChampionshipStatus(text: string | null): void {
+    if (!text) {
+      this.champStatusEl.classList.add("hidden");
+      return;
+    }
+    this.champStatusEl.textContent = text;
+    this.champStatusEl.classList.remove("hidden");
   }
 
   setState(state: GameState): void {
@@ -397,7 +489,8 @@ export class Hud {
     this.banner.innerHTML = `<div class="text-2xl font-black ${tone === "ok" ? "text-emerald-400" : tone === "bad" ? "text-red-400" : "text-zinc-100"}">${text}</div><div class="mt-1 text-xs text-zinc-400">Pulsa R para reiniciar</div>`;
   }
 
-  /** Panel de exito con estrellas, puntuacion desglosada y record. */
+  /** Panel de exito con estrellas, puntuacion desglosada, record y, si es una
+   * etapa del campeonato, el salto a la siguiente pared (o corona de campeon). */
   showSuccess(info: {
     stars: 1 | 2 | 3;
     total: number;
@@ -405,6 +498,15 @@ export class Hud {
     breakdown: { base: number; timeBonus: number; flowBonus: number; fallPenalty: number };
     isRecord: boolean;
     best: BestRecord | null;
+    champ?: {
+      stageIndex: number;
+      totalStages: number;
+      totalStars: number;
+      maxStars: number;
+      champion: boolean;
+      nextLabel: string | null;
+      onNext: () => void;
+    } | null;
   }): void {
     const starsHtml =
       STAR_FULL.repeat(info.stars) + STAR_EMPTY.repeat(3 - info.stars);
@@ -413,6 +515,18 @@ export class Hud {
       : info.best
         ? `<div class="mt-1 text-[11px] text-zinc-500">Récord: ${info.best.score} pts · ${Math.round(info.best.timeS)} s</div>`
         : "";
+    const champ = info.champ;
+    const champHtml = champ
+      ? `<div class="mt-2 border-t border-zinc-800 pt-2">
+          ${champ.champion
+            ? `<div class="text-sm font-black tracking-wide text-amber-300">¡CAMPEÓN DEL CAMPEONATO!</div>
+               <div class="mt-0.5 text-[11px] text-zinc-400">Las cinco paredes superadas · ${champ.totalStars}/${champ.maxStars} estrellas</div>`
+            : `<div class="text-[11px] text-zinc-400">Etapa ${champ.stageIndex}/${champ.totalStages} superada · campeonato ${champ.totalStars}/${champ.maxStars} estrellas</div>
+               ${champ.nextLabel ? `<button id="hud-next-stage" class="mt-1.5 w-full rounded bg-amber-500 px-3 py-1.5 text-[12px] font-bold text-zinc-950 transition hover:bg-amber-400">Siguiente etapa: ${champ.nextLabel} →</button>` : ""}`
+          }
+         </div>`
+      : "";
+    this.banner.classList.toggle("pointer-events-auto", !!champ);
     this.banner.classList.remove("hidden");
     this.banner.innerHTML = `
       <div class="text-3xl font-black text-emerald-400">ÉXITO</div>
@@ -420,7 +534,11 @@ export class Hud {
       <div class="mt-2 font-mono text-xl font-bold text-zinc-100">${info.total} pts</div>
       <div class="mt-1 text-[11px] leading-relaxed text-zinc-400">base ${info.breakdown.base} · tiempo +${info.breakdown.timeBonus} · flujo +${info.breakdown.flowBonus} · caídas −${info.breakdown.fallPenalty}</div>
       ${recordLine}
+      ${champHtml}
       <div class="mt-1 text-xs text-zinc-400">Pulsa R para reiniciar</div>`;
+    if (champ && !champ.champion && champ.nextLabel) {
+      this.banner.querySelector("#hud-next-stage")?.addEventListener("click", () => champ.onNext());
+    }
   }
 
   /** Chip de combo de flujo (xN al encadenar movimientos rapidos). */

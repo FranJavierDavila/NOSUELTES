@@ -57,6 +57,11 @@ time.sleep(2.5)
 try: ab("eval", "document.getElementById('tut-skip')?.click()")
 except Exception: pass
 time.sleep(1.0)
+# Desde el campeonato la carga por defecto es la ETAPA 1; esta ruta es la del tutorial.
+ab("eval", "window.__NS.load('challenge_reach_top')")
+time.sleep(4)
+if not ev('JSON.stringify({s: window.__NS.state()}).slice(6, -2)') == "READY":
+    time.sleep(3)
 
 for limb, hold, hx, hy in RUTA:
     ok = False

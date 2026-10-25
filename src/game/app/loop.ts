@@ -27,12 +27,24 @@ import { P, spawnRagdoll, type RagdollRig } from "../physics/pbd/ragdoll";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { GameScene } from "../render/scene";
 import { Hud } from "../ui/hud";
+import type { ChallengeOption } from "../ui/hud";
 import { DebugOverlay, type DebugData } from "../ui/debug";
 import { AudioBus } from "../ui/audio";
 import type { BalancePresetName } from "../ui/hud";
 import { computeScore, isBetter, BestRecord } from "../gameplay/score";
 import { TutorialOverlay, type TutorialSpotlight, type TutorialGesture } from "../ui/tutorial";
 import { TutorialEngine, buildTutorialSteps, type TutorialCtx, type TutorialStepDef } from "../gameplay/tutorial";
+import {
+  CHAMPIONSHIP_STAGES,
+  STAGE_BY_CHALLENGE,
+  stageOf,
+  isStageUnlocked,
+  currentStageIndex,
+  totalStars,
+  maxStars,
+  isChampion,
+  nextStageId
+} from "../domain/championship";
 import { v3, lerp } from "../physics/pbd/math";
 
 const CHALLENGE_LABELS: Record<ChallengeType, string> = {
@@ -48,11 +60,32 @@ const CHALLENGE_DESCRIPTIONS: Record<ChallengeType, string> = {
 };
 
 /** Overrides por ID de desafio (variantes con etiqueta propia, p.ej. VELOCIDAD). */
-const CHALLENGE_META: Record<string, { label: string; description: string }> = {
+const TRAINING_META: Record<string, { label: string; description: string }> = {
   challenge_speed_run: {
     label: "VELOCIDAD",
     description: "Contrarreloj: la misma cima, 60 segundos. Encadena el flujo y no caigas."
   }
+};
+
+/** Etiquetas de las 5 etapas del campeonato, derivadas del modulo puro. */
+const CHAMPIONSHIP_META: Record<string, { label: string; description: string }> = Object.fromEntries(
+  CHAMPIONSHIP_STAGES.map((s) => [
+    s.challengeId,
+    { label: `ETAPA ${s.index} · ${s.name}`, description: s.blurb }
+  ])
+);
+
+const CHALLENGE_META: Record<string, { label: string; description: string }> = {
+  ...CHAMPIONSHIP_META,
+  ...TRAINING_META
+};
+
+/** Etiquetas compactas del selector lateral para las pruebas de entrenamiento. */
+const TRAINING_SHORT: Record<string, string> = {
+  challenge_reach_top: "Alcanzar",
+  challenge_stabilize_pose: "Estabilizar",
+  challenge_recover_swing: "Recuperar",
+  challenge_speed_run: "Velocidad"
 };
 
 /** Presets de balance fisico (ADR-008) seleccionables en el menu. */
@@ -235,16 +268,16 @@ export class GameApp {
     this.hud = new Hud(
       this.opts.hudRoot,
       this.events,
-      challengeIds.map((id) => {
-        const c = this.repo.getChallenge(id);
-        return {
-          id,
-          label: CHALLENGE_META[id]?.label ?? CHALLENGE_LABELS[c.type],
-          description: CHALLENGE_META[id]?.description ?? CHALLENGE_DESCRIPTIONS[c.type],
-          best: this.loadBest(id)
-        };
-      }),
+      this.buildChallengeOptions(),
       (id) => {
+        // Candado del campeonato: una etapa solo es jugable si las anteriores
+        // estan superadas. El aviso explica POR QUE no se abre (control determinista).
+        const stage = stageOf(id);
+        if (stage && !isStageUnlocked(stage.index, this.championshipBests())) {
+          this.audio.ensure();
+          this.hud.toast(`ETAPA ${stage.index} · ${stage.name} bloqueada: supera primero la etapa ${stage.index - 1}`, "warn");
+          return;
+        }
         this.audio.ensure();
         this.loadChallenge(id);
       },
@@ -310,6 +343,11 @@ export class GameApp {
 
     this.scene.buildWorld(this.wall);
     this.hud.setChallenge(this.challenge, CHALLENGE_META[id]?.label ?? CHALLENGE_LABELS[this.challenge.type]);
+    // Chip permanente de campeonato (panel superior izquierdo) mientras se juega una etapa.
+    const stage = stageOf(id);
+    this.hud.setChampionshipStatus(
+      stage ? `Campeonato · etapa ${stage.index}/5 · ${stage.name} (${stage.heightM} m)` : null
+    );
     this.buildInteraction();
     this.spawn();
   }
@@ -470,7 +508,7 @@ export class GameApp {
     this.spawn();
   }
 
-  // --- Records por desafio (localStorage) ---
+  // --- Records por desafio (localStorage) y campeonato ---
 
   private static bestKey(id: string): string {
     return `ns.best.${id}`;
@@ -483,6 +521,46 @@ export class GameApp {
     } catch {
       return null;
     }
+  }
+
+  /** Records de las 5 etapas del campeonato (fuente de verdad del progreso). */
+  private championshipBests(): Map<string, BestRecord | null> {
+    const m = new Map<string, BestRecord | null>();
+    for (const s of CHAMPIONSHIP_STAGES) m.set(s.challengeId, this.loadBest(s.challengeId));
+    return m;
+  }
+
+  /** Opciones del menu: campeonato primero (con candados y estrellas), luego entrenamiento. */
+  private buildChallengeOptions(): ChallengeOption[] {
+    const bests = this.championshipBests();
+    const champ: ChallengeOption[] = CHAMPIONSHIP_STAGES.map((s) => ({
+      id: s.challengeId,
+      label: CHALLENGE_META[s.challengeId]?.label ?? `ETAPA ${s.index} · ${s.name}`,
+      short: `E${s.index} · ${s.name}`,
+      description: s.blurb,
+      best: bests.get(s.challengeId) ?? null,
+      group: "campeonato",
+      locked: !isStageUnlocked(s.index, bests),
+      stageIndex: s.index,
+      heightM: s.heightM
+    }));
+    const training: ChallengeOption[] = this.repo.listChallengeIds()
+      .filter((id) => !STAGE_BY_CHALLENGE.has(id))
+      .map((id) => {
+        const c = this.repo.getChallenge(id);
+        const meta = CHALLENGE_META[id];
+        const label = meta?.label ?? CHALLENGE_LABELS[c.type];
+        return {
+          id,
+          label,
+          short: TRAINING_SHORT[id] ?? label,
+          description: meta?.description ?? CHALLENGE_DESCRIPTIONS[c.type],
+          best: this.loadBest(id),
+          group: "entrenamiento" as const,
+          locked: false
+        };
+      });
+    return [...champ, ...training];
   }
 
   private saveBest(id: string, rec: BestRecord): boolean {
@@ -975,13 +1053,43 @@ export class GameApp {
         });
         const rec: BestRecord = { score: result.total, timeS: this.gameTime, stars: result.stars };
         const isRecord = this.saveBest(this.challenge.id, rec);
+        // Progresion del campeonato (si la pared superada es una etapa).
+        const cleared = stageOf(this.challenge.id);
+        let champ: Parameters<typeof this.hud.showSuccess>[0]["champ"] = null;
+        if (cleared) {
+          const bests = this.championshipBests();
+          const champion = isChampion(bests);
+          const nextId = nextStageId(bests);
+          const nextStage = nextId ? stageOf(nextId) : null;
+          champ = {
+            stageIndex: cleared.index,
+            totalStages: CHAMPIONSHIP_STAGES.length,
+            totalStars: totalStars(bests),
+            maxStars: maxStars(),
+            champion,
+            nextLabel: nextStage ? `ETAPA ${nextStage.index} · ${nextStage.name}` : null,
+            onNext: () => {
+              if (!nextId) return;
+              this.hud.hideIntro();
+              this.loadChallenge(nextId);
+            }
+          };
+          // Refresca menu y selector: la etapa siguiente queda desbloqueada YA.
+          this.hud.setChallengeList(this.buildChallengeOptions());
+          if (champion) {
+            this.hud.toast(`¡CAMPEÓN DEL CAMPEONATO! Las cinco paredes superadas (${totalStars(bests)}/${maxStars()} estrellas)`, "ok");
+          } else if (nextStage) {
+            this.hud.toast(`Etapa superada: desbloqueas ETAPA ${nextStage.index} · ${nextStage.name}`, "ok");
+          }
+        }
         this.hud.showSuccess({
           stars: result.stars,
           total: result.total,
           timeS: this.gameTime,
           breakdown: result.breakdown,
           isRecord,
-          best: this.loadBest(this.challenge.id)
+          best: this.loadBest(this.challenge.id),
+          champ
         });
         if (isRecord) this.hud.setBest(this.challenge.id, rec);
         break;
@@ -1420,6 +1528,14 @@ export class GameApp {
     preset: () => string | null;
     applyPreset: (name: string) => void;
     releaseLimb: (limb: LimbId) => boolean;
+    load: (id: string) => boolean;
+    forceSuccess: () => boolean;
+    championship: () => {
+      stages: { id: string; index: number; name: string; heightM: number; unlocked: boolean; best: { score: number; timeS: number; stars: number } | null }[];
+      current: number;
+      totalStars: number;
+      champion: boolean;
+    };
     debugLimbInfo: () => Record<string, { zone: string; anchored: boolean; holdId: string | null; loadN: number; ratio: number; fatigue: number; overloadS: number | null; stretch: number }>;
   } {
     return {
@@ -1488,6 +1604,36 @@ export class GameApp {
           return true;
         }
         return false;
+      },
+      // Carga directa de un desafio para E2E (sin gating: los candados se verifican aparte).
+      load: (id) => {
+        if (!this.repo.getBundle().challenges.has(id)) return false;
+        void this.loadChallenge(id);
+        return true;
+      },
+      // Solo diagnostico E2E: fuerza el exito del desafio cargado (el flujo de
+      // puntuacion/campeonato corre identico al exito real).
+      forceSuccess: () => {
+        if (this.machine.state !== "PLAYING" && this.machine.state !== "READY") return false;
+        this.machine.transition("SUCCESS");
+        this.events.emit({ type: "ChallengeSuccess" });
+        return true;
+      },
+      championship: () => {
+        const bests = this.championshipBests();
+        return {
+          stages: CHAMPIONSHIP_STAGES.map((s) => ({
+            id: s.challengeId,
+            index: s.index,
+            name: s.name,
+            heightM: s.heightM,
+            unlocked: isStageUnlocked(s.index, bests),
+            best: bests.get(s.challengeId) ?? null
+          })),
+          current: currentStageIndex(bests),
+          totalStars: totalStars(bests),
+          champion: isChampion(bests)
+        };
       },
       debugLimbInfo: () => {
         const chains = new Map(this.solver.debugChains().map((c) => [c.limb, c] as const));

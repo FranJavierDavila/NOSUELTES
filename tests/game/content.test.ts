@@ -16,9 +16,39 @@ describe("AT-01/AT-02: carga y validacion de contenido", () => {
     const repo = new ContentRepository();
     const bundle = await repo.load(loader, "/content");
     expect(bundle.characters.size).toBeGreaterThanOrEqual(1);
-    expect(bundle.walls.size).toBeGreaterThanOrEqual(1);
-    expect(bundle.challenges.size).toBe(4);
+    expect(bundle.walls.size).toBeGreaterThanOrEqual(6); // tutorial + 5 del campeonato
+    expect(bundle.challenges.size).toBe(9); // 4 entrenamiento + 5 campeonato
     expect(repo.listChallengeIds()).toContain("challenge_reach_top");
+  });
+
+  it("el campeonato declara 5 etapas en orden y cada una su propia pared mas alta", async () => {
+    const repo = new ContentRepository();
+    const bundle = await repo.load(loader, "/content");
+    const ids = bundle.manifest.challenges.filter((id) => id.startsWith("championship_stage_"));
+    expect(ids).toEqual([
+      "championship_stage_1", "championship_stage_2", "championship_stage_3",
+      "championship_stage_4", "championship_stage_5"
+    ]);
+    let prevHeight = 0;
+    for (const id of ids) {
+      const wallId = repo.getChallenge(id).wallId;
+      const wall = bundle.walls.get(wallId);
+      expect(wall).toBeDefined();
+      expect(wall!.dimensions.height).toBeGreaterThan(prevHeight);
+      prevHeight = wall!.dimensions.height;
+      // La cima y las presas de salida existen y la cima admite las dos manos.
+      const holdIds = new Set(wall!.holds.map((h) => h.id));
+      expect(holdIds.has("top")).toBe(true);
+      expect(holdIds.has("start_l")).toBe(true);
+      expect(holdIds.has("start_r")).toBe(true);
+      const top = wall!.holds.find((h) => h.id === "top")!;
+      expect(top.allowedLimbs).toContain("hand_l");
+      expect(top.allowedLimbs).toContain("hand_r");
+      expect(top.maxOccupants).toBeGreaterThanOrEqual(2);
+    }
+    // Alturas crecientes: 6 -> 10,5 m.
+    const heights = ids.map((id) => bundle.walls.get(repo.getChallenge(id).wallId)!.dimensions.height);
+    expect(heights).toEqual([6, 7, 8, 9, 10.5]);
   });
 
   it("rechaza JSON con referencia rota e informa archivo/campo/motivo", async () => {
