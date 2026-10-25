@@ -1,0 +1,204 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "nosueltos/challenge.schema.json",
+  "title": "ChallengeDefinition",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "type",
+    "characterId",
+    "wallId",
+    "instruction",
+    "timeLimitSeconds",
+    "start",
+    "rules",
+    "completion"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "type": {
+      "enum": [
+        "reach_top",
+        "stabilize",
+        "recover"
+      ]
+    },
+    "characterId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "wallId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "instruction": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timeLimitSeconds": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 3600
+    },
+    "start": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stance",
+        "requiredAnchors",
+        "autoStart"
+      ],
+      "properties": {
+        "stance": {
+          "enum": [
+            "standing",
+            "hanging"
+          ]
+        },
+        "requiredAnchors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "limb",
+              "holdId"
+            ],
+            "properties": {
+              "limb": {
+                "enum": [
+                  "hand_l",
+                  "hand_r",
+                  "foot_l",
+                  "foot_r"
+                ]
+              },
+              "holdId": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "autoStart": {
+          "type": "boolean"
+        },
+        "impulse": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        }
+      }
+    },
+    "rules": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowFreeTarget",
+        "allowHandsOnFootHolds",
+        "allowFeetOnHandHolds",
+        "minSupportCount",
+        "fallPlaneY",
+        "fallDropDistance",
+        "fallGraceSeconds"
+      ],
+      "properties": {
+        "allowFreeTarget": {
+          "type": "boolean"
+        },
+        "allowHandsOnFootHolds": {
+          "type": "boolean"
+        },
+        "allowFeetOnHandHolds": {
+          "type": "boolean"
+        },
+        "minSupportCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4
+        },
+        "fallPlaneY": {
+          "type": "number"
+        },
+        "fallDropDistance": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "fallGraceSeconds": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 5
+        }
+      }
+    },
+    "completion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stabilityThreshold",
+        "stableDurationSeconds"
+      ],
+      "properties": {
+        "holdIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "requiredLimbs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": [
+              "hand_l",
+              "hand_r",
+              "foot_l",
+              "foot_r"
+            ]
+          }
+        },
+        "stabilityThreshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "stableDurationSeconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 30
+        }
+      },
+      "if": {
+        "properties": {
+          "holdIds": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "holdIds"
+        ]
+      },
+      "then": {
+        "required": [
+          "holdIds",
+          "requiredLimbs",
+          "stabilityThreshold",
+          "stableDurationSeconds"
+        ]
+      }
+    }
+  }
+}

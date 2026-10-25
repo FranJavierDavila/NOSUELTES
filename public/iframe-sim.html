@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Simulación de preview cross-origin</title>
+<style>
+  body { margin: 0; background: #1a1d23; font-family: system-ui, sans-serif; color: #cbd5e1; }
+  header { padding: 8px 16px; font-size: 13px; background: #12141a; }
+  iframe { display: block; width: 100%; height: calc(100vh - 37px); border: 0; }
+</style>
+</head>
+<body>
+<header>Simulación del iframe del preview (origen distinto: puerto 8899 → 3000)</header>
+<iframe id="game" src="http://localhost:3000/" allow="webgpu; fullscreen; gamepad"></iframe>
+</body>
+</html>

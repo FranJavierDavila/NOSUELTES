@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "prototype_climber",
+  "displayName": "Climber Prototype",
+  "bodyProfileId": "standard_humanoid",
+  "virtues": {
+    "strength": 0.55,
+    "endurance": 0.6,
+    "flexibility": 0.5
+  },
+  "physical": {
+    "massScale": 1.0,
+    "reachScale": 1.0,
+    "baseGripForce": 470,
+    "legForceFactor": 2.2
+  },
+  "control": {
+    "gripAssist": 0.85,
+    "targetFollowStrength": 1.0,
+    "holdSnapRadius": 0.34
+  },
+  "presentation": {
+    "model": "characters/prototype_climber/model.glb",
+    "materialSet": "materials/prototype_climber.json"
+  }
+}

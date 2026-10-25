@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "challenge_recover_swing",
+  "type": "recover",
+  "characterId": "prototype_climber",
+  "wallId": "wall_basic_01",
+  "instruction": "Cuelgas de una sola mano y la fuerza se agota: recupera dos apoyos y estabilidad antes de que suelte el agarre.",
+  "timeLimitSeconds": 20,
+  "start": {
+    "stance": "hanging",
+    "requiredAnchors": [
+      { "limb": "hand_r", "holdId": "r4" }
+    ],
+    "autoStart": true,
+    "impulse": [-0.45, 0, 0]
+  },
+  "rules": {
+    "allowFreeTarget": false,
+    "allowHandsOnFootHolds": false,
+    "allowFeetOnHandHolds": true,
+    "minSupportCount": 2,
+    "fallPlaneY": -0.25,
+    "fallDropDistance": 0.35,
+    "fallGraceSeconds": 0.35
+  },
+  "completion": {
+    "stabilityThreshold": 0.55,
+    "stableDurationSeconds": 0.6
+  }
+}

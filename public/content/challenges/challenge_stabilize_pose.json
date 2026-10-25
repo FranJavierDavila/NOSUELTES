@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "id": "challenge_stabilize_pose",
+  "type": "stabilize",
+  "characterId": "prototype_climber",
+  "wallId": "wall_basic_01",
+  "instruction": "Cuelgas de dos presas: apoya ambos pies en la pared y mantén la estabilidad sobre el umbral durante 3 segundos.",
+  "timeLimitSeconds": 45,
+  "start": {
+    "stance": "hanging",
+    "requiredAnchors": [
+      { "limb": "hand_l", "holdId": "mid_l" },
+      { "limb": "hand_r", "holdId": "mid_r" }
+    ],
+    "autoStart": false,
+    "impulse": [0, 0, 0]
+  },
+  "rules": {
+    "allowFreeTarget": false,
+    "allowHandsOnFootHolds": false,
+    "allowFeetOnHandHolds": true,
+    "minSupportCount": 2,
+    "fallPlaneY": -0.25,
+    "fallDropDistance": 0.35,
+    "fallGraceSeconds": 0.35
+  },
+  "completion": {
+    "stabilityThreshold": 0.6,
+    "stableDurationSeconds": 3.0
+  }
+}

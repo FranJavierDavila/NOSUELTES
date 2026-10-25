@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "id": "standard_humanoid",
+  "units": {
+    "length": "m",
+    "mass": "kg",
+    "force": "N"
+  },
+  "segments": {
+    "torso": {
+      "size": [
+        0.45,
+        0.65,
+        0.25
+      ],
+      "mass": 20
+    },
+    "pelvis": {
+      "size": [
+        0.3,
+        0.25,
+        0.22
+      ],
+      "mass": 16
+    },
+    "head": {
+      "radius": 0.11,
+      "mass": 5
+    },
+    "upperArm": {
+      "length": 0.3,
+      "mass": 2.5
+    },
+    "forearm": {
+      "length": 0.28,
+      "mass": 1.5
+    },
+    "hand": {
+      "radius": 0.05,
+      "mass": 1.0
+    },
+    "thigh": {
+      "length": 0.38,
+      "mass": 5.0
+    },
+    "shin": {
+      "length": 0.38,
+      "mass": 3.0
+    },
+    "foot": {
+      "radius": 0.05,
+      "mass": 1.0
+    }
+  },
+  "reach": {
+    "comfortRatio": 0.92,
+    "hardLimitRatio": 1.12
+  },
+  "joints": {
+    "elbow": {
+      "minAngle": 0.44,
+      "maxAngle": 3.1,
+      "stiffness": 1.0
+    },
+    "knee": {
+      "minAngle": 0.5,
+      "maxAngle": 3.11,
+      "stiffness": 1.0
+    },
+    "shoulder": {
+      "minAngle": 0.01,
+      "maxAngle": 3.05,
+      "stiffness": 0.8
+    },
+    "hip": {
+      "minAngle": 0.75,
+      "maxAngle": 3.14,
+      "stiffness": 0.8
+    },
+    "neck": {
+      "minAngle": 2.44,
+      "maxAngle": 3.14,
+      "stiffness": 0.6
+    }
+  },
+  "biomech": {
+    "comfortableLoadRatio": 0.6,
+    "overloadRatio": 1.0,
+    "overloadGraceSeconds": 6.0,
+    "overloadAccumRate": 0.6,
+    "overloadDecayRate": 2.0,
+    "effortRate": {
+      "thresholdLow": 0.3,
+      "slopeLow": 0.12,
+      "thresholdHigh": 0.9,
+      "slopeHigh": 0.3,
+      "postureWeight": 0.08
+    },
+    "recoveryRate": 0.06,
+    "recoveryLoadRatio": 0.25,
+    "strengthFactorMin": 0.55,
+    "strengthFactorMax": 1.45,
+    "fatigueFactorMin": 0.55,
+    "posturePenalty": 0.45,
+    "loadEstimatorGain": 0.67,
+    "stabilityWeights": {
+      "support": 0.3,
+      "spread": 0.2,
+      "com": 0.3,
+      "load": 0.2
+    },
+    "comSpreadReference": 0.45,
+    "comDistanceReference": 0.8
+  },
+  "sim": {
+    "gravity": [
+      0,
+      -9.81,
+      0
+    ],
+    "damping": 0.9905,
+    "iterations": 12,
+    "fixedDeltaSeconds": 0.0166667,
+    "resetSettleSeconds": 0.5,
+    "tremorAmplitude": 0.0025
+  }
+}

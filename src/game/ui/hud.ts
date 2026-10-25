@@ -1,0 +1,322 @@
+/**
+ * HUD minimo (seccion 12.2): instruccion en una frase, temporizador, fatiga y estado de
+ * extremidades, estado de la prueba, ayuda y avisos. No contiene reglas de juego.
+ */
+import { GameState, GameEvent, LimbId, LoadZone, ChallengeDefinition } from "../types";
+import { LIMB_IDS } from "../types";
+
+const LIMB_LABEL: Record<LimbId, string> = {
+  hand_l: "Mano izq.",
+  hand_r: "Mano der.",
+  foot_l: "Pie izq.",
+  foot_r: "Pie der."
+};
+
+const STATE_LABEL: Record<GameState, string> = {
+  LOADING: "Cargando",
+  READY: "Lista",
+  PLAYING: "En curso",
+  PAUSED: "Pausa",
+  SUCCESS: "Exito",
+  FALLEN: "Caida",
+  TIMEOUT: "Tiempo agotado",
+  RESETTING: "Reiniciando",
+  ERROR: "Error"
+};
+
+const ZONE_COLOR: Record<LoadZone, string> = {
+  NORMAL: "#3fb26f",
+  STRAINED: "#e0b13e",
+  OVERLOADED: "#e05252",
+  ERROR_GUARD: "#e05252"
+};
+
+interface ChallengeOption {
+  id: string;
+  label: string;
+  description: string;
+}
+
+export class Hud {
+  private challengeTitle: HTMLElement;
+  private instruction: HTMLElement;
+  private stateBadge: HTMLElement;
+  private timer: HTMLElement;
+  private stabilityBar: HTMLElement;
+  private stabilityValue: HTMLElement;
+  private fatigueBar: HTMLElement;
+  private fatigueValue: HTMLElement;
+  private limbChips = new Map<LimbId, HTMLElement>();
+  private banner: HTMLElement;
+  private progressWrap: HTMLElement;
+  private progressBar: HTMLElement;
+  private toasts: HTMLElement;
+  private help: HTMLElement;
+  private intro: HTMLElement;
+  private pausedBadge: HTMLElement;
+  private backendSpans: HTMLElement[] = [];
+  private challengeButtons = new Map<string, HTMLElement>();
+
+  constructor(
+    root: HTMLElement,
+    events: { on(listener: (e: GameEvent) => void): () => void },
+    challenges: ChallengeOption[],
+    onPickChallenge: (id: string) => void,
+    onDismissIntro: () => void
+  ) {
+    root.innerHTML = `
+      <div class="pointer-events-none absolute inset-0 select-none font-sans text-zinc-100">
+        <div id="hud-info" class="absolute left-4 top-4 rounded-lg bg-zinc-950/70 px-4 py-3 backdrop-blur border border-zinc-800 max-w-sm">
+          <div class="flex items-baseline gap-2">
+            <span class="text-[11px] font-semibold uppercase tracking-widest text-amber-400">NO SUELTES</span>
+            <span id="hud-challenge" class="text-sm font-bold text-zinc-100">Prototipo</span>
+          </div>
+          <div id="hud-instruction" class="mt-1 text-xs leading-relaxed text-zinc-400"></div>
+          <div class="mt-2 flex items-center gap-2">
+            <span id="hud-state" class="rounded bg-zinc-800 px-2 py-0.5 text-[11px] font-semibold text-zinc-300">Cargando</span>
+            <span id="hud-timer" class="font-mono text-sm tabular-nums text-zinc-300">--:--</span>
+            <span id="hud-paused" class="hidden rounded bg-amber-500/20 px-2 py-0.5 text-[11px] font-semibold text-amber-300">PAUSA</span>
+          </div>
+        </div>
+
+        <div class="pointer-events-auto absolute right-4 top-4 flex flex-col items-end gap-2">
+          <div id="hud-challenges" class="flex flex-col gap-1 rounded-lg bg-zinc-950/70 p-2 backdrop-blur border border-zinc-800">
+            <div class="px-1 pb-1 text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Pruebas</div>
+          </div>
+        </div>
+
+        <div id="hud-vitals" class="absolute right-4 top-40 w-48 rounded-lg bg-zinc-950/70 p-3 backdrop-blur border border-zinc-800">
+          <div class="mb-1 flex justify-between text-[11px] text-zinc-400"><span>Estabilidad</span><span id="hud-stab-v" class="font-mono tabular-nums">0%</span></div>
+          <div class="h-2 overflow-hidden rounded bg-zinc-800"><div id="hud-stab" class="h-full rounded bg-emerald-500 transition-[width] duration-150" style="width:0%"></div></div>
+          <div class="mb-1 mt-3 flex justify-between text-[11px] text-zinc-400"><span>Fatiga max.</span><span id="hud-fat-v" class="font-mono tabular-nums">0%</span></div>
+          <div class="h-2 overflow-hidden rounded bg-zinc-800"><div id="hud-fat" class="h-full rounded bg-amber-500 transition-[width] duration-150" style="width:0%"></div></div>
+          <div id="hud-limbs" class="mt-3 grid grid-cols-2 gap-1"></div>
+          <div class="mt-2 border-t border-zinc-800 pt-2 text-[10px] leading-relaxed text-zinc-500">
+            <div class="flex items-center gap-1.5">
+              <span class="inline-block h-2 w-2 rounded-full" style="background:#3fb26f"></span><span>Normal</span>
+              <span class="ml-1 inline-block h-2 w-2 rounded-full" style="background:#e0b13e"></span><span>Tensión</span>
+              <span class="ml-1 inline-block h-2 w-2 rounded-full" style="background:#e05252"></span><span>Sobrecarga</span>
+            </div>
+            <div class="mt-1">La extremidad fijada y el <b class="text-zinc-400">anillo de su presa</b> toman el color de su zona de carga.</div>
+            <div class="mt-1"><b class="text-zinc-400">Mochila</b> = espalda · <b class="text-zinc-400">marcadores turquesa</b> = frente.</div>
+            <div class="mt-1">Presas: <span class="font-semibold" style="color:#3fb26f">salida</span> · <span class="font-semibold" style="color:#8a97a8">mano</span> · <span class="font-semibold" style="color:#d97b2f">pie</span> · <span class="font-semibold" style="color:#e0b13e">cima</span></div>
+          </div>
+        </div>
+
+        <div id="hud-progress-wrap" class="absolute bottom-16 left-1/2 w-72 -translate-x-1/2 hidden">
+          <div class="mb-1 text-center text-[11px] font-semibold text-amber-300" id="hud-progress-label">Manteniendo postura</div>
+          <div class="h-2 overflow-hidden rounded bg-zinc-800"><div id="hud-progress" class="h-full rounded bg-amber-400" style="width:0%"></div></div>
+        </div>
+
+        <div id="hud-banner" class="absolute left-1/2 top-1/3 hidden -translate-x-1/2 rounded-xl bg-zinc-950/85 px-8 py-5 text-center backdrop-blur border border-zinc-700"></div>
+
+        <div id="hud-toasts" class="absolute left-1/2 top-24 flex w-max -translate-x-1/2 flex-col items-center gap-1"></div>
+
+        <div id="hud-keys" class="absolute bottom-3 left-4 rounded bg-zinc-950/60 px-3 py-1.5 text-[11px] text-zinc-500 backdrop-blur">
+          Arrastrar: clic izq. sobre mano/pie · Cancelar: clic der./Esc · Reiniciar: R · Pausa: Espacio · Tutorial: T · Ayuda: H · Debug: F3 · <span id="hud-backend-mini">motor…</span>
+        </div>
+
+        <div id="hud-help" class="pointer-events-auto absolute inset-0 hidden items-center justify-center bg-zinc-950/80 backdrop-blur">
+          <div class="max-w-md rounded-xl border border-zinc-800 bg-zinc-950 p-6 text-sm text-zinc-300">
+            <div class="mb-3 text-lg font-bold text-amber-400">Controles</div>
+            <ul class="space-y-1.5 text-[13px]">
+              <li><b>Clic izquierdo</b> sobre una mano o pie: seleccionar y arrastrar su objetivo.</li>
+              <li><b>Mover cursor</b>: el objetivo se proyecta sobre el plano de la pared; las presas compatibles se resaltan.</li>
+              <li><b>Soltar el boton</b> sobre una presa valida: la extremidad se ancla; sobre un punto invalido, se conserva el estado anterior.</li>
+              <li><b>Clic derecho o Esc</b>: cancelar el arrastre.</li>
+              <li><b>Colores de carga</b>: la extremidad fijada y el anillo de su presa se tiñen — <b style="color:#3fb26f">verde</b> normal, <b style="color:#e0b13e">ámbar</b> tensión, <b style="color:#e05252">rojo</b> sobrecarga (parpadea). La mochila marca la espalda; los marcadores turquesa, el frente (cara, rodillas, codos).</li>
+              <li><b>Tipos de presa</b>: <b style="color:#3fb26f">verde</b> salida, <b style="color:#8a97a8">gris</b> manos, <b style="color:#d97b2f">naranja</b> pies, <b style="color:#e0b13e">ámbar</b> cima.</li>
+              <li><b>R</b>: reiniciar la prueba. <b>Espacio</b>: pausa. <b>T</b>: tutorial guiado. <b>F3</b>: overlay de depuracion. <b>C</b>: recentrar camara. <b>F4</b>: vista ortografica. <b>M</b>: sonido.</li>
+            </ul>
+            <div class="mt-3 text-[12px] leading-relaxed text-zinc-500">
+              La fuerza de agarre depende de la postura y la fatiga. Si la carga supera la capacidad durante la tolerancia, el agarre se libera y caes. Coloca los pies para descansar: solo con brazos te agotaras.
+            </div>
+            <button id="hud-help-close" class="mt-4 rounded bg-zinc-800 px-4 py-2 text-xs font-semibold hover:bg-zinc-700">Cerrar (H)</button>
+          </div>
+        </div>
+
+        <div id="hud-intro" class="pointer-events-auto absolute inset-0 flex items-center justify-center bg-zinc-950/75 backdrop-blur-sm">
+          <div class="max-w-2xl rounded-2xl border border-zinc-800 bg-zinc-950/95 p-8">
+            <div class="text-[11px] font-semibold uppercase tracking-[0.3em] text-amber-400">Prototipo jugable</div>
+            <h1 class="mt-1 text-3xl font-black tracking-tight text-zinc-100">NO SUELTES</h1>
+            <p class="mt-3 text-sm leading-relaxed text-zinc-400">
+              Control fisico de un personaje ragdoll: mueve, fija y estabiliza extremidades para resolver la pared.
+              El cuerpo se simula con fisica real: no hay teletransporte, y soltar el raton en un punto malo puede costarte la prueba.
+            </p>
+            <div id="hud-intro-challenges" class="mt-5 grid gap-2"></div>
+            <div class="mt-5 flex items-center justify-between">
+              <div class="text-[11px] text-zinc-500">Ratón + teclado · F3 para metricas de depuracion · Motor: <span id="hud-backend" class="text-zinc-400">detectando…</span></div>
+              <button id="hud-intro-dismiss" class="rounded bg-amber-500 px-5 py-2 text-sm font-bold text-zinc-950 hover:bg-amber-400">Comenzar</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    this.challengeTitle = root.querySelector("#hud-challenge")!;
+    this.instruction = root.querySelector("#hud-instruction")!;
+    this.stateBadge = root.querySelector("#hud-state")!;
+    this.timer = root.querySelector("#hud-timer")!;
+    this.stabilityBar = root.querySelector("#hud-stab")!;
+    this.stabilityValue = root.querySelector("#hud-stab-v")!;
+    this.fatigueBar = root.querySelector("#hud-fat")!;
+    this.fatigueValue = root.querySelector("#hud-fat-v")!;
+    this.banner = root.querySelector("#hud-banner")!;
+    this.backendSpans = [
+      root.querySelector("#hud-backend") as HTMLElement | null,
+      root.querySelector("#hud-backend-mini") as HTMLElement | null
+    ].filter((el): el is HTMLElement => el !== null);
+    this.progressWrap = root.querySelector("#hud-progress-wrap")!;
+    this.progressBar = root.querySelector("#hud-progress")!;
+    this.toasts = root.querySelector("#hud-toasts")!;
+    this.help = root.querySelector("#hud-help")!;
+    this.intro = root.querySelector("#hud-intro")!;
+    this.pausedBadge = root.querySelector("#hud-paused")!;
+
+    const limbsRoot = root.querySelector("#hud-limbs")!;
+    for (const limb of LIMB_IDS) {
+      const chip = document.createElement("div");
+      chip.className = "flex items-center justify-between rounded bg-zinc-800/80 px-2 py-1 text-[10px]";
+      chip.innerHTML = `<span class="text-zinc-400">${LIMB_LABEL[limb]}</span><span class="font-mono font-bold" data-dot>·</span>`;
+      limbsRoot.appendChild(chip);
+      this.limbChips.set(limb, chip.querySelector("[data-dot]") as HTMLElement);
+    }
+
+    const introChallenges = root.querySelector("#hud-intro-challenges")!;
+    const switcher = root.querySelector("#hud-challenges")!;
+    for (const c of challenges) {
+      const card = document.createElement("button");
+      card.className =
+        "rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-left transition hover:border-amber-500/60 hover:bg-zinc-900/70";
+      card.innerHTML = `<div class="text-sm font-bold text-zinc-100">${c.label}</div><div class="mt-0.5 text-[12px] leading-snug text-zinc-500">${c.description}</div>`;
+      card.addEventListener("click", () => onPickChallenge(c.id));
+      introChallenges.appendChild(card);
+
+      const btn = document.createElement("button");
+      btn.className =
+        "w-full rounded bg-zinc-800/80 px-3 py-1.5 text-left text-[11px] font-semibold text-zinc-300 transition hover:bg-zinc-700";
+      btn.textContent = c.label;
+      btn.addEventListener("click", () => onPickChallenge(c.id));
+      switcher.appendChild(btn);
+      this.challengeButtons.set(c.id, btn);
+    }
+
+    root.querySelector("#hud-help-close")!.addEventListener("click", () => this.showHelp(false));
+    root.querySelector("#hud-intro-dismiss")!.addEventListener("click", () => {
+      this.intro.classList.add("hidden");
+      onDismissIntro();
+    });
+
+    events.on((e) => {
+      if (e.type === "Message") this.toast(e.text, e.tone);
+    });
+  }
+
+  setChallenge(challenge: ChallengeDefinition, label: string): void {
+    this.challengeTitle.textContent = label;
+    this.instruction.textContent = challenge.instruction;
+    for (const [id, btn] of this.challengeButtons) {
+      btn.classList.toggle("ring-1", id === challenge.id);
+      btn.classList.toggle("ring-amber-400", id === challenge.id);
+    }
+  }
+
+  setState(state: GameState): void {
+    this.stateBadge.textContent = STATE_LABEL[state];
+    const terminal = state === "SUCCESS" || state === "FALLEN" || state === "TIMEOUT";
+    this.stateBadge.className = "rounded px-2 py-0.5 text-[11px] font-semibold " + (
+      state === "SUCCESS" ? "bg-emerald-500/20 text-emerald-300"
+      : state === "FALLEN" || state === "TIMEOUT" ? "bg-red-500/20 text-red-300"
+      : state === "ERROR" ? "bg-red-500/20 text-red-300"
+      : state === "PLAYING" ? "bg-amber-500/20 text-amber-300"
+      : "bg-zinc-800 text-zinc-300"
+    );
+    this.pausedBadge.classList.toggle("hidden", state !== "PAUSED");
+    if (!terminal) this.showBanner(null);
+  }
+
+  setTimer(remaining: number | null, running: boolean): void {
+    if (remaining === null) {
+      this.timer.textContent = "--:--";
+      return;
+    }
+    const s = Math.max(0, remaining);
+    const mm = Math.floor(s / 60);
+    const ss = Math.floor(s % 60);
+    this.timer.textContent = `${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+    this.timer.className = "font-mono text-sm tabular-nums " + (running && s < 10 ? "text-red-400" : "text-zinc-300");
+  }
+
+  setVitals(stability: number, fatigueMax: number): void {
+    const st = Math.round(stability * 100);
+    const ft = Math.round(fatigueMax * 100);
+    this.stabilityBar.style.width = `${st}%`;
+    this.stabilityBar.className = "h-full rounded transition-[width] duration-150 " + (st >= 60 ? "bg-emerald-500" : st >= 35 ? "bg-amber-500" : "bg-red-500");
+    this.stabilityValue.textContent = `${st}%`;
+    this.fatigueBar.style.width = `${ft}%`;
+    this.fatigueValue.textContent = `${ft}%`;
+  }
+
+  setLimbStates(states: Record<LimbId, { zone: LoadZone; anchored: boolean; label: string }>): void {
+    for (const limb of LIMB_IDS) {
+      const chip = this.limbChips.get(limb)!;
+      const s = states[limb];
+      chip.textContent = s.anchored ? (s.zone === "NORMAL" ? "FIJADA" : s.zone === "STRAINED" ? "TENSION" : "SOBRECARGA") : s.label;
+      chip.className = "font-mono font-bold " + (s.anchored ? "" : "text-zinc-500");
+      chip.style.color = s.anchored ? ZONE_COLOR[s.zone] : "";
+    }
+  }
+
+  showBanner(text: string | null, tone: "ok" | "bad" | "info" = "info"): void {
+    if (!text) {
+      this.banner.classList.add("hidden");
+      return;
+    }
+    this.banner.classList.remove("hidden");
+    this.banner.innerHTML = `<div class="text-2xl font-black ${tone === "ok" ? "text-emerald-400" : tone === "bad" ? "text-red-400" : "text-zinc-100"}">${text}</div><div class="mt-1 text-xs text-zinc-400">Pulsa R para reiniciar</div>`;
+  }
+
+  setProgress(ratio: number | null): void {
+    if (ratio === null) {
+      this.progressWrap.classList.add("hidden");
+      return;
+    }
+    this.progressWrap.classList.remove("hidden");
+    this.progressBar.style.width = `${Math.round(ratio * 100)}%`;
+  }
+
+  /** Muestra el motor de render detectado (menu y barra inferior). */
+  setBackend(name: string): void {
+    for (const el of this.backendSpans) el.textContent = name;
+  }
+
+  toast(text: string, tone: "info" | "warn" | "error" | "ok" = "info"): void {
+    const el = document.createElement("div");
+    const color = tone === "error" ? "border-red-500/50 text-red-300" : tone === "warn" ? "border-amber-500/50 text-amber-300" : tone === "ok" ? "border-emerald-500/50 text-emerald-300" : "border-zinc-600 text-zinc-300";
+    el.className = `rounded bg-zinc-950/85 px-3 py-1.5 text-[12px] backdrop-blur border ${color}`;
+    el.textContent = text;
+    this.toasts.appendChild(el);
+    window.setTimeout(() => {
+      el.style.transition = "opacity 0.4s";
+      el.style.opacity = "0";
+      window.setTimeout(() => el.remove(), 450);
+    }, 2200);
+  }
+
+  showHelp(on: boolean): void {
+    this.help.classList.toggle("hidden", !on);
+    this.help.classList.toggle("flex", on);
+  }
+
+  toggleHelp(): boolean {
+    const on = this.help.classList.contains("hidden");
+    this.showHelp(on);
+    return on;
+  }
+
+  hideIntro(): void {
+    this.intro.classList.add("hidden");
+  }
+}
+
+export { STATE_LABEL };

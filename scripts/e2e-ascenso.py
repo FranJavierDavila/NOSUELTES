@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""E2E de ascension completa: escalada de la ruta de principio a fin usando la
+fisica muscular ADR-007 (pies que empujan, step-up). Imprime la altura de cadera
+tras cada movimiento. La presa 'top' con ambas manos = EXITO."""
+import subprocess, json, time, sys
+
+def ab(*a):
+    return subprocess.run(["agent-browser", *a], capture_output=True, text=True).stdout.strip()
+
+def ev(js):
+    raw = ab("eval", js)
+    for _ in range(3):
+        try:
+            d = json.loads(raw)
+            if isinstance(d, str):
+                raw = d; continue
+            return d
+        except Exception:
+            return None
+    return None
+
+# (limb, holdId, x, y) — ruta planificada: pies r2/r4/r6/r8, manos r1/r3/r5/r7/top
+RUTA = [
+    ("foot_r", "foot_jug_r",  0.62, 0.72),
+    ("foot_l", "foot_jug_l", -0.62, 0.72),
+    ("hand_r", "r2",          0.34, 1.98),
+    ("hand_l", "r3",         -0.40, 2.38),
+    ("foot_r", "r1",         -0.18, 1.62),
+    ("foot_l", "r2",          0.34, 1.98),
+    ("hand_r", "r4",          0.10, 2.78),
+    ("hand_l", "r5",         -0.34, 3.18),
+    ("foot_r", "r4",          0.10, 2.78),
+    ("foot_l", "r6",          0.36, 3.52),
+    ("hand_l", "r7",         -0.06, 3.92),
+    ("hand_r", "r6",          0.36, 3.52),
+    ("hand_r", "r8",          0.30, 4.26),
+    ("hand_l", "top",         0.00, 4.58),
+    ("hand_r", "top",         0.00, 4.58),
+]
+
+def drag(limb_screen, target_screen):
+    ab("mouse", "move", str(int(limb_screen["x"])), str(int(limb_screen["y"])))
+    ab("mouse", "down", "left")
+    time.sleep(0.22)
+    for i in range(1, 11):
+        mx = limb_screen["x"] + (target_screen["x"] - limb_screen["x"]) * i / 10
+        my = limb_screen["y"] + (target_screen["y"] - limb_screen["y"]) * i / 10
+        ab("mouse", "move", str(int(mx)), str(int(my)))
+        time.sleep(0.07)
+    ab("mouse", "up", "left")
+
+ab("open", "http://localhost:3000/")
+time.sleep(4)
+try: ab("find", "text", "Comenzar", "click")
+except Exception: pass
+time.sleep(2.5)
+try: ab("eval", "document.getElementById('tut-skip')?.click()")
+except Exception: pass
+time.sleep(1.0)
+
+for limb, hold, hx, hy in RUTA:
+    ok = False
+    for intento in range(3):
+        ls = ev('JSON.stringify(window.__NS.limbScreen())')
+        src = next((l for l in ls if l["limb"] == limb), None)
+        tgt = ev(f'JSON.stringify(window.__NS.project({hx},{hy},-0.18))')
+        if not src or not tgt:
+            print(f"ERROR proyectando {limb}->{hold}"); sys.exit(1)
+        drag(src, tgt)
+        time.sleep(3.2)
+        anchors = ev('JSON.stringify(window.__NS.anchors())')
+        ok = any(a["limb"] == limb and a["hold"] == hold for a in anchors) if anchors else False
+        if ok:
+            break
+        time.sleep(1.2)  # el cuerpo termina de asentarse y se reintenta
+    hip = ev('window.__NS.chainInfo("foot_l").root.y')
+    ancl = ", ".join(f"{a['limb']}@{a['hold']}" for a in (anchors or []))
+    print(f"{limb:7s} -> {hold:12s} {'OK ' if ok else 'FALLA'} cadera={hip:.2f}  [{ancl}]")
+    ab("screenshot", f"download/ascenso-{len([x for x in RUTA if x[1] <= hold])+1:02d}-{hold}.png")
+    st = ev('JSON.stringify(window.__NS.state())')
+    if st in ("SUCCESS", "FALLEN", "TIMEOUT"):
+        print("ESTADO FINAL:", st)
+        break
+
+print("anclajes finales:", ev('JSON.stringify(window.__NS.anchors())'))
+print("estado final:", ev('JSON.stringify(window.__NS.state())'))

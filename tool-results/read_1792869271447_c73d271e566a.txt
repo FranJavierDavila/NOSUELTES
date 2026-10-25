@@ -1,0 +1,925 @@
+     1→/**
+     2→ * Orquestador del bucle de juego (secciones 2, 10, 13): paso fijo de fisica a 60 Hz con
+     3→ * acumulador y render independiente (30-144 FPS), pipeline por tick, maquina de estados,
+     4→ * reset idempotente y entrada de raton/teclado.
+     5→ */
+     6→import {
+     7→  BodyProfileDefinition,
+     8→  ChallengeDefinition,
+     9→  ChallengeType,
+    10→  CharacterDefinition,
+    11→  GameEvent,
+    12→  GameState,
+    13→  LimbId,
+    14→  LoadZone,
+    15→  WallDefinition
+    16→} from "../types";
+    17→import { LIMB_IDS } from "../types";
+    18→import { ContentRepository, browserJsonLoader, type ContentBundle } from "../content/repository";
+    19→import { EventBus } from "../gameplay/events";
+    20→import { GameStateMachine } from "../gameplay/state-machine";
+    21→import { InteractionController, type InteractionWorld } from "../gameplay/interaction";
+    22→import { BiomechanicsSystem, computeStability } from "../domain/biomechanics";
+    23→import { ChallengeEvaluator } from "../domain/challenge";
+    24→import { PbdSolver } from "../physics/pbd/solver";
+    25→import { P, spawnRagdoll, type RagdollRig } from "../physics/pbd/ragdoll";
+    26→import { GameScene } from "../render/scene";
+    27→import { Hud } from "../ui/hud";
+    28→import { DebugOverlay, type DebugData } from "../ui/debug";
+    29→import { AudioBus } from "../ui/audio";
+    30→import { TutorialOverlay, type TutorialSpotlight, type TutorialGesture } from "../ui/tutorial";
+    31→import { TutorialEngine, buildTutorialSteps, type TutorialCtx, type TutorialStepDef } from "../gameplay/tutorial";
+    32→import { v3, lerp } from "../physics/pbd/math";
+    33→
+    34→const CHALLENGE_LABELS: Record<ChallengeType, string> = {
+    35→  reach_top: "ALCANZAR",
+    36→  stabilize: "ESTABILIZAR",
+    37→  recover: "RECUPERAR"
+    38→};
+    39→
+    40→const CHALLENGE_DESCRIPTIONS: Record<ChallengeType, string> = {
+    41→  reach_top: "Pared vertical con ruta de presas: lleva ambas manos a la presa final y mantén la postura.",
+    42→  stabilize: "Empiezas colgando: restablece una postura estable y sostenla sobre el umbral.",
+    43→  recover: "Postura desequilibrada pero recuperable: recupera apoyos y estabilidad antes del timeout."
+    44→};
+    45→
+    46→const REJECT_LABELS: Record<string, string> = {
+    47→  extremidad_no_permitida: "esa presa no admite esa extremidad",
+    48→  presa_ocupada: "la presa ya esta ocupada",
+    49→  fuera_de_alcance: "fuera de alcance",
+    50→  regla_del_desafio: "regla del desafio",
+    51→  debe_terminar_en_presa: "debes terminar el movimiento en una presa",
+    52→  alcance_insuficiente: "la extremidad no llego a la presa",
+    53→  objetivo_invalido: "objetivo invalido",
+    54→  objetivo_libre: "objetivo libre no permitido",
+    55→  presa_inexistente: "presa inexistente"
+    56→};
+    57→
+    58→const MAX_STEPS_PER_FRAME = 6;
+    59→
+    60→export interface GameAppOptions {
+    61→  canvas: HTMLCanvasElement;
+    62→  hudRoot: HTMLElement;
+    63→  debugRoot: HTMLElement;
+    64→}
+    65→
+    66→export class GameApp {
+    67→  private readonly events = new EventBus();
+    68→  private readonly repo = new ContentRepository();
+    69→  private bundle!: ContentBundle;
+    70→  private scene!: GameScene;
+    71→  private hud!: Hud;
+    72→  private debug!: DebugOverlay;
+    73→  private readonly audio = new AudioBus();
+    74→  private solver!: PbdSolver;
+    75→  private readonly machine: GameStateMachine;
+    76→  private bio!: BiomechanicsSystem;
+    77→  private evaluator: ChallengeEvaluator | null = null;
+    78→  private interaction: InteractionController | null = null;
+    79→  private tutorial: TutorialEngine | null = null;
+    80→  private tutorialUi!: TutorialOverlay;
+    81→  private readonly tutorialHintsShown = new Set<string>();
+    82→  /** Posicion mundo de cada presa para proyectar spotlights del tutorial. */
+    83→  private holdPosById = new Map<string, readonly [number, number, number]>();
+    84→
+    85→  private challenge!: ChallengeDefinition;
+    86→  private wall!: WallDefinition;
+    87→  private character!: CharacterDefinition;
+    88→  private profile!: BodyProfileDefinition;
+    89→  private rig: RagdollRig | null = null;
+    90→
+    91→  private gameTime = 0;
+    92→  private accumulator = 0;
+    93→  private lastFrame = 0;
+    94→  private raf = 0;
+    95→  private disposed = false;
+    96→  private paused = false;
+    97→  private recenterOnce = false;
+    98→
+    99→  private settleTimer = 0;
+   100→  private autoStartPending = false;
+   101→  private guardActive = false;
+   102→  private guardCooldown = 0;
+   103→
+   104→  private fpsFrames = 0;
+   105→  private fpsElapsed = 0;
+   106→  private fps = 60;
+   107→  private physicsMs = 0;
+   108→  private hudAccum = 0;
+   109→
+   110→  private lastSnapshot = {
+   111→    stability: 0,
+   112→    com: { x: 0, y: 0, z: 0 },
+   113→    supportCount: 0
+   114→  };
+   115→  private anchorMaxForce = 420;
+   116→  private followForce = 240;
+   117→
+   118→  private readonly canvas: HTMLCanvasElement;
+   119→  private listeners: { target: EventTarget; type: string; fn: EventListenerOrEventListenerObject }[] = [];
+   120→
+   121→  private constructor(
+   122→    private readonly opts: GameAppOptions,
+   123→    private readonly onReady: () => void
+   124→  ) {
+   125→    this.canvas = opts.canvas;
+   126→    this.machine = new GameStateMachine((e) => this.events.emit(e));
+   127→  }
+   128→
+   129→  static async create(opts: GameAppOptions, onReady: () => void): Promise<GameApp> {
+   130→    const app = new GameApp(opts, onReady);
+   131→    await app.init();
+   132→    return app;
+   133→  }
+   134→
+   135→  private async init(): Promise<void> {
+   136→    this.bundle = await this.repo.load(browserJsonLoader, "/content");
+   137→    this.scene = await GameScene.create(this.canvas);
+   138→
+   139→    const challengeIds = this.repo.listChallengeIds();
+   140→    this.hud = new Hud(
+   141→      this.opts.hudRoot,
+   142→      this.events,
+   143→      challengeIds.map((id) => {
+   144→        const c = this.repo.getChallenge(id);
+   145→        return { id, label: CHALLENGE_LABELS[c.type], description: CHALLENGE_DESCRIPTIONS[c.type] };
+   146→      }),
+   147→      (id) => {
+   148→        this.audio.ensure();
+   149→        this.loadChallenge(id);
+   150→      },
+   151→      () => this.onIntroDismissed()
+   152→    );
+   153→    this.debug = new DebugOverlay(this.opts.debugRoot, (flag, value) => {
+   154→      this.scene.setDebugFlags({ [flag]: value });
+   155→      this.debug.setFlagCheckbox(flag, value);
+   156→    });
+   157→    this.hud.setBackend(this.scene.backend);
+   158→    this.tutorialUi = new TutorialOverlay(
+   159→      this.opts.hudRoot,
+   160→      () => this.tutorial?.advance(),
+   161→      () => this.stopTutorial(true)
+   162→    );
+   163→
+   164→    this.events.on((e) => this.onGameEvent(e));
+   165→    this.attachInput();
+   166→
+   167→    await this.loadChallenge(challengeIds[0]);
+   168→    this.lastFrame = performance.now() / 1000;
+   169→    this.raf = requestAnimationFrame(this.frame);
+   170→    this.onReady();
+   171→  }
+   172→
+   173→  // --- Carga de desafio y reset (10.2) ---
+   174→
+   175→  async loadChallenge(id: string): Promise<void> {
+   176→    this.stopTutorial(false);
+   177→    this.challenge = this.repo.getChallenge(id);
+   178→    this.character = this.repo.getCharacter(this.challenge.characterId);
+   179→    this.profile = this.repo.getBodyProfile(this.character.bodyProfileId);
+   180→    this.wall = this.repo.getWall(this.challenge.wallId);
+   181→    this.holdPosById = new Map(this.wall.holds.map((h) => [h.id, h.position] as const));
+   182→    this.bio = new BiomechanicsSystem(this.character, this.profile);
+   183→    this.evaluator = new ChallengeEvaluator(this.challenge);
+   184→
+   185→    const strengthFactor = lerp(this.profile.biomech.strengthFactorMin, this.profile.biomech.strengthFactorMax, this.character.virtues.strength);
+   186→    this.anchorMaxForce = this.character.physical.baseGripForce * strengthFactor;
+   187→    this.followForce = this.character.physical.baseGripForce * this.character.control.gripAssist * this.character.control.targetFollowStrength;
+   188→
+   189→    this.solver = new PbdSolver({
+   190→      gravity: v3(...this.profile.sim.gravity),
+   191→      damping: this.profile.sim.damping,
+   192→      iterations: this.profile.sim.iterations,
+   193→      floorY: 0,
+   194→      wallFrontZ: this.wall.transform.position[2] - this.wall.dimensions.depth / 2,
+   195→      tremorAmplitude: this.profile.sim.tremorAmplitude,
+   196→      loadEstimatorGain: this.profile.biomech.loadEstimatorGain
+   197→    });
+   198→
+   199→    this.scene.buildWorld(this.wall);
+   200→    this.hud.setChallenge(this.challenge, CHALLENGE_LABELS[this.challenge.type]);
+   201→    this.buildInteraction();
+   202→    this.spawn();
+   203→  }
+   204→
+   205→  /**
+   206→   * Recreacion del estado inicial (10.2): libera constraints, destruye y recrea el
+   207→   * ragdoll, restaura fatiga/timers/progreso y espera resetSettleSeconds.
+   208→   * Idempotente: reconstruye todo desde datos; N reinicios no duplican recursos.
+   209→   */
+   210→  private spawn(): void {
+   211→    const holdById = new Map(this.wall.holds.map((h) => [h.id, h]));
+   212→    this.interaction?.cancelDrag();
+   213→    this.interaction?.cancelAssistAll();
+   214→    this.scene.clearHoldHighlights();
+   215→    for (const hold of this.wall.holds) this.scene.setHoldOccupied(hold.id, false);
+   216→
+   217→    this.scene.despawnRagdollVisuals();
+   218→    this.rig = spawnRagdoll(this.solver, this.profile, this.character, this.wall, this.challenge, holdById, this.anchorMaxForce);
+   219→    this.scene.spawnRagdollVisuals(this.rig);
+   220→
+   221→    this.bio.reset();
+   222→    this.evaluator?.reset();
+   223→    this.gameTime = 0;
+   224→    this.accumulator = 0;
+   225→    this.guardActive = false;
+   226→    this.lastSnapshot = { stability: 0, com: { x: 0, y: 0, z: 0 }, supportCount: 0 };
+   227→
+   228→    // Marcar presas ocupadas por los anclajes iniciales creados en spawnRagdoll.
+   229→    for (const req of this.challenge.start.requiredAnchors) {
+   230→      this.scene.setHoldOccupied(req.holdId, true);
+   231→    }
+   232→
+   233→    this.settleTimer = this.profile.sim.resetSettleSeconds;
+   234→    this.autoStartPending = this.challenge.start.autoStart;
+   235→    this.machine.transition("RESETTING");
+   236→    this.events.emit({ type: "Message", text: `Prueba ${CHALLENGE_LABELS[this.challenge.type]} cargada`, tone: "info" });
+   237→  }
+   238→
+   239→  requestReset(): void {
+   240→    if (this.machine.state === "LOADING" || this.machine.state === "RESETTING") return;
+   241→    this.events.emit({ type: "ResetStarted" });
+   242→    this.spawn();
+   243→  }
+   244→
+   245→  // --- Interaccion ---
+   246→
+   247→  private buildInteraction(): void {
+   248→    const holdById = new Map(this.wall.holds.map((h) => [h.id, h]));
+   249→    const world: InteractionWorld = {
+   250→      holdById,
+   251→      challenge: this.challenge,
+   252→      character: this.character,
+   253→      profile: this.profile,
+   254→      wall: this.wall,
+   255→      anchorHoldOf: (limb) => this.solver.getAnchor(limb)?.holdId,
+   256→      holdOccupancy: (holdId) => {
+   257→        let n = 0;
+   258→        for (const limb of LIMB_IDS) {
+   259→          if (this.solver.getAnchor(limb)?.holdId === holdId) n++;
+   260→          if (this.interaction?.assistHoldOf(limb) === holdId) n++;
+   261→        }
+   262→        return n;
+   263→      },
+   264→      chainRootOf: (limb) => {
+   265→        const idx = limb === "hand_l" ? P.shL : limb === "hand_r" ? P.shR : limb === "foot_l" ? P.hipL : P.hipR;
+   266→        const p = this.solver.getParticle(idx);
+   267→        return v3(p.pos.x, p.pos.y, p.pos.z);
+   268→      },
+   269→      limbPositionOf: (limb) => this.solver.positionOfLimb(limb),
+   270→      chainLengthOf: (limb) => {
+   271→        if (!this.rig) return 0.6;
+   272→        const base = limb.startsWith("hand") ? this.rig.armChain : this.rig.legChain;
+   273→        return base * this.character.physical.reachScale;
+   274→      }
+   275→    };
+   276→    this.interaction = new InteractionController(world, {
+   277→      onSelectChanged: () => undefined,
+   278→      onAccept: (limb, holdId) => {
+   279→        const existing = this.solver.getAnchor(limb);
+   280→        if (existing) {
+   281→          this.solver.releaseAnchor(limb);
+   282→          this.events.emit({ type: "GripReleased", limb, holdId: existing.holdId, reason: "PLAYER_RELEASE" });
+   283→        }
+   284→        const hold = holdById.get(holdId)!;
+   285→        this.solver.setTarget(limb, v3(hold.position[0], hold.position[1], hold.position[2]), this.followForce);
+   286→        this.refreshHoldOccupancy();
+   287→      },
+   288→      onReject: (limb, holdId, reason) => {
+   289→        this.solver.clearTarget(limb);
+   290→        this.events.emit({ type: "HoldRejected", limb, holdId, reason });
+   291→        if (holdId) {
+   292→          this.scene.setHoldInvalid(holdId, true);
+   293→          window.setTimeout(() => this.scene.setHoldInvalid(holdId, false), 450);
+   294→        }
+   295→      },
+   296→      onArrival: (limb, holdId) => {
+   297→        this.solver.clearTarget(limb);
+   298→        const hold = holdById.get(holdId)!;
+   299→        this.solver.createAnchor(limb, holdId, v3(hold.position[0], hold.position[1], hold.position[2]), this.anchorMaxForce);
+   300→        this.events.emit({ type: "HoldAcquired", limb, holdId });
+   301→        this.refreshHoldOccupancy();
+   302→      }
+   303→    });
+   304→  }
+   305→
+   306→  private refreshHoldOccupancy(): void {
+   307→    const anchored = new Set<string>();
+   308→    for (const limb of LIMB_IDS) {
+   309→      const a = this.solver.getAnchor(limb);
+   310→      if (a) anchored.add(a.holdId);
+   311→    }
+   312→    for (const hold of this.wall.holds) {
+   313→      this.scene.setHoldOccupied(hold.id, anchored.has(hold.id));
+   314→    }
+   315→  }
+   316→
+   317→  // --- Pipeline por paso fijo ---
+   318→
+   319→  private fixedStep(dt: number): void {
+   320→    const result = this.solver.step(dt);
+   321→
+   322→    // ERROR GUARD (9.2): carga no finita / NaN / energia anomala.
+   323→    if ((result.nanError || result.energySpike) && !this.guardActive) {
+   324→      this.guardActive = true;
+   325→      this.guardCooldown = 0.4;
+   326→      this.lastGuardError = result.nanError ? "nan" : "energia";
+   327→      this.events.emit({ type: "Message", text: "ERROR GUARD: simulacion no finita; reiniciando prueba", tone: "error" });
+   328→      this.machine.transition("ERROR");
+   329→    }
+   330→    if (this.machine.state === "ERROR") {
+   331→      this.guardCooldown -= dt;
+   332→      if (this.guardCooldown <= 0) {
+   333→        this.spawn();
+   334→        return;
+   335→      }
+   336→      return;
+   337→    }
+   338→
+   339→    const anchors = this.solver.anchorHoldIds();
+   340→
+   341→    // Biomecanica solo cuando el desafio esta activo (fatiga congelada en pausa/resultado).
+   342→    if (this.machine.state === "PLAYING") {
+   343→      const bioResult = this.bio.update(dt, result, anchors.map((a) => ({ limb: a.limb, holdId: a.holdId })), this.solver.tremor);
+   344→      // En tutorial la fatiga y las zonas se miden (numeros reales en el paso
+   345→      // de vitals) pero la sobrecarga NO libera agarres: el onboarding no puede
+   346→      // guiar hacia una caida por mover lento.
+   347→      for (const limb of this.tutorial ? [] : bioResult.overloadReleases) {
+   348→        const anchor = this.solver.releaseAnchor(limb);
+   349→        if (anchor) {
+   350→          this.events.emit({ type: "GripReleased", limb, holdId: anchor.holdId, reason: "OVERLOAD" });
+   351→          this.refreshHoldOccupancy();
+   352→        }
+   353→      }
+   354→      for (const limb of bioResult.strainStarted) this.events.emit({ type: "StrainStarted", limb });
+   355→      for (const limb of bioResult.overloadStarted) this.events.emit({ type: "OverloadStarted", limb });
+   356→
+   357→      // Asistencia de viaje hacia la presa aceptada (7.2).
+   358→      this.interaction?.tick(dt);
+   359→
+   360→      const anchorsNow = this.solver.anchorHoldIds();
+   361→      const stability = computeStability(this.bio, result, anchorsNow.map((a) => ({ limb: a.limb, holdId: a.holdId })), this.solver, this.profile);
+   362→      this.lastSnapshot = {
+   363→        stability,
+   364→        com: result.com,
+   365→        supportCount: anchorsNow.length
+   366→      };
+   367→
+   368→      // Evaluacion del desafio (10.3): caida -> exito -> timeout.
+   369→      // El timer no corre durante el tutorial: nadie deberia agotar el tiempo
+   370→      // mientras aprende los controles.
+   371→      if (!this.tutorial) this.gameTime += dt;
+   372→      const outcome = this.evaluator!.tick({
+   373→        dt,
+   374→        gameTime: this.gameTime,
+   375→        anchorsByLimb: Object.fromEntries(anchorsNow.map((a) => [a.limb, a.holdId])),
+   376→        supportCount: anchorsNow.length,
+   377→        stability,
+   378→        pelvisY: this.solver.getParticle(P.pelvisC).pos.y,
+   379→        outOfBounds: result.outOfBounds
+   380→      });
+   381→      if (outcome.kind === "fall") {
+   382→        this.events.emit({ type: "FallStarted", reason: outcome.reason });
+   383→        this.events.emit({ type: "ChallengeFailed", reason: "FALLEN" });
+   384→        this.machine.transition("FALLEN");
+   385→      } else if (outcome.kind === "success") {
+   386→        this.events.emit({ type: "ChallengeSuccess" });
+   387→        this.machine.transition("SUCCESS");
+   388→      } else if (outcome.kind === "timeout") {
+   389→        this.events.emit({ type: "ChallengeFailed", reason: "TIMEOUT" });
+   390→        this.machine.transition("TIMEOUT");
+   391→      }
+   392→    } else {
+   393→      // Fuera de PLAYING la fatiga no cambia; sin tremor.
+   394→      for (const limb of LIMB_IDS) this.solver.tremor[limb] = 0;
+   395→      this.interaction?.tick(0);
+   396→    }
+   397→  }
+   398→
+   399→  // --- Bucle de render ---
+   400→
+   401→  private readonly frame = (nowMs: number): void => {
+   402→    if (this.disposed) return;
+   403→    this.raf = requestAnimationFrame(this.frame);
+   404→    this.frameCount++;
+   405→    const now = nowMs / 1000;
+   406→    const dtFrame = Math.min(Math.max(0, now - this.lastFrame), 0.1);
+   407→    this.lastFrame = now;
+   408→
+   409→    this.fpsFrames++;
+   410→    this.fpsElapsed += dtFrame;
+   411→    if (this.fpsElapsed >= 0.5) {
+   412→      this.fps = this.fpsFrames / this.fpsElapsed;
+   413→      this.fpsFrames = 0;
+   414→      this.fpsElapsed = 0;
+   415→    }
+   416→
+   417→    const state = this.machine.state;
+   418→    const stepping = state !== "PAUSED" && state !== "LOADING" && !this.paused;
+   419→    if (stepping) {
+   420→      this.accumulator += dtFrame;
+   421→      let steps = 0;
+   422→      const fixed = this.profile.sim.fixedDeltaSeconds;
+   423→      while (this.accumulator >= fixed && steps < MAX_STEPS_PER_FRAME) {
+   424→        const t0 = performance.now();
+   425→        this.fixedStep(fixed);
+   426→        this.physicsMs = lerp(this.physicsMs, performance.now() - t0, 0.15);
+   427→        this.accumulator -= fixed;
+   428→        steps++;
+   429→      }
+   430→      if (steps >= MAX_STEPS_PER_FRAME) this.accumulator = 0;
+   431→    }
+   432→
+   433→    if (state === "RESETTING") {
+   434→      this.settleTimer -= dtFrame;
+   435→      if (this.settleTimer <= 0) {
+   436→        this.machine.transition(this.autoStartPending ? "PLAYING" : "READY");
+   437→        if (this.autoStartPending) {
+   438→          this.events.emit({ type: "Message", text: "Recupera dos apoyos antes de perder el agarre", tone: "warn" });
+   439→        }
+   440→      }
+   441→    }
+   442→
+   443→    const alpha = Math.min(1, this.accumulator / this.profile.sim.fixedDeltaSeconds);
+   444→    this.scene.syncRagdoll(this.solver, alpha);
+   445→    this.scene.syncJointDebug(this.solver);
+   446→    this.scene.setSelectionRing(this.interaction?.dragging ? this.interaction.selected : this.interaction?.selected ?? null, this.solver);
+   447→
+   448→    // Preview de arrastre y alcance.
+   449→    const preview = this.interaction?.getPreview() ?? null;
+   450→    this.scene.clearHoldHighlights();
+   451→    if (preview?.snappedHoldId) {
+   452→      if (preview.validity === "valid") this.scene.setHoldCompatible(preview.snappedHoldId, true);
+   453→      else this.scene.setHoldInvalid(preview.snappedHoldId, true);
+   454→    }
+   455→    this.scene.showDragPreview(this.interaction?.dragging ? preview : null, this.solver);
+   456→    if (this.interaction?.dragging && preview) {
+   457→      this.scene.setReachRadius(
+   458→        (preview.limb.startsWith("hand") ? this.rig!.armChain : this.rig!.legChain) * this.character.physical.reachScale
+   459→      );
+   460→      this.scene.showReachPreview(preview.limb, this.solver, preview.validity !== "invalid");
+   461→    } else {
+   462→      this.scene.showReachPreview(null, this.solver, true);
+   463→    }
+   464→
+   465→    // Tutorial: resaltados y avance de pasos.
+   466→    this.tickTutorial();
+   467→
+   468→    // Tinte de esfuerzo por extremidad.
+   469→    for (const limb of LIMB_IDS) {
+   470→      this.scene.updateLimbTint(limb, this.solver.tremor[limb]);
+   471→    }
+   472→
+   473→    const pelvis = this.solver.getParticle(P.pelvisC);
+   474→    this.scene.updateCamera(dtFrame, pelvis.pos, this.recenterOnce);
+   475→    this.recenterOnce = false;
+   476→
+   477→    // HUD y debug a 10 Hz.
+   478→    this.hudAccum += dtFrame;
+   479→    if (this.hudAccum >= 0.1) {
+   480→      this.hudAccum = 0;
+   481→      this.updateHud(state);
+   482→      this.debug.update(this.buildDebugData(state));
+   483→    }
+   484→
+   485→    this.scene.render();
+   486→  };
+   487→
+   488→  private updateHud(state: GameState): void {
+   489→    const running = state === "PLAYING";
+   490→    this.hud.setTimer(
+   491→      this.evaluator ? Math.max(0, this.challenge.timeLimitSeconds - (running ? this.gameTime : 0)) : null,
+   492→      running
+   493→    );
+   494→    let fatigueMax = 0;
+   495→    for (const limb of LIMB_IDS) fatigueMax = Math.max(fatigueMax, this.bio.fatigue[limb]);
+   496→    this.hud.setVitals(this.lastSnapshot.stability, fatigueMax);
+   497→
+   498→    const limbStates: Record<LimbId, { zone: LoadZone; anchored: boolean; label: string }> = {} as never;
+   499→    for (const limb of LIMB_IDS) {
+   500→      const anchored = this.solver.hasAnchor(limb);
+   501→      const zone = this.bio.infoFor(limb)?.zone ?? "NORMAL";
+   502→      limbStates[limb] = {
+   503→        zone,
+   504→        anchored,
+   505→        label: this.interaction?.isAssisting(limb) ? "MOVIENDO" : this.interaction?.dragging && this.interaction.selected === limb ? "OBJETIVO" : "LIBRE"
+   506→      };
+   507→    }
+   508→    this.hud.setLimbStates(limbStates);
+   509→    this.hud.setProgress(running && this.evaluator && this.evaluator.progress > 0 ? this.evaluator.progress : null);
+   510→  }
+   511→
+   512→  private limbDisplayState(limb: LimbId): string {
+   513→    if (this.machine.state === "FALLEN") return "FALLING";
+   514→    if (this.interaction?.isAssisting(limb)) return "TARGETING";
+   515→    if (this.solver.hasAnchor(limb)) {
+   516→      const timer = this.bio.infoFor(limb)?.zone ?? "NORMAL";
+   517→      return timer === "OVERLOADED" ? "OVERLOADED" : "ANCHORED";
+   518→    }
+   519→    if (this.interaction?.dragging && this.interaction.selected === limb) return "TARGETING";
+   520→    return "FREE";
+   521→  }
+   522→
+   523→  private buildDebugData(state: GameState): DebugData {
+   524→    const counts = this.solver.counts();
+   525→    const limbs = {} as DebugData["limbs"];
+   526→    for (const limb of LIMB_IDS) {
+   527→      const info = this.bio.infoFor(limb);
+   528→      const anchor = this.solver.getAnchor(limb);
+   529→      limbs[limb] = {
+   530→        state: this.limbDisplayState(limb),
+   531→        holdId: anchor?.holdId ?? this.interaction?.assistHoldOf(limb) ?? null,
+   532→        loadN: anchor?.loadN ?? 0,
+   533→        effectiveN: info?.effectiveForceN ?? 0,
+   534→        ratio: info?.ratio ?? 0,
+   535→        fatigue: this.bio.fatigue[limb],
+   536→        zone: info?.zone ?? "-"
+   537→      };
+   538→    }
+   539→    return {
+   540→      fps: Math.round(this.fps),
+   541→      backend: this.scene.backend,
+   542→      physicsMs: this.physicsMs,
+   543→      bodies: counts.particles,
+   544→      constraints: counts.sticks + counts.angles,
+   545→      anchors: counts.anchors,
+   546→      state,
+   547→      gameTime: this.gameTime,
+   548→      com: this.lastSnapshot.com,
+   549→      stability: this.lastSnapshot.stability,
+   550→      supportCount: this.lastSnapshot.supportCount,
+   551→      limbs,
+   552→      flags: this.scene.getDebugFlags()
+   553→    };
+   554→  }
+   555→
+   556→  // --- Eventos y entrada ---
+   557→
+   558→  private onGameEvent(e: GameEvent): void {
+   559→    this.audio.play(e);
+   560→    switch (e.type) {
+   561→      case "StateChanged":
+   562→        this.hud.setState(e.to);
+   563→        break;
+   564→      case "ChallengeSuccess":
+   565→        this.hud.showBanner("EXITO", "ok");
+   566→        break;
+   567→      case "ChallengeFailed":
+   568→        this.hud.showBanner(e.reason === "TIMEOUT" ? "TIEMPO AGOTADO" : "CAIDA", "bad");
+   569→        break;
+   570→      case "HoldRejected": {
+   571→        const label = REJECT_LABELS[e.reason] ?? e.reason;
+   572→        this.hud.toast(`Movimiento rechazado: ${label}`, "warn");
+   573→        break;
+   574→      }
+   575→      case "GripReleased":
+   576→        if (e.reason === "OVERLOAD") this.hud.toast(`Sobrecarga: se solto el agarre (${e.limb})`, "error");
+   577→        break;
+   578→      case "StrainStarted":
+   579→        this.hintOnce("strain", "Agarre en tension: la fatiga de esa extremidad sube mas rapido", "warn");
+   580→        break;
+   581→      case "OverloadStarted":
+   582→        this.hintOnce("overload", "SOBRECARGA: si no alivias ese brazo, soltara el agarre en segundos", "error");
+   583→        break;
+   584→      case "FallStarted":
+   585→        this.hintOnce("fall", "Caída: el agarre fallo bajo la carga o perdiste los apoyos. R para reintentar", "info");
+   586→        break;
+   587→      default:
+   588→        break;
+   589→    }
+   590→  }
+   591→
+   592→  private on<K extends keyof HTMLElementEventMap>(target: HTMLElement, type: K, fn: (ev: HTMLElementEventMap[K]) => void): void;
+   593→  private on(target: Window, type: string, fn: (ev: Event) => void): void;
+   594→  private on(target: EventTarget, type: string, fn: (ev: never) => void): void {
+   595→    const wrapped = fn as EventListener;
+   596→    target.addEventListener(type, wrapped);
+   597→    this.listeners.push({ target, type, fn: wrapped });
+   598→  }
+   599→
+   600→  private attachInput(): void {
+   601→    const canvas = this.canvas;
+   602→    const zPlane = () => this.wall.holds[0]?.position[2] ?? -0.18;
+   603→
+   604→    this.on(canvas, "pointerdown", (e) => {
+   605→      this.audio.ensure();
+   606→      if (e.button !== 0) return;
+   607→      if (!(this.machine.state === "READY" || this.machine.state === "PLAYING")) return;
+   608→      const rect = canvas.getBoundingClientRect();
+   609→      const limb = this.scene.pickLimb(e.clientX - rect.left, e.clientY - rect.top);
+   610→      if (!limb || this.interaction!.isAssisting(limb)) return;
+   611→      this.interaction!.beginDrag(limb);
+   612→      if (this.machine.state === "READY") {
+   613→        // El timer arranca con la primera interaccion (start.autoStart = false).
+   614→        this.machine.transition("PLAYING");
+   615→      }
+   616→      canvas.setPointerCapture(e.pointerId);
+   617→    });
+   618→
+   619→    this.on(canvas, "pointermove", (e) => {
+   620→      if (!this.interaction?.dragging) return;
+   621→      const rect = canvas.getBoundingClientRect();
+   622→      const point = this.scene.wallPlanePoint(e.clientX - rect.left, e.clientY - rect.top, zPlane());
+   623→      this.interaction.updateDrag(point ? v3(point.x, point.y, point.z) : null);
+   624→      const preview = this.interaction.getPreview();
+   625→      if (preview?.snappedHoldId) {
+   626→        this.interaction.setRejectReason(this.interaction.rejectReason(preview.limb, preview.snappedHoldId));
+   627→      } else {
+   628→        this.interaction.setRejectReason(null);
+   629→      }
+   630→    });
+   631→
+   632→    this.on(canvas, "pointerup", (e) => {
+   633→      if (e.button !== 0) return;
+   634→      if (this.interaction?.dragging) {
+   635→        this.interaction.endDrag();
+   636→        this.scene.clearHoldHighlights();
+   637→      }
+   638→    });
+   639→
+   640→    this.on(canvas, "contextmenu", (e) => {
+   641→      e.preventDefault();
+   642→      this.interaction?.cancelDrag();
+   643→    });
+   644→
+   645→    this.on(window, "keydown", (e) => {
+   646→      const ev = e as KeyboardEvent;
+   647→      switch (ev.code) {
+   648→        case "KeyR":
+   649→          this.requestReset();
+   650→          break;
+   651→        case "KeyH":
+   652→          this.hud.toggleHelp();
+   653→          break;
+   654→        case "F3":
+   655→          ev.preventDefault();
+   656→          this.debug.toggle();
+   657→          break;
+   658→        case "Space":
+   659→          ev.preventDefault();
+   660→          this.togglePause();
+   661→          break;
+   662→        case "KeyC":
+   663→          this.recenterOnce = true;
+   664→          break;
+   665→        case "F4":
+   666→          ev.preventDefault();
+   667→          this.scene.toggleOrtho();
+   668→          break;
+   669→        case "KeyM": {
+   670→          const muted = this.audio.toggleMute();
+   671→          this.hud.toast(muted ? "Sonido desactivado" : "Sonido activado", "info");
+   672→          break;
+   673→        }
+   674→        case "KeyT":
+   675→          this.startTutorial();
+   676→          break;
+   677→        case "Escape":
+   678→          this.interaction?.cancelDrag();
+   679→          break;
+   680→        default:
+   681→          break;
+   682→      }
+   683→    });
+   684→
+   685→    this.on(window, "resize", () => {
+   686→      this.scene.resize();
+   687→    });
+   688→  }
+   689→
+   690→  togglePause(): void {
+   691→    if (this.machine.state === "PLAYING") {
+   692→      this.machine.transition("PAUSED");
+   693→      this.hud.toast("Pausa: fisica y timer congelados", "info");
+   694→    } else if (this.machine.state === "PAUSED") {
+   695→      this.machine.transition("PLAYING");
+   696→    }
+   697→  }
+   698→
+   699→  // --- Tutorial (onboarding interactivo) ---
+   700→
+   701→  // v2: el tutorial visual contextual sustituye al de panel de texto; se vuelve
+   702→  // a mostrar una vez a quien ya completo la version anterior.
+   703→  private static readonly TUTORIAL_DONE_KEY = "ns.tutorial.done.v2";
+   704→
+   705→  private onIntroDismissed(): void {
+   706→    let done = false;
+   707→    try {
+   708→      done = window.localStorage.getItem(GameApp.TUTORIAL_DONE_KEY) === "1";
+   709→    } catch {
+   710→      /* localStorage bloqueado: mostrar el tutorial igualmente */
+   711→    }
+   712→    if (!done) this.startTutorial();
+   713→  }
+   714→
+   715→  startTutorial(): void {
+   716→    // Solo tiene sentido en el desafio de ruta (objetivos fijos validados).
+   717→    if (this.challenge?.type !== "reach_top") return;
+   718→    if (this.machine.state === "LOADING" || this.machine.state === "RESETTING") return;
+   719→    this.tutorial = new TutorialEngine(buildTutorialSteps(), () => this.syncTutorialUi());
+   720→    this.tutorialUi.show(buildTutorialSteps().length);
+   721→    this.syncTutorialUi();
+   722→  }
+   723→
+   724→  private stopTutorial(markDone: boolean): void {
+   725→    if (this.tutorial && markDone) {
+   726→      try {
+   727→        window.localStorage.setItem(GameApp.TUTORIAL_DONE_KEY, "1");
+   728→      } catch {
+   729→        /* sin persistencia: el tutorial reaparecera en la proxima sesion */
+   730→      }
+   731→      this.hud.toast("Tutorial cerrado (T para repetirlo)", "info");
+   732→    }
+   733→    this.tutorial = null;
+   734→    this.tutorialUi.hide();
+   735→    this.scene?.setTutorialHoldHighlight(null);
+   736→    this.scene?.setTutorialLimbHighlight(null);
+   737→  }
+   738→
+   739→  private syncTutorialUi(): void {
+   740→    const tut = this.tutorial;
+   741→    const step = tut !== null ? tut.current : null;
+   742→    if (tut === null || step === null) {
+   743→      if (tut?.isFinished) this.stopTutorial(true);
+   744→      return;
+   745→    }
+   746→    this.tutorialUi.update(step, tut.progress, this.buildTutorialCtx(), buildTutorialSteps().length);
+   747→  }
+   748→
+   749→  private buildTutorialCtx(): TutorialCtx {
+   750→    const anchors: Partial<Record<LimbId, string>> = {};
+   751→    const loads: Partial<Record<LimbId, number>> = {};
+   752→    for (const a of this.solver.anchorHoldIds()) {
+   753→      anchors[a.limb] = a.holdId;
+   754→      loads[a.limb] = Math.round(a.loadN);
+   755→    }
+   756→    const preview = this.interaction?.getPreview() ?? null;
+   757→    return {
+   758→      state: this.machine.state,
+   759→      anchors,
+   760→      loads,
+   761→      selected: this.interaction?.selected ?? null,
+   762→      dragging: this.interaction?.dragging ?? false,
+   763→      preview: preview ? { holdId: preview.snappedHoldId, validity: preview.validity } : null,
+   764→      supportCount: this.lastSnapshot.supportCount,
+   765→      fatigueMax: Math.max(...LIMB_IDS.map((l) => this.bio.fatigue[l] ?? 0))
+   766→    };
+   767→  }
+   768→
+   769→  private tickTutorial(): void {
+   770→    if (!this.tutorial) {
+   771→      return;
+   772→    }
+   773→    const step = this.tutorial.current;
+   774→    this.scene.setTutorialHoldHighlight(step?.highlightHold ?? null);
+   775→    this.scene.setTutorialLimbHighlight(step?.highlightLimb ?? null);
+   776→    this.tutorial.tick(this.buildTutorialCtx());
+   777→    this.frameTutorialUi(step);
+   778→    // El texto con placeholders vivos (cargas/fatiga) se refresca a 10 Hz.
+   779→    if (this.hudAccum >= 0.1) this.syncTutorialUi();
+   780→  }
+   781→
+   782→  /**
+   783→   * Geometria del tutorial cada frame: proyecta el objetivo del paso (limb,
+   784→   * presa, panel del HUD o personaje completo) a px CSS y alimenta al overlay
+   785→   * con el spotlight, la demo de arrastre y la posicion de la tarjeta.
+   786→   */
+   787→  private frameTutorialUi(step: TutorialStepDef | null): void {
+   788→    if (!this.tutorial) return;
+   789→    const hudRect = this.opts.hudRoot.getBoundingClientRect();
+   790→
+   791→    let spotlight: TutorialSpotlight | null = null;
+   792→    if (step?.highlightLimb) {
+   793→      const p = this.solver.positionOfLimb(step.highlightLimb);
+   794→      const s = this.scene.projectToScreenCss(p.x, p.y, p.z);
+   795→      spotlight = { shape: "circle", x: s.x, y: s.y, r: 48 };
+   796→    } else if (step?.highlightHold) {
+   797→      const pos = this.holdPosById.get(step.highlightHold);
+   798→      if (pos) {
+   799→        const s = this.scene.projectToScreenCss(pos[0], pos[1], pos[2]);
+   800→        spotlight = { shape: "circle", x: s.x, y: s.y, r: 44 };
+   801→      }
+   802→    } else if (step?.highlightHud) {
+   803→      const el = document.getElementById(step.highlightHud);
+   804→      if (el) {
+   805→        const r = el.getBoundingClientRect();
+   806→        if (r.width > 4 && r.height > 4) {
+   807→          spotlight = {
+   808→            shape: "rect",
+   809→            x: r.left - hudRect.left + r.width / 2,
+   810→            y: r.top - hudRect.top + r.height / 2,
+   811→            w: r.width,
+   812→            h: r.height
+   813→          };
+   814→        }
+   815→      }
+   816→    } else if (step?.highlightCharacter) {
+   817→      const pts = LIMB_IDS.map((l) => this.solver.positionOfLimb(l)).map((p) =>
+   818→        this.scene.projectToScreenCss(p.x, p.y, p.z)
+   819→      );
+   820→      if (pts.length > 0) {
+   821→        const xs = pts.map((p) => p.x);
+   822→        const ys = pts.map((p) => p.y);
+   823→        const minX = Math.min(...xs);
+   824→        const maxX = Math.max(...xs);
+   825→        const minY = Math.min(...ys);
+   826→        const maxY = Math.max(...ys);
+   827→        spotlight = {
+   828→          shape: "ellipse",
+   829→          x: (minX + maxX) / 2,
+   830→          y: (minY + maxY) / 2,
+   831→          rx: (maxX - minX) / 2 + 80,
+   832→          ry: (maxY - minY) / 2 + 90
+   833→        };
+   834→      }
+   835→    }
+   836→
+   837→    let gesture: TutorialGesture | null = null;
+   838→    if (step?.gesture) {
+   839→      const limbPos = this.solver.positionOfLimb(step.gesture.from);
+   840→      const from = this.scene.projectToScreenCss(limbPos.x, limbPos.y, limbPos.z);
+   841→      const holdPos = this.holdPosById.get(step.gesture.to);
+   842→      if (holdPos) {
+   843→        const to = this.scene.projectToScreenCss(holdPos[0], holdPos[1], holdPos[2]);
+   844→        gesture = { from, to, labelFrom: "mantén el clic", labelTo: "suelta aquí" };
+   845→      }
+   846→    }
+   847→
+   848→    this.tutorialUi.frame({ spotlight, gesture, time: performance.now() / 1000 });
+   849→  }
+   850→
+   851→  /** Aviso contextual una unica vez por sesion (solo fuera del tutorial). */
+   852→  private hintOnce(key: string, text: string, tone: "info" | "warn" | "error"): void {
+   853→    if (this.tutorial || this.tutorialHintsShown.has(key)) return;
+   854→    this.tutorialHintsShown.add(key);
+   855→    this.hud.toast(text, tone);
+   856→  }
+   857→
+   858→  private frameCount = 0;
+   859→  private lastGuardError = "";
+   860→
+   861→  /** Hook de diagnostico en navegador: TODAS las lecturas son funciones vivas. */
+   862→  get debugHook(): {
+   863→    state: () => GameState;
+   864→    frames: () => number;
+   865→    settle: () => number;
+   866→    lastError: () => string;
+   867→    selected: () => LimbId | null;
+   868→    dragging: () => boolean;
+   869→    preview: () => { limb: LimbId; snap: string | null; validity: string; target: { x: number; y: number } } | null;
+   870→    anchors: () => { limb: LimbId; hold: string; load: number }[];
+   871→    reject: (limb: LimbId, holdId: string) => string;
+   872→    chainInfo: (limb: LimbId) => { root: { x: number; y: number; z: number } };
+   873→    pickAt: (x: number, y: number) => LimbId | null;
+   874→    pickNearest: (x: number, y: number) => { name: string; dist: number } | null;
+   875→    handMeshes: () => { name: string; pickable: boolean; enabled: boolean; pos: { x: number; y: number; z: number } }[];
+   876→    renderSize: () => { w: number; h: number; cssW: number; cssH: number };
+   877→    project: (x: number, y: number, z: number) => { x: number; y: number };
+   878→    limbScreen: () => { limb: string; x: number; y: number }[];
+   879→  } {
+   880→    return {
+   881→      state: () => this.machine.state,
+   882→      frames: () => this.frameCount,
+   883→      settle: () => this.settleTimer,
+   884→      lastError: () => this.lastGuardError,
+   885→      selected: () => this.interaction?.selected ?? null,
+   886→      dragging: () => this.interaction?.dragging ?? false,
+   887→      preview: () => {
+   888→        const p = this.interaction?.getPreview();
+   889→        return p ? { limb: p.limb, snap: p.snappedHoldId, validity: p.validity, target: { x: Math.round(p.target.x * 100) / 100, y: Math.round(p.target.y * 100) / 100 } } : null;
+   890→      },
+   891→      pickAt: (x: number, y: number) => this.scene.pickLimb(x, y),
+   892→      pickNearest: (x: number, y: number) => this.scene.pickNearestDebug(x, y),
+   893→      handMeshes: () => this.scene.handMeshDebug(),
+   894→      renderSize: () => this.scene.renderSizeDebug(),
+   895→      project: (x: number, y: number, z: number) => this.scene.projectToScreen(x, y, z),
+   896→      anchors: () => this.solver.anchorHoldIds().map((a) => ({ limb: a.limb, hold: a.holdId, load: Math.round(a.loadN) })),
+   897→      reject: (limb: LimbId, holdId: string) => this.interaction?.rejectReason(limb, holdId) ?? "sin-interaccion",
+   898→      chainInfo: (limb: LimbId) => {
+   899→        const root = this.interaction ? this.interaction["world" as keyof object] : null;
+   900→        const shoulder = limb === "hand_l" ? this.solver.getParticle(2) : limb === "hand_r" ? this.solver.getParticle(3) : limb === "foot_l" ? this.solver.getParticle(5) : this.solver.getParticle(6);
+   901→        return { root: { x: +shoulder.pos.x.toFixed(2), y: +shoulder.pos.y.toFixed(2), z: +shoulder.pos.z.toFixed(2) } };
+   902→      },
+   903→      limbScreen: () => {
+   904→        const out: { limb: string; x: number; y: number }[] = [];
+   905→        for (const limb of LIMB_IDS) {
+   906→          const p = this.solver.positionOfLimb(limb);
+   907→          const s = this.scene.projectToScreen(p.x, p.y, p.z);
+   908→          out.push({ limb, x: s.x, y: s.y });
+   909→        }
+   910→        return out;
+   911→      }
+   912→    };
+   913→  }
+   914→
+   915→  dispose(): void {
+   916→    this.disposed = true;
+   917→    cancelAnimationFrame(this.raf);
+   918→    for (const l of this.listeners) l.target.removeEventListener(l.type, l.fn);
+   919→    this.listeners = [];
+   920→    this.events.clear();
+   921→    this.audio.dispose();
+   922→    this.scene?.dispose();
+   923→  }
+   924→}
+   925→
