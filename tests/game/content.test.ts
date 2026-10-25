@@ -17,7 +17,7 @@ describe("AT-01/AT-02: carga y validacion de contenido", () => {
     const bundle = await repo.load(loader, "/content");
     expect(bundle.characters.size).toBeGreaterThanOrEqual(1);
     expect(bundle.walls.size).toBeGreaterThanOrEqual(1);
-    expect(bundle.challenges.size).toBe(3);
+    expect(bundle.challenges.size).toBe(4);
     expect(repo.listChallengeIds()).toContain("challenge_reach_top");
   });
 

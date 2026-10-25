@@ -24,10 +24,13 @@ import { ChallengeEvaluator } from "../domain/challenge";
 import { PbdSolver } from "../physics/pbd/solver";
 import type { BalanceTuning } from "../physics/pbd/solver";
 import { P, spawnRagdoll, type RagdollRig } from "../physics/pbd/ragdoll";
+import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { GameScene } from "../render/scene";
 import { Hud } from "../ui/hud";
 import { DebugOverlay, type DebugData } from "../ui/debug";
 import { AudioBus } from "../ui/audio";
+import type { BalancePresetName } from "../ui/hud";
+import { computeScore, isBetter, BestRecord } from "../gameplay/score";
 import { TutorialOverlay, type TutorialSpotlight, type TutorialGesture } from "../ui/tutorial";
 import { TutorialEngine, buildTutorialSteps, type TutorialCtx, type TutorialStepDef } from "../gameplay/tutorial";
 import { v3, lerp } from "../physics/pbd/math";
@@ -44,6 +47,21 @@ const CHALLENGE_DESCRIPTIONS: Record<ChallengeType, string> = {
   recover: "Postura desequilibrada pero recuperable: recupera apoyos y estabilidad antes del timeout."
 };
 
+/** Overrides por ID de desafio (variantes con etiqueta propia, p.ej. VELOCIDAD). */
+const CHALLENGE_META: Record<string, { label: string; description: string }> = {
+  challenge_speed_run: {
+    label: "VELOCIDAD",
+    description: "Contrarreloj: la misma cima, 60 segundos. Encadena el flujo y no caigas."
+  }
+};
+
+/** Presets de balance fisico (ADR-008) seleccionables en el menu. */
+const PRESET_TUNES: Record<BalancePresetName, BalanceTuning> = {
+  realista: { postureTone: 0.95, jointLimitStiffness: 1.0, foldStrength: 1.0, toneFloor: 0.08 },
+  equilibrado: { postureTone: 0.75, jointLimitStiffness: 1.0, foldStrength: 0.85, toneFloor: 0.12 },
+  ragdoll: { postureTone: 0.5, jointLimitStiffness: 0.85, foldStrength: 0.6, toneFloor: 0.25 }
+};
+
 const REJECT_LABELS: Record<string, string> = {
   extremidad_no_permitida: "esa presa no admite esa extremidad",
   presa_ocupada: "la presa ya esta ocupada",
@@ -57,6 +75,19 @@ const REJECT_LABELS: Record<string, string> = {
 };
 
 const MAX_STEPS_PER_FRAME = 6;
+
+// Combo de flujo: movimientos encadenados en menos de FLOW_WINDOW_S multiplican
+// la puntuacion (chip FLUJO xN). Una pausa larga o una caida rompen la cadena.
+const FLOW_WINDOW_S = 6;
+const FLOW_MAX_CHAIN = 9;
+const FLOW_BONUS_PER_STEP = 50;
+
+// Cinemática lenta al declararse la caida (drama) y escala de tiempo objetivo.
+const SLOWMO_DURATION_S = 0.85;
+const SLOWMO_SCALE = 0.32;
+
+// FX de aterrizaje: el cuerpo toca el colchon ~0.7 s despues de abrirse los agarres.
+const LANDING_FX_AT_S = 0.68;
 
 // Secuencia de caida (ADR-008): declarada la caida, los agarres se abren ESCALONADOS
 // (las manos resbalan primero, los pies saltan despues), el tono postural cae a
@@ -115,6 +146,16 @@ export class GameApp {
   /** Secuencia de caida: cola de liberacion escalonada y auto-reintento. */
   private fallTimer = 0;
   private fallReleaseQueue: { limb: LimbId; at: number }[] = [];
+  private fallLandedFx = false;
+  /** Escala de tiempo actual (slow-motion cinematografico al caer). */
+  private timeScale = 1;
+  private slowmoLeft = 0;
+  // Puntuacion / flujo / caidas del desafio cargado.
+  private flowCount = 0;
+  private lastGrabAt = -1e9;
+  private flowBonus = 0;
+  private fallCount = 0;
+  private peakFatigue = 0;
   private fallAutoReset = -1;
   /** Balance realismo/ragdoll (ADR-008), persistido y calibrable en F3. */
   private tune: BalanceTuning = { jointLimitStiffness: 1.0, foldStrength: 0.85, postureTone: 0.75, toneFloor: 0.12 };
@@ -170,13 +211,19 @@ export class GameApp {
       this.events,
       challengeIds.map((id) => {
         const c = this.repo.getChallenge(id);
-        return { id, label: CHALLENGE_LABELS[c.type], description: CHALLENGE_DESCRIPTIONS[c.type] };
+        return {
+          id,
+          label: CHALLENGE_META[id]?.label ?? CHALLENGE_LABELS[c.type],
+          description: CHALLENGE_META[id]?.description ?? CHALLENGE_DESCRIPTIONS[c.type],
+          best: this.loadBest(id)
+        };
       }),
       (id) => {
         this.audio.ensure();
         this.loadChallenge(id);
       },
-      () => this.onIntroDismissed()
+      () => this.onIntroDismissed(),
+      (preset) => this.applyPreset(preset)
     );
     this.debug = new DebugOverlay(this.opts.debugRoot, (flag, value) => {
       this.scene.setDebugFlags({ [flag]: value });
@@ -200,6 +247,7 @@ export class GameApp {
     });
     this.loadTune();
     this.attachInput();
+    this.hud.setPresetActive(this.presetName);
 
     await this.loadChallenge(challengeIds[0]);
     this.lastFrame = performance.now() / 1000;
@@ -234,7 +282,7 @@ export class GameApp {
     });
 
     this.scene.buildWorld(this.wall);
-    this.hud.setChallenge(this.challenge, CHALLENGE_LABELS[this.challenge.type]);
+    this.hud.setChallenge(this.challenge, CHALLENGE_META[id]?.label ?? CHALLENGE_LABELS[this.challenge.type]);
     this.buildInteraction();
     this.spawn();
   }
@@ -262,6 +310,16 @@ export class GameApp {
     this.guardActive = false;
     this.lastSnapshot = { stability: 0, com: { x: 0, y: 0, z: 0 }, supportCount: 0 };
 
+    // El combo de flujo se rompe con cada respawn (intento nuevo); el conteo de
+    // caidas persiste para la puntuacion del desafio cargado.
+    this.flowCount = 0;
+    this.flowBonus = 0;
+    this.peakFatigue = 0;
+    this.timeScale = 1;
+    this.slowmoLeft = 0;
+    this.fallLandedFx = false;
+    this.hud.setFlow(0);
+
     // Marcar presas ocupadas por los anclajes iniciales creados en spawnRagdoll.
     for (const req of this.challenge.start.requiredAnchors) {
       this.scene.setHoldOccupied(req.holdId, true);
@@ -275,14 +333,43 @@ export class GameApp {
     // Despues de la transicion: en FALLEN el objetivo seria el tono flacido de la
     // caida; al re-spawnear el escalador vuelve a estar vivo (tono calibrado).
     this.applyTuneToSolver();
-    this.events.emit({ type: "Message", text: `Prueba ${CHALLENGE_LABELS[this.challenge.type]} cargada`, tone: "info" });
+    this.events.emit({ type: "Message", text: `Prueba ${CHALLENGE_META[this.challenge.id]?.label ?? CHALLENGE_LABELS[this.challenge.type]} cargada`, tone: "info" });
   }
 
   // --- Balance realismo/ragdoll (ADR-008): persistencia y aplicacion ---
 
   private static readonly TUNE_KEY = "ns.tune.v1";
+  private static readonly PRESET_KEY = "ns.tune.preset.v1";
+  /** Preset de balance activo (null = calibracion manual con sliders F3). */
+  private presetName: BalancePresetName | null = null;
+
+  /** Aplica un preset del menu, lo persiste y lo marca como activo en el HUD. */
+  applyPreset(name: BalancePresetName): void {
+    // setTune limpia el preset activo (cualquier ajuste pasa por el); volver a
+    // marcar aqui deja el estado coherente: preset aplicado y persistido.
+    this.setTune({ ...PRESET_TUNES[name] });
+    this.presetName = name;
+    try {
+      window.localStorage.setItem(GameApp.PRESET_KEY, name);
+    } catch {
+      /* sin persistencia */
+    }
+    this.hud.setPresetActive(name);
+    this.debug.setTuneValues({ postureTone: this.tune.postureTone, jointLimitStiffness: this.tune.jointLimitStiffness, foldStrength: this.tune.foldStrength });
+    this.events.emit({ type: "Message", text: `Balance ${name}: tono ${this.tune.postureTone.toFixed(2)}, límites ${this.tune.jointLimitStiffness.toFixed(2)}, pliegue ${this.tune.foldStrength.toFixed(2)}`, tone: "info" });
+  }
 
   private loadTune(): void {
+    try {
+      const preset = window.localStorage.getItem(GameApp.PRESET_KEY) as BalancePresetName | null;
+      if (preset && preset in PRESET_TUNES) this.presetName = preset;
+    } catch {
+      this.presetName = null;
+    }
+    if (this.presetName) {
+      this.tune = { ...PRESET_TUNES[this.presetName] };
+      return;
+    }
     try {
       const raw = window.localStorage.getItem(GameApp.TUNE_KEY);
       if (raw) {
@@ -314,6 +401,14 @@ export class GameApp {
       postureTone: clamp01(patch.postureTone ?? this.tune.postureTone),
       toneFloor: clamp01(patch.toneFloor ?? this.tune.toneFloor)
     };
+    // Un ajuste manual (sliders F3 o __NS.setTune) deja de corresponder al preset.
+    this.presetName = null;
+    try {
+      window.localStorage.removeItem(GameApp.PRESET_KEY);
+    } catch {
+      /* sin persistencia */
+    }
+    this.hud?.setPresetActive(null);
     this.applyTuneToSolver();
     this.saveTune();
     return { ...this.tune };
@@ -333,6 +428,32 @@ export class GameApp {
     if (this.machine.state === "LOADING" || this.machine.state === "RESETTING") return;
     this.events.emit({ type: "ResetStarted" });
     this.spawn();
+  }
+
+  // --- Records por desafio (localStorage) ---
+
+  private static bestKey(id: string): string {
+    return `ns.best.${id}`;
+  }
+
+  private loadBest(id: string): BestRecord | null {
+    try {
+      const raw = window.localStorage.getItem(GameApp.bestKey(id));
+      return raw ? (JSON.parse(raw) as BestRecord) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private saveBest(id: string, rec: BestRecord): boolean {
+    const prev = this.loadBest(id);
+    if (prev && !isBetter(rec, prev)) return false;
+    try {
+      window.localStorage.setItem(GameApp.bestKey(id), JSON.stringify(rec));
+    } catch {
+      /* sin persistencia */
+    }
+    return true;
   }
 
   // --- Interaccion ---
@@ -504,6 +625,13 @@ export class GameApp {
           this.refreshHoldOccupancy();
         }
       }
+      // Impacto contra el colchon: polvo + sacudida (una sola vez por caida).
+      if (!this.fallLandedFx && this.fallTimer >= LANDING_FX_AT_S) {
+        this.fallLandedFx = true;
+        const pv = this.solver.getParticle(P.pelvisC);
+        this.scene.burstDust(new Vector3(pv.pos.x, 0.06, pv.pos.z), 42);
+        this.scene.shake(0.055);
+      }
       if (this.fallAutoReset > 0) {
         this.fallAutoReset -= dt;
         if (this.fallAutoReset <= 0) {
@@ -523,6 +651,7 @@ export class GameApp {
     this.interaction?.cancelAssistAll();
     this.fallTimer = 0;
     this.fallReleaseQueue = [];
+    this.fallLandedFx = false;
     const hands = ["hand_l", "hand_r"] as const;
     const feet = ["foot_l", "foot_r"] as const;
     let n = 0;
@@ -558,7 +687,11 @@ export class GameApp {
     const state = this.machine.state;
     const stepping = state !== "PAUSED" && state !== "LOADING" && !this.paused;
     if (stepping) {
-      this.accumulator += dtFrame;
+      // Slow-motion cinematografico: la escala converge suave hacia el objetivo.
+      if (this.slowmoLeft > 0) this.slowmoLeft -= dtFrame;
+      const goalScale = this.slowmoLeft > 0 ? SLOWMO_SCALE : 1;
+      this.timeScale += (goalScale - this.timeScale) * Math.min(1, dtFrame * 9);
+      this.accumulator += dtFrame * this.timeScale;
       let steps = 0;
       const fixed = this.profile.sim.fixedDeltaSeconds;
       while (this.accumulator >= fixed && steps < MAX_STEPS_PER_FRAME) {
@@ -628,12 +761,20 @@ export class GameApp {
     // y la carga reales (solo suenan con PLAYING activo; el director se resetea fuera).
     const maxFatigue = Math.max(...LIMB_IDS.map((l) => this.bio.fatigue[l] ?? 0));
     const maxRatio = Math.max(...LIMB_IDS.map((l) => this.bio.infoFor(l)?.ratio ?? 0));
+    if (this.machine.state === "PLAYING") this.peakFatigue = Math.max(this.peakFatigue, maxFatigue);
     this.audio.update(dtFrame, {
       playing: this.machine.state === "PLAYING",
       maxFatigue,
       maxRatio,
-      overloadRatio: this.profile.biomech.overloadRatio
+      overloadRatio: this.profile.biomech.overloadRatio,
+      overload: LIMB_IDS.some((l) => this.bio.infoFor(l)?.zone === "OVERLOADED")
     });
+
+    // Combo de flujo: se rompe si pasa la ventana sin fijar otra presa.
+    if (this.flowCount > 0 && performance.now() / 1000 - this.lastGrabAt > FLOW_WINDOW_S) {
+      this.flowCount = 0;
+      this.hud.setFlow(0);
+    }
 
     const pelvis = this.solver.getParticle(P.pelvisC);
     this.scene.updateCamera(dtFrame, pelvis.pos, this.recenterOnce);
@@ -727,19 +868,61 @@ export class GameApp {
       case "StateChanged":
         this.hud.setState(e.to);
         break;
-      case "ChallengeSuccess":
-        this.hud.showBanner("EXITO", "ok");
+      case "ChallengeSuccess": {
+        // Tanda de confeti sobre la presa cima del desafio.
+        const topHold = this.challenge.completion.holdIds?.[0] ?? "";
+        const topPos = topHold ? this.holdPosById.get(topHold) : undefined;
+        if (topPos) this.scene.burstConfetti(new Vector3(topPos[0], topPos[1] + 0.1, topPos[2] - 0.05));
+        // Puntuacion, estrellas y record persistente.
+        const result = computeScore({
+          timeS: this.gameTime,
+          timeLimitS: this.challenge.timeLimitSeconds,
+          falls: this.fallCount,
+          flowBonus: this.flowBonus
+        });
+        const rec: BestRecord = { score: result.total, timeS: this.gameTime, stars: result.stars };
+        const isRecord = this.saveBest(this.challenge.id, rec);
+        this.hud.showSuccess({
+          stars: result.stars,
+          total: result.total,
+          timeS: this.gameTime,
+          breakdown: result.breakdown,
+          isRecord,
+          best: this.loadBest(this.challenge.id)
+        });
+        if (isRecord) this.hud.setBest(this.challenge.id, rec);
         break;
+      }
       case "ChallengeFailed":
         this.hud.showBanner(e.reason === "TIMEOUT" ? "TIEMPO AGOTADO" : "CAIDA", "bad");
         break;
+      case "HoldAcquired": {
+        // Combo de flujo: encadenar fijaciones en menos de FLOW_WINDOW_S suma bonus.
+        const now = performance.now() / 1000;
+        this.flowCount = now - this.lastGrabAt <= FLOW_WINDOW_S ? Math.min(FLOW_MAX_CHAIN, this.flowCount + 1) : 1;
+        this.lastGrabAt = now;
+        if (this.flowCount >= 2) this.flowBonus += FLOW_BONUS_PER_STEP * this.flowCount;
+        this.hud.setFlow(this.flowCount);
+        // Bocada de tiza al fijar una mano.
+        if (e.limb.startsWith("hand")) {
+          const pos = this.holdPosById.get(e.holdId);
+          if (pos) this.scene.burstChalk(new Vector3(pos[0], pos[1], pos[2] - 0.03));
+        }
+        break;
+      }
       case "HoldRejected": {
         const label = REJECT_LABELS[e.reason] ?? e.reason;
         this.hud.toast(`Movimiento rechazado: ${label}`, "warn");
         break;
       }
       case "GripReleased":
-        if (e.reason === "OVERLOAD") this.hud.toast(`Sobrecarga: se solto el agarre (${e.limb})`, "error");
+        if (e.reason === "OVERLOAD") {
+          this.hud.toast(`Sobrecarga: se solto el agarre (${e.limb})`, "error");
+          // Sacudida corta + tiza al resbalar el agarre.
+          this.scene.shake(0.02);
+          const pos = this.holdPosById.get(e.holdId);
+          if (pos) this.scene.burstChalk(new Vector3(pos[0], pos[1], pos[2] - 0.03), 14);
+        }
         break;
       case "StrainStarted":
         this.hintOnce("strain", "Agarre en tension: la fatiga de esa extremidad sube mas rapido", "warn");
@@ -749,6 +932,11 @@ export class GameApp {
         break;
       case "FallStarted":
         this.hintOnce("fall", "Caída: los agarres se abren y el cuerpo cae. Se reintenta solo (o pulsa R)", "info");
+        // Drama: slow-motion breve + rotura del combo + conteo de caidas.
+        this.slowmoLeft = SLOWMO_DURATION_S;
+        this.fallCount += 1;
+        this.flowCount = 0;
+        this.hud.setFlow(0);
         break;
       default:
         break;
@@ -1059,6 +1247,8 @@ export class GameApp {
     tone: () => number;
     tune: () => BalanceTuning;
     setTune: (patch: Partial<BalanceTuning>) => BalanceTuning;
+    preset: () => string | null;
+    applyPreset: (name: string) => void;
     releaseLimb: (limb: LimbId) => boolean;
     debugLimbInfo: () => Record<string, { zone: string; anchored: boolean; holdId: string | null; loadN: number; ratio: number; fatigue: number }>;
   } {
@@ -1101,6 +1291,10 @@ export class GameApp {
       tone: () => this.solver.toneLevel(),
       tune: () => ({ ...this.tune }),
       setTune: (patch) => this.setTune(patch),
+      preset: () => this.presetName,
+      applyPreset: (name) => {
+        if (name === "realista" || name === "equilibrado" || name === "ragdoll") this.applyPreset(name);
+      },
       releaseLimb: (limb) => {
         const a = this.solver.releaseAnchor(limb);
         if (a) {

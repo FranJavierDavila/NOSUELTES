@@ -89,11 +89,12 @@ describe("Mapa de eventos a voces", () => {
 
   it("la caida programa grito primero y 'uff' al impactar (~0.72 s)", () => {
     const voices = mapEventToVoices({ type: "FallStarted", reason: "GRIP_LOST" }, rngDet);
-    expect(voices.length).toBe(2);
+    expect(voices.length).toBe(3); // grito + whoosh de viento + impacto
     expect(voices[0].spec.breath).toBeLessThan(1); // grito con voz
     expect(voices[0].spec.f0Mid).toBeGreaterThan(voices[0].spec.f0[0]); // arco de pitch
-    expect(voices[1].at).toBeGreaterThan(0.6);
-    expect(voices[1].spec.thud).toBe(true); // impacto contra el colchon
+    expect(voices[1].spec.breath).toBe(1); // whoosh de viento
+    expect(voices[2].at).toBeGreaterThan(0.6);
+    expect(voices[2].spec.thud).toBe(true); // impacto contra el colchon
   });
 
   it("exito = suspiro de alivio + risa; timeout = ohh decepcionado", () => {
@@ -138,9 +139,9 @@ describe("Respiracion y director de esfuerzo", () => {
 
   it("sin PLAYING no hay voz de fondo y el director se rearma", () => {
     const d = new EffortDirector(rngDet);
-    expect(d.update(1, { playing: false, maxFatigue: 1, maxRatio: 3, overloadRatio: 1.4 })).toEqual([]);
+    expect(d.update(1, { playing: false, maxFatigue: 1, maxRatio: 3, overloadRatio: 1.4, overload: true })).toEqual([]);
     // Al volver a jugar, el ciclo empieza de cero: primera exhalacion pronto.
-    const early = d.update(0.4, { playing: true, maxFatigue: 0.2, maxRatio: 0.5, overloadRatio: 1.4 });
+    const early = d.update(0.4, { playing: true, maxFatigue: 0.2, maxRatio: 0.5, overloadRatio: 1.4, overload: false });
     expect(early.some((r) => r.kind === "exhale")).toBe(true);
   });
 
@@ -148,7 +149,7 @@ describe("Respiracion y director de esfuerzo", () => {
     const d = new EffortDirector(rngDet);
     let kinds: string[] = [];
     for (let t = 0; t < 12; t += 0.1) {
-      kinds = kinds.concat(d.update(0.1, { playing: true, maxFatigue: 0.3, maxRatio: 0.6, overloadRatio: 1.4 }).map((r) => r.kind));
+      kinds = kinds.concat(d.update(0.1, { playing: true, maxFatigue: 0.3, maxRatio: 0.6, overloadRatio: 1.4, overload: false }).map((r) => r.kind));
     }
     expect(kinds).toContain("exhale");
     expect(kinds).toContain("inhale");
@@ -161,7 +162,7 @@ describe("Respiracion y director de esfuerzo", () => {
     const kinds: string[] = [];
     for (let t = 0; t < 10; t += 0.1) {
       kinds.push(
-        ...d.update(0.1, { playing: true, maxFatigue: 0.9, maxRatio: 1.45, overloadRatio: 1.4 }).map((r) => r.kind)
+        ...d.update(0.1, { playing: true, maxFatigue: 0.9, maxRatio: 1.45, overloadRatio: 1.4, overload: false }).map((r) => r.kind)
       );
     }
     expect(kinds).toContain("gruntHeavy");
@@ -173,7 +174,7 @@ describe("Respiracion y director de esfuerzo", () => {
     const kinds: string[] = [];
     for (let t = 0; t < 14; t += 0.1) {
       kinds.push(
-        ...d.update(0.1, { playing: true, maxFatigue: 0.62, maxRatio: 0.7, overloadRatio: 1.4 }).map((r) => r.kind)
+        ...d.update(0.1, { playing: true, maxFatigue: 0.62, maxRatio: 0.7, overloadRatio: 1.4, overload: false }).map((r) => r.kind)
       );
     }
     expect(kinds).toContain("gruntEffort");
@@ -186,7 +187,7 @@ describe("Respiracion y director de esfuerzo", () => {
     let t = 0;
     for (let i = 0; i < 60 * 20; i++) {
       t += 1 / 60;
-      const reqs = d.update(1 / 60, { playing: true, maxFatigue: 0.7, maxRatio: 0.8, overloadRatio: 1.4 });
+      const reqs = d.update(1 / 60, { playing: true, maxFatigue: 0.7, maxRatio: 0.8, overloadRatio: 1.4, overload: false });
       if (reqs.some((r) => r.kind === "gruntEffort" || r.kind === "gruntHeavy")) grunts.push(t);
     }
     expect(grunts.length).toBeGreaterThanOrEqual(3);

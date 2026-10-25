@@ -175,3 +175,29 @@ Work Log:
 Stage Summary:
 - El personaje ahora "suena humano": se le oye el esfuerzo (quejidos por carga y fatiga), la respiracion se acorta al agotarse, grita al caer, suelta un "uff" al impactar y se rie al lograr el desafio. Todo sintetizado (sin assets), calibrable en voice.ts.
 - El audio consume los mismos eventos semanticos y el mismo dato de fatiga/carga que el HUD: coherencia audio-visual garantizada por diseno.
+
+---
+Task ID: 10
+Agent: Z.ai (principal)
+Task: Paquete de jugabilidad y espectacularidad (peticion: "sorprendeme con dinamicas que aporten valor")
+
+Work Log:
+- RECUPERACION CRITICA: el sandbox se reinicio y borro /home/z/my-project (el codigo nunca estaba en git). Copia completa recuperada de /tmp/my-project (incluida la Task 9). bun install + build + verificado 71/71. COMMIT DE BLINDAJE inmediato (6bac93e) para que esto no repita.
+- Particulas (scene.ts): textura radial compartida (DynamicTexture) + sistemas one-shot con disposeOnStop: burstChalk (tiza blanca al fijar mano, 26 particulas), burstDust (polvo del colchon al impactar), burstConfetti (3 tandas de color desde la cima al completar).
+- Camara (scene.ts): BUG REAL corregido: la mutacion de camera.target no reorienta a FreeCamera (el seguimiento con zona muerta documentado nunca se aplico). Ahora updateCamera llama setTarget cada frame: el seguimiento FUNCIONA. Sacudida de camara con amplitud decaying (aterrizaje 0.055, suelta por sobrecarga 0.02) aplicada sobre el punto de mira.
+- Slow-motion (loop.ts): al FallStarted, timeScale converge a 0.32 durante 0.85 s y vuelve a 1 suavemente (acumulador de fisica escalado; el timer del desafio tambien se ralentiza: drama coherente).
+- Audio (voice.ts/audio.ts): whoosh de viento en caida (barrido breathHz 300->1500 via breathHzEnd), latidos lub-dub (golpes sordos graves) dirigidos por el director: periodo 0.62 s en SOBRECARGA, 1.05 s cerca del umbral; campo overload en EffortInput.
+- Puntuacion (gameplay/score.ts nuevo, puro): base 1000 + 10/s de tiempo restante + flujo - 150/caida; estrellas 3 (sin caidas y <=50% del limite), 2 (<=1 caida), 1 (resto); isBetter para records. showSuccess en HUD con estrellas unicode, desglose y ¡NUEVO RECORD!; records en localStorage ns.best.<challengeId> y lineas "Mejor:" en las tarjetas del menu (setBest en vivo).
+- Combo de FLUJO (loop.ts + hud.ts): fijar presas en <6 s encadena x2..x9 (chip animado ns-flow-pop en globals.css), bonus 50*N acumulado; roto por caida/respawn/ventana.
+- Presets de balance en menu (hud.ts + loop.ts): Realista/Equilibrado/Ragdoll con valores de tone/limites/pliegue; persisten en ns.tune.preset.v1; setTune manual los invalida (coherencia con sliders F3); __NS.applyPreset()/preset() para E2E.
+- Contenido: challenge_speed_run.json (VELOCIDAD, reach_top, 60 s, gracia 0.3 s, estabilizacion 0.35 s) + manifest; CHALLENGE_META por ID para etiqueta propia; help H ampliada (flujo + presets).
+- Reset de contadores por attempt (spawn: flujo/fatiga pico/slow-mo) y por challenge (fallCount persiste en loadChallenge).
+- Tests: score (6) + voces nuevas/latidos (4) + ajustes de tests existentes (fall=3 voces, challenges=4, overload en EffortInput). 81/81, eslint limpio, tsc sin errores nuevos.
+- E2E nuevo scripts/e2e-juice.py: menu con VELOCIDAD+presets, preset realista persistido (tone 0.95), transferencias hand_r->r2 + pie->foot_jug_l con chip FLUJO visible, FALLEN con slow-mo/polvo, auto-reset, consola limpia. Capturas download/juice-1..3.png.
+- Regresion e2e-ascenso: 15/15 movimientos (cadera ~3.4 m, ambas manos en cima) y AL LLEGAR: banner ÉXITO ★★☆ 1625 pts (base 1000 + tiempo 625, 0 caidas), ¡NUEVO RECORD! y ns.best.challenge_reach_top={"score":1625,"timeS":87.5,"stars":2}. Cambio a VELOCIDAD verificado. Records de prueba eliminados del localStorage.
+- Build produccion + redeploy daemonize. Server OK.
+
+Stage Summary:
+- El prototipo ahora tiene bucle de rejugabilidad: puntuacion con estrellas, records por desafio, combo de flujo por encadenar movimientos, desafio contrarreloj VELOCIDAD, presets de balance en menu.
+- Espectacularidad: tiza, polvo, confeti, sacudida de camara, slow-motion en caida, whoosh de viento y latidos al limite.
+- Corregido de regalo: el seguimiento de camara (zona muerta) que documentaba la Task 1 pero nunca se aplicaba (mutacion inutil de camera.target en FreeCamera).

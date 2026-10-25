@@ -24,6 +24,7 @@ import "@babylonjs/core/Meshes/Builders/torusBuilder";
 import "@babylonjs/core/Meshes/Builders/linesBuilder";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
+import { ParticleSystem } from "@babylonjs/core/Particles/particleSystem";
 import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
 import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { AxesViewer } from "@babylonjs/core/Debug/axesViewer";
@@ -109,6 +110,10 @@ export class GameScene {
   private ortho = false;
   private camTargetBase = new Vector3(0, 2.4, -0.2);
   private lastReachRadius = 0.58;
+  /** Textura radial blanca compartida (tiza, polvo, confeti usa colores propios). */
+  private readonly spriteTex: DynamicTexture;
+  /** Amplitud de sacudida de camara (decae exponencialmente). */
+  private shakeAmp = 0;
 
   private constructor(engine: AbstractEngine, scene: Scene, backend: string, canvas: HTMLCanvasElement) {
     this.engine = engine;
@@ -137,6 +142,18 @@ export class GameScene {
     this.camera.fov = 0.95;
     this.camera.setTarget(this.camTargetBase.clone());
     scene.activeCamera = this.camera;
+
+    // Textura de particulas: disco radial suave (tiza/polvo no pueden ser cuadrados).
+    this.spriteTex = new DynamicTexture("spriteTex", { width: 64, height: 64 }, scene, false);
+    const sctx = this.spriteTex.getContext() as CanvasRenderingContext2D;
+    const grad = sctx.createRadialGradient(32, 32, 2, 32, 32, 30);
+    grad.addColorStop(0, "rgba(255,255,255,1)");
+    grad.addColorStop(0.55, "rgba(255,255,255,0.55)");
+    grad.addColorStop(1, "rgba(255,255,255,0)");
+    sctx.fillStyle = grad;
+    sctx.fillRect(0, 0, 64, 64);
+    this.spriteTex.update();
+    this.spriteTex.hasAlpha = true;
 
     // Anillos e indicadores persistentes.
     this.selectionRing = MeshBuilder.CreateTorus("selRing", { diameter: 0.34, thickness: 0.035, tessellation: 32 }, scene);
@@ -630,6 +647,99 @@ export class GameScene {
     this.lastReachRadius = radius;
   }
 
+  // --- Particulas de juice (tiza, polvo, confeti) ---
+
+  /** Sistema one-shot: emite N particulas y se destruye solo. */
+  private burst(
+    name: string,
+    emitter: Vector3,
+    count: number,
+    c1: Color4,
+    c2: Color4,
+    dir1: Vector3,
+    dir2: Vector3,
+    opts: { sizeMin: number; sizeMax: number; lifeMin: number; lifeMax: number; gravity?: Vector3; emitTime?: number; scaleGravity?: number }
+  ): void {
+    const ps = new ParticleSystem(name, Math.max(32, count + 16), this.scene);
+    ps.particleTexture = this.spriteTex;
+    ps.emitter = emitter.clone();
+    ps.minEmitBox = new Vector3(-0.03, -0.03, -0.03);
+    ps.maxEmitBox = new Vector3(0.03, 0.03, 0.03);
+    ps.color1 = c1;
+    ps.color2 = c2;
+    ps.colorDead = new Color4(c1.r, c1.g, c1.b, 0);
+    ps.minSize = opts.sizeMin;
+    ps.maxSize = opts.sizeMax;
+    ps.minLifeTime = opts.lifeMin;
+    ps.maxLifeTime = opts.lifeMax;
+    ps.emitRate = count / Math.max(0.04, opts.emitTime ?? 0.1);
+    ps.direction1 = dir1;
+    ps.direction2 = dir2;
+    if (opts.gravity) ps.gravity = opts.gravity;
+    ps.blendMode = ParticleSystem.BLENDMODE_STANDARD;
+    ps.minAngularSpeed = -Math.PI;
+    ps.maxAngularSpeed = Math.PI;
+    ps.updateSpeed = 0.012;
+    ps.targetStopDuration = opts.emitTime ?? 0.1;
+    ps.disposeOnStop = true;
+    ps.start();
+  }
+
+  /** Tiza: bocada blanca al fijar una mano (la firma visual del escalador). */
+  burstChalk(pos: Vector3, count = 26): void {
+    this.burst(
+      "chalkBurst",
+      pos,
+      count,
+      new Color4(1, 1, 1, 0.85),
+      new Color4(0.82, 0.85, 0.9, 0.6),
+      new Vector3(-0.55, 0.35, -1.1),
+      new Vector3(0.55, 1.15, -0.15),
+      { sizeMin: 0.035, sizeMax: 0.1, lifeMin: 0.25, lifeMax: 0.6, gravity: new Vector3(0, -2.4, 0), emitTime: 0.08 }
+    );
+  }
+
+  /** Polvo del colchon al impactar el cuerpo. */
+  burstDust(pos: Vector3, count = 40): void {
+    this.burst(
+      "dustBurst",
+      pos,
+      count,
+      new Color4(0.55, 0.5, 0.42, 0.7),
+      new Color4(0.4, 0.38, 0.34, 0.45),
+      new Vector3(-0.9, 0.4, -0.5),
+      new Vector3(0.9, 1.4, 0.1),
+      { sizeMin: 0.08, sizeMax: 0.22, lifeMin: 0.4, lifeMax: 0.9, gravity: new Vector3(0, -1.1, 0), emitTime: 0.12 }
+    );
+  }
+
+  /** Confeti de celebracion: tres tandas de colores desde la presa cima. */
+  burstConfetti(pos: Vector3): void {
+    const colors: [Color4, Color4][] = [
+      [new Color4(1, 0.72, 0.2, 1), new Color4(1, 0.55, 0.15, 0.9)],
+      [new Color4(0.2, 0.8, 0.75, 1), new Color4(0.15, 0.65, 0.85, 0.9)],
+      [new Color4(0.95, 0.35, 0.35, 1), new Color4(0.9, 0.45, 0.55, 0.9)]
+    ];
+    for (let k = 0; k < colors.length; k++) {
+      const p = pos.add(new Vector3((k - 1) * 0.18, 0.05 + k * 0.04, -0.02));
+      this.burst(
+        `confetti${k}`,
+        p,
+        46,
+        colors[k][0],
+        colors[k][1],
+        new Vector3(-1.4, 1.2, -0.7),
+        new Vector3(1.4, 2.6, 0.3),
+        { sizeMin: 0.05, sizeMax: 0.13, lifeMin: 0.9, lifeMax: 1.9, gravity: new Vector3(0, -3.2, 0), emitTime: 0.22 }
+      );
+    }
+  }
+
+  /** Sacudida de camara (se acumula la maxima y decae sola en updateCamera). */
+  shake(amp: number): void {
+    this.shakeAmp = Math.min(0.09, Math.max(this.shakeAmp, amp));
+  }
+
   // --- Camara ---
 
   updateCamera(dt: number, pelvis: { x: number; y: number; z: number }, recenter: boolean): void {
@@ -650,6 +760,23 @@ export class GameScene {
       }
     }
     target.z = this.camTargetBase.z;
+
+    // La mutacion de camera.target no reorienta a una FreeCamera: hay que llamar
+    // a setTarget. Ademas aplicamos la sacudida sobre el punto de mira.
+    if (this.shakeAmp > 0.0006) {
+      const t = performance.now() / 1000;
+      const look = new Vector3(
+        target.x + Math.sin(t * 47) * this.shakeAmp,
+        target.y + Math.cos(t * 39) * this.shakeAmp * 0.7,
+        target.z
+      );
+      this.camera.setTarget(look);
+      this.shakeAmp *= Math.exp(-dt * 5.2);
+    } else {
+      this.shakeAmp = 0;
+      this.camera.setTarget(new Vector3(target.x, target.y, target.z));
+    }
+
     if (this.ortho) {
       const aspect = this.engine.getRenderWidth() / Math.max(1, this.engine.getRenderHeight());
       const halfH = 3.1;

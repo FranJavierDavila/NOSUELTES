@@ -192,7 +192,10 @@ export class AudioBus {
       noise.loop = true;
       const nbp = ctx.createBiquadFilter();
       nbp.type = "bandpass";
-      nbp.frequency.value = spec.breathHz ?? 1500;
+      nbp.frequency.setValueAtTime(spec.breathHz ?? 1500, when);
+      if (spec.breathHzEnd && spec.breathHzEnd > 0) {
+        nbp.frequency.linearRampToValueAtTime(spec.breathHzEnd, when + dur * 0.85);
+      }
       nbp.Q.value = 0.8;
       const envB = this.makeEnv(spec.gain * spec.breath * 1.3, when, dur, spec.attack);
       noise.connect(nbp).connect(envB).connect(mix);

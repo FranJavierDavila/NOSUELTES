@@ -1,7 +1,18 @@
 {
   "schemaVersion": 1,
-  "characters": ["prototype_climber"],
-  "bodyProfiles": ["standard_humanoid"],
-  "walls": ["wall_basic_01"],
-  "challenges": ["challenge_reach_top", "challenge_stabilize_pose", "challenge_recover_swing"]
+  "characters": [
+    "prototype_climber"
+  ],
+  "bodyProfiles": [
+    "standard_humanoid"
+  ],
+  "walls": [
+    "wall_basic_01"
+  ],
+  "challenges": [
+    "challenge_reach_top",
+    "challenge_stabilize_pose",
+    "challenge_recover_swing",
+    "challenge_speed_run"
+  ]
 }

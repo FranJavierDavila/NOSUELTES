@@ -4,6 +4,18 @@
  */
 import { GameState, GameEvent, LimbId, LoadZone, ChallengeDefinition } from "../types";
 import { LIMB_IDS } from "../types";
+import type { BestRecord } from "../gameplay/score";
+
+export type BalancePresetName = "realista" | "equilibrado" | "ragdoll";
+
+const PRESETS: { name: BalancePresetName; label: string }[] = [
+  { name: "realista", label: "Realista" },
+  { name: "equilibrado", label: "Equilibrado" },
+  { name: "ragdoll", label: "Ragdoll" }
+];
+
+const STAR_FULL = "★";
+const STAR_EMPTY = "☆";
 
 const LIMB_LABEL: Record<LimbId, string> = {
   hand_l: "Mano izq.",
@@ -35,6 +47,7 @@ interface ChallengeOption {
   id: string;
   label: string;
   description: string;
+  best?: BestRecord | null;
 }
 
 export class Hud {
@@ -56,13 +69,18 @@ export class Hud {
   private pausedBadge: HTMLElement;
   private backendSpans: HTMLElement[] = [];
   private challengeButtons = new Map<string, HTMLElement>();
+  private challengeCards = new Map<string, HTMLElement>();
+  private presetButtons = new Map<BalancePresetName, HTMLButtonElement>();
+  private flowEl: HTMLElement;
+  private activePreset: BalancePresetName | null = null;
 
   constructor(
     root: HTMLElement,
     events: { on(listener: (e: GameEvent) => void): () => void },
     challenges: ChallengeOption[],
     onPickChallenge: (id: string) => void,
-    onDismissIntro: () => void
+    onDismissIntro: () => void,
+    onPreset: (preset: BalancePresetName) => void
   ) {
     root.innerHTML = `
       <div class="pointer-events-none absolute inset-0 select-none font-sans text-zinc-100">
@@ -108,6 +126,10 @@ export class Hud {
           <div class="h-2 overflow-hidden rounded bg-zinc-800"><div id="hud-progress" class="h-full rounded bg-amber-400" style="width:0%"></div></div>
         </div>
 
+        <div id="hud-flow" class="absolute left-1/2 top-16 hidden -translate-x-1/2 rounded-full border border-amber-400/60 bg-amber-500/15 px-4 py-1 text-sm font-black tracking-wider text-amber-300 backdrop-blur">
+          FLUJO <span id="hud-flow-n" class="tabular-nums">x2</span>
+        </div>
+
         <div id="hud-banner" class="absolute left-1/2 top-1/3 hidden -translate-x-1/2 rounded-xl bg-zinc-950/85 px-8 py-5 text-center backdrop-blur border border-zinc-700"></div>
 
         <div id="hud-toasts" class="absolute left-1/2 top-24 flex w-max -translate-x-1/2 flex-col items-center gap-1"></div>
@@ -127,6 +149,8 @@ export class Hud {
               <li><b>Colores de carga</b>: la extremidad fijada y el anillo de su presa se tiñen — <b style="color:#3fb26f">verde</b> normal, <b style="color:#e0b13e">ámbar</b> tensión, <b style="color:#e05252">rojo</b> sobrecarga (parpadea). La mochila marca la espalda; los marcadores turquesa, el frente (cara, rodillas, codos).</li>
               <li><b>Tipos de presa</b>: <b style="color:#3fb26f">verde</b> salida, <b style="color:#8a97a8">gris</b> manos, <b style="color:#d97b2f">naranja</b> pies, <b style="color:#e0b13e">ámbar</b> cima.</li>
               <li><b>R</b>: reiniciar la prueba. <b>Espacio</b>: pausa. <b>T</b>: tutorial guiado. <b>F3</b>: overlay de depuracion. <b>C</b>: recentrar camara. <b>F4</b>: vista ortografica. <b>M</b>: sonido.</li>
+              <li><b>Flujo</b>: encadena movimientos en menos de 6 s para multiplicar la puntuación (chip FLUJO). Las caídas y el tiempo restan: la rapidez con control da las 3 estrellas.</li>
+              <li><b>Balance físico</b>: los presets del menú (Realista / Equilibrado / Ragdoll) ajustan tono postural, límites articulares y pliegue; se pueden refinar en F3.</li>
             </ul>
             <div class="mt-3 text-[12px] leading-relaxed text-zinc-500">
               La fuerza de agarre depende de la postura y la fatiga. Si la carga supera la capacidad durante la tolerancia, el agarre se libera y caes. Coloca los pies para descansar: solo con brazos te agotaras.
@@ -144,6 +168,10 @@ export class Hud {
               El cuerpo se simula con fisica real: no hay teletransporte, y soltar el raton en un punto malo puede costarte la prueba.
             </p>
             <div id="hud-intro-challenges" class="mt-5 grid gap-2"></div>
+            <div class="mt-4">
+              <div class="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Balance físico (ADR-008)</div>
+              <div id="hud-intro-presets" class="mt-1.5 grid grid-cols-3 gap-1.5"></div>
+            </div>
             <div class="mt-5 flex items-center justify-between">
               <div class="text-[11px] text-zinc-500">Ratón + teclado · F3 para metricas de depuracion · Motor: <span id="hud-backend" class="text-zinc-400">detectando…</span></div>
               <button id="hud-intro-dismiss" class="rounded bg-amber-500 px-5 py-2 text-sm font-bold text-zinc-950 hover:bg-amber-400">Comenzar</button>
@@ -168,6 +196,7 @@ export class Hud {
     ].filter((el): el is HTMLElement => el !== null);
     this.progressWrap = root.querySelector("#hud-progress-wrap")!;
     this.progressBar = root.querySelector("#hud-progress")!;
+    this.flowEl = root.querySelector("#hud-flow")!;
     this.toasts = root.querySelector("#hud-toasts")!;
     this.help = root.querySelector("#hud-help")!;
     this.intro = root.querySelector("#hud-intro")!;
@@ -188,9 +217,10 @@ export class Hud {
       const card = document.createElement("button");
       card.className =
         "rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-left transition hover:border-amber-500/60 hover:bg-zinc-900/70";
-      card.innerHTML = `<div class="text-sm font-bold text-zinc-100">${c.label}</div><div class="mt-0.5 text-[12px] leading-snug text-zinc-500">${c.description}</div>`;
+      card.innerHTML = `<div class="text-sm font-bold text-zinc-100">${c.label}</div><div class="mt-0.5 text-[12px] leading-snug text-zinc-500">${c.description}</div>${c.best ? `<div class="mt-1 text-[11px] font-semibold text-amber-400/90" data-best>Mejor: ${c.best.stars >= 1 ? STAR_FULL.repeat(Math.max(1, Math.min(3, c.best.stars))) : ""} · ${c.best.score} pts · ${Math.round(c.best.timeS)} s</div>` : ""}`;
       card.addEventListener("click", () => onPickChallenge(c.id));
       introChallenges.appendChild(card);
+      this.challengeCards.set(c.id, card);
 
       const btn = document.createElement("button");
       btn.className =
@@ -206,6 +236,18 @@ export class Hud {
       this.intro.classList.add("hidden");
       onDismissIntro();
     });
+
+    // Presets de balance fisico en el menu (ADR-008): seleccion persistente.
+    const presetsRoot = root.querySelector("#hud-intro-presets")!;
+    for (const p of PRESETS) {
+      const b = document.createElement("button");
+      b.className =
+        "rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-[11px] font-semibold text-zinc-400 transition hover:border-amber-500/60 hover:text-zinc-200";
+      b.textContent = p.label;
+      b.addEventListener("click", () => onPreset(p.name));
+      presetsRoot.appendChild(b);
+      this.presetButtons.set(p.name, b);
+    }
 
     events.on((e) => {
       if (e.type === "Message") this.toast(e.text, e.tone);
@@ -274,6 +316,71 @@ export class Hud {
     }
     this.banner.classList.remove("hidden");
     this.banner.innerHTML = `<div class="text-2xl font-black ${tone === "ok" ? "text-emerald-400" : tone === "bad" ? "text-red-400" : "text-zinc-100"}">${text}</div><div class="mt-1 text-xs text-zinc-400">Pulsa R para reiniciar</div>`;
+  }
+
+  /** Panel de exito con estrellas, puntuacion desglosada y record. */
+  showSuccess(info: {
+    stars: 1 | 2 | 3;
+    total: number;
+    timeS: number;
+    breakdown: { base: number; timeBonus: number; flowBonus: number; fallPenalty: number };
+    isRecord: boolean;
+    best: BestRecord | null;
+  }): void {
+    const starsHtml =
+      STAR_FULL.repeat(info.stars) + STAR_EMPTY.repeat(3 - info.stars);
+    const recordLine = info.isRecord
+      ? `<div class="mt-1 text-xs font-bold text-amber-300">¡NUEVO RÉCORD!</div>`
+      : info.best
+        ? `<div class="mt-1 text-[11px] text-zinc-500">Récord: ${info.best.score} pts · ${Math.round(info.best.timeS)} s</div>`
+        : "";
+    this.banner.classList.remove("hidden");
+    this.banner.innerHTML = `
+      <div class="text-3xl font-black text-emerald-400">ÉXITO</div>
+      <div class="mt-1 text-2xl tracking-[0.25em] text-amber-400">${starsHtml}</div>
+      <div class="mt-2 font-mono text-xl font-bold text-zinc-100">${info.total} pts</div>
+      <div class="mt-1 text-[11px] leading-relaxed text-zinc-400">base ${info.breakdown.base} · tiempo +${info.breakdown.timeBonus} · flujo +${info.breakdown.flowBonus} · caídas −${info.breakdown.fallPenalty}</div>
+      ${recordLine}
+      <div class="mt-1 text-xs text-zinc-400">Pulsa R para reiniciar</div>`;
+  }
+
+  /** Chip de combo de flujo (xN al encadenar movimientos rapidos). */
+  setFlow(n: number): void {
+    if (n < 2) {
+      this.flowEl.classList.add("hidden");
+      return;
+    }
+    this.flowEl.classList.remove("hidden");
+    (this.flowEl.querySelector("#hud-flow-n") as HTMLElement).textContent = `x${n}`;
+    // Reinicia la animacion de pulso.
+    this.flowEl.style.animation = "none";
+    void this.flowEl.offsetWidth;
+    this.flowEl.style.animation = "ns-flow-pop 0.3s ease-out";
+  }
+
+  /** Marca el preset de balance activo en el menu. */
+  setPresetActive(name: BalancePresetName | null): void {
+    this.activePreset = name;
+    for (const [preset, btn] of this.presetButtons) {
+      const active = preset === name;
+      btn.classList.toggle("border-amber-400", active);
+      btn.classList.toggle("text-amber-300", active);
+      btn.classList.toggle("bg-amber-500/10", active);
+    }
+  }
+
+  get preset(): BalancePresetName | null {
+    return this.activePreset;
+  }
+
+  /** Actualiza el record mostrado en la tarjeta del menu. */
+  setBest(id: string, best: BestRecord): void {
+    const card = this.challengeCards.get(id);
+    if (!card) return;
+    const existing = card.querySelector("[data-best]") as HTMLElement | null;
+    const html = `<div class="mt-1 text-[11px] font-semibold text-amber-400/90" data-best>Mejor: ${STAR_FULL.repeat(Math.max(1, Math.min(3, best.stars)))} · ${best.score} pts · ${Math.round(best.timeS)} s</div>`;
+    if (existing) existing.outerHTML = html;
+    else card.insertAdjacentHTML("beforeend", html);
   }
 
   setProgress(ratio: number | null): void {

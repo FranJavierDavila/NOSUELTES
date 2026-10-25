@@ -36,6 +36,8 @@ export interface VoiceSpec {
   breath: number;
   /** Frecuencia central del ruido de aliento (Hz). */
   breathHz?: number;
+  /** Barrido final del aliento (whoosh del viento al caer). */
+  breathHzEnd?: number;
   /** Vibrato de pitch (Hz de profundidad). */
   vibratoHz?: number;
   vibratoDepth?: number;
@@ -68,6 +70,8 @@ export type VoiceKind =
   | "ohh"
   | "inhale"
   | "exhale"
+  | "whoosh"
+  | "heart"
   | "tup";
 
 export interface EffortInput {
@@ -79,6 +83,8 @@ export interface EffortInput {
   maxRatio: number;
   /** Ratio que define SOBRECARGA (perfil biomecanico). */
   overloadRatio: number;
+  /** Alguna extremidad en zona SOBRECARGA (latidos de corazon). */
+  overload: boolean;
 }
 
 export interface VoiceRequest {
@@ -250,6 +256,36 @@ export function sigh(rng: Rng): ScheduledVoice {
   };
 }
 
+/** Whoosh de viento durante la caida (barrido ascendente del filtro). */
+export function whoosh(rng: Rng): ScheduledVoice {
+  return {
+    spec: {
+      f0: [0, 0],
+      vowel: VOWELS.u,
+      dur: jit(rng, 1.15, 0.12),
+      attack: 0.18,
+      gain: 0.3,
+      breath: 1,
+      breathHz: 300,
+      breathHzEnd: 1500
+    },
+    at: 0
+  };
+}
+
+/** Latido "lub-dub": dos golpes sordos graves de corazon. intensity 0..1. */
+export function heart(rng: Rng, intensity = 1): ScheduledVoice[] {
+  const i = clamp01(intensity);
+  const lub = tup(rng);
+  lub.spec.thudGain = 0.34 + i * 0.3;
+  lub.spec.dur = 0.09;
+  const dub = tup(rng);
+  dub.spec.thudGain = 0.24 + i * 0.24;
+  dub.spec.dur = 0.08;
+  dub.at = 0.16;
+  return [lub, dub];
+}
+
 /** "ja-ja-jaaa": risita de exito (3 golpes glotales descendentes). */
 export function chuckle(rng: Rng): ScheduledVoice[] {
   const base = jit(rng, 168, 0.1);
@@ -354,6 +390,10 @@ export function buildVoice(kind: VoiceKind, rng: Rng, intensity = 0.5): Schedule
       return [oof(rng)];
     case "sigh":
       return [sigh(rng)];
+    case "whoosh":
+      return [whoosh(rng)];
+    case "heart":
+      return heart(rng, intensity);
     case "chuckle":
       return chuckle(rng);
     case "dud":
@@ -413,9 +453,11 @@ export function mapEventToVoices(event: VoxEvent, rng: Rng = Math.random): Sched
       return event.reason === "OVERLOAD" ? [yelp(rng)] : [];
     case "FallStarted": {
       const sc = scream(rng);
+      const wind = whoosh(rng);
+      wind.at = 0.1;
       const impact = oof(rng);
       impact.at = 0.72; // el cuerpo tarda en llegar al colchon (suelta escalonada)
-      return [sc, impact];
+      return [sc, wind, impact];
     }
     case "ChallengeSuccess": {
       const s = sigh(rng);
@@ -457,6 +499,7 @@ export class EffortDirector {
   private exhaled = false;
   private inhaled = false;
   private gruntTimer = 2.4;
+  private heartTimer = 0;
 
   constructor(private readonly rng: Rng = Math.random) {}
 
@@ -465,6 +508,7 @@ export class EffortDirector {
     this.exhaled = false;
     this.inhaled = false;
     this.gruntTimer = Math.max(this.gruntTimer, 1.6);
+    this.heartTimer = 0;
   }
 
   update(dt: number, s: EffortInput): VoiceRequest[] {
@@ -502,6 +546,18 @@ export class EffortDirector {
         out.push({ kind: heavy ? "gruntHeavy" : "gruntEffort", intensity: Math.max(f, 0.5) });
         this.gruntTimer = 2.0 + this.rng() * 3.2;
       }
+    }
+
+    // Latidos: el corazon se oye al estar al limite; acelera en SOBRECARGA.
+    const heartPeriod = s.overload ? 0.62 : s.maxRatio >= s.overloadRatio * 0.8 ? 1.05 : 0;
+    if (heartPeriod > 0) {
+      this.heartTimer -= dt;
+      if (this.heartTimer <= 0) {
+        out.push({ kind: "heart", intensity: s.overload ? 1 : 0.6 });
+        this.heartTimer = heartPeriod;
+      }
+    } else {
+      this.heartTimer = 0;
     }
     return out;
   }
