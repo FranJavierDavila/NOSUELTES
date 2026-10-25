@@ -85,6 +85,9 @@ export interface EffortInput {
   overloadRatio: number;
   /** Alguna extremidad en zona SOBRECARGA (latidos de corazon). */
   overload: boolean;
+  /** Presion de fallo 0..1: daño de sobrecarga acumulado / tolerancia
+   * (1 = el agarre esta a punto de ceder). Opcional; 0 = sin presion. */
+  overloadPressure?: number;
 }
 
 export interface VoiceRequest {
@@ -538,22 +541,29 @@ export class EffortDirector {
     }
 
     // Quejidos periodicos: solo cuando el esfuerzo es notable; se aceleran con
-    // la fatiga y se vuelven gruñido pesado cerca de la sobrecarga.
-    if (f > 0.45 || s.maxRatio >= s.overloadRatio * 0.92) {
-      this.gruntTimer -= dt * (0.65 + 0.85 * f);
+    // la fatiga y se vuelven gruñido pesado cerca de la sobrecarga. Con presion
+    // de fallo alta (a punto de ceder) se vuelven gruñidos de PANICO rapidos.
+    const pressure = clamp01(s.overloadPressure ?? 0);
+    if (f > 0.45 || s.maxRatio >= s.overloadRatio * 0.92 || pressure > 0) {
+      this.gruntTimer -= dt * (0.65 + 0.85 * f + 2.2 * pressure);
       if (this.gruntTimer <= 0) {
-        const heavy = f > 0.8 || s.maxRatio >= s.overloadRatio;
-        out.push({ kind: heavy ? "gruntHeavy" : "gruntEffort", intensity: Math.max(f, 0.5) });
-        this.gruntTimer = 2.0 + this.rng() * 3.2;
+        const heavy = f > 0.8 || s.maxRatio >= s.overloadRatio || pressure >= 0.55;
+        out.push({ kind: heavy ? "gruntHeavy" : "gruntEffort", intensity: Math.max(f, pressure, 0.5) });
+        this.gruntTimer = pressure >= 0.55 ? 0.42 + this.rng() * 0.4 : 2.0 + this.rng() * 3.2;
       }
     }
 
-    // Latidos: el corazon se oye al estar al limite; acelera en SOBRECARGA.
-    const heartPeriod = s.overload ? 0.62 : s.maxRatio >= s.overloadRatio * 0.8 ? 1.05 : 0;
+    // Latidos: el corazon se oye al estar al limite; acelera en SOBRECARGA y se
+    // dispara conforme la cuenta atras de fallo se agota (0.62 s -> 0.36 s).
+    const heartPeriod = s.overload
+      ? 0.62 - 0.26 * pressure
+      : s.maxRatio >= s.overloadRatio * 0.8
+        ? 1.05
+        : 0;
     if (heartPeriod > 0) {
       this.heartTimer -= dt;
       if (this.heartTimer <= 0) {
-        out.push({ kind: "heart", intensity: s.overload ? 1 : 0.6 });
+        out.push({ kind: "heart", intensity: s.overload ? 0.85 + 0.15 * pressure : 0.6 });
         this.heartTimer = heartPeriod;
       }
     } else {

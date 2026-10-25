@@ -36,6 +36,7 @@ export interface TuneValues {
   postureTone: number;
   jointLimitStiffness: number;
   foldStrength: number;
+  stretchTolerance: number;
 }
 
 export type TuneKey = keyof TuneValues;
@@ -106,7 +107,8 @@ export class DebugOverlay {
     for (const [key, label, min, max] of [
       ["postureTone", "tono", 0, 1],
       ["jointLimitStiffness", "limites", 0.3, 1],
-      ["foldStrength", "pliegue", 0.2, 1]
+      ["foldStrength", "pliegue", 0.2, 1],
+      ["stretchTolerance", "estirar", 1.02, 1.35]
     ] as const) {
       const wrap = document.createElement("div");
       wrap.className = "flex items-center gap-2";
@@ -117,7 +119,7 @@ export class DebugOverlay {
       input.type = "range";
       input.min = String(min);
       input.max = String(max);
-      input.step = "0.05";
+      input.step = "0.01";
       input.className = "w-full accent-amber-400";
       const val = document.createElement("span");
       val.className = "w-8 shrink-0 text-right text-zinc-200";

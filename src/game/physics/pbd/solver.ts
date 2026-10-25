@@ -144,12 +144,32 @@ export interface MuscleParams {
  * - foldStrength: dureza del sentido de flexion (anti-rodilla/codo invertido).
  * - postureTone: tono postural en juego (1 = erguido y vivo, 0 = muñeco de trapo).
  * - toneFloor: tono residual tras declararse la caida (passivo pero sin pliegues).
+ * - stretchTolerance: cuanto puede ALARGARSE una cadena anatomica sobre su longitud
+ *   natural antes de que el tope duro la corte (1.05 = realista, 1.2 = muneco de goma).
  */
 export interface BalanceTuning {
   jointLimitStiffness: number;
   foldStrength: number;
   postureTone: number;
   toneFloor: number;
+  stretchTolerance: number;
+}
+
+/**
+ * Tope de LONGITUD DE CADENA (anatomia pasiva, como los limites articulares):
+ * prohibe que la distancia raiz->extremo (hombro->mano, cadera->pie, pelvis->pecho)
+ * supere la longitud natural x tolerancia. Es el anti-"muneco de goma": sin el, las
+ * barras elasticas se estiran bajo carga sostenida y aparecen posturas imposibles
+ * (brazos de 1.5 m). Desigualdad dura: solo actua al violar el maximo.
+ */
+interface ChainCap {
+  a: number;
+  b: number;
+  /** Longitud natural de la cadena (m) sin la tolerancia. */
+  base: number;
+  /** Lectura de diagnostico: longitud actual (m). */
+  current: number;
+  limb: LimbId | null;
 }
 
 export interface TargetState {
@@ -206,12 +226,16 @@ export interface SolverCounts {
 
 const BOUNDS_DEFAULT = { minX: -4, maxX: 4, minY: 0, maxY: 9, minZ: -7, maxZ: 0.6 };
 
+/** Tolerancia del tope de columna (segmento rigido: casi sin elastico). */
+const SPINE_STRETCH_TOLERANCE = 1.04;
+
 export class PbdSolver {
   readonly env: SolverEnv;
   private particles: Particle[] = [];
   private sticks: Stick[] = [];
   private angles: AngleConstraint[] = [];
   private folds: FoldConstraint[] = [];
+  private chainCaps: ChainCap[] = [];
   private anchors = new Map<LimbId, AnchorState>();
   private targets = new Map<LimbId, TargetState>();
   private limbParticle = new Map<LimbId, number>();
@@ -258,7 +282,8 @@ export class PbdSolver {
         jointLimitStiffness: env.balance?.jointLimitStiffness ?? 1.0,
         foldStrength: env.balance?.foldStrength ?? 0.85,
         postureTone: env.balance?.postureTone ?? 0.75,
-        toneFloor: env.balance?.toneFloor ?? 0.12
+        toneFloor: env.balance?.toneFloor ?? 0.12,
+        stretchTolerance: env.balance?.stretchTolerance ?? 1.1
       }
     };
     this.tone = this.env.balance.postureTone;
@@ -282,6 +307,32 @@ export class PbdSolver {
     this.anchors.clear();
     this.targets.clear();
     this.climbDrive = 0;
+    this.rebuildChainCaps();
+  }
+
+  /** Deriva los topes de cadena de la topologia (hombro->mano, cadera->pie, columna). */
+  private rebuildChainCaps(): void {
+    this.chainCaps = [];
+    const t = this.topology;
+    if (!t) return;
+    for (const limb of LIMB_IDS) {
+      const root = t.rootOf.get(limb);
+      const end = this.limbParticle.get(limb);
+      if (root === undefined || end === undefined) continue;
+      const base = limb.startsWith("hand") ? t.armChain : t.legChain;
+      this.chainCaps.push({ a: root, b: end, base, current: base, limb });
+    }
+    // Columna: el torso tampoco se estira (menos tolerancia: es un segmento rigido).
+    this.chainCaps.push({ a: t.pelvis, b: t.chest, base: t.spineLen, current: t.spineLen, limb: null });
+  }
+
+  /** Lecturas de diagnostico del estiramiento de cadena (ratio 1 = en el tope). */
+  debugChains(): { limb: string; len: number; max: number; ratio: number }[] {
+    const tol = this.env.balance.stretchTolerance;
+    return this.chainCaps.map((c) => {
+      const max = c.limb === null ? c.base * SPINE_STRETCH_TOLERANCE : c.base * tol;
+      return { limb: c.limb ?? "spine", len: c.current, max, ratio: max > 1e-9 ? c.current / max : 0 };
+    });
   }
 
   /** Fija el tono postural objetivo (F3 / secuencia de caida). */
@@ -414,10 +465,15 @@ export class PbdSolver {
       this.solveSticks();
       this.solveAngles();
       this.solveFolds();
+      this.solveChainCaps();
       for (const anchor of this.anchors.values()) {
         const p = this.particles[anchor.particle];
         p.pos = vClone(anchor.point);
       }
+      // Segunda pasada de topes: los pines acaban de recolocar las manos en sus
+      // presas; si esa recolocacion deja una cadena sobre su maximo, se corta YA
+      // (si no, la relajacion convergeria con los brazos estirados).
+      this.solveChainCaps();
       this.solveCollisions();
     }
     for (const p of this.particles) {
@@ -525,6 +581,7 @@ export class PbdSolver {
       this.solveSticks();
       this.solveAngles();
       this.solveFolds();
+      this.solveChainCaps();
       // 4b) Anclajes: pin rigido con tope de fuerza. La carga requerida se mide como la
       // fuerza necesaria para mantener el pin (F = m x correccion / dt^2), un estimador
       // consistente con el impulso aplicado (9.2). En sobrecarga el pin se satura y la
@@ -539,6 +596,11 @@ export class PbdSolver {
         p.pos = vAdd(p.pos, scaled);
         pinCorrection.set(anchor.limb, vAdd(pinCorrection.get(anchor.limb) ?? v3(), scaled));
       }
+      // 4c) Topes de cadena tras los pines: una presa mas alla del alcance anatomico
+      // NO estira el brazo (sin "muneco de goma"); el agarre resbala hacia el cuerpo,
+      // el cuerpo es arrastrado hacia la presa y la carga del pin se dispara (9.2):
+      // la biomecanica lee esa lucha como SOBRECARGA y abre el agarre con cuenta atras.
+      this.solveChainCaps();
       this.solveCollisions();
     }
     // NOTA: la correccion del pin genera momento "fantasma" en Verlet; ya no se
@@ -867,6 +929,30 @@ export class PbdSolver {
       pj.pos = vAdd(pj.pos, vScale(f.dir, corr * 0.7));
       pa.pos = vSub(pa.pos, vScale(f.dir, corr * 0.15));
       pb.pos = vSub(pb.pos, vScale(f.dir, corr * 0.15));
+    }
+  }
+
+  /**
+   * Topes de longitud de cadena (anti-muneco de goma). Dureza 1.0 SIEMPRE: es
+   * anatomia pasiva, no musculo (como los limites articulares duros de ADR-008).
+   * La tolerancia si escala con el balance: realista corta antes, ragdoll permite
+   * mas estiramiento antes de cortar. Al violarse, arrastra la raiz hacia el extremo:
+   * una presa "imposible" no alarga el brazo, sube el cuerpo (y dispara la carga).
+   */
+  private solveChainCaps(): void {
+    const tol = Math.max(1.0, this.env.balance.stretchTolerance);
+    for (const c of this.chainCaps) {
+      const max = c.limb === null ? c.base * SPINE_STRETCH_TOLERANCE : c.base * tol;
+      const pa = this.particles[c.a];
+      const pb = this.particles[c.b];
+      const w = pa.invMass + pb.invMass;
+      const d = vSub(pb.pos, pa.pos);
+      const len = vLen(d);
+      c.current = len;
+      if (w <= 0 || len <= max || len < 1e-9) continue;
+      const diff = (len - max) / len;
+      pa.pos = vAdd(pa.pos, vScale(d, (diff * pa.invMass) / w));
+      pb.pos = vSub(pb.pos, vScale(d, (diff * pb.invMass) / w));
     }
   }
 

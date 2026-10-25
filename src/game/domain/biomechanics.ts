@@ -188,10 +188,10 @@ export class BiomechanicsSystem {
     this.anchorMeta.clear();
   }
 
-  infoFor(limb: LimbId): { effectiveForceN: number; ratio: number; zone: LoadZone } | undefined {
+  infoFor(limb: LimbId): { effectiveForceN: number; ratio: number; zone: LoadZone; overloadTimer: number } | undefined {
     const meta = this.anchorMeta.get(limb);
     if (!meta) return undefined;
-    return { effectiveForceN: meta.effectiveForceN, ratio: meta.ratio, zone: meta.zone };
+    return { effectiveForceN: meta.effectiveForceN, ratio: meta.ratio, zone: meta.zone, overloadTimer: meta.overloadTimer };
   }
 
   update(

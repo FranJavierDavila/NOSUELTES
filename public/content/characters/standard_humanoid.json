@@ -86,9 +86,9 @@
   "biomech": {
     "comfortableLoadRatio": 0.6,
     "overloadRatio": 1.0,
-    "overloadGraceSeconds": 6.0,
-    "overloadAccumRate": 0.6,
-    "overloadDecayRate": 2.0,
+    "overloadGraceSeconds": 4.5,
+    "overloadAccumRate": 1.0,
+    "overloadDecayRate": 0.5,
     "effortRate": {
       "thresholdLow": 0.3,
       "slopeLow": 0.12,

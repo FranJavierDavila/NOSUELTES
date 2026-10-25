@@ -549,14 +549,18 @@ export class GameScene {
   /** Tinte de zona por extremidad (9.5 + retroalimentacion del HUD): la
    * extremidad fijada se tine con la paleta del panel lateral (verde normal,
    * ambar tension, rojo sobrecarga con pulso); libre, color base neutro.
-   * Aplica al agarre (mano/pie) y a los dos segmentos de su cadena. */
-  updateLimbTint(limb: LimbId, anchored: boolean, zone: LoadZone): void {
+   * Aplica al agarre (mano/pie) y a los dos segmentos de su cadena.
+   * urgency (0..1): presion de fallo del temporizador de sobrecarga — acelera
+   * el parpadeo y sube el brillo a medida que el agarre se acerca a ceder. */
+  updateLimbTint(limb: LimbId, anchored: boolean, zone: LoadZone, urgency = 0): void {
     const visual = this.limbVisual[limb];
     if (!visual?.hand || visual.hand.isDisposed()) return;
     const zoneColor = ZONE_COLORS[zone] ?? ZONE_COLORS.NORMAL;
     const overloading = zone === "OVERLOADED" || zone === "ERROR_GUARD";
-    const wave = 0.5 + 0.5 * Math.sin((Date.now() % 700) / 700 * Math.PI * 2);
-    const glow = anchored ? (overloading ? 0.2 + 0.4 * wave : 0.18) : 0;
+    const u = overloading ? Math.min(1, Math.max(0, urgency)) : 0;
+    const period = 700 - 380 * u;
+    const wave = 0.5 + 0.5 * Math.sin((Date.now() % period) / period * Math.PI * 2);
+    const glow = anchored ? (overloading ? 0.2 + 0.4 * wave + 0.3 * u : 0.18) : 0;
     const tint = anchored ? Color3.Lerp(visual.base, zoneColor, 0.8) : visual.base;
     const segTint = anchored ? Color3.Lerp(visual.segBase, zoneColor, 0.62) : visual.segBase;
     const handMat = visual.hand.material as StandardMaterial;
@@ -572,8 +576,9 @@ export class GameScene {
 
   /** Anillo sobre la presa anclada de una extremidad: hereda su zona de carga
    * (verde/ambar/rojo) con pulso en sobrecarga, para saber que apoyo esta
-   * comprometido sin mirar el panel lateral. */
-  setAnchorRing(limb: LimbId, holdId: string | null, zone: LoadZone): void {
+   * comprometido sin mirar el panel lateral. La urgencia (0..1) acelera el
+   * pulso y lo agranda: la presa "late" mas fuerte cuanto antes cedera. */
+  setAnchorRing(limb: LimbId, holdId: string | null, zone: LoadZone, urgency = 0): void {
     const ring = this.anchorRings.get(limb);
     if (!ring) return;
     const holdMesh = holdId ? this.holdMeshes.get(holdId) : undefined;
@@ -582,15 +587,18 @@ export class GameScene {
       return;
     }
     const r = this.holdRadius.get(holdId) ?? 0.14;
-    const wave = 0.5 + 0.5 * Math.sin((Date.now() % 700) / 700 * Math.PI * 2);
+    const overloading = zone === "OVERLOADED" || zone === "ERROR_GUARD";
+    const u = overloading ? Math.min(1, Math.max(0, urgency)) : 0;
+    const period = 700 - 380 * u;
+    const wave = 0.5 + 0.5 * Math.sin((Date.now() % period) / period * Math.PI * 2);
     const zoneColor = ZONE_COLORS[zone] ?? ZONE_COLORS.NORMAL;
     const mat = ring.material as StandardMaterial;
-    if (zone === "OVERLOADED" || zone === "ERROR_GUARD") {
-      mat.emissiveColor = Color3.Lerp(zoneColor, Color3.FromHexString("#ffffff"), 0.4 * wave);
+    if (overloading) {
+      mat.emissiveColor = Color3.Lerp(zoneColor, Color3.FromHexString("#ffffff"), 0.4 * wave + 0.3 * u);
     } else {
       mat.emissiveColor = zoneColor;
     }
-    ring.scaling.setAll(((r + 0.05) / 0.18) * (zone === "OVERLOADED" || zone === "ERROR_GUARD" ? 1 + 0.1 * wave : 1));
+    ring.scaling.setAll(((r + 0.05) / 0.18) * (overloading ? 1 + (0.1 + 0.2 * u) * wave : 1));
     // La presa es una esfera aplanada en z (0.62): el anillo flota justo delante
     // de su cara frontal; mano y pie apilados en la misma presa van a cotas distintas.
     const zOff = r * 0.62 + 0.03 + (limb.startsWith("foot") ? 0.035 : 0);

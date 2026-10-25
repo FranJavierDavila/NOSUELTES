@@ -201,3 +201,23 @@ Stage Summary:
 - El prototipo ahora tiene bucle de rejugabilidad: puntuacion con estrellas, records por desafio, combo de flujo por encadenar movimientos, desafio contrarreloj VELOCIDAD, presets de balance en menu.
 - Espectacularidad: tiza, polvo, confeti, sacudida de camara, slow-motion en caida, whoosh de viento y latidos al limite.
 - Corregido de regalo: el seguimiento de camara (zona muerta) que documentaba la Task 1 pero nunca se aplicaba (mutacion inutil de camera.target en FreeCamera).
+
+---
+Task ID: 11
+Agent: Z.ai (principal)
+Task: Cuenta atras de fallo por sobrecarga (visible y reactivable) + tope de estiramiento anti-posturas-imposibles (pregunta del usuario: "cuanto aguanta una articulacion en sobrecarga y como se le indica" + "posturas imposibles no deberian ser posibles")
+
+Work Log:
+- Respuesta a la pregunta: ANTES el temporizador existia pero era invisible (grace 6.0 / accum 0.6 = ~10 s continuos para ceder; decay 2.0). AHORA: grace 4.5, accum 1.0 (el timer ES segundos de sobrecarga continua), decay 0.5 (recuperar tolerancia cuesta el doble que gastarla: la cuenta atras casi nunca retrocede aunque el pendulo oscile).
+- Solver (anti-muneco de goma): nuevos ChainCap = topes de longitud de cadena hombro->mano, cadera->pie y pelvis->pecho (columna 1.04, miembros stretchTolerance). Desigualdad dura con stiffness 1.0 SIEMPRE (anatomia pasiva, como los limites angulares ADR-008); se proyecta ANTES y DESPUES de los pines en cada iteracion (y en relax): una presa imposible ya no estira el brazo — el cuerpo es arrastrado hacia la presa, el agarre resbala y la carga del pin se dispara (probe: carga 11.8 kN en la lucha) => la biomecanica la lee como SOBRECARGA y la cuenta atras la expulsa sola. BalanceTuning.stretchTolerance: realista 1.05 / equilibrado 1.10 / ragdoll 1.20, slider F3 "estirar" 1.02-1.35, persistencia con default 1.1 para tunes viejos.
+- Cuenta atras visible (4 capas): (1) panel lateral: chip de extremidad "SOBRECARGA 3,3s" + barra roja deplenante por extremidad; (2) chip central "⚠ MANO DER. Cede en 3,3 s" con escalado ambar->rojo->critico parpadeante (ns-critical) y memoria 0.6 s anti-flicker por los valles del pendulo; (3) escena: parpadeo de extremidad y anillo acelera 700->320 ms y sube brillo/escala con la urgencia (updateLimbTint/setAnchorRing aceptan urgency); (4) voz: EffortInput.overloadPressure — latidos aceleran 0.62->0.36 s y aparecen gruñidos de panico rapidos a presion >= 0.55. Oculto durante el tutorial (ahi la sobrecarga nunca suelta). hintOnce de sobrecarga reescrito; toast de cedida dice "el agarre cedió".
+- BiomechanicsSystem.infoFor expone overloadTimer; loop calcula secondsLeft=(grace-timer)/accum y frac, y llama a HUD/escena/audio con la misma fuente.
+- Retune en standard_humanoid.json (schema permite los nuevos valores); sincronizado a .next/standalone/public.
+- Tests: 89/89 (8 nuevos): brazo con tiron violento <=1.08 y final <=1.03; presa imposible +0.9 m arrastra el cuerpo (+0.89 m COM) sin goma; columna <=1.05 bajo sacudida; cuenta atras cede a 3.8-5.4 s continuos; alivio recupera tolerancia; infoFor expone timer; director: latidos acelerados y gruñidos rapidos a presion 1, sin ametrallar sin presion.
+- E2E nuevo scripts/e2e-overload.py: PASS en produccion (transferencia real -> suelta hand_l -> OVERLOADED -> chip 3.7->2.7->1.6 s decreciente -> barra visible -> cadenas <=0.94 -> GripReleased:OVERLOAD -> CAIDA -> auto-reset -> consola limpia). Capturas download/overload-1-chip.png (chip + panel + barra visibles) y overload-2-tras-cedida.png.
+- Regresion completa: e2e-ascenso 15/15 (cadera 0.90->3.65, ambas manos en cima: los topes NO estorban la escalada), e2e-caida OK, e2e-voz PASS, e2e-juice PASS. Probe scripts/probe-stretch.ts queda como arnes de diagnostico del estiramiento.
+- tsc limpio (solo error preexistente de gameplay.test.ts), eslint limpio, build produccion + redeploy daemonize (:3000 OK).
+
+Stage Summary:
+- Respuesta al jugador: una articulacion aguanta 4.5 s de SOBRECARGA CONTINUA antes de que el agarre ceda solo; si alivia, recupera a mitad de velocidad. Lo ve en 4 sitios a la vez (panel por extremidad con barra, chip central con segundos, parpadeo acelerado en el cuerpo/anillo, latidos y gruñidos acelerados).
+- Las posturas imposibles dejaron de existir: cadenas con tope anatomico duro; intentar una presa lejana arrastra el cuerpo, dispara la carga y la propia cuenta atras abre el agarre. La tolerancia (1.05/1.10/1.20) va alineada con los presets y es calibrable en F3.

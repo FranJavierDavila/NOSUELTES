@@ -57,9 +57,9 @@ const CHALLENGE_META: Record<string, { label: string; description: string }> = {
 
 /** Presets de balance fisico (ADR-008) seleccionables en el menu. */
 const PRESET_TUNES: Record<BalancePresetName, BalanceTuning> = {
-  realista: { postureTone: 0.95, jointLimitStiffness: 1.0, foldStrength: 1.0, toneFloor: 0.08 },
-  equilibrado: { postureTone: 0.75, jointLimitStiffness: 1.0, foldStrength: 0.85, toneFloor: 0.12 },
-  ragdoll: { postureTone: 0.5, jointLimitStiffness: 0.85, foldStrength: 0.6, toneFloor: 0.25 }
+  realista: { postureTone: 0.95, jointLimitStiffness: 1.0, foldStrength: 1.0, toneFloor: 0.08, stretchTolerance: 1.05 },
+  equilibrado: { postureTone: 0.75, jointLimitStiffness: 1.0, foldStrength: 0.85, toneFloor: 0.12, stretchTolerance: 1.1 },
+  ragdoll: { postureTone: 0.5, jointLimitStiffness: 0.85, foldStrength: 0.6, toneFloor: 0.25, stretchTolerance: 1.2 }
 };
 
 const REJECT_LABELS: Record<string, string> = {
@@ -72,6 +72,14 @@ const REJECT_LABELS: Record<string, string> = {
   objetivo_invalido: "objetivo invalido",
   objetivo_libre: "objetivo libre no permitido",
   presa_inexistente: "presa inexistente"
+};
+
+/** Etiquetas legibles de extremidad para avisos (el HUD tiene las suyas). */
+const LIMB_LABEL_ES: Record<LimbId, string> = {
+  hand_l: "Mano izq.",
+  hand_r: "Mano der.",
+  foot_l: "Pie izq.",
+  foot_r: "Pie der."
 };
 
 const MAX_STEPS_PER_FRAME = 6;
@@ -99,6 +107,7 @@ const FALL_RELEASE_FOOT_S = 0.42;
 const FALL_AUTO_RESET_S = 2.6;
 
 const clamp01 = (x: number | undefined): number => Math.min(1, Math.max(0, typeof x === "number" && Number.isFinite(x) ? x : 0));
+const clampRange = (x: number | undefined, min: number, max: number): number => Math.min(max, Math.max(min, typeof x === "number" && Number.isFinite(x) ? x : min));
 
 export interface GameAppOptions {
   canvas: HTMLCanvasElement;
@@ -158,7 +167,15 @@ export class GameApp {
   private peakFatigue = 0;
   private fallAutoReset = -1;
   /** Balance realismo/ragdoll (ADR-008), persistido y calibrable en F3. */
-  private tune: BalanceTuning = { jointLimitStiffness: 1.0, foldStrength: 0.85, postureTone: 0.75, toneFloor: 0.12 };
+  private tune: BalanceTuning = { jointLimitStiffness: 1.0, foldStrength: 0.85, postureTone: 0.75, toneFloor: 0.12, stretchTolerance: 1.1 };
+  /** Cuenta atras de fallo por extremidad (sobrecarga continua), refrescada cada frame. */
+  private readonly limbOverload = new Map<LimbId, { seconds: number; frac: number }>();
+  /** Presion de fallo maxima 0..1 (alimenta latidos/gruñidos de panico del audio). */
+  private overloadPressure = 0;
+  /** Ultimo aviso de sobrecarga (con memoria 0.6 s: el pendulo hace oscilar la
+   * carga alrededor del umbral y sin memoria el chip central parpadearia). */
+  private lastWorst: { label: string; seconds: number; frac: number } | null = null;
+  private lastWorstAt = -1e9;
 
   private fpsFrames = 0;
   private fpsElapsed = 0;
@@ -231,7 +248,7 @@ export class GameApp {
     }, (key, value) => {
       this.setTune({ [key]: value });
     });
-    this.debug.setTuneValues({ postureTone: this.tune.postureTone, jointLimitStiffness: this.tune.jointLimitStiffness, foldStrength: this.tune.foldStrength });
+    this.debug.setTuneValues({ postureTone: this.tune.postureTone, jointLimitStiffness: this.tune.jointLimitStiffness, foldStrength: this.tune.foldStrength, stretchTolerance: this.tune.stretchTolerance });
     this.hud.setBackend(this.scene.backend);
     this.tutorialUi = new TutorialOverlay(
       this.opts.hudRoot,
@@ -319,6 +336,9 @@ export class GameApp {
     this.slowmoLeft = 0;
     this.fallLandedFx = false;
     this.hud.setFlow(0);
+    this.lastWorst = null;
+    this.limbOverload.clear();
+    this.overloadPressure = 0;
 
     // Marcar presas ocupadas por los anclajes iniciales creados en spawnRagdoll.
     for (const req of this.challenge.start.requiredAnchors) {
@@ -355,8 +375,8 @@ export class GameApp {
       /* sin persistencia */
     }
     this.hud.setPresetActive(name);
-    this.debug.setTuneValues({ postureTone: this.tune.postureTone, jointLimitStiffness: this.tune.jointLimitStiffness, foldStrength: this.tune.foldStrength });
-    this.events.emit({ type: "Message", text: `Balance ${name}: tono ${this.tune.postureTone.toFixed(2)}, límites ${this.tune.jointLimitStiffness.toFixed(2)}, pliegue ${this.tune.foldStrength.toFixed(2)}`, tone: "info" });
+    this.debug.setTuneValues({ postureTone: this.tune.postureTone, jointLimitStiffness: this.tune.jointLimitStiffness, foldStrength: this.tune.foldStrength, stretchTolerance: this.tune.stretchTolerance });
+    this.events.emit({ type: "Message", text: `Balance ${name}: tono ${this.tune.postureTone.toFixed(2)}, límites ${this.tune.jointLimitStiffness.toFixed(2)}, pliegue ${this.tune.foldStrength.toFixed(2)}, estiramiento ×${this.tune.stretchTolerance.toFixed(2)}`, tone: "info" });
   }
 
   private loadTune(): void {
@@ -378,7 +398,8 @@ export class GameApp {
           jointLimitStiffness: clamp01(t.jointLimitStiffness ?? 1.0),
           foldStrength: clamp01(t.foldStrength ?? 0.85),
           postureTone: clamp01(t.postureTone ?? 0.75),
-          toneFloor: clamp01(t.toneFloor ?? 0.12)
+          toneFloor: clamp01(t.toneFloor ?? 0.12),
+          stretchTolerance: clampRange(t.stretchTolerance ?? 1.1, 1.02, 1.35)
         };
       }
     } catch {
@@ -399,7 +420,8 @@ export class GameApp {
       jointLimitStiffness: clamp01(patch.jointLimitStiffness ?? this.tune.jointLimitStiffness),
       foldStrength: clamp01(patch.foldStrength ?? this.tune.foldStrength),
       postureTone: clamp01(patch.postureTone ?? this.tune.postureTone),
-      toneFloor: clamp01(patch.toneFloor ?? this.tune.toneFloor)
+      toneFloor: clamp01(patch.toneFloor ?? this.tune.toneFloor),
+      stretchTolerance: clampRange(patch.stretchTolerance ?? this.tune.stretchTolerance, 1.02, 1.35)
     };
     // Un ajuste manual (sliders F3 o __NS.setTune) deja de corresponder al preset.
     this.presetName = null;
@@ -420,6 +442,7 @@ export class GameApp {
     this.solver.env.balance.foldStrength = this.tune.foldStrength;
     this.solver.env.balance.postureTone = this.tune.postureTone;
     this.solver.env.balance.toneFloor = this.tune.toneFloor;
+    this.solver.env.balance.stretchTolerance = this.tune.stretchTolerance;
     // En FALLEN el tono objetivo sigue siendo el flacido; en el resto, el calibrado.
     this.solver.setToneTarget(this.machine.state === "FALLEN" ? this.tune.toneFloor : this.tune.postureTone);
   }
@@ -750,11 +773,25 @@ export class GameApp {
 
     // Retroalimentacion de carga por extremidad (misma paleta que el panel
     // lateral): tinte verde/ambar/rojo de la extremidad y anillo sobre su presa.
+    // La sobrecarga ademas lleva CUENTA ATRAS de fallo: urgencia 0..1 (danno
+    // acumulado/tolerancia) acelera parpadeo y latidos, y alimenta el chip central.
+    const cfgBio = this.profile.biomech;
+    this.limbOverload.clear();
+    this.overloadPressure = 0;
     for (const limb of LIMB_IDS) {
       const anchored = this.solver.hasAnchor(limb);
-      const zone = this.bio.infoFor(limb)?.zone ?? "NORMAL";
-      this.scene.updateLimbTint(limb, anchored, zone);
-      this.scene.setAnchorRing(limb, this.solver.getAnchor(limb)?.holdId ?? null, zone);
+      const info = this.bio.infoFor(limb);
+      const zone = info?.zone ?? "NORMAL";
+      let urgency = 0;
+      if (anchored && info && (zone === "OVERLOADED" || zone === "ERROR_GUARD")) {
+        const secondsLeft = Math.max(0, (cfgBio.overloadGraceSeconds - info.overloadTimer) / cfgBio.overloadAccumRate);
+        const frac = clamp01(1 - (secondsLeft * cfgBio.overloadAccumRate) / Math.max(1e-6, cfgBio.overloadGraceSeconds));
+        this.limbOverload.set(limb, { seconds: secondsLeft, frac });
+        urgency = frac;
+        this.overloadPressure = Math.max(this.overloadPressure, frac);
+      }
+      this.scene.updateLimbTint(limb, anchored, zone, urgency);
+      this.scene.setAnchorRing(limb, this.solver.getAnchor(limb)?.holdId ?? null, zone, urgency);
     }
 
     // Voz del escalador: respiracion y quejidos de fondo dirigidos por la fatiga
@@ -767,7 +804,8 @@ export class GameApp {
       maxFatigue,
       maxRatio,
       overloadRatio: this.profile.biomech.overloadRatio,
-      overload: LIMB_IDS.some((l) => this.bio.infoFor(l)?.zone === "OVERLOADED")
+      overload: LIMB_IDS.some((l) => this.bio.infoFor(l)?.zone === "OVERLOADED"),
+      overloadPressure: this.overloadPressure
     });
 
     // Combo de flujo: se rompe si pasa la ventana sin fijar otra presa.
@@ -801,17 +839,34 @@ export class GameApp {
     for (const limb of LIMB_IDS) fatigueMax = Math.max(fatigueMax, this.bio.fatigue[limb]);
     this.hud.setVitals(this.lastSnapshot.stability, fatigueMax);
 
-    const limbStates: Record<LimbId, { zone: LoadZone; anchored: boolean; label: string }> = {} as never;
+    const limbStates: Record<LimbId, { zone: LoadZone; anchored: boolean; label: string; overloadS?: number | null; overloadFrac?: number | null }> = {} as never;
     for (const limb of LIMB_IDS) {
       const anchored = this.solver.hasAnchor(limb);
       const zone = this.bio.infoFor(limb)?.zone ?? "NORMAL";
+      const over = this.limbOverload.get(limb);
       limbStates[limb] = {
         zone,
         anchored,
-        label: this.interaction?.isAssisting(limb) ? "MOVIENDO" : this.interaction?.dragging && this.interaction.selected === limb ? "OBJETIVO" : "LIBRE"
+        label: this.interaction?.isAssisting(limb) ? "MOVIENDO" : this.interaction?.dragging && this.interaction.selected === limb ? "OBJETIVO" : "LIBRE",
+        overloadS: over ? over.seconds : null,
+        overloadFrac: over ? over.frac : null
       };
     }
     this.hud.setLimbStates(limbStates);
+    // Chip central: la extremidad mas comprometida (solo jugando y fuera del
+    // tutorial: ahi la sobrecarga nunca suelta, el aviso despistaria). Memoria
+    // de 0.6 s: los valles del pendulum no hacen parpadear el aviso.
+    let worst: { limb: LimbId; seconds: number; frac: number } | null = null;
+    for (const [limb, over] of this.limbOverload) {
+      if (!worst || over.seconds < worst.seconds) worst = { limb, seconds: over.seconds, frac: over.frac };
+    }
+    const nowS = performance.now() / 1000;
+    if (worst) {
+      this.lastWorst = { label: LIMB_LABEL_ES[worst.limb], seconds: worst.seconds, frac: worst.frac };
+      this.lastWorstAt = nowS;
+    }
+    const showWarning = state === "PLAYING" && !this.tutorial && this.lastWorst !== null && (worst !== null || nowS - this.lastWorstAt < 0.6);
+    this.hud.setOverloadWarning(showWarning && this.lastWorst ? this.lastWorst : null);
     this.hud.setProgress(running && this.evaluator && this.evaluator.progress > 0 ? this.evaluator.progress : null);
   }
 
@@ -917,7 +972,7 @@ export class GameApp {
       }
       case "GripReleased":
         if (e.reason === "OVERLOAD") {
-          this.hud.toast(`Sobrecarga: se solto el agarre (${e.limb})`, "error");
+          this.hud.toast(`Sobrecarga: el agarre cedió (${e.limb})`, "error");
           // Sacudida corta + tiza al resbalar el agarre.
           this.scene.shake(0.02);
           const pos = this.holdPosById.get(e.holdId);
@@ -928,7 +983,7 @@ export class GameApp {
         this.hintOnce("strain", "Agarre en tension: la fatiga de esa extremidad sube mas rapido", "warn");
         break;
       case "OverloadStarted":
-        this.hintOnce("overload", "SOBRECARGA: si no alivias ese brazo, soltara el agarre en segundos", "error");
+        this.hintOnce("overload", "SOBRECARGA: el chip rojo cuenta los segundos que aguanta el agarre (~4,5 s en sobrecarga continua). Alivia esa extremidad ya", "error");
         break;
       case "FallStarted":
         this.hintOnce("fall", "Caída: los agarres se abren y el cuerpo cae. Se reintenta solo (o pulsa R)", "info");
@@ -1244,13 +1299,14 @@ export class GameApp {
     pelvisY: () => number;
     joints: () => { id: string; angle: number; utilization: number; min: number; max: number }[];
     folds: () => { id: string; side: number; minSide: number }[];
+    chains: () => { limb: string; len: number; max: number; ratio: number }[];
     tone: () => number;
     tune: () => BalanceTuning;
     setTune: (patch: Partial<BalanceTuning>) => BalanceTuning;
     preset: () => string | null;
     applyPreset: (name: string) => void;
     releaseLimb: (limb: LimbId) => boolean;
-    debugLimbInfo: () => Record<string, { zone: string; anchored: boolean; holdId: string | null; loadN: number; ratio: number; fatigue: number }>;
+    debugLimbInfo: () => Record<string, { zone: string; anchored: boolean; holdId: string | null; loadN: number; ratio: number; fatigue: number; overloadS: number | null; stretch: number }>;
   } {
     return {
       state: () => this.machine.state,
@@ -1288,6 +1344,7 @@ export class GameApp {
       pelvisY: () => this.solver.getParticle(P.pelvisC).pos.y,
       joints: () => this.solver.debugJoints(),
       folds: () => this.solver.debugFolds(),
+      chains: () => this.solver.debugChains(),
       tone: () => this.solver.toneLevel(),
       tune: () => ({ ...this.tune }),
       setTune: (patch) => this.setTune(patch),
@@ -1305,17 +1362,22 @@ export class GameApp {
         return false;
       },
       debugLimbInfo: () => {
-        const out: Record<string, { zone: string; anchored: boolean; holdId: string | null; loadN: number; ratio: number; fatigue: number }> = {};
+        const chains = new Map(this.solver.debugChains().map((c) => [c.limb, c] as const));
+        const out: Record<string, { zone: string; anchored: boolean; holdId: string | null; loadN: number; ratio: number; fatigue: number; overloadS: number | null; stretch: number }> = {};
         for (const limb of LIMB_IDS) {
           const info = this.bio.infoFor(limb);
           const anchor = this.solver.getAnchor(limb);
+          const over = this.limbOverload.get(limb);
+          const chain = chains.get(limb);
           out[limb] = {
             zone: info?.zone ?? "NORMAL",
             anchored: this.solver.hasAnchor(limb),
             holdId: anchor?.holdId ?? null,
             loadN: Math.round(anchor?.loadN ?? 0),
             ratio: info ? Math.round(info.ratio * 100) / 100 : 0,
-            fatigue: Math.round(this.bio.fatigue[limb] * 100) / 100
+            fatigue: Math.round(this.bio.fatigue[limb] * 100) / 100,
+            overloadS: over ? Math.round(over.seconds * 10) / 10 : null,
+            stretch: chain ? Math.round(chain.ratio * 100) / 100 : 0
           };
         }
         return out;

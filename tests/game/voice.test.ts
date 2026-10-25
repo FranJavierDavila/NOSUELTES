@@ -196,3 +196,38 @@ describe("Respiracion y director de esfuerzo", () => {
     }
   });
 });
+
+describe("Presion de fallo de sobrecarga (cuenta atras audible)", () => {
+  const dt = 0.1;
+
+  it("a presion alta los latidos se aceleran (0.62 s -> 0.36 s) y hay gruñidos de panico", () => {
+    const d = new EffortDirector(rngDet);
+    let hearts = 0;
+    let grunts = 0;
+    for (let t = 0; t < 2.4; t += dt) {
+      for (const r of d.update(dt, { playing: true, maxFatigue: 0.3, maxRatio: 1.4, overloadRatio: 1.4, overload: true, overloadPressure: 1 })) {
+        if (r.kind === "heart") hearts++;
+        if (r.kind === "gruntHeavy") grunts++;
+      }
+    }
+    // Con periodo ~0.36 s: ~6-7 latidos en 2.4 s (a 0.62 s serian ~3-4).
+    expect(hearts).toBeGreaterThanOrEqual(5);
+    // Gruñidos rapidos: periodo ~0.42-0.82 s => al menos 2 en 2.4 s.
+    expect(grunts).toBeGreaterThanOrEqual(2);
+  });
+
+  it("sin presion los quejidos siguen espaciados (no ametralla aunque haya SOBRECARGA)", () => {
+    const d = new EffortDirector(rngDet);
+    const grunts: number[] = [];
+    let t = 0;
+    for (let i = 0; i < 60 * 20; i++) {
+      t += 1 / 60;
+      const reqs = d.update(1 / 60, { playing: true, maxFatigue: 0.4, maxRatio: 1.45, overloadRatio: 1.4, overload: true, overloadPressure: 0 });
+      if (reqs.some((r) => r.kind === "gruntEffort" || r.kind === "gruntHeavy")) grunts.push(t);
+    }
+    expect(grunts.length).toBeGreaterThanOrEqual(3);
+    for (let i = 1; i < grunts.length; i++) {
+      expect(grunts[i] - grunts[i - 1]).toBeGreaterThan(1.5);
+    }
+  });
+});

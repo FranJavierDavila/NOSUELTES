@@ -60,6 +60,10 @@ export class Hud {
   private fatigueBar: HTMLElement;
   private fatigueValue: HTMLElement;
   private limbChips = new Map<LimbId, HTMLElement>();
+  private limbBars = new Map<LimbId, { wrap: HTMLElement; fill: HTMLElement }>();
+  private overloadChip: HTMLElement;
+  private overloadMain: HTMLElement;
+  private overloadSub: HTMLElement;
   private banner: HTMLElement;
   private progressWrap: HTMLElement;
   private progressBar: HTMLElement;
@@ -130,6 +134,11 @@ export class Hud {
           FLUJO <span id="hud-flow-n" class="tabular-nums">x2</span>
         </div>
 
+        <div id="hud-overload" class="absolute bottom-28 left-1/2 hidden -translate-x-1/2 rounded-lg border bg-zinc-950/85 px-5 py-2 text-center backdrop-blur">
+          <div id="hud-overload-main" class="text-sm font-black tracking-wide text-red-400">SOBRECARGA</div>
+          <div id="hud-overload-sub" class="text-[11px] text-zinc-400"></div>
+        </div>
+
         <div id="hud-banner" class="absolute left-1/2 top-1/3 hidden -translate-x-1/2 rounded-xl bg-zinc-950/85 px-8 py-5 text-center backdrop-blur border border-zinc-700"></div>
 
         <div id="hud-toasts" class="absolute left-1/2 top-24 flex w-max -translate-x-1/2 flex-col items-center gap-1"></div>
@@ -150,6 +159,8 @@ export class Hud {
               <li><b>Tipos de presa</b>: <b style="color:#3fb26f">verde</b> salida, <b style="color:#8a97a8">gris</b> manos, <b style="color:#d97b2f">naranja</b> pies, <b style="color:#e0b13e">ámbar</b> cima.</li>
               <li><b>R</b>: reiniciar la prueba. <b>Espacio</b>: pausa. <b>T</b>: tutorial guiado. <b>F3</b>: overlay de depuracion. <b>C</b>: recentrar camara. <b>F4</b>: vista ortografica. <b>M</b>: sonido.</li>
               <li><b>Flujo</b>: encadena movimientos en menos de 6 s para multiplicar la puntuación (chip FLUJO). Las caídas y el tiempo restan: la rapidez con control da las 3 estrellas.</li>
+              <li><b>Sobrecarga con cuenta atras</b>: en rojo, el panel marca cuántos segundos aguanta el agarre (<b style="color:#e05252">cede en X,s</b>); el chip central avisa de la extremidad más comprometida. Si la carga no baja cuando llega a 0, el agarre se abre solo.</li>
+              <li><b>Posturas imposibles no existen</b>: brazos y piernas tienen tope de estiramiento (el cuerpo es arrastrado hacia la presa, y la carga se dispara). El preset Realista es el más estricto; se ajusta en F3.</li>
               <li><b>Balance físico</b>: los presets del menú (Realista / Equilibrado / Ragdoll) ajustan tono postural, límites articulares y pliegue; se pueden refinar en F3.</li>
             </ul>
             <div class="mt-3 text-[12px] leading-relaxed text-zinc-500">
@@ -197,6 +208,9 @@ export class Hud {
     this.progressWrap = root.querySelector("#hud-progress-wrap")!;
     this.progressBar = root.querySelector("#hud-progress")!;
     this.flowEl = root.querySelector("#hud-flow")!;
+    this.overloadChip = root.querySelector("#hud-overload")!;
+    this.overloadMain = root.querySelector("#hud-overload-main")!;
+    this.overloadSub = root.querySelector("#hud-overload-sub")!;
     this.toasts = root.querySelector("#hud-toasts")!;
     this.help = root.querySelector("#hud-help")!;
     this.intro = root.querySelector("#hud-intro")!;
@@ -205,10 +219,14 @@ export class Hud {
     const limbsRoot = root.querySelector("#hud-limbs")!;
     for (const limb of LIMB_IDS) {
       const chip = document.createElement("div");
-      chip.className = "flex items-center justify-between rounded bg-zinc-800/80 px-2 py-1 text-[10px]";
-      chip.innerHTML = `<span class="text-zinc-400">${LIMB_LABEL[limb]}</span><span class="font-mono font-bold" data-dot>·</span>`;
+      chip.className = "rounded bg-zinc-800/80 px-2 py-1 text-[10px]";
+      chip.innerHTML = `<div class="flex items-center justify-between gap-1"><span class="text-zinc-400">${LIMB_LABEL[limb]}</span><span class="font-mono font-bold" data-dot>·</span></div><div data-bar class="mt-0.5 hidden h-1 overflow-hidden rounded bg-zinc-900"><div data-bar-fill class="h-full bg-red-500" style="width:100%"></div></div>`;
       limbsRoot.appendChild(chip);
       this.limbChips.set(limb, chip.querySelector("[data-dot]") as HTMLElement);
+      this.limbBars.set(limb, {
+        wrap: chip.querySelector("[data-bar]") as HTMLElement,
+        fill: chip.querySelector("[data-bar-fill]") as HTMLElement
+      });
     }
 
     const introChallenges = root.querySelector("#hud-intro-challenges")!;
@@ -299,14 +317,46 @@ export class Hud {
     this.fatigueValue.textContent = `${ft}%`;
   }
 
-  setLimbStates(states: Record<LimbId, { zone: LoadZone; anchored: boolean; label: string }>): void {
+  setLimbStates(states: Record<LimbId, { zone: LoadZone; anchored: boolean; label: string; overloadS?: number | null; overloadFrac?: number | null }>): void {
     for (const limb of LIMB_IDS) {
       const chip = this.limbChips.get(limb)!;
+      const bar = this.limbBars.get(limb)!;
       const s = states[limb];
-      chip.textContent = s.anchored ? (s.zone === "NORMAL" ? "FIJADA" : s.zone === "STRAINED" ? "TENSION" : "SOBRECARGA") : s.label;
+      const overloaded = s.anchored && s.zone !== "NORMAL" && s.zone !== "STRAINED";
+      if (overloaded && typeof s.overloadS === "number") {
+        chip.textContent = `SOBRECARGA ${s.overloadS.toFixed(1).replace(".", ",")}s`;
+      } else {
+        chip.textContent = s.anchored ? (s.zone === "NORMAL" ? "FIJADA" : s.zone === "STRAINED" ? "TENSION" : "SOBRECARGA") : s.label;
+      }
       chip.className = "font-mono font-bold " + (s.anchored ? "" : "text-zinc-500");
       chip.style.color = s.anchored ? ZONE_COLOR[s.zone] : "";
+      // Barra de cuenta atras de fallo: visible solo en sobrecarga con temporizador.
+      if (overloaded && typeof s.overloadFrac === "number") {
+        bar.wrap.classList.remove("hidden");
+        bar.fill.style.width = `${Math.round(Math.min(1, Math.max(0, s.overloadFrac)) * 100)}%`;
+        bar.fill.className = "h-full " + (s.overloadFrac < 0.25 ? "bg-red-400" : "bg-red-500");
+      } else {
+        bar.wrap.classList.add("hidden");
+      }
     }
+  }
+
+  /** Chip central de cuenta atras de fallo: la extremidad mas comprometida y
+   * los segundos que aguanta su agarre en sobrecarga continua. null = oculto. */
+  setOverloadWarning(w: { label: string; seconds: number; frac: number } | null): void {
+    if (!w) {
+      this.overloadChip.classList.add("hidden");
+      return;
+    }
+    this.overloadChip.classList.remove("hidden");
+    const critical = w.frac < 0.25;
+    const urgent = w.frac < 0.55;
+    this.overloadMain.textContent = `⚠ ${w.label.toUpperCase()} Cede en ${w.seconds.toFixed(1).replace(".", ",")} s`;
+    this.overloadSub.textContent = critical ? "¡cambía el apoyo YA!" : "alivia la carga o soltará el agarre";
+    this.overloadChip.className =
+      "absolute bottom-28 left-1/2 -translate-x-1/2 rounded-lg border bg-zinc-950/85 px-5 py-2 text-center backdrop-blur " +
+      (critical ? "border-red-400 ns-critical" : urgent ? "border-red-500/70" : "border-amber-500/70");
+    this.overloadMain.className = "text-sm font-black tracking-wide " + (critical ? "text-red-300" : urgent ? "text-red-400" : "text-amber-300");
   }
 
   showBanner(text: string | null, tone: "ok" | "bad" | "info" = "info"): void {

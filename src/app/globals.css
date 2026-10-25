@@ -121,9 +121,20 @@
   }
 }
 
-/* Combo de flujo (NO SUELTES): pulso al encadenar movimientos. */
+/* Combo de flujo (NO SUELTES): pulso al encadenar movimientos.
+   Usa propiedades individuales (scale/opacity) para no pisar al -translate-x-1/2
+   de centrado (propiedad translate de Tailwind v4). */
 @keyframes ns-flow-pop {
-  0% { transform: translate(-50%, 0) scale(0.7); opacity: 0.4; }
-  55% { transform: translate(-50%, 0) scale(1.18); opacity: 1; }
-  100% { transform: translate(-50%, 0) scale(1); opacity: 1; }
+  0% { scale: 0.7; opacity: 0.4; }
+  55% { scale: 1.18; opacity: 1; }
+  100% { scale: 1; opacity: 1; }
+}
+
+/* Cuenta atras de fallo en estado critico (NO SUELTES): el agarre esta a punto de ceder. */
+@keyframes ns-critical {
+  0%, 100% { opacity: 1; scale: 1; }
+  50% { opacity: 0.55; scale: 1.06; }
+}
+.ns-critical {
+  animation: ns-critical 0.42s ease-in-out infinite;
 }

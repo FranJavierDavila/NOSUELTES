@@ -246,3 +246,82 @@ describe("Balance realismo/ragdoll ADR-008 (limites duros, sentido de flexion, t
     expectJointsInRange(solver);
   }, 60000);
 });
+
+describe("Topes de longitud de cadena (anti-muneco de goma)", () => {
+  it("Colgando de una mano, un tiron violento hacia abajo no estira el brazo mas alla del tope", async () => {
+    const { challenge, character, profile, wall, holdById, maxF, makeSolver } = await setup("challenge_reach_top");
+    const solver = makeSolver();
+    solver.env.balance.stretchTolerance = 1.05;
+    spawnRagdoll(solver, profile, character, wall, challenge, holdById, () => maxF);
+    const dt = profile.sim.fixedDeltaSeconds;
+    for (let i = 0; i < 30; i++) solver.step(dt);
+    // Cuelga solo de la mano derecha y tirona hacia abajo (energia de caida).
+    solver.releaseAnchor("hand_l");
+    solver.releaseAnchor("foot_l");
+    solver.releaseAnchor("foot_r");
+    solver.applyImpulseVelocity(v3(0.2, -5.5, 0), dt);
+    let worst = 0;
+    for (let i = 0; i < 240; i++) {
+      const r = solver.step(dt);
+      expect(r.nanError).toBe(false);
+      const chain = solver.debugChains().find((c) => c.limb === "hand_r")!;
+      worst = Math.max(worst, chain.ratio);
+    }
+    expect(worst, `ratio maximo de la cadena del brazo ${worst.toFixed(3)}`).toBeLessThanOrEqual(1.08);
+    const final = solver.debugChains().find((c) => c.limb === "hand_r")!;
+    expect(final.ratio).toBeLessThanOrEqual(1.03);
+    expect(solver.hasAnchor("hand_r")).toBe(true);
+  }, 60000);
+
+  it("Una presa IMPOSIBLE no alarga el brazo: arrastra el cuerpo hacia ella y dispara la carga", async () => {
+    const { challenge, character, profile, wall, holdById, maxF, makeSolver } = await setup("challenge_reach_top");
+    const solver = makeSolver();
+    solver.env.balance.stretchTolerance = 1.05;
+    spawnRagdoll(solver, profile, character, wall, challenge, holdById, () => maxF);
+    const dt = profile.sim.fixedDeltaSeconds;
+    for (let i = 0; i < 30; i++) solver.step(dt);
+    const comBefore = solver.centerOfMass().y;
+    // Re-ancla ambas manos 0.9 m por encima de sus presas: fuera del alcance
+    // anatomico (cadena del brazo ~0.58 m). Sin el tope, esto era goma pura.
+    for (const [limb, holdId] of [["hand_l", "start_l"], ["hand_r", "start_r"]] as const) {
+      solver.releaseAnchor(limb);
+      const h = holdById.get(holdId)!;
+      solver.createAnchor(limb, "imposible_" + holdId, v3(h.position[0], h.position[1] + 0.9, h.position[2]), maxF * 3);
+    }
+    let worst = 0;
+    for (let i = 0; i < 240; i++) {
+      const r = solver.step(dt);
+      expect(r.nanError).toBe(false);
+      // El pico del re-anclaje (steps 0-15: la presa nace 0.9 m por encima) es el
+      // "arranque" del arrastre; el anti-goma se mide desde que el cuerpo reacciona.
+      if (i < 15) continue;
+      for (const c of solver.debugChains()) {
+        if (c.limb === "spine") continue;
+        worst = Math.max(worst, c.ratio);
+      }
+    }
+    // El cuerpo subio hacia las presas (no hay brazos de 1.5 m) y las cadenas
+    // quedan en el tope, no al doble.
+    expect(solver.centerOfMass().y, "el cuerpo no fue arrastrado hacia la presa").toBeGreaterThan(comBefore + 0.25);
+    expect(worst, `ratio de cadena maximo ${worst.toFixed(3)}`).toBeLessThanOrEqual(1.08);
+    // La carga medida del pin se dispara en la lucha: la biomecanica lo leeria
+    // como SOBRECARGA y la cuenta atras abriria el agarre.
+    const loads = ["hand_l", "hand_r"].map((l) => solver.getAnchor(l as "hand_l")!.loadN);
+    expect(Math.max(...loads)).toBeGreaterThan(250);
+  }, 60000);
+
+  it("La columna tampoco se estira: el tope de pelvis-pecho aguanta un colgon sacudido", async () => {
+    const { challenge, character, profile, wall, holdById, maxF, makeSolver } = await setup("challenge_reach_top");
+    const solver = makeSolver();
+    spawnRagdoll(solver, profile, character, wall, challenge, holdById, () => maxF);
+    const dt = profile.sim.fixedDeltaSeconds;
+    for (let i = 0; i < 20; i++) solver.step(dt);
+    solver.applyImpulseVelocity(v3(-0.6, -4.0, 0.2), dt);
+    for (let i = 0; i < 200; i++) {
+      const r = solver.step(dt);
+      expect(r.nanError).toBe(false);
+      const spine = solver.debugChains().find((c) => c.limb === "spine")!;
+      expect(spine.ratio, `columna ${spine.ratio.toFixed(3)} en paso ${i}`).toBeLessThanOrEqual(1.05);
+    }
+  }, 60000);
+});
