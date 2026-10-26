@@ -212,12 +212,34 @@ export interface TargetState {
   maxForce: number;
 }
 
+/**
+ * Plano frontal de un segmento de pared (circuito con angulos). La colision del
+ * cuerpo se hace contra CADA segmento: paredes inclinadas y techos usan normales
+ * arbitrarias; la pared vertical clasica es un plano con n=(0,0,-1).
+ */
+export interface WallPlaneSpec {
+  /** Normal unitaria frontal (hacia el escalador). */
+  n: V3;
+  /** Punto del plano frontal (cara de la pared). */
+  p: V3;
+  /** AABB mundo holgado: el plano solo gobierna particulas dentro de el. */
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  minZ: number;
+  maxZ: number;
+}
+
 export interface SolverEnv {
   gravity: V3;
   damping: number;
   iterations: number;
   floorY: number;
+  /** Clasico plano z de pared vertical (compatibilidad; con wallPlanes no se usa). */
   wallFrontZ: number;
+  /** Planos frontales por segmento (default: uno vertical en wallFrontZ). */
+  wallPlanes: WallPlaneSpec[];
   bounds: { minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number };
   anchorStiffness: number;
   anchorDamping: number;
@@ -292,6 +314,20 @@ export class PbdSolver {
       iterations: env.iterations ?? 10,
       floorY: env.floorY ?? 0,
       wallFrontZ: env.wallFrontZ ?? -0.125,
+      wallPlanes:
+        env.wallPlanes ??
+        [
+          {
+            n: v3(0, 0, -1),
+            p: v3(0, 0, env.wallFrontZ ?? -0.125),
+            minX: -50,
+            maxX: 50,
+            minY: -50,
+            maxY: 500,
+            minZ: -50,
+            maxZ: (env.wallFrontZ ?? -0.125) + 2
+          }
+        ],
       bounds: env.bounds ?? BOUNDS_DEFAULT,
       anchorStiffness: env.anchorStiffness ?? 7200,
       anchorDamping: env.anchorDamping ?? 170,
@@ -403,6 +439,41 @@ export class PbdSolver {
   /** Reactiva el impulso de subida (llamado al consolidar un anclaje nuevo). */
   pulseClimbDrive(): void {
     this.climbDrive = 1;
+  }
+
+  /**
+   * Plano que gobierna un punto: el primero cuyo AABB lo contiene (orden bottom->top
+   * = prioridad al segmento en el que esta); si ninguno lo contiene, el de menor
+   * distancia al plano. Usado por colision y por la fuerza de pegado.
+   */
+  private governingPlane(px: number, py: number, pz: number): WallPlaneSpec {
+    const planes = this.env.wallPlanes;
+    let best = planes[0];
+    let bestScore = Number.POSITIVE_INFINITY;
+    for (const pl of planes) {
+      const inBox = px >= pl.minX && px <= pl.maxX && py >= pl.minY && py <= pl.maxY && pz >= pl.minZ && pz <= pl.maxZ;
+      const d = Math.abs((px - pl.p.x) * pl.n.x + (py - pl.p.y) * pl.n.y + (pz - pl.p.z) * pl.n.z);
+      const score = inBox ? d : d + 1000;
+      if (score < bestScore) {
+        bestScore = score;
+        best = pl;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Impulso fisico a todo el cuerpo (mecanica GAS): cambia la VELOCIDAD de las
+   * particulas (Verlet: prev -= dv*dt). Nada de teletransportes (ADR del proyecto).
+   */
+  impulse(dvx: number, dvy: number, dvz: number): void {
+    const dt = this.lastStepDt;
+    for (const p of this.particles) {
+      if (p.invMass <= 0) continue;
+      p.prev.x -= dvx * dt;
+      p.prev.y -= dvy * dt;
+      p.prev.z -= dvz * dt;
+    }
   }
 
   /** Diagnostico: fuerzas musculares del ultimo paso (N) por indice de particula. */
@@ -892,15 +963,24 @@ export class PbdSolver {
 
     // PEGADO A LA PARED con cualquier anclaje: la colision del cuerpo con la cara del
     // muro impide colgar en la vertical exacta de los pines (las presas sobresalen), y
-    // sin fuerza de centrado en z el cuerpo queda 0.1-0.2 m por detras, offset que
-    // devora el alcance util de brazos y piernas en CADA movimiento. El escalador real
-    // va pegado: cadera y pecho se presionan hacia el plano de presas.
+    // sin fuerza de centrado el cuerpo queda 0.1-0.2 m por detras, offset que devora
+    // el alcance util. Generalizada al SEGMENTO que gobierna el cuerpo: la fuerza
+    // empuja a lo largo de -normal y se atenua con la horizontalidad de la cara
+    // (en un techo no hay "pegado": colgar no es apoyarse).
     if (this.anchors.size > 0) {
-      const zTarget = this.env.wallFrontZ - 0.26;
-      const fzPelvis = clamp((zTarget - pelvis.pos.z) * 400, -M.wallLeanMax, M.wallLeanMax);
-      const fzChest = clamp((zTarget - chest.pos.z) * 400, -M.wallLeanMax, M.wallLeanMax);
-      addForce(T.pelvis, 0, 0, fzPelvis);
-      addForce(T.chest, 0, 0, fzChest);
+      const REST_DIST = 0.26;
+      const leanOf = (px: number, py: number, pz: number): { fx: number; fy: number; fz: number } => {
+        const plane = this.governingPlane(px, py, pz);
+        const d = (px - plane.p.x) * plane.n.x + (py - plane.p.y) * plane.n.y + (pz - plane.p.z) * plane.n.z;
+        // Escala por verticalidad de la cara: |n.z| = 1 en pared vertical, 0 en techo.
+        const scale = Math.min(1, Math.abs(plane.n.z) + Math.abs(plane.n.x));
+        const f = clamp((REST_DIST - d) * 400 * scale, -M.wallLeanMax, M.wallLeanMax);
+        return { fx: plane.n.x * f, fy: plane.n.y * f, fz: plane.n.z * f };
+      };
+      const lp = leanOf(pelvis.pos.x, pelvis.pos.y, pelvis.pos.z);
+      const lc = leanOf(chest.pos.x, chest.pos.y, chest.pos.z);
+      addForce(T.pelvis, lp.fx, lp.fy, lp.fz);
+      addForce(T.chest, lc.fx, lc.fy, lc.fz);
     }
 
     // Tope de fuerza muscular por particula axial: la suma de musculos nunca puede
@@ -1083,10 +1163,27 @@ export class PbdSolver {
         p.prev.x += (p.pos.x - p.prev.x) * 0.25;
         p.prev.z += (p.pos.z - p.prev.z) * 0.25;
       }
-      // Pared: los segmentos del cuerpo no atraviesan el plano frontal.
+      // Pared: los segmentos del cuerpo no atraviesan el plano frontal de NINGUN
+      // segmento (pared vertical clasica, placas, desplomes y techos del circuito).
       // (Manos y pies quedan exentos: se apoyan en presas que sobresalen.)
-      if (p.collideWall && p.pos.z > this.env.wallFrontZ - p.radius) {
-        p.pos.z = this.env.wallFrontZ - p.radius;
+      // d = distancia con signo al plano (positiva = lado del escalador): si el
+      // centro queda a menos de su radio de la cara, se proyecta de vuelta.
+      if (p.collideWall) {
+        for (const plane of this.env.wallPlanes) {
+          if (
+            p.pos.x < plane.minX || p.pos.x > plane.maxX ||
+            p.pos.y < plane.minY || p.pos.y > plane.maxY ||
+            p.pos.z < plane.minZ || p.pos.z > plane.maxZ
+          ) {
+            continue;
+          }
+          const d = (p.pos.x - plane.p.x) * plane.n.x + (p.pos.y - plane.p.y) * plane.n.y + (p.pos.z - plane.p.z) * plane.n.z;
+          if (d >= p.radius) continue;
+          const push = p.radius - d;
+          p.pos.x += plane.n.x * push;
+          p.pos.y += plane.n.y * push;
+          p.pos.z += plane.n.z * push;
+        }
       }
     }
   }

@@ -236,3 +236,61 @@ describe("Cuenta atras de sobrecarga (grace/accum visibles para el jugador)", ()
     expect(secondsLeft).toBeGreaterThan(0);
   });
 });
+
+describe("Sobrecarga x2: pie en presa de mano (mecanica del circuito)", () => {
+  const dt = 1 / 60;
+  const tremor = { hand_l: 0, hand_r: 0, foot_l: 0, foot_r: 0 };
+  const footAnchors = [{ limb: "foot_r" as LimbId, holdId: "h5" }];
+  const effFoot = effectiveGripForce(character, profile, 0, 0) * (character.physical.legForceFactor ?? 2.2);
+
+  function fakeFoot(load: number): StepResult {
+    return {
+      nanError: false,
+      energySpike: false,
+      outOfBounds: false,
+      com: { x: 0, y: 1.5, z: 0 },
+      anchorLoads: { foot_r: load },
+      anchorStretch: { foot_r: 0 },
+      floorContacts: [],
+      jointAngles: [
+        { id: "knee_r", angle: Math.PI - 0.1, utilization: 0 },
+        { id: "hip_r", angle: Math.PI - 0.05, utilization: 0 }
+      ],
+      maxSpeed: 0
+    };
+  }
+
+  it("el multiplicador dobla el ratio y cambia la zona (NORMAL -> STRAINED)", () => {
+    const load = effFoot * 0.45; // ratio 0.45 < comfortable 0.6 => NORMAL sin multiplicador
+    const bio = new BiomechanicsSystem(character, profile);
+    const sin = bio.update(dt, fakeFoot(load), footAnchors, tremor);
+    expect(sin.snapshot.anchors[0].zone).toBe("NORMAL");
+    const bio2 = new BiomechanicsSystem(character, profile);
+    const con = bio2.update(dt, fakeFoot(load), footAnchors, tremor, { foot_r: 2 });
+    expect(con.snapshot.anchors[0].ratio).toBeCloseTo(sin.snapshot.anchors[0].ratio * 2, 3);
+    expect(con.snapshot.anchors[0].zone).toBe("STRAINED");
+  });
+
+  it("el alivio de fatiga (GAS) reduce fatiga y retrasa la cesion del agarre", () => {
+    const heavy = fakeFoot(effFoot * 1.5); // sobrecarga continua en el pie
+    // Control: 120 pasos pesados -> timer de sobrecarga avanzado.
+    const control = new BiomechanicsSystem(character, profile);
+    for (let i = 0; i < 120; i++) control.update(dt, heavy, footAnchors, tremor);
+    expect(control.fatigue.foot_r).toBeGreaterThan(0);
+    // Con alivio: mismos pasos, alivio, y un paso mas: la fatiga menor retrasa
+    // el timer visible (menor ratio y decada) frente al control.
+    const aliviado = new BiomechanicsSystem(character, profile);
+    for (let i = 0; i < 120; i++) aliviado.update(dt, heavy, footAnchors, tremor);
+    const fatBefore = aliviado.fatigue.foot_r;
+    aliviado.relieveFatigue(0.16);
+    expect(aliviado.fatigue.foot_r).toBeLessThan(fatBefore);
+    aliviado.update(dt, heavy, footAnchors, tremor);
+    const t1 = control.infoFor("foot_r")!.overloadTimer;
+    const t2 = aliviado.infoFor("foot_r")!.overloadTimer;
+    expect(t2).toBeLessThan(t1);
+    // Nunca sube: doble alivio con fatiga ya a 0 se queda en 0.
+    aliviado.relieveFatigue(1);
+    aliviado.relieveFatigue(1);
+    expect(aliviado.fatigue.foot_r).toBe(0);
+  });
+});

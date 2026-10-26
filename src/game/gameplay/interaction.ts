@@ -55,6 +55,12 @@ export interface InteractionWorld {
   chainLengthOf(limb: LimbId): number;
   /** Reglas de postura imposible vigentes (opcionales: sin ellas no se aplican). */
   postureRules?: () => PostureRules | null;
+  /**
+   * Distancia EN EL PLANO de la pared entre dos puntos (por segmento). En paredes
+   * inclinadas/techos el avance cambia la Z mundial: medir solo x/y haria gratuito
+   * todo el techo. Opcional: sin ella se usa hypot(dx, dy) (paredes verticales).
+   */
+  planeDistanceOf?: (a: V3, b: V3) => number;
 }
 
 export interface InteractionCallbacks {
@@ -271,7 +277,7 @@ export class InteractionController {
     const root = origin ? this.holdPoint(origin) : this.world.chainRootOf(limb);
     const point = this.holdPoint(holdId);
     const snapAllowance = Math.min(this.world.character.control.holdSnapRadius, 0.34) * 0.7;
-    const dist = Math.max(0, Math.hypot(point.x - root.x, point.y - root.y) - snapAllowance);
+    const dist = Math.max(0, (this.world.planeDistanceOf?.(root, point) ?? Math.hypot(point.x - root.x, point.y - root.y)) - snapAllowance);
     const verdict = reachVerdict(dist, this.world.chainLengthOf(limb), this.world.character, this.world.profile);
     if (verdict === "rejected") {
       return "fuera_de_alcance";
@@ -300,7 +306,7 @@ export class InteractionController {
     const origin = limb.startsWith("hand") ? this.world.anchorHoldOf(limb) : undefined;
     const root = origin ? this.holdPoint(origin) : this.world.chainRootOf(limb);
     const snapAllowance = Math.min(this.world.character.control.holdSnapRadius, 0.34) * 0.7;
-    const dist = Math.max(0, Math.hypot(point.x - root.x, point.y - root.y) - snapAllowance);
+    const dist = Math.max(0, (this.world.planeDistanceOf?.(root, point) ?? Math.hypot(point.x - root.x, point.y - root.y)) - snapAllowance);
     return reachVerdict(dist, this.world.chainLengthOf(limb), this.world.character, this.world.profile);
   }
 

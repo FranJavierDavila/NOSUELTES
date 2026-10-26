@@ -14,6 +14,13 @@ export interface EvaluatorInput {
   stability: number;
   pelvisY: number;
   outOfBounds: boolean;
+  /**
+   * Postura fisicamente imposible ya filtrada con gracia por el orquestador
+   * (peticion del jugador: "NO puede ser fisicamente posible quedar boca abajo
+   * con ambas manos sueltas y no caerse"): sin manos, el cuerpo solo se sostiene
+   * de pie (torso erguido) o colgando DEBAJO de los apoyos. Cierto = caida segura.
+   */
+  impossiblePosture?: boolean;
 }
 
 export type EvaluatorOutcome =
@@ -76,6 +83,11 @@ export class ChallengeEvaluator {
     const rules = this.challenge.rules;
     if (input.outOfBounds) {
       return "fuera_de_limites";
+    }
+    // Postura imposible: maxima prioridad tras limites (el cuerpo con peso no
+    // se sostiene boca abajo/en horizontal sin agarres de manos).
+    if (input.impossiblePosture) {
+      return "postura_imposible";
     }
     if (input.pelvisY <= rules.fallPlaneY) {
       return "plano_de_caida";

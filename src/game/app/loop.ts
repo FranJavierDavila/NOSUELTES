@@ -22,8 +22,9 @@ import { InteractionController, postureRulesForTone, type InteractionWorld, type
 import { BiomechanicsSystem, computeStability } from "../domain/biomechanics";
 import { ChallengeEvaluator } from "../domain/challenge";
 import { PbdSolver } from "../physics/pbd/solver";
-import type { BalanceTuning } from "../physics/pbd/solver";
+import type { BalanceTuning, WallPlaneSpec } from "../physics/pbd/solver";
 import { P, spawnRagdoll, type RagdollRig } from "../physics/pbd/ragdoll";
+import { computeWallFrames, facePoint, framesBounds, localCoords, segmentAtPoint, type WallFrame } from "../domain/wallgeometry";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { GameScene } from "../render/scene";
 import { Hud } from "../ui/hud";
@@ -43,7 +44,15 @@ import {
   totalStars,
   maxStars,
   isChampion,
-  nextStageId
+  nextStageId,
+  CIRCUIT_STAGES,
+  circuitStageOf,
+  isCircuitStageUnlocked,
+  currentCircuitIndex,
+  circuitTotalStars,
+  circuitMaxStars,
+  isCircuitChampion,
+  nextCircuitStageId
 } from "../domain/championship";
 import { v3, lerp } from "../physics/pbd/math";
 
@@ -75,8 +84,17 @@ const CHAMPIONSHIP_META: Record<string, { label: string; description: string }> 
   ])
 );
 
+/** Etiquetas de los 5 escenarios del CIRCUITO (angulos/techos, peticion del jugador). */
+const CIRCUIT_META: Record<string, { label: string; description: string }> = Object.fromEntries(
+  CIRCUIT_STAGES.map((s) => [
+    s.challengeId,
+    { label: `ESCENARIO ${s.index} · ${s.name}`, description: s.blurb }
+  ])
+);
+
 const CHALLENGE_META: Record<string, { label: string; description: string }> = {
   ...CHAMPIONSHIP_META,
+  ...CIRCUIT_META,
   ...TRAINING_META
 };
 
@@ -87,6 +105,21 @@ const TRAINING_SHORT: Record<string, string> = {
   challenge_recover_swing: "Recuperar",
   challenge_speed_run: "Velocidad"
 };
+
+// Mecanica GAS (comedia fisica, peticion del jugador: "una flatulencia que se
+// avise... efecto carton"): aviso audible, detonacion, impulso comico contenido
+// y alivio corto de fatiga que permite encadenar algunos agarres mas.
+const GAS_WARN_S = 2.1;
+const GAS_BUFF_S = 6.0;
+const GAS_COOLDOWN_S = 22;
+const GAS_IMPULSE_AWAY = 0.9;
+const GAS_IMPULSE_UP = 1.7;
+const GAS_RELIEF = 0.16;
+
+// Postura imposible (peticion del jugador: "el cuerpo tiene un peso y sin agarres
+// de manos es caida segura"). Gracia corta: los movimientos dinamicos cruzan
+// posturas malas sin castigo; SOSTENERLAS si es caida garantizada.
+const POSTURE_GRACE_S = 0.24;
 
 /** Presets de balance fisico (ADR-008) seleccionables en el menu. */
 const PRESET_TUNES: Record<BalancePresetName, BalanceTuning> = {
@@ -168,6 +201,17 @@ export class GameApp {
   private readonly tutorialHintsShown = new Set<string>();
   /** Posicion mundo de cada presa para proyectar spotlights del tutorial. */
   private holdPosById = new Map<string, readonly [number, number, number]>();
+  /** Definicion de presa por id (tipos para el multiplicador de carga). */
+  private holdDefById = new Map<string, import("../types").HoldDefinition>();
+  /** Marcos de segmentos de la pared cargada (circuito inclinado). */
+  private wallFrames: WallFrame[] = [];
+  /** Penalizacion de carga pie-en-presa-de-mano (1 = desactivada). */
+  private footPenalty = 1;
+  /** Gracia acumulada de postura imposible (peticion del jugador). */
+  private postureBadTimer = 0;
+  /** Mecanica GAS: fase y temporizador (aviso -> detonacion -> alivio -> cooldown). */
+  private gasPhase: "idle" | "warning" | "buff" | "cooldown" = "idle";
+  private gasTimer = 0;
 
   private challenge!: ChallengeDefinition;
   private wall!: WallDefinition;
@@ -278,6 +322,13 @@ export class GameApp {
           this.hud.toast(`ETAPA ${stage.index} · ${stage.name} bloqueada: supera primero la etapa ${stage.index - 1}`, "warn");
           return;
         }
+        // Candado del CIRCUITO (cadena propia, independiente del campeonato).
+        const cstage = circuitStageOf(id);
+        if (cstage && !isCircuitStageUnlocked(cstage.index, this.championshipBests())) {
+          this.audio.ensure();
+          this.hud.toast(`ESCENARIO ${cstage.index} · ${cstage.name} bloqueado: supera primero el escenario ${cstage.index - 1}`, "warn");
+          return;
+        }
         this.audio.ensure();
         this.loadChallenge(id);
       },
@@ -324,6 +375,10 @@ export class GameApp {
     this.profile = this.repo.getBodyProfile(this.character.bodyProfileId);
     this.wall = this.repo.getWall(this.challenge.wallId);
     this.holdPosById = new Map(this.wall.holds.map((h) => [h.id, h.position] as const));
+    this.holdDefById = new Map(this.wall.holds.map((h) => [h.id, h] as const));
+    // Marcos por segmento (circuito inclinado: placas, desplomes y techos).
+    this.wallFrames = computeWallFrames(this.wall);
+    this.footPenalty = this.wall.difficulty?.footOnHandPenalty ?? 1;
     this.bio = new BiomechanicsSystem(this.character, this.profile);
     this.evaluator = new ChallengeEvaluator(this.challenge);
 
@@ -331,22 +386,51 @@ export class GameApp {
     this.anchorMaxForce = this.character.physical.baseGripForce * strengthFactor;
     this.followForce = this.character.physical.baseGripForce * this.character.control.gripAssist * this.character.control.targetFollowStrength;
 
+    // Planos frontales por segmento para el solver (colision y pegado generales).
+    const planes: WallPlaneSpec[] = this.wallFrames.map((f) => {
+      const fp = facePoint(f);
+      return {
+        n: { x: f.normal.x, y: f.normal.y, z: f.normal.z },
+        p: { x: fp.x, y: fp.y, z: fp.z },
+        minX: f.aabb.minX,
+        maxX: f.aabb.maxX,
+        minY: f.aabb.minY,
+        maxY: f.aabb.maxY,
+        minZ: f.aabb.minZ,
+        maxZ: f.aabb.maxZ
+      };
+    });
+    const fb = framesBounds(this.wallFrames, this.wall.dimensions.width / 2);
     this.solver = new PbdSolver({
       gravity: v3(...this.profile.sim.gravity),
       damping: this.profile.sim.damping,
       iterations: this.profile.sim.iterations,
       floorY: 0,
       wallFrontZ: this.wall.transform.position[2] - this.wall.dimensions.depth / 2,
+      wallPlanes: planes,
+      bounds: {
+        minX: fb.minX - 0.4,
+        maxX: fb.maxX + 0.4,
+        minY: fb.minY,
+        maxY: Math.max(9, fb.maxY + 1.2),
+        minZ: Math.min(-7, fb.minZ - 0.6),
+        maxZ: Math.max(0.6, fb.maxZ + 0.6)
+      },
       tremorAmplitude: this.profile.sim.tremorAmplitude,
       loadEstimatorGain: this.profile.biomech.loadEstimatorGain
     });
 
     this.scene.buildWorld(this.wall);
     this.hud.setChallenge(this.challenge, CHALLENGE_META[id]?.label ?? CHALLENGE_LABELS[this.challenge.type]);
-    // Chip permanente de campeonato (panel superior izquierdo) mientras se juega una etapa.
+    // Chip permanente de campeonato/circuito (panel superior izquierdo).
     const stage = stageOf(id);
+    const cstage = circuitStageOf(id);
     this.hud.setChampionshipStatus(
-      stage ? `Campeonato · etapa ${stage.index}/5 · ${stage.name} (${stage.heightM} m)` : null
+      stage
+        ? `Campeonato · etapa ${stage.index}/5 · ${stage.name} (${stage.heightM} m)`
+        : cstage
+          ? `Circuito · escenario ${cstage.index}/5 · ${cstage.name} (${cstage.heightM} m)`
+          : null
     );
     this.buildInteraction();
     this.spawn();
@@ -367,7 +451,9 @@ export class GameApp {
     for (const hold of this.wall.holds) this.scene.setHoldOccupied(hold.id, false);
 
     this.scene.despawnRagdollVisuals();
-    this.rig = spawnRagdoll(this.solver, this.profile, this.character, this.wall, this.challenge, holdById, (limb) => this.anchorMaxForceFor(limb));
+    // Normal del PRIMER segmento para los pliegues (circuito inclinado).
+    const n0 = this.wallFrames[0]?.normal ?? { x: 0, y: 0, z: -1 };
+    this.rig = spawnRagdoll(this.solver, this.profile, this.character, this.wall, this.challenge, holdById, (limb) => this.anchorMaxForceFor(limb), n0);
     this.scene.spawnRagdollVisuals(this.rig);
 
     this.bio.reset();
@@ -389,6 +475,11 @@ export class GameApp {
     this.lastWorst = null;
     this.limbOverload.clear();
     this.overloadPressure = 0;
+    // Postura imposible y GAS se reinician con cada respawn.
+    this.postureBadTimer = 0;
+    this.gasPhase = "idle";
+    this.gasTimer = 0;
+    this.hud.setGasStatus(null);
 
     // Marcar presas ocupadas por los anclajes iniciales creados en spawnRagdoll.
     for (const req of this.challenge.start.requiredAnchors) {
@@ -530,7 +621,7 @@ export class GameApp {
     return m;
   }
 
-  /** Opciones del menu: campeonato primero (con candados y estrellas), luego entrenamiento. */
+  /** Opciones del menu: campeonato, circuito y entrenamiento (con candados/estrellas). */
   private buildChallengeOptions(): ChallengeOption[] {
     const bests = this.championshipBests();
     const champ: ChallengeOption[] = CHAMPIONSHIP_STAGES.map((s) => ({
@@ -544,8 +635,19 @@ export class GameApp {
       stageIndex: s.index,
       heightM: s.heightM
     }));
+    const circuit: ChallengeOption[] = CIRCUIT_STAGES.map((s) => ({
+      id: s.challengeId,
+      label: CHALLENGE_META[s.challengeId]?.label ?? `ESCENARIO ${s.index} · ${s.name}`,
+      short: `C${s.index} · ${s.name}`,
+      description: s.blurb,
+      best: bests.get(s.challengeId) ?? null,
+      group: "circuito",
+      locked: !isCircuitStageUnlocked(s.index, bests),
+      stageIndex: s.index,
+      heightM: s.heightM
+    }));
     const training: ChallengeOption[] = this.repo.listChallengeIds()
-      .filter((id) => !STAGE_BY_CHALLENGE.has(id))
+      .filter((id) => !STAGE_BY_CHALLENGE.has(id) && !CIRCUIT_STAGES.some((c) => c.challengeId === id))
       .map((id) => {
         const c = this.repo.getChallenge(id);
         const meta = CHALLENGE_META[id];
@@ -560,7 +662,7 @@ export class GameApp {
           locked: false
         };
       });
-    return [...champ, ...training];
+    return [...champ, ...circuit, ...training];
   }
 
   private saveBest(id: string, rec: BestRecord): boolean {
@@ -604,7 +706,16 @@ export class GameApp {
         const base = limb.startsWith("hand") ? this.rig.armChain : this.rig.legChain;
         return base * this.character.physical.reachScale;
       },
-      postureRules: () => this.postureRules
+      postureRules: () => this.postureRules,
+      // Alcance medido EN EL PLANO del segmento (imprescindible en circuito con
+      // techos: el avance cambia la z mundial y x/y no diria nada).
+      planeDistanceOf: (a, b) => {
+        if (this.wallFrames.length === 0) return Math.hypot(b.x - a.x, b.y - a.y);
+        const frame = segmentAtPoint(this.wallFrames, { x: b.x, y: b.y, z: b.z });
+        const da = localCoords(frame, { x: a.x, y: a.y, z: a.z });
+        const db = localCoords(frame, { x: b.x, y: b.y, z: b.z });
+        return Math.hypot(db.lateral - da.lateral, db.along - da.along);
+      }
     };
     this.interaction = new InteractionController(world, {
       onSelectChanged: () => undefined,
@@ -676,7 +787,17 @@ export class GameApp {
 
     // Biomecanica solo cuando el desafio esta activo (fatiga congelada en pausa/resultado).
     if (this.machine.state === "PLAYING") {
-      const bioResult = this.bio.update(dt, result, anchors.map((a) => ({ limb: a.limb, holdId: a.holdId })), this.solver.tremor);
+      // Multiplicador de carga pie-en-presa-de-mano (mecanica realista del circuito:
+      // "la sobrecarga sea el doble"). Los pies en presa de mano cargan x2.
+      const loadMult: Partial<Record<LimbId, number>> = {};
+      if (this.footPenalty > 1) {
+        for (const a of anchors) {
+          if (!a.limb.startsWith("foot")) continue;
+          const hold = this.holdDefById.get(a.holdId);
+          if (hold && hold.type !== "foot") loadMult[a.limb] = this.footPenalty;
+        }
+      }
+      const bioResult = this.bio.update(dt, result, anchors.map((a) => ({ limb: a.limb, holdId: a.holdId })), this.solver.tremor, loadMult);
       // En tutorial la fatiga y las zonas se miden (numeros reales en el paso
       // de vitals) pero la sobrecarga NO libera agarres: el onboarding no puede
       // guiar hacia una caida por mover lento.
@@ -705,6 +826,12 @@ export class GameApp {
       // El timer no corre durante el tutorial: nadie deberia agotar el tiempo
       // mientras aprende los controles.
       if (!this.tutorial) this.gameTime += dt;
+      // POSTURA IMPOSIBLE (peticion del jugador): sin manos ancladas el cuerpo solo
+      // se sostiene de pie (torso erguido) o colgando DEBAJO de los apoyos; quedar
+      // boca abajo / horizontal sostenido solo por pies es caida segura. Gracia
+      // corta para no castigar movimientos dinamicos que cruzan posturas malas.
+      const postureBad = this.impossiblePostureNow(anchors, result.floorContacts.length);
+      this.postureBadTimer = postureBad ? this.postureBadTimer + dt : 0;
       const outcome = this.evaluator!.tick({
         dt,
         gameTime: this.gameTime,
@@ -712,7 +839,8 @@ export class GameApp {
         supportCount: anchorsNow.length,
         stability,
         pelvisY: this.solver.getParticle(P.pelvisC).pos.y,
-        outOfBounds: result.outOfBounds
+        outOfBounds: result.outOfBounds,
+        impossiblePosture: !this.tutorial && this.postureBadTimer >= POSTURE_GRACE_S
       });
       if (outcome.kind === "fall") {
         this.events.emit({ type: "FallStarted", reason: outcome.reason });
@@ -785,6 +913,103 @@ export class GameApp {
     this.solver.setToneTarget(this.tune.toneFloor);
   }
 
+  // --- Postura fisicamente imposible (peticion del jugador) ---
+
+  /**
+   * Regla estricta de fisica elemental: SIN manos ancladas, un cuerpo con peso solo
+   * se sostiene (a) de pie —torso aproximadamente erguido, empujando con las piernas
+   * contra el suelo o las presas— o (b) COLGANDO por debajo de sus apoyos (gancho de
+   * rodilla/pie). Todo lo demas —boca abajo, horizontal, ladeado— es friccion pura y
+   * caida garantizada. El tutorial esta exento (no puede guiar hacia una caida).
+   */
+  private impossiblePostureNow(anchors: { limb: LimbId; holdId: string }[], floorContacts: number): boolean {
+    let hands = 0;
+    let feet = 0;
+    for (const a of anchors) {
+      if (a.limb.startsWith("hand")) hands++;
+      else feet++;
+    }
+    if (hands > 0 || feet === 0) return false;
+    // Tocando el colchon: esta de pie aunque suelte las manos (legal).
+    if (floorContacts > 0) return false;
+    const chest = this.solver.getParticle(P.chest).pos;
+    const pelvis = this.solver.getParticle(P.pelvisC).pos;
+    const spine = Math.hypot(chest.x - pelvis.x, chest.y - pelvis.y, chest.z - pelvis.z) || 1e-6;
+    const upDot = (chest.y - pelvis.y) / spine;
+    // Cuanto mas realista el preset, mas vertical se exige (~0.49 realista).
+    const upMin = 0.4 + 0.1 * this.tune.postureTone;
+    if (upDot >= upMin) return false;
+    // ¿Cuelga DEBAJO de algun apoyo (colgadura legitima, p.ej. gancho de rodilla)?
+    const com = this.solver.centerOfMass();
+    for (const a of anchors) {
+      const anchor = this.solver.getAnchor(a.limb);
+      if (!anchor) continue;
+      const hangs = com.y < anchor.point.y - 0.12 && Math.abs(com.x - anchor.point.x) <= 0.85;
+      if (hangs) return false;
+    }
+    return true;
+  }
+
+  // --- Mecanica GAS (comedia fisica sin romper la simulacion) ---
+
+  /** Tecla P: arranca el aviso (retortijon). Solo fuera del tutorial y sin cooldown. */
+  private tryStartGas(): void {
+    if (this.tutorial) return;
+    if (!(this.machine.state === "READY" || this.machine.state === "PLAYING")) return;
+    if (this.gasPhase !== "idle") return;
+    this.audio.ensure();
+    this.gasPhase = "warning";
+    this.gasTimer = GAS_WARN_S;
+    this.audio.playBellyRumble(GAS_WARN_S);
+    this.hud.toast("Retortijón... el GAS viene en camino. Prepáralo antes de la secuencia difícil", "warn");
+  }
+
+  /** Avance del GAS (llamar cada frame fuera de pausa/carga). */
+  private tickGas(dt: number): void {
+    if (this.gasPhase === "warning") {
+      this.gasTimer -= dt;
+      if (this.gasTimer <= 0) this.detonateGas();
+    } else if (this.gasPhase === "buff") {
+      this.gasTimer -= dt;
+      if (this.gasTimer <= 0) {
+        this.gasPhase = "cooldown";
+        this.gasTimer = GAS_COOLDOWN_S;
+      }
+    } else if (this.gasPhase === "cooldown") {
+      this.gasTimer -= dt;
+      if (this.gasTimer <= 0) this.gasPhase = "idle";
+    }
+    // Chip del HUD: aviso con cuenta atras, alivio activo o recarga.
+    if (this.gasPhase === "warning") this.hud.setGasStatus({ state: "warning", seconds: Math.max(0, this.gasTimer) });
+    else if (this.gasPhase === "buff") this.hud.setGasStatus({ state: "buff", seconds: Math.max(0, this.gasTimer) });
+    else if (this.gasPhase === "cooldown") this.hud.setGasStatus({ state: "cooldown", seconds: Math.max(0, this.gasTimer) });
+    else this.hud.setGasStatus(null);
+  }
+
+  /** Detonacion: sonido, nube, CARTON, impulso comico y alivio de fatiga. */
+  private detonateGas(): void {
+    this.gasPhase = "buff";
+    this.gasTimer = GAS_BUFF_S;
+    const pv = this.solver.getParticle(P.pelvisC);
+    const away = this.scene.awayNormalAt({ x: pv.pos.x, y: pv.pos.y, z: pv.pos.z });
+    // El trasero esta en la cara de la espalda (lado "away" de la pared), un poco abajo.
+    const butt = new Vector3(
+      pv.pos.x + away.x * 0.16,
+      pv.pos.y - 0.1,
+      pv.pos.z + away.z * 0.16
+    );
+    this.scene.spawnFartBlast(butt, new Vector3(away.x, away.y, away.z));
+    this.scene.shake(0.045);
+    this.audio.playFart();
+    // Fisica: impulso COMICO pero contenido (velocidad, no teletransporte):
+    // empujoncito hacia arriba y hacia fuera de la pared, como un cohete de bolsillo.
+    this.solver.impulse(away.x * GAS_IMPULSE_AWAY, GAS_IMPULSE_UP, away.z * GAS_IMPULSE_AWAY);
+    // Beneficio real: alivio de fatiga y de timers de sobrecarga (permite encadenar
+    // algunos agarres mas: "permitiria avanzar algunos agarres").
+    this.bio.relieveFatigue(GAS_RELIEF);
+    this.events.emit({ type: "Message", text: "¡PPPPBBBFT! Carton eyectado. Impulso de gas: fatiga aliviada 6 s", tone: "info" });
+  }
+
   // --- Bucle de render ---
 
   private readonly frame = (nowMs: number): void => {
@@ -806,6 +1031,8 @@ export class GameApp {
     const state = this.machine.state;
     const stepping = state !== "PAUSED" && state !== "LOADING" && !this.paused;
     if (stepping) {
+      // GAS: el aviso y el alivio avanzan con el juego (congelados en pausa).
+      this.tickGas(dtFrame);
       // Slow-motion cinematografico: la escala converge suave hacia el objetivo.
       if (this.slowmoLeft > 0) this.slowmoLeft -= dtFrame;
       const goalScale = this.slowmoLeft > 0 ? SLOWMO_SCALE : 1;
@@ -931,8 +1158,13 @@ export class GameApp {
     }
 
     const pelvis = this.solver.getParticle(P.pelvisC);
-    this.scene.updateCamera(dtFrame, pelvis.pos, this.recenterOnce);
+    // Camara cinematica: zoom-in de drama al caer y de celebracion al completar.
+    // Con un arrastre en curso se congela la posicion (apuntado determinista).
+    const camMode = state === "FALLEN" ? "fallen" : state === "SUCCESS" ? "success" : "play";
+    this.scene.updateCamera(dtFrame, pelvis.pos, this.recenterOnce, camMode, this.interaction?.dragging ?? false);
     this.recenterOnce = false;
+    // Escombros del GAS (carton): balistica propia, fuera del paso fijo.
+    this.scene.tickFx(dtFrame);
 
     // HUD y debug a 10 Hz.
     this.hudAccum += dtFrame;
@@ -1053,8 +1285,9 @@ export class GameApp {
         });
         const rec: BestRecord = { score: result.total, timeS: this.gameTime, stars: result.stars };
         const isRecord = this.saveBest(this.challenge.id, rec);
-        // Progresion del campeonato (si la pared superada es una etapa).
+        // Progresion del campeonato O del circuito (si la pared superada es de uno).
         const cleared = stageOf(this.challenge.id);
+        const clearedCircuit = cleared ? null : circuitStageOf(this.challenge.id);
         let champ: Parameters<typeof this.hud.showSuccess>[0]["champ"] = null;
         if (cleared) {
           const bests = this.championshipBests();
@@ -1067,6 +1300,7 @@ export class GameApp {
             totalStars: totalStars(bests),
             maxStars: maxStars(),
             champion,
+            seriesLabel: "campeonato",
             nextLabel: nextStage ? `ETAPA ${nextStage.index} · ${nextStage.name}` : null,
             onNext: () => {
               if (!nextId) return;
@@ -1080,6 +1314,31 @@ export class GameApp {
             this.hud.toast(`¡CAMPEÓN DEL CAMPEONATO! Las cinco paredes superadas (${totalStars(bests)}/${maxStars()} estrellas)`, "ok");
           } else if (nextStage) {
             this.hud.toast(`Etapa superada: desbloqueas ETAPA ${nextStage.index} · ${nextStage.name}`, "ok");
+          }
+        } else if (clearedCircuit) {
+          const bests = this.championshipBests();
+          const master = isCircuitChampion(bests);
+          const nextId = nextCircuitStageId(bests);
+          const nextStage = nextId ? circuitStageOf(nextId) : null;
+          champ = {
+            stageIndex: clearedCircuit.index,
+            totalStages: CIRCUIT_STAGES.length,
+            totalStars: circuitTotalStars(bests),
+            maxStars: circuitMaxStars(),
+            champion: master,
+            seriesLabel: "circuito",
+            nextLabel: nextStage ? `ESCENARIO ${nextStage.index} · ${nextStage.name}` : null,
+            onNext: () => {
+              if (!nextId) return;
+              this.hud.hideIntro();
+              this.loadChallenge(nextId);
+            }
+          };
+          this.hud.setChallengeList(this.buildChallengeOptions());
+          if (master) {
+            this.hud.toast(`¡MAESTRO DEL CIRCUITO! Los cinco escenarios superados (${circuitTotalStars(bests)}/${circuitMaxStars()} estrellas)`, "ok");
+          } else if (nextStage) {
+            this.hud.toast(`Escenario superado: desbloqueas ESCENARIO ${nextStage.index} · ${nextStage.name}`, "ok");
           }
         }
         this.hud.showSuccess({
@@ -1109,6 +1368,14 @@ export class GameApp {
           const pos = this.holdPosById.get(e.holdId);
           if (pos) this.scene.burstChalk(new Vector3(pos[0], pos[1], pos[2] - 0.03));
         }
+        // Mecanica realista: pie en presa de mano = sobrecarga x2 (solo paredes con
+        // penalizacion). Se avisa CADA VEZ al fijar: es decision táctica del jugador.
+        if (this.footPenalty > 1 && e.limb.startsWith("foot")) {
+          const hold = this.holdDefById.get(e.holdId);
+          if (hold && hold.type !== "foot") {
+            this.hud.toast("Pie en presa de mano: esa pierna carga x2 (el dedo no es una mano)", "warn");
+          }
+        }
         break;
       }
       case "HoldRejected": {
@@ -1132,7 +1399,12 @@ export class GameApp {
         this.hintOnce("overload", "SOBRECARGA: el chip rojo cuenta los segundos que aguanta el agarre (~4,5 s en sobrecarga continua). Alivia esa extremidad ya", "error");
         break;
       case "FallStarted":
-        this.hintOnce("fall", "Caída: los agarres se abren y el cuerpo cae. Se reintenta solo (o pulsa R)", "info");
+        if (e.reason === "postura_imposible") {
+          // La caida explica la FISICA: sin manos no se sostiene boca abajo.
+          this.hud.toast("POSTURA IMPOSIBLE: sin manos no te sostienes boca abajo ni en horizontal. El cuerpo pesa", "error");
+        } else {
+          this.hintOnce("fall", "Caída: los agarres se abren y el cuerpo cae. Se reintenta solo (o pulsa R)", "info");
+        }
         // Drama: slow-motion breve + rotura del combo + conteo de caidas.
         this.slowmoLeft = SLOWMO_DURATION_S;
         this.fallCount += 1;
@@ -1154,7 +1426,20 @@ export class GameApp {
 
   private attachInput(): void {
     const canvas = this.canvas;
-    const zPlane = () => this.wall.holds[0]?.position[2] ?? -0.18;
+    /**
+     * Plano de arrastre: el del SEGMENTO que gobierna la extremidad arrastrada
+     * (paredes inclinadas/techos). Fallback: plano z clasico de las presas.
+     */
+    const dragPoint = (px: number, py: number): Vector3 | null => {
+      const limb = this.interaction?.selected ?? null;
+      if (limb && this.wallFrames.length > 0) {
+        const p = this.solver.positionOfLimb(limb);
+        const near = this.scene.wallPlanePointNear(px, py, { x: p.x, y: p.y, z: p.z });
+        if (near) return near;
+      }
+      const zPlane = this.wall.holds[0]?.position[2] ?? -0.18;
+      return this.scene.wallPlanePoint(px, py, zPlane);
+    };
 
     this.on(canvas, "pointerdown", (e) => {
       this.audio.ensure();
@@ -1180,7 +1465,7 @@ export class GameApp {
       this.pointerY = e.clientY - rect.top;
       this.pointerInside = true;
       if (!this.interaction?.dragging) return;
-      const point = this.scene.wallPlanePoint(e.clientX - rect.left, e.clientY - rect.top, zPlane());
+      const point = dragPoint(e.clientX - rect.left, e.clientY - rect.top);
       // Agarre por teclado: el objetivo conserva el offset inicial (agarrar no salta).
       const target = point && this.keyboardLimb && this.grabOffset ? { x: point.x + this.grabOffset.x, y: point.y + this.grabOffset.y, z: point.z } : point;
       this.interaction.updateDrag(target ? v3(target.x, target.y, target.z) : null);
@@ -1244,6 +1529,9 @@ export class GameApp {
         case "KeyT":
           this.startTutorial();
           break;
+        case "KeyP":
+          this.tryStartGas();
+          break;
         case "Digit1":
           this.toggleKeyboardGrab("hand_l");
           break;
@@ -1303,11 +1591,13 @@ export class GameApp {
     this.keyboardLimb = limb;
     // Offset inicial: objetivo = posicion actual de la extremidad (limbPos - cursor),
     // asi agarrar NO salta: la extremidad solo responde al MOVIMIENTO del cursor.
-    const zPlane = this.wall.holds[0]?.position[2] ?? -0.18;
     const limbPos = this.solver.positionOfLimb(limb);
-    const cursor = this.scene.wallPlanePoint(this.pointerX, this.pointerY, zPlane);
+    const lp = { x: limbPos.x, y: limbPos.y, z: limbPos.z };
+    const cursor = this.wallFrames.length > 0
+      ? this.scene.wallPlanePointNear(this.pointerX, this.pointerY, lp)
+      : this.scene.wallPlanePoint(this.pointerX, this.pointerY, this.wall.holds[0]?.position[2] ?? -0.18);
     this.grabOffset = cursor ? { x: limbPos.x - cursor.x, y: limbPos.y - cursor.y } : { x: 0, y: 0 };
-    this.applyKeyboardDragTarget(zPlane);
+    this.applyKeyboardDragTarget();
     this.hud.toast(`${LIMB_LABEL_ES[limb]} agarrada (tecla ${GameApp.KEY_OF_LIMB[limb]}): muévela con el ratón y pulsa ${GameApp.KEY_OF_LIMB[limb]} para soltar`, "info");
   }
 
@@ -1326,10 +1616,14 @@ export class GameApp {
   }
 
   /** Re-proyecta el objetivo del agarre por teclado (cursor + offset) al plano. */
-  private applyKeyboardDragTarget(zPlane: number): void {
+  private applyKeyboardDragTarget(): void {
     if (!this.interaction?.dragging || !this.keyboardLimb) return;
-    const point = this.scene.wallPlanePoint(this.pointerX, this.pointerY, zPlane);
-    const base = point ?? { x: this.solver.positionOfLimb(this.keyboardLimb).x, y: this.solver.positionOfLimb(this.keyboardLimb).y, z: zPlane };
+    const limbPos = this.solver.positionOfLimb(this.keyboardLimb);
+    const lp = { x: limbPos.x, y: limbPos.y, z: limbPos.z };
+    const point = this.wallFrames.length > 0
+      ? this.scene.wallPlanePointNear(this.pointerX, this.pointerY, lp)
+      : this.scene.wallPlanePoint(this.pointerX, this.pointerY, this.wall.holds[0]?.position[2] ?? -0.18);
+    const base = point ?? { x: lp.x, y: lp.y, z: lp.z };
     const target = this.grabOffset ? { x: base.x + this.grabOffset.x, y: base.y + this.grabOffset.y, z: base.z } : base;
     this.interaction.updateDrag(v3(target.x, target.y, target.z));
   }
@@ -1504,7 +1798,7 @@ export class GameApp {
     lastError: () => string;
     selected: () => LimbId | null;
     dragging: () => boolean;
-    preview: () => { limb: LimbId; snap: string | null; validity: string; target: { x: number; y: number } } | null;
+    preview: () => { limb: LimbId; snap: string | null; validity: string; target: { x: number; y: number; z: number } } | null;
     anchors: () => { limb: LimbId; hold: string; load: number }[];
     reject: (limb: LimbId, holdId: string) => string | null;
     chainInfo: (limb: LimbId) => { root: { x: number; y: number; z: number } };
@@ -1530,6 +1824,16 @@ export class GameApp {
     releaseLimb: (limb: LimbId) => boolean;
     load: (id: string) => boolean;
     forceSuccess: () => boolean;
+    gas: () => string;
+    gasTrigger: () => string;
+    forceProne: () => boolean;
+    posture: () => { upDot: number; hands: number; feet: number; badTimer: number; grace: number };
+    circuit: () => {
+      stages: { id: string; index: number; name: string; heightM: number; unlocked: boolean; best: { score: number; timeS: number; stars: number } | null }[];
+      current: number;
+      totalStars: number;
+      master: boolean;
+    };
     championship: () => {
       stages: { id: string; index: number; name: string; heightM: number; unlocked: boolean; best: { score: number; timeS: number; stars: number } | null }[];
       current: number;
@@ -1547,7 +1851,7 @@ export class GameApp {
       dragging: () => this.interaction?.dragging ?? false,
       preview: () => {
         const p = this.interaction?.getPreview();
-        return p ? { limb: p.limb, snap: p.snappedHoldId, validity: p.validity, target: { x: Math.round(p.target.x * 100) / 100, y: Math.round(p.target.y * 100) / 100 } } : null;
+        return p ? { limb: p.limb, snap: p.snappedHoldId, validity: p.validity, target: { x: Math.round(p.target.x * 100) / 100, y: Math.round(p.target.y * 100) / 100, z: Math.round(p.target.z * 1000) / 1000 } } : null;
       },
       events: () => [...this.eventLog],
       pickAt: (x: number, y: number) => this.scene.pickLimb(x, y, this.solver),
@@ -1633,6 +1937,86 @@ export class GameApp {
           current: currentStageIndex(bests),
           totalStars: totalStars(bests),
           champion: isChampion(bests)
+        };
+      },
+      gas: () => this.gasPhase,
+      gasTrigger: () => {
+        this.tryStartGas();
+        return this.gasPhase;
+      },
+      // Solo diagnostico E2E: coloca el cuerpo BOCA ABAJO (horizontal) con los pies
+      // anclados y las manos sueltas para validar la regla de postura imposible de
+      // punta a punta (deteccion real por frame + caida + aviso).
+      forceProne: () => {
+        if (!(this.machine.state === "PLAYING" || this.machine.state === "READY")) return false;
+        for (const h of ["hand_l", "hand_r"] as LimbId[]) {
+          const a = this.solver.releaseAnchor(h);
+          if (a) this.refreshHoldOccupancy();
+        }
+        // Ancla los pies que esten libres a la presa mas cercana.
+        for (const f of ["foot_l", "foot_r"] as LimbId[]) {
+          if (this.solver.hasAnchor(f)) continue;
+          const pos = this.solver.positionOfLimb(f);
+          let best: { id: string; d: number } | null = null;
+          for (const hold of this.wall.holds) {
+            if (!hold.allowedLimbs.includes(f)) continue;
+            const d = Math.hypot(hold.position[0] - pos.x, hold.position[1] - pos.y, hold.position[2] - pos.z);
+            if (!best || d < best.d) best = { id: hold.id, d };
+          }
+          if (best) {
+            const hold = this.holdDefById.get(best.id)!;
+            this.solver.createAnchor(f, hold.id, v3(hold.position[0], hold.position[1], hold.position[2]), this.anchorMaxForceFor(f));
+          }
+        }
+        // Postura horizontal: pecho al nivel de la pelvis (upDot ~ 0).
+        const pelvis = this.solver.getParticle(P.pelvisC);
+        const y = Math.max(1.1, pelvis.pos.y);
+        const place = (idx: number, px2: number, py2: number, pz2: number): void => {
+          const p = this.solver.getParticle(idx);
+          p.pos = v3(px2, py2, pz2);
+          p.prev = v3(px2, py2, pz2);
+        };
+        const px0 = 0.3;
+        place(P.pelvisC, px0, y, -0.35);
+        place(P.hipL, px0 - 0.14, y - 0.02, -0.35);
+        place(P.hipR, px0 + 0.14, y - 0.02, -0.35);
+        place(P.chest, px0 + 0.5, y + 0.01, -0.35);
+        place(P.shL, px0 + 0.48, y + 0.1, -0.35);
+        place(P.shR, px0 + 0.52, y - 0.08, -0.35);
+        place(P.head, px0 + 0.75, y + 0.02, -0.35);
+        place(P.elbowL, px0 + 0.6, y + 0.12, -0.45);
+        place(P.elbowR, px0 + 0.62, y - 0.1, -0.45);
+        place(P.handL, px0 + 0.7, y + 0.14, -0.55);
+        place(P.handR, px0 + 0.72, y - 0.12, -0.55);
+        return true;
+      },
+      posture: () => {
+        const anchors = this.solver.anchorHoldIds();
+        const chest = this.solver.getParticle(P.chest).pos;
+        const pelvis = this.solver.getParticle(P.pelvisC).pos;
+        const spine = Math.hypot(chest.x - pelvis.x, chest.y - pelvis.y, chest.z - pelvis.z) || 1e-6;
+        return {
+          upDot: Math.round(((chest.y - pelvis.y) / spine) * 100) / 100,
+          hands: anchors.filter((a) => a.limb.startsWith("hand")).length,
+          feet: anchors.filter((a) => a.limb.startsWith("foot")).length,
+          badTimer: Math.round(this.postureBadTimer * 100) / 100,
+          grace: POSTURE_GRACE_S
+        };
+      },
+      circuit: () => {
+        const bests = this.championshipBests();
+        return {
+          stages: CIRCUIT_STAGES.map((s) => ({
+            id: s.challengeId,
+            index: s.index,
+            name: s.name,
+            heightM: s.heightM,
+            unlocked: isCircuitStageUnlocked(s.index, bests),
+            best: bests.get(s.challengeId) ?? null
+          })),
+          current: currentCircuitIndex(bests),
+          totalStars: circuitTotalStars(bests),
+          master: isCircuitChampion(bests)
         };
       },
       debugLimbInfo: () => {

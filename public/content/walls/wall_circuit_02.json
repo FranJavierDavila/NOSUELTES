@@ -1,0 +1,458 @@
+{
+  "schemaVersion": 1,
+  "id": "wall_circuit_02",
+  "dimensions": {
+    "width": 5.0,
+    "height": 5.24,
+    "depth": 0.25
+  },
+  "transform": {
+    "position": [
+      0,
+      2.47,
+      0
+    ],
+    "rotationEuler": [
+      0,
+      0,
+      0
+    ]
+  },
+  "bounds": {
+    "minX": -2.3,
+    "maxX": 2.3,
+    "minY": 0.15,
+    "maxY": 4.84
+  },
+  "segments": [
+    {
+      "height": 2.9,
+      "tiltDeg": 0,
+      "name": "vertical"
+    },
+    {
+      "height": 2.7,
+      "tiltDeg": -32,
+      "name": "desplome"
+    }
+  ],
+  "difficulty": {
+    "footOnHandPenalty": 2.0
+  },
+  "holds": [
+    {
+      "id": "start_l",
+      "type": "start",
+      "position": [
+        -0.38,
+        2.02,
+        -0.18
+      ],
+      "radius": 0.13,
+      "allowedLimbs": [
+        "hand_l"
+      ],
+      "maxOccupants": 2
+    },
+    {
+      "id": "start_r",
+      "type": "start",
+      "position": [
+        0.38,
+        2.02,
+        -0.18
+      ],
+      "radius": 0.13,
+      "allowedLimbs": [
+        "hand_r"
+      ],
+      "maxOccupants": 2
+    },
+    {
+      "id": "h1",
+      "type": "standard",
+      "position": [
+        0.2,
+        2.3,
+        -0.18
+      ],
+      "radius": 0.13,
+      "allowedLimbs": [
+        "hand_l",
+        "hand_r",
+        "foot_l",
+        "foot_r"
+      ],
+      "maxOccupants": 2
+    },
+    {
+      "id": "h2",
+      "type": "standard",
+      "position": [
+        -0.24,
+        2.575,
+        -0.18
+      ],
+      "radius": 0.13,
+      "allowedLimbs": [
+        "hand_l",
+        "hand_r",
+        "foot_l",
+        "foot_r"
+      ],
+      "maxOccupants": 2
+    },
+    {
+      "id": "h3",
+      "type": "standard",
+      "position": [
+        0.22,
+        2.85,
+        -0.18
+      ],
+      "radius": 0.13,
+      "allowedLimbs": [
+        "hand_l",
+        "hand_r",
+        "foot_l",
+        "foot_r"
+      ],
+      "maxOccupants": 2
+    },
+    {
+      "id": "h4",
+      "type": "standard",
+      "position": [
+        -0.22,
+        2.995,
+        -0.272
+      ],
+      "radius": 0.13,
+      "allowedLimbs": [
+        "hand_l",
+        "hand_r",
+        "foot_l",
+        "foot_r"
+      ],
+      "maxOccupants": 2
+    },
+    {
+      "id": "h5",
+      "type": "standard",
+      "position": [
+        0.2,
+        3.229,
+        -0.418
+      ],
+      "radius": 0.13,
+      "allowedLimbs": [
+        "hand_l",
+        "hand_r",
+        "foot_l",
+        "foot_r"
+      ],
+      "maxOccupants": 2
+    },
+    {
+      "id": "h6",
+      "type": "standard",
+      "position": [
+        -0.2,
+        3.462,
+        -0.563
+      ],
+      "radius": 0.13,
+      "allowedLimbs": [
+        "hand_l",
+        "hand_r",
+        "foot_l",
+        "foot_r"
+      ],
+      "maxOccupants": 2
+    },
+    {
+      "id": "h7",
+      "type": "standard",
+      "position": [
+        0.18,
+        3.695,
+        -0.709
+      ],
+      "radius": 0.13,
+      "allowedLimbs": [
+        "hand_l",
+        "hand_r",
+        "foot_l",
+        "foot_r"
+      ],
+      "maxOccupants": 2
+    },
+    {
+      "id": "h8",
+      "type": "standard",
+      "position": [
+        -0.18,
+        3.928,
+        -0.855
+      ],
+      "radius": 0.13,
+      "allowedLimbs": [
+        "hand_l",
+        "hand_r",
+        "foot_l",
+        "foot_r"
+      ],
+      "maxOccupants": 2
+    },
+    {
+      "id": "h9",
+      "type": "standard",
+      "position": [
+        0.16,
+        4.161,
+        -1.001
+      ],
+      "radius": 0.13,
+      "allowedLimbs": [
+        "hand_l",
+        "hand_r",
+        "foot_l",
+        "foot_r"
+      ],
+      "maxOccupants": 2
+    },
+    {
+      "id": "h10",
+      "type": "standard",
+      "position": [
+        -0.16,
+        4.395,
+        -1.146
+      ],
+      "radius": 0.13,
+      "allowedLimbs": [
+        "hand_l",
+        "hand_r",
+        "foot_l",
+        "foot_r"
+      ],
+      "maxOccupants": 2
+    },
+    {
+      "id": "h11",
+      "type": "standard",
+      "position": [
+        0.14,
+        4.628,
+        -1.292
+      ],
+      "radius": 0.13,
+      "allowedLimbs": [
+        "hand_l",
+        "hand_r",
+        "foot_l",
+        "foot_r"
+      ],
+      "maxOccupants": 2
+    },
+    {
+      "id": "fb1",
+      "type": "foot",
+      "position": [
+        0.5,
+        0.8,
+        -0.18
+      ],
+      "radius": 0.12,
+      "allowedLimbs": [
+        "foot_l",
+        "foot_r"
+      ],
+      "maxOccupants": 1
+    },
+    {
+      "id": "fa1",
+      "type": "foot",
+      "position": [
+        -0.5,
+        0.8,
+        -0.18
+      ],
+      "radius": 0.12,
+      "allowedLimbs": [
+        "foot_l",
+        "foot_r"
+      ],
+      "maxOccupants": 1
+    },
+    {
+      "id": "fb2",
+      "type": "foot",
+      "position": [
+        0.5,
+        1.52,
+        -0.18
+      ],
+      "radius": 0.12,
+      "allowedLimbs": [
+        "foot_l",
+        "foot_r"
+      ],
+      "maxOccupants": 1
+    },
+    {
+      "id": "fa2",
+      "type": "foot",
+      "position": [
+        -0.5,
+        1.52,
+        -0.18
+      ],
+      "radius": 0.12,
+      "allowedLimbs": [
+        "foot_l",
+        "foot_r"
+      ],
+      "maxOccupants": 1
+    },
+    {
+      "id": "fb3",
+      "type": "foot",
+      "position": [
+        0.5,
+        2.24,
+        -0.18
+      ],
+      "radius": 0.12,
+      "allowedLimbs": [
+        "foot_l",
+        "foot_r"
+      ],
+      "maxOccupants": 1
+    },
+    {
+      "id": "fa3",
+      "type": "foot",
+      "position": [
+        -0.5,
+        2.24,
+        -0.18
+      ],
+      "radius": 0.12,
+      "allowedLimbs": [
+        "foot_l",
+        "foot_r"
+      ],
+      "maxOccupants": 1
+    },
+    {
+      "id": "fb4",
+      "type": "foot",
+      "position": [
+        0.5,
+        2.855,
+        -0.184
+      ],
+      "radius": 0.12,
+      "allowedLimbs": [
+        "foot_l",
+        "foot_r"
+      ],
+      "maxOccupants": 1
+    },
+    {
+      "id": "fa4",
+      "type": "foot",
+      "position": [
+        -0.5,
+        2.855,
+        -0.184
+      ],
+      "radius": 0.12,
+      "allowedLimbs": [
+        "foot_l",
+        "foot_r"
+      ],
+      "maxOccupants": 1
+    },
+    {
+      "id": "fb5",
+      "type": "foot",
+      "position": [
+        0.5,
+        3.466,
+        -0.566
+      ],
+      "radius": 0.12,
+      "allowedLimbs": [
+        "foot_l",
+        "foot_r"
+      ],
+      "maxOccupants": 1
+    },
+    {
+      "id": "fa5",
+      "type": "foot",
+      "position": [
+        -0.5,
+        3.466,
+        -0.566
+      ],
+      "radius": 0.12,
+      "allowedLimbs": [
+        "foot_l",
+        "foot_r"
+      ],
+      "maxOccupants": 1
+    },
+    {
+      "id": "frest1",
+      "type": "foot",
+      "position": [
+        0.48,
+        3.822,
+        -0.789
+      ],
+      "radius": 0.12,
+      "allowedLimbs": [
+        "foot_l",
+        "foot_r"
+      ],
+      "maxOccupants": 1
+    },
+    {
+      "id": "frest2",
+      "type": "foot",
+      "position": [
+        -0.5,
+        4.077,
+        -0.948
+      ],
+      "radius": 0.12,
+      "allowedLimbs": [
+        "foot_l",
+        "foot_r"
+      ],
+      "maxOccupants": 1
+    },
+    {
+      "id": "top",
+      "type": "top",
+      "position": [
+        0.05,
+        4.942,
+        -1.488
+      ],
+      "radius": 0.18,
+      "allowedLimbs": [
+        "hand_l",
+        "hand_r"
+      ],
+      "maxOccupants": 2
+    }
+  ],
+  "collisionProfile": "climbing_wall_default",
+  "presentation": {
+    "mesh": "walls/prototype/wall.glb"
+  }
+}

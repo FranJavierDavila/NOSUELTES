@@ -59,11 +59,17 @@ export interface ChallengeOption {
   /** Etiqueta compacta para el selector lateral. */
   short: string;
   best?: BestRecord | null;
-  group: "campeonato" | "entrenamiento";
+  group: "campeonato" | "circuito" | "entrenamiento";
   locked: boolean;
-  /** 1..5 para etapas del campeonato. */
+  /** 1..5 para etapas del campeonato/escenarios del circuito. */
   stageIndex?: number;
   heightM?: number;
+}
+
+/** Estado del chip GAS (mecanica comica): aviso, alivio activo o recarga. */
+export interface GasStatus {
+  state: "warning" | "buff" | "cooldown";
+  seconds: number;
 }
 
 export class Hud {
@@ -98,6 +104,8 @@ export class Hud {
   private challengeCards = new Map<string, HTMLElement>();
   private presetButtons = new Map<BalancePresetName, HTMLButtonElement>();
   private flowEl: HTMLElement;
+  private gasEl: HTMLElement;
+  private gasTextEl: HTMLElement;
   private activePreset: BalancePresetName | null = null;
 
   constructor(
@@ -154,6 +162,10 @@ export class Hud {
           <div class="h-2 overflow-hidden rounded bg-zinc-800"><div id="hud-progress" class="h-full rounded bg-amber-400" style="width:0%"></div></div>
         </div>
 
+        <div id="hud-gas" class="absolute left-1/2 top-28 hidden -translate-x-1/2 rounded-full border px-4 py-1 text-sm font-black tracking-wider backdrop-blur">
+          <span id="hud-gas-text">GAS</span>
+        </div>
+
         <div id="hud-flow" class="absolute left-1/2 top-16 hidden -translate-x-1/2 rounded-full border border-amber-400/60 bg-amber-500/15 px-4 py-1 text-sm font-black tracking-wider text-amber-300 backdrop-blur">
           FLUJO <span id="hud-flow-n" class="tabular-nums">x2</span>
         </div>
@@ -170,7 +182,7 @@ export class Hud {
         <div id="hud-toasts" class="absolute left-1/2 top-24 flex w-max -translate-x-1/2 flex-col items-center gap-1"></div>
 
         <div id="hud-keys" class="absolute bottom-3 left-4 rounded bg-zinc-950/60 px-3 py-1.5 text-[11px] text-zinc-500 backdrop-blur">
-          Agarrar sin ratón: <b>1-4</b> (repite para soltar) · Arrastrar: clic izq. sobre mano/pie · Cancelar: clic der./Esc · Reiniciar: R · Pausa: Espacio · Tutorial: T · Ayuda: H · Debug: F3 · <span id="hud-backend-mini">motor…</span>
+          Agarrar sin ratón: <b>1-4</b> (repite para soltar) · Arrastrar: clic izq. sobre mano/pie · Cancelar: clic der./Esc · Reiniciar: R · GAS: P · Pausa: Espacio · Tutorial: T · Ayuda: H · Debug: F3 · <span id="hud-backend-mini">motor…</span>
         </div>
 
         <div id="hud-help" class="pointer-events-auto absolute inset-0 hidden items-center justify-center bg-zinc-950/80 backdrop-blur">
@@ -187,6 +199,9 @@ export class Hud {
               <li><b>Lo posible y lo imposible, en vivo</b>: mientras arrastras, si una presa se marca en rojo el aviso central dice el motivo (fuera de alcance, ocupada, cruce imposible…). En Realista/Equilibrado se rechaza el cruce total de una mano por detrás del hombro contrario (el cruce moderado de escalada es legal); en Ragdoll el cuerpo es libre.</li>
               <li><b>Tipos de presa</b>: <b style="color:#3fb26f">verde</b> salida, <b style="color:#8a97a8">gris</b> manos, <b style="color:#d97b2f">naranja</b> pies, <b style="color:#e0b13e">ámbar</b> cima.</li>
               <li><b>R</b>: reiniciar la prueba. <b>Espacio</b>: pausa. <b>T</b>: tutorial guiado. <b>F3</b>: overlay de depuracion. <b>C</b>: recentrar camara. <b>F4</b>: vista ortografica. <b>M</b>: sonido.</li>
+              <li><b>GAS (tecla P)</b>: retortijón de aviso (2 s) y… ¡PUM! Sonido, nube y <b>cartón eyectado</b>. Beneficio real pero comico: impulso hacia arriba y fatiga aliviada 6 s — sirve para encadenar algunos agarres imposibles. Recarga 22 s. El cuerpo pesa: el gas no es un jet privado.</li>
+              <li><b>Física sin trampas</b>: sin manos ancladas, el cuerpo solo se sostiene de pie (torso erguido) o colgando DEBAJO de los apoyos. Quedar boca abajo o en horizontal sin manos es <b>caída garantizada</b>. Y en el circuito, un pie en presa de mano carga <b>x2</b>: el dedo del pie no es una mano.</li>
+              <li><b>Circuito</b>: cinco escenarios con ángulos crecientes (placa, desplome, cueva y TECHO horizontal). Se avanza colgado; los ganchos de pie (presas naranjas) son los descansos. Supera un escenario para desbloquear el siguiente.</li>
               <li><b>Flujo</b>: encadena movimientos en menos de 6 s para multiplicar la puntuación (chip FLUJO). Las caídas y el tiempo restan: la rapidez con control da las 3 estrellas.</li>
               <li><b>Campeonato</b>: cinco paredes (6 a 10,5 m) de complejidad creciente. Supera una etapa para desbloquear la siguiente; estrellas y récords se guardan solos. El botón <b>Siguiente etapa</b> aparece al superar cada pared.</li>
               <li><b>Sobrecarga con cuenta atras</b>: en rojo, el panel marca cuántos segundos aguanta el agarre (<b style="color:#e05252">cede en X,s</b>); el chip central avisa de la extremidad más comprometida. Si la carga no baja cuando llega a 0, el agarre se abre solo.</li>
@@ -206,7 +221,7 @@ export class Hud {
             <p class="mt-3 text-sm leading-relaxed text-zinc-400">
               Control fisico de un personaje ragdoll: mueve, fija y estabiliza extremidades para resolver la pared.
               El cuerpo se simula con fisica real: no hay teletransporte, y soltar el raton en un punto malo puede costarte la prueba.
-              Los modos de entrenamiento te enseñan los controles; el <b class="text-amber-300">campeonato</b> te enfrenta a cinco paredes cada vez mas altas y exigentes.
+              Los modos de entrenamiento te enseñan los controles; el <b class="text-amber-300">campeonato</b> te enfrenta a cinco paredes cada vez mas altas y exigentes, y el <b class="text-cyan-300">circuito</b> mezcla placas, desplomes y techos donde se avanza colgado.
             </p>
             <div class="mt-4">
               <div class="flex items-baseline justify-between">
@@ -214,6 +229,11 @@ export class Hud {
                 <div id="hud-intro-champ-status" class="text-[11px] text-zinc-500"></div>
               </div>
               <div id="hud-intro-champ" class="mt-1.5 grid grid-cols-5 gap-1.5"></div>
+              <div class="mt-3 flex items-baseline justify-between">
+                <div class="text-[10px] font-semibold uppercase tracking-widest text-cyan-400">Circuito · 5 escenarios con ángulos y techos</div>
+                <div id="hud-intro-circuit-status" class="text-[11px] text-zinc-500"></div>
+              </div>
+              <div id="hud-intro-circuit" class="mt-1.5 grid grid-cols-5 gap-1.5"></div>
               <div class="mt-3 text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Entrenamiento</div>
               <div id="hud-intro-training" class="mt-1.5 grid grid-cols-2 gap-2"></div>
             </div>
@@ -246,6 +266,8 @@ export class Hud {
     this.progressWrap = root.querySelector("#hud-progress-wrap")!;
     this.progressBar = root.querySelector("#hud-progress")!;
     this.flowEl = root.querySelector("#hud-flow")!;
+    this.gasEl = root.querySelector("#hud-gas")!;
+    this.gasTextEl = root.querySelector("#hud-gas-text")!;
     this.overloadChip = root.querySelector("#hud-overload")!;
     this.overloadMain = root.querySelector("#hud-overload-main")!;
     this.overloadSub = root.querySelector("#hud-overload-sub")!;
@@ -321,30 +343,35 @@ export class Hud {
   private renderChallengeLists(challenges: ChallengeOption[]): void {
     const root = this.rootEl;
     const champIntro = root.querySelector("#hud-intro-champ")!;
+    const circuitIntro = root.querySelector("#hud-intro-circuit")!;
     const trainingIntro = root.querySelector("#hud-intro-training")!;
     const switchList = root.querySelector("#hud-switch-list")!;
     champIntro.innerHTML = "";
+    circuitIntro.innerHTML = "";
     trainingIntro.innerHTML = "";
     switchList.innerHTML = "";
     this.challengeCards.clear();
     this.challengeButtons.clear();
     for (const c of challenges) {
       const isChamp = c.group === "campeonato";
+      const isCircuit = c.group === "circuito";
       const starsHtml = c.best
         ? `<span class="text-amber-400">${STAR_FULL.repeat(Math.max(1, Math.min(3, c.best.stars)))}</span><span class="text-zinc-600">${STAR_EMPTY.repeat(3 - Math.max(1, Math.min(3, c.best.stars)))}</span>`
         : "";
 
-      // Tarjeta del menu (etapa compacta en fila de 5 / tarjeta de entrenamiento con descripcion).
+      // Tarjeta del menu (etapa/escenario compactos en fila de 5 / entrenamiento con descripcion).
       const card = document.createElement("button");
-      if (isChamp) {
+      if (isChamp || isCircuit) {
         card.className =
           "rounded-lg border px-2 py-2 text-left transition " +
           (c.locked
             ? "border-zinc-800 bg-zinc-900/50 opacity-55 hover:border-zinc-600"
-            : "border-zinc-700 bg-zinc-900 hover:border-amber-500/60 hover:bg-zinc-900/70");
+            : isCircuit
+              ? "border-zinc-700 bg-zinc-900 hover:border-cyan-400/60 hover:bg-zinc-900/70"
+              : "border-zinc-700 bg-zinc-900 hover:border-amber-500/60 hover:bg-zinc-900/70");
         card.innerHTML = `
-          <div class="flex items-center justify-between text-[10px] font-bold ${c.locked ? "text-zinc-500" : "text-amber-300"}">E${c.stageIndex}${c.locked ? " · BLOQUEADA" : ""}</div>
-          <div class="text-[11px] font-bold leading-tight ${c.locked ? "text-zinc-400" : "text-zinc-100"}">${c.label.replace(/^ETAPA \d+ · /, "")}</div>
+          <div class="flex items-center justify-between text-[10px] font-bold ${c.locked ? "text-zinc-500" : isCircuit ? "text-cyan-300" : "text-amber-300"}">${isCircuit ? "C" : "E"}${c.stageIndex}${c.locked ? " · BLOQUEADA" : ""}</div>
+          <div class="text-[11px] font-bold leading-tight ${c.locked ? "text-zinc-400" : "text-zinc-100"}">${c.label.replace(/^(ETAPA|ESCENARIO) \d+ · /, "")}</div>
           <div class="text-[10px] text-zinc-500">${c.heightM ?? ""} m</div>
           <div class="text-[11px] leading-none">${c.locked ? '<span class="text-[9px] font-semibold text-zinc-600">supera la anterior</span>' : c.best ? starsHtml : '<span class="text-[9px] text-zinc-600">sin completar</span>'}</div>`;
       } else {
@@ -353,7 +380,7 @@ export class Hud {
         card.innerHTML = `<div class="text-sm font-bold text-zinc-100">${c.label}</div><div class="mt-0.5 text-[12px] leading-snug text-zinc-500">${c.description}</div>${c.best ? `<div class="mt-1 text-[11px] font-semibold text-amber-400/90" data-best>Mejor: ${STAR_FULL.repeat(Math.max(1, Math.min(3, c.best.stars)))} · ${c.best.score} pts · ${Math.round(c.best.timeS)} s</div>` : ""}`;
       }
       card.addEventListener("click", () => this.onPickChallengeFn(c.id));
-      (isChamp ? champIntro : trainingIntro).appendChild(card);
+      (isChamp ? champIntro : isCircuit ? circuitIntro : trainingIntro).appendChild(card);
       this.challengeCards.set(c.id, card);
 
       // Boton compacto del selector lateral.
@@ -362,21 +389,32 @@ export class Hud {
         "rounded px-2 py-1 text-left text-[10px] font-semibold transition " +
         (c.locked
           ? "bg-zinc-900/70 text-zinc-600 hover:bg-zinc-900"
-          : "bg-zinc-800/80 text-zinc-300 hover:bg-zinc-700");
+          : isCircuit
+            ? "bg-cyan-900/50 text-cyan-200 hover:bg-cyan-900/80"
+            : "bg-zinc-800/80 text-zinc-300 hover:bg-zinc-700");
       btn.textContent = c.locked ? `E${c.stageIndex} · bloqueada` : c.short;
       btn.title = c.label + " — " + c.description;
       btn.addEventListener("click", () => this.onPickChallengeFn(c.id));
       switchList.appendChild(btn);
       this.challengeButtons.set(c.id, btn);
     }
-    // Estado del campeonato en el menu (linea superior de la seccion).
-    const done = challenges.filter((c) => c.group === "campeonato" && c.best && c.best.stars >= 1).length;
-    const stars = challenges.reduce((n, c) => n + (c.group === "campeonato" && c.best ? Math.max(0, Math.min(3, c.best.stars)) : 0), 0);
-    const statusText = done === 5
-      ? `¡CAMPEÓN! ${done}/5 etapas · ${stars}/15 estrellas`
-      : `${done}/5 etapas superadas · ${stars}/15 estrellas`;
+    // Estado del campeonato y del circuito en el menu (linea superior de cada seccion).
+    const champDone = challenges.filter((c) => c.group === "campeonato" && c.best && c.best.stars >= 1).length;
+    const champStars = challenges.reduce((n, c) => n + (c.group === "campeonato" && c.best ? Math.max(0, Math.min(3, c.best.stars)) : 0), 0);
     const champStatus = root.querySelector("#hud-intro-champ-status");
-    if (champStatus) champStatus.textContent = statusText;
+    if (champStatus) {
+      champStatus.textContent = champDone === 5
+        ? `¡CAMPEÓN! ${champDone}/5 etapas · ${champStars}/15 estrellas`
+        : `${champDone}/5 etapas superadas · ${champStars}/15 estrellas`;
+    }
+    const circDone = challenges.filter((c) => c.group === "circuito" && c.best && c.best.stars >= 1).length;
+    const circStars = challenges.reduce((n, c) => n + (c.group === "circuito" && c.best ? Math.max(0, Math.min(3, c.best.stars)) : 0), 0);
+    const circStatus = root.querySelector("#hud-intro-circuit-status");
+    if (circStatus) {
+      circStatus.textContent = circDone === 5
+        ? `¡MAESTRO! ${circDone}/5 escenarios · ${circStars}/15 estrellas`
+        : `${circDone}/5 escenarios superados · ${circStars}/15 estrellas`;
+    }
   }
 
   /** Chip permanente de campeonato en el panel superior izquierdo (null = oculto). */
@@ -504,6 +542,8 @@ export class Hud {
       totalStars: number;
       maxStars: number;
       champion: boolean;
+      /** "campeonato" | "circuito": cambia los textos de progresion. */
+      seriesLabel?: string;
       nextLabel: string | null;
       onNext: () => void;
     } | null;
@@ -516,13 +556,16 @@ export class Hud {
         ? `<div class="mt-1 text-[11px] text-zinc-500">Récord: ${info.best.score} pts · ${Math.round(info.best.timeS)} s</div>`
         : "";
     const champ = info.champ;
+    const isCircuitSeries = champ?.seriesLabel === "circuito";
+    const unit = isCircuitSeries ? "escenario" : "etapa";
+    const seriesName = isCircuitSeries ? "circuito" : "campeonato";
     const champHtml = champ
       ? `<div class="mt-2 border-t border-zinc-800 pt-2">
           ${champ.champion
-            ? `<div class="text-sm font-black tracking-wide text-amber-300">¡CAMPEÓN DEL CAMPEONATO!</div>
-               <div class="mt-0.5 text-[11px] text-zinc-400">Las cinco paredes superadas · ${champ.totalStars}/${champ.maxStars} estrellas</div>`
-            : `<div class="text-[11px] text-zinc-400">Etapa ${champ.stageIndex}/${champ.totalStages} superada · campeonato ${champ.totalStars}/${champ.maxStars} estrellas</div>
-               ${champ.nextLabel ? `<button id="hud-next-stage" class="mt-1.5 w-full rounded bg-amber-500 px-3 py-1.5 text-[12px] font-bold text-zinc-950 transition hover:bg-amber-400">Siguiente etapa: ${champ.nextLabel} →</button>` : ""}`
+            ? `<div class="text-sm font-black tracking-wide ${isCircuitSeries ? "text-cyan-300" : "text-amber-300"}">¡${isCircuitSeries ? "MAESTRO DEL CIRCUITO" : "CAMPEÓN DEL CAMPEONATO"}!</div>
+               <div class="mt-0.5 text-[11px] text-zinc-400">Los cinco ${isCircuitSeries ? "escenarios" : "paredes"} superados · ${champ.totalStars}/${champ.maxStars} estrellas</div>`
+            : `<div class="text-[11px] text-zinc-400">${unit.charAt(0).toUpperCase() + unit.slice(1)} ${champ.stageIndex}/${champ.totalStages} superada · ${seriesName} ${champ.totalStars}/${champ.maxStars} estrellas</div>
+               ${champ.nextLabel ? `<button id="hud-next-stage" class="mt-1.5 w-full rounded ${isCircuitSeries ? "bg-cyan-500" : "bg-amber-500"} px-3 py-1.5 text-[12px] font-bold text-zinc-950 transition ${isCircuitSeries ? "hover:bg-cyan-400" : "hover:bg-amber-400"}">Siguiente ${unit}: ${champ.nextLabel} →</button>` : ""}`
           }
          </div>`
       : "";
@@ -538,6 +581,28 @@ export class Hud {
       <div class="mt-1 text-xs text-zinc-400">Pulsa R para reiniciar</div>`;
     if (champ && !champ.champion && champ.nextLabel) {
       this.banner.querySelector("#hud-next-stage")?.addEventListener("click", () => champ.onNext());
+    }
+  }
+
+  /** Chip del GAS: aviso (ambar, cuenta atras), alivio (verde) o recarga (gris). */
+  setGasStatus(status: { state: "warning" | "buff" | "cooldown"; seconds: number } | null): void {
+    if (!status) {
+      this.gasEl.classList.add("hidden");
+      return;
+    }
+    this.gasEl.classList.remove("hidden");
+    if (status.state === "warning") {
+      this.gasEl.className =
+        "absolute left-1/2 top-28 -translate-x-1/2 rounded-full border border-amber-400/70 bg-amber-500/20 px-4 py-1 text-sm font-black tracking-wider text-amber-300 backdrop-blur animate-pulse";
+      this.gasTextEl.textContent = `GAS INMINENTE · ${status.seconds.toFixed(1)} s`;
+    } else if (status.state === "buff") {
+      this.gasEl.className =
+        "absolute left-1/2 top-28 -translate-x-1/2 rounded-full border border-lime-400/70 bg-lime-500/20 px-4 py-1 text-sm font-black tracking-wider text-lime-300 backdrop-blur";
+      this.gasTextEl.textContent = `¡ALIVIO DE GAS! · ${status.seconds.toFixed(0)} s`;
+    } else {
+      this.gasEl.className =
+        "absolute left-1/2 top-28 -translate-x-1/2 rounded-full border border-zinc-700 bg-zinc-900/80 px-4 py-1 text-xs font-bold tracking-wider text-zinc-400 backdrop-blur";
+      this.gasTextEl.textContent = `gas recargando · ${status.seconds.toFixed(0)} s`;
     }
   }
 

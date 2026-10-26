@@ -278,6 +278,27 @@ export const wallSchema: JSONSchema7 = {
         maxY: { type: "number" }
       }
     },
+    segments: {
+      type: "array",
+      minItems: 1,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["height", "tiltDeg"],
+        properties: {
+          height: positive,
+          tiltDeg: { type: "number", minimum: -90, maximum: 45 },
+          name: { type: "string", minLength: 1 }
+        }
+      }
+    },
+    difficulty: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        footOnHandPenalty: { type: "number", minimum: 1, maximum: 4 }
+      }
+    },
     holds: {
       type: "array",
       minItems: 1,

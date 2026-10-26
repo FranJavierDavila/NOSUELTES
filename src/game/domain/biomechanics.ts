@@ -198,7 +198,8 @@ export class BiomechanicsSystem {
     dt: number,
     result: StepResult,
     anchors: { limb: LimbId; holdId: string }[],
-    solverTremor: Record<LimbId, number>
+    solverTremor: Record<LimbId, number>,
+    loadMultiplier?: Partial<Record<LimbId, number>>
   ): BiomechUpdateResult {
     const cfg = this.profile.biomech;
     const overloadReleases: LimbId[] = [];
@@ -218,7 +219,11 @@ export class BiomechanicsSystem {
       // Las piernas soportan el peso del cuerpo: capacidad multiplicada (ADR-007).
       const legFactor = anchor.limb.startsWith("foot") ? (this.character.physical.legForceFactor ?? 2.2) : 1;
       const eff = effBase * legFactor;
-      const ratio = finite ? load / Math.max(eff, 1e-6) : Infinity;
+      // Multiplicador de carga por presa (mecanica realista del circuito: un pie en
+      // una presa de mano carga el doble - el dedo no es una mano). Entra en
+      // TENSION/SOBRECARGA el doble de rapido y la fatiga se dispara con el ratio.
+      const mult = loadMultiplier?.[anchor.limb] ?? 1;
+      const ratio = finite ? (load * mult) / Math.max(eff, 1e-6) : Infinity;
       const zone = loadZone(ratio, this.profile, finite);
       const prevZone = this.zones[anchor.limb];
       if (zone === "STRAINED" && prevZone !== "STRAINED" && prevZone !== "OVERLOADED") strainStarted.push(anchor.limb);
@@ -303,6 +308,19 @@ export class BiomechanicsSystem {
 
   zoneOf(limb: LimbId): LoadZone {
     return this.zones[limb];
+  }
+
+  /**
+   * Alivio instantaneo de fatiga en TODAS las extremidades (mecanica GAS: el
+   * "empujon" relaja la tension, permite encadenar algunos agarres mas). Cantidad
+   * absoluta 0..1 por extremidad; nunca sube fatiga.
+   */
+  relieveFatigue(amount: number): void {
+    const a = Math.max(0, amount);
+    for (const limb of LIMB_IDS) {
+      this.fatigue[limb] = Math.max(0, this.fatigue[limb] - a);
+      this.overloadTimers[limb] = Math.max(0, this.overloadTimers[limb] - a * 2);
+    }
   }
 }
 

@@ -128,12 +128,37 @@ export interface HoldDefinition {
   maxOccupants: number;
 }
 
+/**
+ * Segmento de pared (circuito con ángulos): franja apilada de bottom a top con
+ * inclinación propia. tiltDeg positivo = top se aleja de la cámara (placa/desplome
+ * suave); negativo = top se acerca a la cámara (desplome; -90 = techo horizontal).
+ */
+export interface WallSegment {
+  /** Altura vertical local del segmento (m). La suma = dimensions.height. */
+  height: number;
+  tiltDeg: number;
+  name?: string;
+}
+
+/** Dificultad opcional por pared (mecánicas realistas del circuito). */
+export interface WallDifficulty {
+  /**
+   * Multiplicador de carga cuando un PIE se apoya en una presa designada para
+   * manos (type != "foot"): el dedo del pie no es una mano (peticion del jugador:
+   * "la sobrecarga sea el doble"). 1 = desactivado (paredes antiguas).
+   */
+  footOnHandPenalty?: number;
+}
+
 export interface WallDefinition {
   schemaVersion: number;
   id: string;
   dimensions: { width: number; height: number; depth: number };
   transform: { position: Vec3Tuple; rotationEuler: Vec3Tuple };
   bounds: { minX: number; maxX: number; minY: number; maxY: number };
+  /** Segmentos apilados bottom->top (ausente = pared vertical unica). */
+  segments?: WallSegment[];
+  difficulty?: WallDifficulty;
   holds: HoldDefinition[];
   collisionProfile: string;
   presentation?: Record<string, unknown>;

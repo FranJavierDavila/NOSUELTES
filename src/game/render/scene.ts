@@ -36,6 +36,7 @@ import { LIMB_IDS } from "../types";
 import { RagdollRig } from "../physics/pbd/ragdoll";
 import { PbdSolver } from "../physics/pbd/solver";
 import type { DragPreview } from "../gameplay/interaction";
+import { computeWallFrames, facePoint, framesRoofFactor, framesTopY, segmentAtPoint, type WallFrame } from "../domain/wallgeometry";
 
 export interface DebugFlags {
   axes: boolean;
@@ -125,7 +126,9 @@ export class GameScene {
   private axesViewer: AxesViewer | null = null;
   private jointSpheres: Mesh[] = [];
   private rayLine: LinesMesh;
-  private wallMesh: Mesh | null = null;
+  private wallMeshes: Mesh[] = [];
+  /** Marcos de los segmentos de la pared cargada (circuito inclinado). */
+  private wallFrames: WallFrame[] = [];
   private debugFlags: DebugFlags = { axes: false, joints: false, reach: false, raycast: false };
   private ortho = false;
   private camTargetBase = new Vector3(0, 2.4, -0.2);
@@ -133,6 +136,15 @@ export class GameScene {
   private wallTopY = 4.85;
   /** Semiancho de la pared cargada (travesias hasta el borde quedan en cuadro). */
   private wallHalfWidth = 2.5;
+  /** Distancia base de camara segun pared (crece con techo/altura del circuito). */
+  private camBaseDist = 7.8;
+  private camDist = 7.8;
+  /** Estado cinematico: zoom-in al caer (drama) y al completar (celebracion). */
+  private camMode: "play" | "fallen" | "success" = "play";
+  private camModeLeft = 0;
+  private lastPelvis = { x: 0, y: 2, z: 0 };
+  /** Escombros comedicoss (carton del GAS): balistica manual y giro. */
+  private debris: { mesh: Mesh; vel: Vector3; spin: Vector3; rot: Vector3; life: number; mat: StandardMaterial }[] = [];
   private lastReachRadius = 0.58;
   /** Textura radial blanca compartida (tiza, polvo, confeti usa colores propios). */
   private readonly spriteTex: DynamicTexture;
@@ -252,20 +264,32 @@ export class GameScene {
     this.holdMeshes.clear();
     this.holdBaseColor.clear();
     this.holdRadius.clear();
-    this.wallMesh?.dispose();
+    for (const m of this.wallMeshes) m.dispose();
+    this.wallMeshes = [];
 
     const d = wall.dimensions;
-    const t = wall.transform.position;
-    // La camara debe poder seguir al escalador hasta cerca de la cima (campeonato:
-    // paredes de 6 a 10,5 m) y encuadrar travesias hasta el borde de la pared.
-    this.wallTopY = t[1] + d.height / 2;
+    // Marcos por segmento (una sola franja vertical si el JSON no declara segments).
+    this.wallFrames = computeWallFrames(wall);
+    this.wallTopY = framesTopY(this.wallFrames);
     this.wallHalfWidth = d.width / 2;
-    const wallMesh = MeshBuilder.CreateBox("wall", { width: d.width, height: d.height, depth: d.depth }, this.scene);
-    wallMesh.position = new Vector3(t[0], t[1], t[2]);
-    wallMesh.isPickable = true;
-    wallMesh.material = wallMaterial(this.scene);
-    wallMesh.receiveShadows = true;
-    this.wallMesh = wallMesh;
+    // Camara: mas lejos cuanto mas techo (el escalador avanza HACIA la camara) y
+    // cuanto mas alta la pared (se ve mas recorrido de una vez).
+    const roof = framesRoofFactor(this.wallFrames);
+    this.camBaseDist = Math.min(10.6, 7.8 + 2.3 * roof + Math.max(0, this.wallTopY - 6) * 0.28);
+    this.camDist = this.camBaseDist;
+    this.camMode = "play";
+    this.camModeLeft = 0;
+    const wallMat = wallMaterial(this.scene);
+    for (const frame of this.wallFrames) {
+      const segMesh = MeshBuilder.CreateBox(`wall_seg_${frame.index}`, { width: d.width, height: frame.height, depth: d.depth }, this.scene);
+      segMesh.position = new Vector3(frame.center.x, frame.center.y, frame.center.z);
+      segMesh.rotation.x = (frame.tiltDeg * Math.PI) / 180;
+      segMesh.isPickable = true;
+      segMesh.name = "wall"; // el raycast de bloqueo y la distancia de pared lo buscan por nombre
+      segMesh.material = wallMat;
+      segMesh.receiveShadows = true;
+      this.wallMeshes.push(segMesh);
+    }
 
     const floor = MeshBuilder.CreateGround("floor", { width: 12, height: 12 }, this.scene);
     const floorMat = new StandardMaterial("floorMat", this.scene);
@@ -870,13 +894,35 @@ export class GameScene {
 
   // --- Camara ---
 
-  updateCamera(dt: number, pelvis: { x: number; y: number; z: number }, recenter: boolean): void {
+  /**
+   * Camara de seguimiento cinematografico (peticion del jugador: "una camara que
+   * permita un seguimiento muy bueno y espectacular"):
+   * - sigue la pelvis con zona muerta (x/y) y mirada adelantada (+0.35 arriba);
+   * - distancia ADAPTATIVA: se aleja con la velocidad (pendulos y saltos entran en
+   *   cuadro), se acerca en caida (drama, junto al slow-mo) y al completar;
+   * - retrocede cuando el escalador avanza bajo un techo hacia la camara (circuito);
+   * - respiracion sutil en reposo y sacudida de impacto sobre el punto de mira.
+   * Sin balanceo lateral ni roll: el picking en espacio de pantalla debe ser estable.
+   */
+  updateCamera(dt: number, pelvis: { x: number; y: number; z: number }, recenter: boolean, mode: "play" | "fallen" | "success" = "play", aiming = false): void {
+    if (mode !== "play") {
+      this.camMode = mode;
+      this.camModeLeft = 1.5;
+    } else if (this.camModeLeft > 0) {
+      this.camModeLeft -= dt;
+      if (this.camModeLeft <= 0) this.camMode = "play";
+    }
+
+    const speed = Math.hypot(pelvis.x - this.lastPelvis.x, pelvis.y - this.lastPelvis.y, pelvis.z - this.lastPelvis.z) / Math.max(1e-4, dt);
+    this.lastPelvis = { x: pelvis.x, y: pelvis.y, z: pelvis.z };
+
     const deadzoneHalf = 0.55;
     const target = this.camera.target;
     if (recenter) {
       target.copyFrom(this.camTargetBase);
+      this.camDist = this.camBaseDist;
     } else if (pelvis) {
-      const yCap = Math.max(4.2, this.wallTopY - 1.2);
+      const yCap = Math.max(4.2, this.wallTopY + 0.6);
       const xCap = Math.max(1.6, this.wallHalfWidth - 0.45);
       const desiredY = Math.min(yCap, Math.max(1.0, pelvis.y));
       const dy = desiredY - target.y;
@@ -888,23 +934,40 @@ export class GameScene {
       if (Math.abs(dx) > deadzoneHalf) {
         target.x += (dx - Math.sign(dx) * deadzoneHalf) * Math.min(1, dt * 3);
       }
+      // Bajo techos el cuerpo avanza hacia la camara: el punto de mira lo sigue en z.
+      const desiredZ = Math.min(0.3, Math.max(-2.6, pelvis.z * 0.55));
+      target.z += (desiredZ - target.z) * Math.min(1, dt * 2.2);
     }
-    target.z = this.camTargetBase.z;
 
-    // La mutacion de camera.target no reorienta a una FreeCamera: hay que llamar
-    // a setTarget. Ademas aplicamos la sacudida sobre el punto de mira.
-    if (this.shakeAmp > 0.0006) {
-      const t = performance.now() / 1000;
-      const look = new Vector3(
-        target.x + Math.sin(t * 47) * this.shakeAmp,
-        target.y + Math.cos(t * 39) * this.shakeAmp * 0.7,
-        target.z
+    // Distancia adaptativa + posicion (suavizadas). MIENTRAS SE ARRASTRA la
+    // posicion queda CONGELADA: el jugador esta apuntando con el cursor y el
+    // mapeo cursor->presa no puede moverse bajo sus pies (control determinista).
+    const zoomGoal = this.camMode === "fallen" ? -1.4 : this.camMode === "success" ? -0.85 : Math.min(1.15, speed * 0.13);
+    const distGoal = Math.min(12, Math.max(5.2, this.camBaseDist + zoomGoal));
+    this.camDist += (distGoal - this.camDist) * Math.min(1, dt * (this.camMode === "play" ? 2.6 : 4.2));
+    const t = performance.now() / 1000;
+    if (!aiming) {
+      const roofPull = Math.max(0, -target.z) * 0.85;
+      const breathe = Math.sin(t * 0.45) * 0.035;
+      const desiredPos = new Vector3(
+        target.x * 0.22,
+        target.y + 1.12 + breathe,
+        -(this.camDist) - roofPull
       );
+      this.camera.position.addInPlace(desiredPos.subtract(this.camera.position).scale(Math.min(1, dt * 3.4)));
+    }
+
+    // La mutacion de camera.target no reorienta a una FreeCamera: hay que llamar a
+    // setTarget. Mirada adelantada (ves a donde vas) + sacudida de impacto.
+    const look = new Vector3(target.x, target.y + 0.35, target.z);
+    if (this.shakeAmp > 0.0006) {
+      look.x += Math.sin(t * 47) * this.shakeAmp;
+      look.y += Math.cos(t * 39) * this.shakeAmp * 0.7;
       this.camera.setTarget(look);
       this.shakeAmp *= Math.exp(-dt * 5.2);
     } else {
       this.shakeAmp = 0;
-      this.camera.setTarget(new Vector3(target.x, target.y, target.z));
+      this.camera.setTarget(look);
     }
 
     if (this.ortho) {
@@ -1090,6 +1153,97 @@ export class GameScene {
     const t = (zPlane - ray.origin.z) / ray.direction.z;
     if (t <= 0) return null;
     return ray.origin.add(ray.direction.scale(t));
+  }
+
+  /**
+   * Proyeccion del cursor al PLANO DE PRESAS del segmento que gobierna `ref`
+   * (posicion de la raiz de la extremidad arrastrada). En circuito inclinado cada
+   * segmento tiene su propio plano: es lo que hace posible arrastrar bajo un techo.
+   */
+  wallPlanePointNear(x: number, y: number, ref: { x: number; y: number; z: number }): Vector3 | null {
+    if (this.wallFrames.length === 0) return null;
+    const frame = segmentAtPoint(this.wallFrames, ref);
+    const n = frame.normal;
+    const f = facePoint(frame);
+    const holdOff = 0.055; // las presas sobresalen 5,5 cm de la cara (z=-0.18 en vertical)
+    const px = f.x + n.x * holdOff;
+    const py = f.y + n.y * holdOff;
+    const pz = f.z + n.z * holdOff;
+    const ray = this.scene.createPickingRay(x, y, Matrix.Identity(), this.camera);
+    const denom = ray.direction.x * n.x + ray.direction.y * n.y + ray.direction.z * n.z;
+    if (Math.abs(denom) < 1e-5) return null;
+    const t = ((px - ray.origin.x) * n.x + (py - ray.origin.y) * n.y + (pz - ray.origin.z) * n.z) / denom;
+    if (t <= 0.05) return null;
+    return ray.origin.add(ray.direction.scale(t));
+  }
+
+  /** Normal de escape en un punto (hacia el escalador): para FX y mecanica GAS. */
+  awayNormalAt(p: { x: number; y: number; z: number }): { x: number; y: number; z: number } {
+    if (this.wallFrames.length === 0) return { x: 0, y: 0, z: -1 };
+    const n = segmentAtPoint(this.wallFrames, p).normal;
+    return { x: n.x, y: n.y, z: n.z };
+  }
+
+  /**
+   * FX del GAS (peticion del jugador: "toques de humos sorprendentes"): nube verde
+   * desde el trasero + UN TROZO DE CARTON eyectado que vuela girando y cae. El
+   * carton es balistica manual (nada de fisica del solver): nace evidente y muere solo.
+   */
+  spawnFartBlast(pos: Vector3, away: Vector3): void {
+    // Nube de gas: verde oliva, sube y se disipa.
+    this.burst(
+      "gasBurst",
+      pos.clone(),
+      34,
+      new Color4(0.55, 0.75, 0.25, 0.55),
+      new Color4(0.42, 0.62, 0.2, 0.35),
+      new Vector3(away.x - 0.6, 0.15, away.z - 0.6),
+      new Vector3(away.x + 0.6, 1.15, away.z + 0.6),
+      { sizeMin: 0.12, sizeMax: 0.34, lifeMin: 0.6, lifeMax: 1.5, gravity: new Vector3(0, 0.55, 0), emitTime: 0.24 }
+    );
+    // Carton: caja marron que sale disparada con giro y cae con drag.
+    const carton = MeshBuilder.CreateBox("fartCarton", { width: 0.2, height: 0.14, depth: 0.035 }, this.scene);
+    const mat = new StandardMaterial("fartCartonMat", this.scene);
+    mat.diffuseColor = Color3.FromHexString("#b08a5a");
+    mat.specularColor = new Color3(0.05, 0.05, 0.05);
+    carton.material = mat;
+    carton.rotationQuaternion = Quaternion.Identity();
+    carton.position.copyFrom(pos);
+    carton.isPickable = false;
+    const spin = new Vector3((Math.random() - 0.5) * 14, (Math.random() - 0.5) * 14, (Math.random() - 0.5) * 10);
+    const rot = new Vector3(Math.random() * 6.28, Math.random() * 6.28, Math.random() * 6.28);
+    const vel = new Vector3(
+      away.x * (2.1 + Math.random() * 0.7) + (Math.random() - 0.5) * 0.7,
+      0.4 + Math.random() * 0.5,
+      away.z * (2.1 + Math.random() * 0.7) + (Math.random() - 0.5) * 0.7
+    );
+    this.debris.push({ mesh: carton, vel, spin, rot, life: 2.4, mat });
+  }
+
+  /** Integracion de escombros (llamar cada frame de render con dt real). */
+  tickFx(dt: number): void {
+    for (let i = this.debris.length - 1; i >= 0; i--) {
+      const d = this.debris[i];
+      d.life -= dt;
+      // Gravedad suave + drag de papel: el carton planea un poco antes de caer.
+      d.vel.y -= 3.6 * dt;
+      d.vel.scaleInPlace(Math.max(0, 1 - 0.55 * dt));
+      d.mesh.position.addInPlace(d.vel.scale(dt));
+      if (d.mesh.position.y < 0.03) {
+        d.mesh.position.y = 0.03;
+        d.vel.y = Math.abs(d.vel.y) * 0.25;
+        d.vel.scaleInPlace(0.7);
+      }
+      const q = d.mesh.rotationQuaternion ?? Quaternion.Identity();
+      d.rot.addInPlace(d.spin.scale(dt));
+      Quaternion.RotationYawPitchRollToRef(d.rot.x, d.rot.y, d.rot.z, q);
+      d.mesh.rotationQuaternion = q;
+      if (d.life < 0.45) d.mat.alpha = Math.max(0, d.life / 0.45);
+      if (d.life <= 0) {
+        d.mesh.dispose();
+        this.debris.splice(i, 1);
+      }
+    }
   }
 
   /** Distancia de la pared a lo largo del rayo, para depuracion de raycast. */

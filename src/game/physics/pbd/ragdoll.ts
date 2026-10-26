@@ -2,6 +2,8 @@
  * Construccion del ragdoll a partir del BodyProfileDefinition y del personaje.
  * La topologia es fija (pelvis, torso, cabeza, 2 brazos, 2 piernas) pero TODAS las
  * dimensiones, masas y limites articulares provienen de datos (seccion 5 y 6).
+ * wallNormal: normal frontal del PRIMER segmento de pared (circuito inclinado);
+ * los pliegues son relativos a ella (codos hacia fuera de la pared, rodillas hacia ella).
  */
 import { BodyProfileDefinition, CharacterDefinition, ChallengeDefinition, HoldDefinition, LimbId, Vec3Tuple, WallDefinition } from "../../types";
 import { AngleConstraint, BodyTopology, FoldConstraint, Particle, PbdSolver, Stick, TwistConstraint } from "./solver";
@@ -44,7 +46,11 @@ export interface RagdollRig {
   legChain: number;
 }
 
-export function buildRagdollRig(profile: BodyProfileDefinition, character: CharacterDefinition): RagdollRig {
+export function buildRagdollRig(
+  profile: BodyProfileDefinition,
+  character: CharacterDefinition,
+  wallNormal?: { x: number; y: number; z: number }
+): RagdollRig {
   const s = profile.segments;
   const massScale = character.physical.massScale;
   const m = (mass: number) => mass * massScale;
@@ -161,16 +167,18 @@ export function buildRagdollRig(profile: BodyProfileDefinition, character: Chara
   // Cuello.
   angle("neck", P.chest, P.pelvisC, P.head, joints.neck);
 
-  // Sentido de flexion (ADR-008): el cuerpo mira a la pared (+z hacia el muro).
+  // Sentido de flexion (ADR-008): el cuerpo mira a la pared (normal frontal del
+  // primer segmento; vertical clasica = -z). Relativos a ella:
   // - CODO: el vertice se pliega hacia atras/fuera; prohibido meterse en la pared
   //   (tolera 2 cm de la linea hombro-mano hacia el muro, nada mas).
   // - RODILLA: la flexion lleva el talon atras y el vertice adelante; prohibido el
   //   giro invertido (rodilla hacia atras = hiperextension visible).
+  const nrm = wallNormal ?? { x: 0, y: 0, z: -1 };
   const folds: FoldConstraint[] = [
-    { id: "fold_elbow_l", j: P.elbowL, a: P.shL, b: P.handL, dir: v3(0, 0, -1), minSide: -0.02, strength: 1, side: 0 },
-    { id: "fold_elbow_r", j: P.elbowR, a: P.shR, b: P.handR, dir: v3(0, 0, -1), minSide: -0.02, strength: 1, side: 0 },
-    { id: "fold_knee_l", j: P.kneeL, a: P.hipL, b: P.footL, dir: v3(0, 0, 1), minSide: 0.012, strength: 1, side: 0 },
-    { id: "fold_knee_r", j: P.kneeR, a: P.hipR, b: P.footR, dir: v3(0, 0, 1), minSide: 0.012, strength: 1, side: 0 }
+    { id: "fold_elbow_l", j: P.elbowL, a: P.shL, b: P.handL, dir: v3(nrm.x, nrm.y, nrm.z), minSide: -0.02, strength: 1, side: 0 },
+    { id: "fold_elbow_r", j: P.elbowR, a: P.shR, b: P.handR, dir: v3(nrm.x, nrm.y, nrm.z), minSide: -0.02, strength: 1, side: 0 },
+    { id: "fold_knee_l", j: P.kneeL, a: P.hipL, b: P.footL, dir: v3(-nrm.x, -nrm.y, -nrm.z), minSide: 0.012, strength: 1, side: 0 },
+    { id: "fold_knee_r", j: P.kneeR, a: P.hipR, b: P.footR, dir: v3(-nrm.x, -nrm.y, -nrm.z), minSide: 0.012, strength: 1, side: 0 }
   ];
 
   // Guinada de pelvis limitada (anti-"cadera girada"): la barra de caderas sigue a la
@@ -240,9 +248,21 @@ export function seedPose(
   const handAnchors = anchors.filter((a) => a.limb.startsWith("hand"));
   const stance = challenge.start.stance;
 
-  const wallFrontZ = wall.transform.position[2] - wall.dimensions.depth / 2;
+  // Referencia de profundidad. Pared VERTICAL (primer segmento tilt 0): las
+  // constantes legacy probadas (pecho pegado a la cara, colgando a -0.34) - el
+  // comportamiento del tutorial/campeonato no cambia ni 1 cm. Pared INCLINADA
+  // (circuito): las PROPIAS presas de mano son la verdad, porque la cara no es un
+  // plano z constante y el cuerpo debe nacer pegado a su plano (vertical o techo).
+  const startHolds = handAnchors
+    .map((a) => holdById.get(a.holdId))
+    .filter((h): h is HoldDefinition => Boolean(h));
+  const holdsMeanZ = startHolds.length > 0
+    ? startHolds.reduce((acc, h) => acc + h.position[2], 0) / startHolds.length
+    : wall.transform.position[2] - wall.dimensions.depth / 2;
   const chestR = s.torso.size[2] * 0.5;
   const spineLen = s.torso.size[1] * 0.95;
+  const legacyVertical = Math.abs(wall.segments?.[0]?.tiltDeg ?? 0) < 1;
+  const wallFrontZ = wall.transform.position[2] - wall.dimensions.depth / 2;
 
   const handHoldOf = (limb: LimbId): HoldDefinition | undefined => {
     const anchor = anchors.find((a) => a.limb === limb);
@@ -261,7 +281,9 @@ export function seedPose(
   // mano, a una altura que garantiza que cada presa quede dentro del alcance geometrico.
   // Asi ninguna riostra del torso nace violada y el settle no genera patadas.
   const halfSpan = s.torso.size[0] / 2;
-  const zBody = stance === "standing" ? wallFrontZ - chestR + 0.01 : -0.34;
+  const zBody = stance === "standing"
+    ? (legacyVertical ? wallFrontZ - chestR + 0.01 : holdsMeanZ - chestR + 0.01)
+    : (legacyVertical ? -0.34 : holdsMeanZ - 0.06);
   let meanX = 0;
   let shY: number;
   if (handHolds.length > 0) {
@@ -354,6 +376,7 @@ export function seedPose(
  * Crea el ragdoll, aplica la pose semilla, crea los anclajes iniciales requeridos y
  * relaja la pose sin energia cinetica antes del primer paso (settle sin patadas).
  * anchorMaxForceFor permite pines mas fuertes en pies (las piernas soportan el peso).
+ * wallNormal: normal frontal del primer segmento (pliegues relativos a ella).
  */
 export function spawnRagdoll(
   solver: PbdSolver,
@@ -362,9 +385,10 @@ export function spawnRagdoll(
   wall: WallDefinition,
   challenge: ChallengeDefinition,
   holdById: Map<string, HoldDefinition>,
-  anchorMaxForceFor: (limb: LimbId) => number
+  anchorMaxForceFor: (limb: LimbId) => number,
+  wallNormal?: { x: number; y: number; z: number }
 ): RagdollRig {
-  const rig = buildRagdollRig(profile, character);
+  const rig = buildRagdollRig(profile, character, wallNormal);
   seedPose(rig, profile, character, wall, challenge, holdById);
   const s = profile.segments;
   const topology: BodyTopology = {

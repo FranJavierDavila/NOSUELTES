@@ -87,6 +87,102 @@ export class AudioBus {
     this.renderAll(mapEventToVoices(event as VoxEvent));
   }
 
+  /**
+   * Aviso del GAS (mecanica comica, peticion del jugador): retortijon de tripa.
+   * Grulos graves con wobble de amplitud creciente: "algo se acerca".
+   */
+  playBellyRumble(seconds = 2.0): void {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx;
+    const when = ctx.currentTime;
+    const end = when + seconds;
+    const osc = ctx.createOscillator();
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(52, when);
+    osc.frequency.linearRampToValueAtTime(71, end);
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.value = 240;
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0.0002, when);
+    env.gain.linearRampToValueAtTime(0.5, when + 0.25);
+    env.gain.setValueAtTime(0.5, end - 0.15);
+    env.gain.exponentialRampToValueAtTime(0.001, end);
+    // Wobble: el retortijono fluctua (2 LFO: amplitud y pitch).
+    const lfoA = ctx.createOscillator();
+    lfoA.type = "sine";
+    lfoA.frequency.value = 9.5;
+    const depthA = ctx.createGain();
+    depthA.gain.value = 0.3;
+    lfoA.connect(depthA).connect(env.gain);
+    const lfoF = ctx.createOscillator();
+    lfoF.type = "sine";
+    lfoF.frequency.value = 5.2;
+    const depthF = ctx.createGain();
+    depthF.gain.value = 11;
+    lfoF.connect(depthF).connect(osc.frequency);
+    osc.connect(lp).connect(env).connect(this.master);
+    osc.start(when);
+    lfoA.start(when);
+    lfoF.start(when);
+    osc.stop(end + 0.05);
+    lfoA.stop(end + 0.05);
+    lfoF.stop(end + 0.05);
+  }
+
+  /**
+   * EL PEDO (detonacion del GAS): sierra grave con caida de pitch y traqueteo de
+   * amplitud aleatorio (flato classic), mas soplo de ruido. Largo, evidente y comico.
+   */
+  playFart(): void {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx;
+    const when = ctx.currentTime;
+    const dur = 0.95 + Math.random() * 0.35;
+    const end = when + dur;
+    const osc = ctx.createOscillator();
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(88 + Math.random() * 22, when);
+    osc.frequency.exponentialRampToValueAtTime(46 + Math.random() * 10, end);
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.value = 700;
+    lp.Q.value = 2.2;
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0.0002, when);
+    env.gain.linearRampToValueAtTime(0.85, when + 0.03);
+    // Traqueteo: la famejada del flato (LFO cuadrada sobre la amplitud).
+    const flap = ctx.createOscillator();
+    flap.type = "square";
+    flap.frequency.setValueAtTime(23 + Math.random() * 9, when);
+    flap.frequency.linearRampToValueAtTime(13 + Math.random() * 5, end);
+    const flapDepth = ctx.createGain();
+    flapDepth.gain.value = 0.42;
+    flap.connect(flapDepth).connect(env.gain);
+    env.gain.setValueAtTime(0.55, end - 0.12);
+    env.gain.exponentialRampToValueAtTime(0.001, end);
+    osc.connect(lp).connect(env).connect(this.master);
+    // Soplo: ruido grave que acompana la salida.
+    if (this.noiseBuffer) {
+      const noise = ctx.createBufferSource();
+      noise.buffer = this.noiseBuffer;
+      noise.loop = true;
+      const nbp = ctx.createBiquadFilter();
+      nbp.type = "lowpass";
+      nbp.frequency.value = 420;
+      const nenv = ctx.createGain();
+      nenv.gain.setValueAtTime(0.22, when);
+      nenv.gain.exponentialRampToValueAtTime(0.001, when + dur * 0.8);
+      noise.connect(nbp).connect(nenv).connect(this.master);
+      noise.start(when);
+      noise.stop(when + dur);
+    }
+    osc.start(when);
+    flap.start(when);
+    osc.stop(end + 0.05);
+    flap.stop(end + 0.05);
+  }
+
   private renderAll(voices: ScheduledVoice[]): void {
     if (!this.ctx) return;
     const base = this.ctx.currentTime;

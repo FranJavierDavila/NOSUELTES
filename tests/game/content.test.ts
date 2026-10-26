@@ -16,9 +16,10 @@ describe("AT-01/AT-02: carga y validacion de contenido", () => {
     const repo = new ContentRepository();
     const bundle = await repo.load(loader, "/content");
     expect(bundle.characters.size).toBeGreaterThanOrEqual(1);
-    expect(bundle.walls.size).toBeGreaterThanOrEqual(6); // tutorial + 5 del campeonato
-    expect(bundle.challenges.size).toBe(9); // 4 entrenamiento + 5 campeonato
+    expect(bundle.walls.size).toBeGreaterThanOrEqual(11); // tutorial + 5 campeonato + 5 circuito
+    expect(bundle.challenges.size).toBe(14); // 4 entrenamiento + 5 campeonato + 5 circuito
     expect(repo.listChallengeIds()).toContain("challenge_reach_top");
+    expect(repo.listChallengeIds()).toContain("circuit_stage_5");
   });
 
   it("el campeonato declara 5 etapas en orden y cada una su propia pared mas alta", async () => {
