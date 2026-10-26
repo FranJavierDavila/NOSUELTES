@@ -1,0 +1,1206 @@
+     1→/**
+     2→ * Solver de fisica PBD (Position Based Dynamics) para el ragdoll.
+     3→ *
+     4→ * Decision documentada (ADR-001 del prototipo): adaptador fisico interno basado en
+     5→ * particulas + restricciones de distancia y de angulo. La interfaz PhysicsAdapter se
+     6→ * mantiene desacoplada para poder sustituirlo por Havok/Rapier sin tocar gameplay.
+     7→ *
+     8→ * Modelo de anclaje (estimador documentado, seccion 9.2 del documento): cada anclaje
+     9→ * es un resorte amortiguado con fuerza maxima. La carga se mide como la fuerza que el
+    10→ * resorte debe aplicar (rigidez x estiramiento, antes de saturar), lo que permite
+    11→ * detectar sobrecarga y provoca estiramiento visible cuando el agarre no basta.
+    12→ * Nunca se teletransportan cuerpos durante el juego.
+    13→ */
+    14→import { V3, v3, vAdd, vSub, vScale, vDot, vCross, vLen, vClone, clamp, angleBetween, rotateAroundAxis, isFiniteVec } from "./math";
+    15→import type { LimbId } from "../../types";
+    16→import { LIMB_IDS } from "../../types";
+    17→
+    18→export interface Particle {
+    19→  id: string;
+    20→  limb: LimbId | null;
+    21→  mass: number;
+    22→  invMass: number;
+    23→  radius: number;
+    24→  pos: V3;
+    25→  prev: V3;
+    26→  collideWall: boolean;
+    27→  collideFloor: boolean;
+    28→}
+    29→
+    30→export interface Stick {
+    31→  a: number;
+    32→  b: number;
+    33→  rest: number;
+    34→  stiffness: number;
+    35→}
+    36→
+    37→export interface AngleConstraint {
+    38→  id: string;
+    39→  j: number;
+    40→  a: number;
+    41→  b: number;
+    42→  min: number;
+    43→  max: number;
+    44→  stiffness: number;
+    45→  currentAngle: number;
+    46→}
+    47→
+    48→/**
+    49→ * Restriccion de SENTIDO DE FLEXION (ADR-008): el constraint angular es 2D y no
+    50→ * distingue doblar de doblar al reves (una rodilla invertida tiene el MISMO angulo).
+    51→ * Este constraint mantiene el vertice articular (codo/rodilla) en el lado correcto
+    52→ * del plano definido por la cuerda padre-hijo y una direccion de referencia del
+    53→ * cuerpo (normal del muro): prohibe la hiperextension/luxacion visual.
+    54→ */
+    55→export interface FoldConstraint {
+    56→  id: string;
+    57→  /** Particula del vertice articular (codo/rodilla). */
+    58→  j: number;
+    59→  /** Extremo padre (hombro/cadera). */
+    60→  a: number;
+    61→  /** Extremo hijo (mano/pie). */
+    62→  b: number;
+    63→  /** Direccion unitaria del lado PERMITIDO (mundo). */
+    64→  dir: V3;
+    65→  /** Separacion minima exigida en esa direccion (m): tolera recto, prohibe el giro. */
+    66→  minSide: number;
+    67→  strength: number;
+    68→  /** Lectura de diagnostico: lado actual (m). */
+    69→  side: number;
+    70→}
+    71→
+    72→/**
+    73→ * Restriccion de GIRO DE PELVIS (anti-"cadera girada", peticion del jugador):
+    74→ * en PBD clasico la pelvis puede rotar libremente alrededor del eje de la columna
+    75→ * (todas las riostras hombro-cadera cambian su longitud en SEGUNDO orden al girar),
+    76→ * con lo que el mas minimo sesgo del settle la deja cruzada 90 grados y ahi se queda.
+    77→ * Este constraint limita el angulo de guinada de la barra de caderas respecto a la
+    78→ * barra de hombros, medido alrededor del eje columna (axisFrom->pivot). La correccion
+    79→ * rota SOLO las caderas alrededor del eje que pasa por el pivote (pelvisC): conserva
+    80→ * exactamente la longitud cadera-cadera y las riostras pelvisC-cadera (correccion
+    81→ * minimamente invasiva, anatomia pasiva como los limites articulares).
+    82→ */
+    83→export interface TwistConstraint {
+    84→  id: string;
+    85→  /** Barra de referencia (hombros: shL, shR). */
+    86→  a1: number;
+    87→  a2: number;
+    88→  /** Barra corregida (caderas: hipL, hipR). */
+    89→  b1: number;
+    90→  b2: number;
+    91→  /** Pivote de la correccion (pelvisC). */
+    92→  pivot: number;
+    93→  /** Origen del eje de guinada (pecho: eje columna pecho->pelvis). */
+    94→  axisFrom: number;
+    95→  /** Tope de guinada (rad); el solver lo sustituye por balance.twistLimitRad en vivo. */
+    96→  maxAngle: number;
+    97→  stiffness: number;
+    98→  /** Lectura de diagnostico: guinada actual (rad). */
+    99→  currentAngle: number;
+   100→}
+   101→
+   102→export interface AnchorState {
+   103→  limb: LimbId;
+   104→  particle: number;
+   105→  holdId: string;
+   106→  point: V3;
+   107→  maxForce: number;
+   108→  /** Ultima carga requerida medida (N), sin saturar. */
+   109→  loadN: number;
+   110→  /** Estiramiento actual del anclaje (m). */
+   111→  stretch: number;
+   112→  /** Rampa de activacion muscular (0..1): evita tirones al anclar (ADR-007). */
+   113→  activation: number;
+   114→}
+   115→
+   116→/**
+   117→ * Topologia corporal que los musculos necesitan conocer (ADR-007): raices de cadena
+   118→ * (hombro/cadera) por extremidad y particulas axiales (pelvis/pecho/cabeza).
+   119→ * La rellena spawnRagdoll a partir del rig; el solver sigue desacoplado de la construccion.
+   120→ */
+   121→export interface BodyTopology {
+   122→  /** Particula raiz de la cadena (hombro para manos, cadera para pies). */
+   123→  rootOf: Map<LimbId, number>;
+   124→  /** Particulas axiales del tronco. */
+   125→  pelvis: number;
+   126→  chest: number;
+   127→  head: number;
+   128→  /** Longitudes de cadena (m) sin escalar por alcance. */
+   129→  armChain: number;
+   130→  legChain: number;
+   131→  spineLen: number;
+   132→}
+   133→
+   134→/**
+   135→ * Constantes musculares (ADR-007). Las fuerzas se aplican sobre particulas AXIALES
+   136→ * (pelvis/pecho) de masa alta para mantener el paso de Verlet estable (desplazamiento
+   137→ * por paso <= ~2 cm). Captan la carga el estimador de pin existente (9.2), de modo que
+   138→ * apoyar pies DESCARGA brazos y traccionar los SOBRECARGA, con fatiga real.
+   139→ */
+   140→export interface MuscleParams {
+   141→  /** Cuadriceps: empuje axial pie->pelvis (N) por pie anclado por debajo de la cadera. */
+   142→  quadPushMax: number;
+   143→  /** Rigidez del servo de pierna (N/m): empuja hacia la extension natural 0.9·cadena. */
+   144→  quadServoK: number;
+   145→  /** Sesgo vertical del empuje del cuadriceps (0 axial puro, 1 vertical pura):
+   146→   * la reaccion del suelo al estar de pie es mayormente vertical. */
+   147→  quadUpBias: number;
+   148→  /** Balance (SIMBICON): tiron horizontal del COM hacia el apoyo del pie (N). */
+   149→  balanceMax: number;
+   150→  /** Psoas/step-up: traccion pelvis->presa cuando el pie queda por encima de la cadera (N). */
+   151→  stepUpMax: number;
+   152→  /** Traccion de brazos hacia el anclaje durante el impulso de subida (N) por mano. */
+   153→  armPullMax: number;
+   154→  /** Tono postural del tronco (N): pecho sobre pelvis. */
+   155→  coreMax: number;
+   156→  /** Tono del cuello (N): cabeza sobre pecho. */
+   157→  neckMax: number;
+   158→  /** Inclinacion hacia la pared con pies anclados (N, componente z). */
+   159→  wallLeanMax: number;
+   160→  /** Duracion del impulso de subida tras cada anclaje (s). */
+   161→  driveSeconds: number;
+   162→  /** Tope de velocidad por particula (m/s): techo de energia del ragdoll. */
+   163→  vMaxSpeed: number;
+   164→  /** Tope de fuerza muscular total por particula axial (N). */
+   165→  muscleForceCapPelvis: number;
+   166→  muscleForceCapChest: number;
+   167→  /** Interruptor global (arnes A/B y regla: cuerpo libre = ragdoll puro). */
+   168→  musclesOn: boolean;
+   169→}
+   170→
+   171→/**
+   172→ * Rangos del balance realismo/ragdoll (ADR-008), calibrables en vivo (F3).
+   173→ * - jointLimitStiffness: dureza de los limites angulares (1 = duro, sin luxaciones).
+   174→ * - foldStrength: dureza del sentido de flexion (anti-rodilla/codo invertido).
+   175→ * - postureTone: tono postural en juego (1 = erguido y vivo, 0 = muñeco de trapo).
+   176→ * - toneFloor: tono residual tras declararse la caida (passivo pero sin pliegues).
+   177→ * - stretchTolerance: cuanto puede ALARGARSE una cadena anatomica sobre su longitud
+   178→ *   natural antes de que el tope duro la corte (1.05 = realista, 1.2 = muneco de goma).
+   179→ */
+   180→export interface BalanceTuning {
+   181→  jointLimitStiffness: number;
+   182→  foldStrength: number;
+   183→  postureTone: number;
+   184→  toneFloor: number;
+   185→  stretchTolerance: number;
+   186→  /** Tope de guinada de la pelvis (rad): 0.30 = realista (cadera cuadrada),
+   187→   *  0.85 = ragdoll (giro libre casi total). 0 desactiva el tope. */
+   188→  twistLimitRad: number;
+   189→}
+   190→
+   191→/**
+   192→ * Tope de LONGITUD DE CADENA (anatomia pasiva, como los limites articulares):
+   193→ * prohibe que la distancia raiz->extremo (hombro->mano, cadera->pie, pelvis->pecho)
+   194→ * supere la longitud natural x tolerancia. Es el anti-"muneco de goma": sin el, las
+   195→ * barras elasticas se estiran bajo carga sostenida y aparecen posturas imposibles
+   196→ * (brazos de 1.5 m). Desigualdad dura: solo actua al violar el maximo.
+   197→ */
+   198→interface ChainCap {
+   199→  a: number;
+   200→  b: number;
+   201→  /** Longitud natural de la cadena (m) sin la tolerancia. */
+   202→  base: number;
+   203→  /** Lectura de diagnostico: longitud actual (m). */
+   204→  current: number;
+   205→  limb: LimbId | null;
+   206→}
+   207→
+   208→export interface TargetState {
+   209→  limb: LimbId;
+   210→  particle: number;
+   211→  target: V3;
+   212→  maxForce: number;
+   213→}
+   214→
+   215→/**
+   216→ * Plano frontal de un segmento de pared (circuito con angulos). La colision del
+   217→ * cuerpo se hace contra CADA segmento: paredes inclinadas y techos usan normales
+   218→ * arbitrarias; la pared vertical clasica es un plano con n=(0,0,-1).
+   219→ */
+   220→export interface WallPlaneSpec {
+   221→  /** Normal unitaria frontal (hacia el escalador). */
+   222→  n: V3;
+   223→  /** Punto del plano frontal (cara de la pared). */
+   224→  p: V3;
+   225→  /** AABB mundo holgado: el plano solo gobierna particulas dentro de el. */
+   226→  minX: number;
+   227→  maxX: number;
+   228→  minY: number;
+   229→  maxY: number;
+   230→  minZ: number;
+   231→  maxZ: number;
+   232→}
+   233→
+   234→export interface SolverEnv {
+   235→  gravity: V3;
+   236→  damping: number;
+   237→  iterations: number;
+   238→  floorY: number;
+   239→  /** Clasico plano z de pared vertical (compatibilidad; con wallPlanes no se usa). */
+   240→  wallFrontZ: number;
+   241→  /** Planos frontales por segmento (default: uno vertical en wallFrontZ). */
+   242→  wallPlanes: WallPlaneSpec[];
+   243→  bounds: { minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number };
+   244→  anchorStiffness: number;
+   245→  anchorDamping: number;
+   246→  followStiffness: number;
+   247→  tremorAmplitude: number;
+   248→  /** Ganancia del estimador de carga del pin (calibrada; documenta 9.2). */
+   249→  loadEstimatorGain: number;
+   250→  /** Musculos activos (ADR-007). */
+   251→  muscles: MuscleParams;
+   252→  /** Balance realismo/ragdoll (ADR-008), calibrable en vivo (F3). */
+   253→  balance: BalanceTuning;
+   254→}
+   255→
+   256→export interface JointAngleReadout {
+   257→  id: string;
+   258→  angle: number;
+   259→  /** 0 = centro de rango, 1 = en el limite mas cercano. */
+   260→  utilization: number;
+   261→}
+   262→
+   263→export interface StepResult {
+   264→  nanError: boolean;
+   265→  energySpike: boolean;
+   266→  outOfBounds: boolean;
+   267→  com: V3;
+   268→  anchorLoads: Partial<Record<LimbId, number>>;
+   269→  anchorStretch: Partial<Record<LimbId, number>>;
+   270→  floorContacts: { limb: LimbId; point: V3 }[];
+   271→  jointAngles: JointAngleReadout[];
+   272→  maxSpeed: number;
+   273→}
+   274→
+   275→export interface SolverCounts {
+   276→  particles: number;
+   277→  sticks: number;
+   278→  angles: number;
+   279→  anchors: number;
+   280→}
+   281→
+   282→const BOUNDS_DEFAULT = { minX: -4, maxX: 4, minY: 0, maxY: 9, minZ: -7, maxZ: 0.6 };
+   283→
+   284→/** Tolerancia del tope de columna (segmento rigido: casi sin elastico). */
+   285→const SPINE_STRETCH_TOLERANCE = 1.04;
+   286→
+   287→export class PbdSolver {
+   288→  readonly env: SolverEnv;
+   289→  private particles: Particle[] = [];
+   290→  private sticks: Stick[] = [];
+   291→  private angles: AngleConstraint[] = [];
+   292→  private folds: FoldConstraint[] = [];
+   293→  private twists: TwistConstraint[] = [];
+   294→  private chainCaps: ChainCap[] = [];
+   295→  /** Duracion del ultimo paso (velocityOfLimb). */
+   296→  private lastStepDt = 1 / 60;
+   297→  private anchors = new Map<LimbId, AnchorState>();
+   298→  private targets = new Map<LimbId, TargetState>();
+   299→  private limbParticle = new Map<LimbId, number>();
+   300→  private topology: BodyTopology | null = null;
+   301→  /** Impulso de subida (0..1): se reactiva en cada anclaje y decae (ADR-007). */
+   302→  private climbDrive = 0;
+   303→  /** Tono postural actual (0..1): persigue a toneTarget con rates asimetricos. */
+   304→  private tone = 1;
+   305→  private toneTarget = 1;
+   306→  private lastMuscleForces = new Map<number, V3>();
+   307→  /** Amplitud de tremor por extremidad, la fija la capa biomecanica (0..1). */
+   308→  readonly tremor: Record<LimbId, number> = { hand_l: 0, hand_r: 0, foot_l: 0, foot_r: 0 };
+   309→
+   310→  constructor(env: Partial<SolverEnv> = {}) {
+   311→    this.env = {
+   312→      gravity: env.gravity ?? v3(0, -9.81, 0),
+   313→      damping: env.damping ?? 0.992,
+   314→      iterations: env.iterations ?? 10,
+   315→      floorY: env.floorY ?? 0,
+   316→      wallFrontZ: env.wallFrontZ ?? -0.125,
+   317→      wallPlanes:
+   318→        env.wallPlanes ??
+   319→        [
+   320→          {
+   321→            n: v3(0, 0, -1),
+   322→            p: v3(0, 0, env.wallFrontZ ?? -0.125),
+   323→            minX: -50,
+   324→            maxX: 50,
+   325→            minY: -50,
+   326→            maxY: 500,
+   327→            minZ: -50,
+   328→            maxZ: (env.wallFrontZ ?? -0.125) + 2
+   329→          }
+   330→        ],
+   331→      bounds: env.bounds ?? BOUNDS_DEFAULT,
+   332→      anchorStiffness: env.anchorStiffness ?? 7200,
+   333→      anchorDamping: env.anchorDamping ?? 170,
+   334→      followStiffness: env.followStiffness ?? 6000,
+   335→      tremorAmplitude: env.tremorAmplitude ?? 0.0025,
+   336→      loadEstimatorGain: env.loadEstimatorGain ?? 0.67,
+   337→      muscles: {
+   338→        quadPushMax: env.muscles?.quadPushMax ?? 820,
+   339→        quadServoK: env.muscles?.quadServoK ?? 5000,
+   340→        quadUpBias: env.muscles?.quadUpBias ?? 0.88,
+   341→        balanceMax: env.muscles?.balanceMax ?? 110,
+   342→        stepUpMax: env.muscles?.stepUpMax ?? 900,
+   343→        armPullMax: env.muscles?.armPullMax ?? 340,
+   344→        coreMax: env.muscles?.coreMax ?? 480,
+   345→        neckMax: env.muscles?.neckMax ?? 40,
+   346→        wallLeanMax: env.muscles?.wallLeanMax ?? 220,
+   347→        driveSeconds: env.muscles?.driveSeconds ?? 1.6,
+   348→        vMaxSpeed: env.muscles?.vMaxSpeed ?? 8.5,
+   349→        muscleForceCapPelvis: env.muscles?.muscleForceCapPelvis ?? 1500,
+   350→        muscleForceCapChest: env.muscles?.muscleForceCapChest ?? 800,
+   351→        musclesOn: env.muscles?.musclesOn ?? true
+   352→      },
+   353→      balance: {
+   354→        jointLimitStiffness: env.balance?.jointLimitStiffness ?? 1.0,
+   355→        foldStrength: env.balance?.foldStrength ?? 0.85,
+   356→        postureTone: env.balance?.postureTone ?? 0.75,
+   357→        toneFloor: env.balance?.toneFloor ?? 0.12,
+   358→        stretchTolerance: env.balance?.stretchTolerance ?? 1.1,
+   359→        twistLimitRad: env.balance?.twistLimitRad ?? 0.45
+   360→      }
+   361→    };
+   362→    this.tone = this.env.balance.postureTone;
+   363→    this.toneTarget = this.env.balance.postureTone;
+   364→  }
+   365→
+   366→  setRagdoll(
+   367→    particles: Particle[],
+   368→    sticks: Stick[],
+   369→    angles: AngleConstraint[],
+   370→    limbParticle: Map<LimbId, number>,
+   371→    topology?: BodyTopology,
+   372→    folds: FoldConstraint[] = [],
+   373→    twists: TwistConstraint[] = []
+   374→  ): void {
+   375→    this.particles = particles;
+   376→    this.sticks = sticks;
+   377→    this.angles = angles;
+   378→    this.folds = folds;
+   379→    this.twists = twists;
+   380→    this.limbParticle = limbParticle;
+   381→    this.topology = topology ?? null;
+   382→    this.anchors.clear();
+   383→    this.targets.clear();
+   384→    this.climbDrive = 0;
+   385→    this.rebuildChainCaps();
+   386→  }
+   387→
+   388→  /** Deriva los topes de cadena de la topologia (hombro->mano, cadera->pie, columna). */
+   389→  private rebuildChainCaps(): void {
+   390→    this.chainCaps = [];
+   391→    const t = this.topology;
+   392→    if (!t) return;
+   393→    for (const limb of LIMB_IDS) {
+   394→      const root = t.rootOf.get(limb);
+   395→      const end = this.limbParticle.get(limb);
+   396→      if (root === undefined || end === undefined) continue;
+   397→      const base = limb.startsWith("hand") ? t.armChain : t.legChain;
+   398→      this.chainCaps.push({ a: root, b: end, base, current: base, limb });
+   399→    }
+   400→    // Columna: el torso tampoco se estira (menos tolerancia: es un segmento rigido).
+   401→    this.chainCaps.push({ a: t.pelvis, b: t.chest, base: t.spineLen, current: t.spineLen, limb: null });
+   402→  }
+   403→
+   404→  /** Lecturas de diagnostico del estiramiento de cadena (ratio 1 = en el tope). */
+   405→  debugChains(): { limb: string; len: number; max: number; ratio: number }[] {
+   406→    const tol = this.env.balance.stretchTolerance;
+   407→    return this.chainCaps.map((c) => {
+   408→      const max = c.limb === null ? c.base * SPINE_STRETCH_TOLERANCE : c.base * tol;
+   409→      return { limb: c.limb ?? "spine", len: c.current, max, ratio: max > 1e-9 ? c.current / max : 0 };
+   410→    });
+   411→  }
+   412→
+   413→  /** Fija el tono postural objetivo (F3 / secuencia de caida). */
+   414→  setToneTarget(t: number): void {
+   415→    this.toneTarget = clamp(t, 0, 1);
+   416→  }
+   417→
+   418→  /** Tono postural actual (0..1), para HUD/debug. */
+   419→  toneLevel(): number {
+   420→    return this.tone;
+   421→  }
+   422→
+   423→  /** Lecturas de diagnostico de limites angulares del ultimo paso. */
+   424→  debugJoints(): { id: string; angle: number; utilization: number; min: number; max: number }[] {
+   425→    return this.angles.map((a) => ({ id: a.id, angle: a.currentAngle, utilization: jointUtilization(a), min: a.min, max: a.max }));
+   426→  }
+   427→
+   428→  /** Lecturas de diagnostico del sentido de flexion (lado actual vs minimo). */
+   429→  debugFolds(): { id: string; side: number; minSide: number }[] {
+   430→    return this.folds.map((f) => ({ id: f.id, side: f.side, minSide: f.minSide }));
+   431→  }
+   432→
+   433→  /** Lecturas de diagnostico del guinada de pelvis (rad y tope vigente). */
+   434→  debugTwists(): { id: string; angle: number; max: number }[] {
+   435→    const max = this.env.balance.twistLimitRad;
+   436→    return this.twists.map((t) => ({ id: t.id, angle: t.currentAngle, max }));
+   437→  }
+   438→
+   439→  /** Reactiva el impulso de subida (llamado al consolidar un anclaje nuevo). */
+   440→  pulseClimbDrive(): void {
+   441→    this.climbDrive = 1;
+   442→  }
+   443→
+   444→  /**
+   445→   * Plano que gobierna un punto: el primero cuyo AABB lo contiene (orden bottom->top
+   446→   * = prioridad al segmento en el que esta); si ninguno lo contiene, el de menor
+   447→   * distancia al plano. Usado por colision y por la fuerza de pegado.
+   448→   */
+   449→  private governingPlane(px: number, py: number, pz: number): WallPlaneSpec {
+   450→    const planes = this.env.wallPlanes;
+   451→    let best = planes[0];
+   452→    let bestScore = Number.POSITIVE_INFINITY;
+   453→    for (const pl of planes) {
+   454→      const inBox = px >= pl.minX && px <= pl.maxX && py >= pl.minY && py <= pl.maxY && pz >= pl.minZ && pz <= pl.maxZ;
+   455→      const d = Math.abs((px - pl.p.x) * pl.n.x + (py - pl.p.y) * pl.n.y + (pz - pl.p.z) * pl.n.z);
+   456→      const score = inBox ? d : d + 1000;
+   457→      if (score < bestScore) {
+   458→        bestScore = score;
+   459→        best = pl;
+   460→      }
+   461→    }
+   462→    return best;
+   463→  }
+   464→
+   465→  /**
+   466→   * Impulso fisico a todo el cuerpo (mecanica GAS): cambia la VELOCIDAD de las
+   467→   * particulas (Verlet: prev -= dv*dt). Nada de teletransportes (ADR del proyecto).
+   468→   */
+   469→  impulse(dvx: number, dvy: number, dvz: number): void {
+   470→    const dt = this.lastStepDt;
+   471→    for (const p of this.particles) {
+   472→      if (p.invMass <= 0) continue;
+   473→      p.prev.x -= dvx * dt;
+   474→      p.prev.y -= dvy * dt;
+   475→      p.prev.z -= dvz * dt;
+   476→    }
+   477→  }
+   478→
+   479→  /** Diagnostico: fuerzas musculares del ultimo paso (N) por indice de particula. */
+   480→  debugMuscleForces(): { idx: number; fx: number; fy: number; fz: number }[] {
+   481→    return [...this.lastMuscleForces.entries()].map(([idx, f]) => ({ idx, fx: Math.round(f.x), fy: Math.round(f.y), fz: Math.round(f.z) }));
+   482→  }
+   483→
+   484→  climbDriveLevel(): number {
+   485→    return this.climbDrive;
+   486→  }
+   487→
+   488→  counts(): SolverCounts {
+   489→    return {
+   490→      particles: this.particles.length,
+   491→      sticks: this.sticks.length,
+   492→      angles: this.angles.length,
+   493→      anchors: this.anchors.size
+   494→    };
+   495→  }
+   496→
+   497→  getParticle(index: number): Particle {
+   498→    return this.particles[index];
+   499→  }
+   500→
+   501→  particleOfLimb(limb: LimbId): number {
+   502→    return this.limbParticle.get(limb) ?? -1;
+   503→  }
+   504→
+   505→  positionOfLimb(limb: LimbId): V3 {
+   506→    const idx = this.limbParticle.get(limb);
+   507→    return idx === undefined ? v3() : vClone(this.particles[idx].pos);
+   508→  }
+   509→
+   510→  /** Velocidad estimada de la extremidad (m/s): para el iman predictivo del picking
+   511→   * (coger una extremidad en movimento: apunta a donde VA a estar). */
+   512→  velocityOfLimb(limb: LimbId): V3 {
+   513→    const idx = this.limbParticle.get(limb);
+   514→    if (idx === undefined || this.lastStepDt <= 1e-6) return v3();
+   515→    const p = this.particles[idx];
+   516→    return vScale(vSub(p.pos, p.prev), 1 / this.lastStepDt);
+   517→  }
+   518→
+   519→  hasAnchor(limb: LimbId): boolean {
+   520→    return this.anchors.has(limb);
+   521→  }
+   522→
+   523→  getAnchor(limb: LimbId): AnchorState | undefined {
+   524→    return this.anchors.get(limb);
+   525→  }
+   526→
+   527→  anchorHoldIds(): { limb: LimbId; holdId: string; point: V3; loadN: number }[] {
+   528→    return [...this.anchors.values()].map((a) => ({
+   529→      limb: a.limb,
+   530→      holdId: a.holdId,
+   531→      point: vClone(a.point),
+   532→      loadN: a.loadN
+   533→    }));
+   534→  }
+   535→
+   536→  createAnchor(limb: LimbId, holdId: string, point: V3, maxForce: number): AnchorState {
+   537→    this.releaseAnchor(limb);
+   538→    const particle = this.limbParticle.get(limb);
+   539→    if (particle === undefined) {
+   540→      throw new Error(`No existe particula para la extremidad ${limb}`);
+   541→    }
+   542→    const anchor: AnchorState = {
+   543→      limb,
+   544→      particle,
+   545→      holdId,
+   546→      point: vClone(point),
+   547→      maxForce,
+   548→      loadN: 0,
+   549→      stretch: 0,
+   550→      activation: 0
+   551→    };
+   552→    this.anchors.set(limb, anchor);
+   553→    this.targets.delete(limb);
+   554→    return anchor;
+   555→  }
+   556→
+   557→  releaseAnchor(limb: LimbId): AnchorState | undefined {
+   558→    const a = this.anchors.get(limb);
+   559→    this.anchors.delete(limb);
+   560→    return a;
+   561→  }
+   562→
+   563→  setTarget(limb: LimbId, target: V3, maxForce: number): void {
+   564→    const particle = this.limbParticle.get(limb);
+   565→    if (particle === undefined) {
+   566→      throw new Error(`No existe particula para la extremidad ${limb}`);
+   567→    }
+   568→    this.targets.set(limb, { limb, particle, target: vClone(target), maxForce });
+   569→  }
+   570→
+   571→  clearTarget(limb: LimbId): void {
+   572→    this.targets.delete(limb);
+   573→  }
+   574→
+   575→  /** Mueve todos los particulas por un delta (solo para la pose inicial y el impulso de arranque). */
+   576→  translateRagdoll(delta: V3): void {
+   577→    for (const p of this.particles) {
+   578→      p.pos = vAdd(p.pos, delta);
+   579→      p.prev = vAdd(p.prev, delta);
+   580→    }
+   581→  }
+   582→
+   583→  /**
+   584→   * Relajacion estatica: proyecta restricciones SIN integrar (sin gravedad ni energia
+   585→   * cinetica). Convierte una semilla aproximada en una pose consistente antes del primer
+   586→   * paso, eliminando las patadas del settle inicial.
+   587→   */
+   588→  relax(sweeps = 80): void {
+   589→    for (let i = 0; i < sweeps; i++) {
+   590→      this.solveSticks();
+   591→      this.solveTwists();
+   592→      this.solveAngles();
+   593→      this.solveFolds();
+   594→      this.solveChainCaps();
+   595→      for (const anchor of this.anchors.values()) {
+   596→        const p = this.particles[anchor.particle];
+   597→        p.pos = vClone(anchor.point);
+   598→      }
+   599→      // Segunda pasada de topes: los pines acaban de recolocar las manos en sus
+   600→      // presas; si esa recolocacion deja una cadena sobre su maximo, se corta YA
+   601→      // (si no, la relajacion convergeria con los brazos estirados).
+   602→      this.solveChainCaps();
+   603→      // Cierre de la iteracion con los limites articulares: los otros constraints
+   604→      // (pliegues, topes, pines) pueden re-violentar un angulo ya corregido; asi el
+   605→      // rango anatomico queda garantizado EN EL ESTADO FINAL (el cuello, el mas
+   606→      // flexible, era el que se colaba en caidas violentas).
+   607→      this.solveAngles();
+   608→      this.solveCollisions();
+   609→    }
+   610→    for (const p of this.particles) {
+   611→      p.prev = vClone(p.pos);
+   612→    }
+   613→  }
+   614→
+   615→  /** Aplica una velocidad inicial (m/s) al cuerpo completo; usado por start.impulse. */
+   616→  applyImpulseVelocity(vel: V3, dt: number): void {
+   617→    for (const p of this.particles) {
+   618→      if (p.invMass > 0) {
+   619→        p.prev = vSub(p.pos, vScale(vel, dt));
+   620→      }
+   621→    }
+   622→  }
+   623→
+   624→  totalMass(): number {
+   625→    return this.particles.reduce((acc, p) => acc + p.mass, 0);
+   626→  }
+   627→
+   628→  centerOfMass(): V3 {
+   629→    let m = 0;
+   630→    const c = v3();
+   631→    for (const p of this.particles) {
+   632→      c.x += p.pos.x * p.mass;
+   633→      c.y += p.pos.y * p.mass;
+   634→      c.z += p.pos.z * p.mass;
+   635→      m += p.mass;
+   636→    }
+   637→    return vScale(c, 1 / (m || 1));
+   638→  }
+   639→
+   640→  step(dt: number): StepResult {
+   641→    const K = this.env.iterations;
+   642→    if (dt > 1e-6) this.lastStepDt = dt;
+   643→    const forces = new Map<number, V3>();
+   644→    const anchorLoads: Partial<Record<LimbId, number>> = {};
+   645→    const anchorStretch: Partial<Record<LimbId, number>> = {};
+   646→    let nanError = false;
+   647→    let outOfBounds = false;
+   648→    let maxSpeed = 0;
+   649→
+   650→    // 0) Tono postural (ADR-008): persigue el objetivo con rates asimetricos
+   651→    // (la caida relaja rapido; recuperarlo de pie cuesta mas).
+   652→    const toneRate = this.toneTarget < this.tone ? 4.5 : 2.0;
+   653→    const toneGap = this.toneTarget - this.tone;
+   654→    this.tone = Math.abs(toneGap) < 0.01 ? this.toneTarget : this.tone + toneGap * Math.min(1, toneRate * dt);
+   655→
+   656→    // 1) Fuerza externa de objetivos (resorte amortiguado con tope). Los anclajes NO son
+   657→    // resortes: se fijan como pin rigido en la fase de restricciones (ver 4b).
+   658→    for (const target of this.targets.values()) {
+   659→      const p = this.particles[target.particle];
+   660→      const err = vSub(target.target, p.pos);
+   661→      const vel = vScale(vSub(p.pos, p.prev), 1 / dt);
+   662→      const spring = vAdd(vScale(err, this.env.followStiffness), vScale(vel, -this.env.anchorDamping * 0.5));
+   663→      const applied = clampVecMag(spring, target.maxForce);
+   664→      forces.set(target.particle, vAdd(forces.get(target.particle) ?? v3(), applied));
+   665→    }
+   666→
+   667→    // 1b) Musculos activos (ADR-007): cuadriceps, step-up, traccion de brazos y tono
+   668→    // postural. Sin anclajes el cuerpo es ragdoll puro (caida limpia).
+   669→    if (this.env.muscles.musclesOn && this.topology !== null && this.anchors.size > 0) {
+   670→      this.solveMuscles(dt, forces);
+   671→    }
+   672→    this.climbDrive = Math.max(0, this.climbDrive - dt / this.env.muscles.driveSeconds);
+   673→
+   674→    // 2) Integracion Verlet con paso fijo (con techo de velocidad: los musculos no
+   675→    // pueden lanzar el ragdoll a velocidades no humanas; el ERROR GUARD queda para
+   676→    // anomalias reales del solver).
+   677→    const g = this.env.gravity;
+   678→    const vCap = this.env.muscles.vMaxSpeed * dt;
+   679→    for (let i = 0; i < this.particles.length; i++) {
+   680→      const p = this.particles[i];
+   681→      if (p.invMass <= 0) continue;
+   682→      const f = forces.get(i);
+   683→      const a = f ? vAdd(g, vScale(f, p.invMass)) : g;
+   684→      const vel = vScale(vSub(p.pos, p.prev), this.env.damping);
+   685→      p.prev = vClone(p.pos);
+   686→      let next = vAdd(vAdd(p.pos, vel), vScale(a, dt * dt));
+   687→      const newVel = vSub(next, p.prev);
+   688→      const newSpeed = vLen(newVel);
+   689→      if (newSpeed > vCap) {
+   690→        next = vAdd(p.prev, vScale(newVel, vCap / newSpeed));
+   691→      }
+   692→      p.pos = next;
+   693→      // Metrica sobre la velocidad YA acotada (la previa incluye correcciones de pin).
+   694→      const measured = Math.min(newSpeed, vCap) / dt;
+   695→      if (measured > maxSpeed) maxSpeed = measured;
+   696→    }
+   697→
+   698→    // 3) Tremor de esfuerzo (seccion 9.5): ruido proporcional al estado de tension.
+   699→    for (const limb of LIMB_IDS) {
+   700→      const t = this.tremor[limb];
+   701→      if (t <= 0) continue;
+   702→      const idx = this.limbParticle.get(limb);
+   703→      if (idx === undefined) continue;
+   704→      const p = this.particles[idx];
+   705→      const amp = this.env.tremorAmplitude * t;
+   706→      p.pos = vAdd(p.pos, v3((Math.random() * 2 - 1) * amp, (Math.random() * 2 - 1) * amp, (Math.random() * 2 - 1) * amp));
+   707→    }
+   708→
+   709→    // 4) Proyeccion de restricciones.
+   710→    // 4a) Acumulador de reaccion por anclaje: suma de correcciones del pin este paso.
+   711→    const pinCorrection = new Map<LimbId, V3>();
+   712→    for (let iter = 0; iter < K; iter++) {
+   713→      this.solveSticks();
+   714→      // El giro ANTES de los limites articulares: los angulos se miden/corrigen sobre
+   715→      // la geometria ya cuadrada (lecturas coherentes y sin latigazos al cuello).
+   716→      this.solveTwists();
+   717→      this.solveAngles();
+   718→      this.solveFolds();
+   719→      this.solveChainCaps();
+   720→      // 4b) Anclajes: pin rigido con tope de fuerza. La carga requerida se mide como la
+   721→      // fuerza necesaria para mantener el pin (F = m x correccion / dt^2), un estimador
+   722→      // consistente con el impulso aplicado (9.2). En sobrecarga el pin se satura y la
+   723→      // extremidad resbala visiblemente de la presa.
+   724→      for (const anchor of this.anchors.values()) {
+   725→        const p = this.particles[anchor.particle];
+   726→        const err = vSub(anchor.point, p.pos);
+   727→        const errLen = vLen(err);
+   728→        if (errLen < 1e-9) continue;
+   729→        const maxCorr = (anchor.maxForce * dt * dt) / p.mass;
+   730→        const scaled = errLen > maxCorr ? vScale(err, maxCorr / errLen) : err;
+   731→        p.pos = vAdd(p.pos, scaled);
+   732→        pinCorrection.set(anchor.limb, vAdd(pinCorrection.get(anchor.limb) ?? v3(), scaled));
+   733→      }
+   734→      // 4c) Topes de cadena tras los pines: una presa mas alla del alcance anatomico
+   735→      // NO estira el brazo (sin "muneco de goma"); el agarre resbala hacia el cuerpo,
+   736→      // el cuerpo es arrastrado hacia la presa y la carga del pin se dispara (9.2):
+   737→      // la biomecanica lee esa lucha como SOBRECARGA y abre el agarre con cuenta atras.
+   738→      this.solveChainCaps();
+   739→      // Cierre de iteracion: limites articulares sobre el estado final (ver relax).
+   740→      this.solveAngles();
+   741→      this.solveCollisions();
+   742→    }
+   743→    // NOTA: la correccion del pin genera momento "fantasma" en Verlet; ya no se
+   744→    // neutraliza en prev (cambiaria la calibracion del estimador de carga). El techo
+   745→    // de velocidad de la integracion (vMaxSpeed) contiene ese momento residual.
+   746→    // Carga suavizada: impulso total demandado por el pin, en newtons, con ganancia
+   747→    // calibrada del estimador documentado (las re-proyecciones por iteracion sobre-miden).
+   748→    for (const anchor of this.anchors.values()) {
+   749→      const net = pinCorrection.get(anchor.limb) ?? v3();
+   750→      const measured = this.particles[anchor.particle].mass * (vLen(net) / (dt * dt)) * this.env.loadEstimatorGain;
+   751→      anchor.loadN = anchor.loadN === 0 ? measured : anchor.loadN + (measured - anchor.loadN) * 0.3;
+   752→      anchor.stretch = vLen(vSub(anchor.point, this.particles[anchor.particle].pos));
+   753→      anchorLoads[anchor.limb] = anchor.loadN;
+   754→      anchorStretch[anchor.limb] = anchor.stretch;
+   755→    }
+   756→
+   757→    // 5) Guardas: NaN, energia y limites del mundo.
+   758→    for (const p of this.particles) {
+   759→      if (!isFiniteVec(p.pos) || !isFiniteVec(p.prev)) {
+   760→        nanError = true;
+   761→        break;
+   762→      }
+   763→      if (p.pos.x < this.env.bounds.minX || p.pos.x > this.env.bounds.maxX || p.pos.y > this.env.bounds.maxY || p.pos.z < this.env.bounds.minZ || p.pos.z > this.env.bounds.maxZ) {
+   764→        outOfBounds = true;
+   765→      }
+   766→    }
+   767→    if (maxSpeed > 18) {
+   768→      // Energia anomala: se registra, la capa de juego decide (ERROR GUARD).
+   769→      maxSpeed = clamp(maxSpeed, 0, 30);
+   770→    }
+   771→
+   772→    // 6) Lecturas derivadas.
+   773→    const floorContacts: { limb: LimbId; point: V3 }[] = [];
+   774→    for (const limb of LIMB_IDS) {
+   775→      const idx = this.limbParticle.get(limb);
+   776→      if (idx === undefined) continue;
+   777→      const p = this.particles[idx];
+   778→      if (p.pos.y <= this.env.floorY + 0.045) {
+   779→        floorContacts.push({ limb, point: v3(p.pos.x, this.env.floorY, p.pos.z) });
+   780→      }
+   781→    }
+   782→
+   783→    return {
+   784→      nanError,
+   785→      energySpike: maxSpeed > 18,
+   786→      outOfBounds,
+   787→      com: this.centerOfMass(),
+   788→      anchorLoads,
+   789→      anchorStretch,
+   790→      floorContacts,
+   791→      jointAngles: this.angles.map((a) => ({
+   792→        id: a.id,
+   793→        angle: a.currentAngle,
+   794→        utilization: jointUtilization(a)
+   795→      })),
+   796→      maxSpeed
+   797→    };
+   798→  }
+   799→
+   800→  /**
+   801→   * Fase muscular (ADR-007). Todas las fuerzas se aplican sobre particulas de masa alta
+   802→   * (pelvis ~11 kg, pecho ~14 kg) con topes calibrados para un desplazamiento por paso
+   803→   * estable; los pines miden la carga resultante y la biomecanica la traduce en fatiga.
+   804→   */
+   805→  private solveMuscles(dt: number, forces: Map<number, V3>): void {
+   806→    const M = this.env.muscles;
+   807→    const T = this.topology!;
+   808→    const pelvis = this.particles[T.pelvis];
+   809→    const chest = this.particles[T.chest];
+   810→    const head = this.particles[T.head];
+   811→    const addForce = (idx: number, fx: number, fy: number, fz: number): void => {
+   812→      const cur = forces.get(idx);
+   813→      forces.set(idx, cur ? v3(cur.x + fx, cur.y + fy, cur.z + fz) : v3(fx, fy, fz));
+   814→    };
+   815→
+   816→    // Rampa de activacion por anclaje (evita el tiron al anclar).
+   817→    for (const anchor of this.anchors.values()) {
+   818→      const rate = anchor.limb.startsWith("foot") ? 1 / 0.35 : 1 / 0.2;
+   819→      anchor.activation = Math.min(1, anchor.activation + dt * rate);
+   820→    }
+   821→
+   822→    // Pre-pasada: hay pierna sosteniendo (cuadriceps activo)? Con apoyo de piernas
+   823→    // los brazos NO tiran (el pull-up esta para colgar/colocarse, no para despegar
+   824→    // al cuerpo que ya esta de pie: evita la suma explosiva de fuerzas).
+   825→    let feetSupporting = false;
+   826→    // Peso que cargan los brazos ahora mismo (N): modula el balance (un pie que
+   827→    // solo descansa no debe volcar el COM hacia si; uno que sostiene, si).
+   828→    let handLoadN = 0;
+   829→    for (const anchor of this.anchors.values()) {
+   830→      if (anchor.limb.startsWith("hand")) handLoadN += Math.max(0, anchor.loadN);
+   831→    }
+   832→    // Arbitracion de pies: el STEP-UP lo hace solo el pie MAS ALTO (transferencia de
+   833→    // peso al escalon, como en escalada real); el balance solo desde el pie activo,
+   834→    // para que un apoyo bajo no pelee contra el pie que esta montando.
+   835→    let stepUpFoot: LimbId | null = null;
+   836→    let stepUpHoldY = -Infinity;
+   837→    for (const anchor of this.anchors.values()) {
+   838→      if (!anchor.limb.startsWith("foot")) continue;
+   839→      const root = this.particles[T.rootOf.get(anchor.limb)!];
+   840→      const dyr = root.pos.y - anchor.point.y;
+   841→      const dr = Math.hypot(root.pos.x - anchor.point.x, dyr, root.pos.z - anchor.point.z) || 1e-6;
+   842→      if (dyr / dr > 0.05) {
+   843→        feetSupporting = true;
+   844→      }
+   845→      if (dyr / dr < 0.02 && anchor.point.y > stepUpHoldY) {
+   846→        stepUpHoldY = anchor.point.y;
+   847→        stepUpFoot = anchor.limb;
+   848→      }
+   849→    }
+   850→
+   851→    let feetAnchored = 0;
+   852→    for (const anchor of this.anchors.values()) {
+   853→      const isFoot = anchor.limb.startsWith("foot");
+   854→      if (isFoot) feetAnchored++;
+   855→      const rootIdx = T.rootOf.get(anchor.limb);
+   856→      if (rootIdx === undefined) continue;
+   857→      const root = this.particles[rootIdx];
+   858→      const dx = root.pos.x - anchor.point.x;
+   859→      const dy = root.pos.y - anchor.point.y;
+   860→      const dz = root.pos.z - anchor.point.z;
+   861→      const dist = Math.hypot(dx, dy, dz) || 1e-6;
+   862→
+   863→      if (isFoot) {
+   864→        // CUADRICEPS (apoyo): el pie por DEBAJO de la cadera empuja la pelvis lejos del
+   865→        // pie (extension de pierna = ponerse de pie). Proyectado al plano de la pared:
+   866→        // la pierna empuja "hacia arriba", no separa del muro.
+   867→        if (dy / dist > 0.05) {
+   868→          // Servo de pierna: empuja mientras la pierna este flexionada y ceda al
+   869→          // acercarse a la extension natural (0.9·cadena = rodilla casi recta).
+   870→          // Asi la postura de pie es un equilibrio estable, no un empuje sin tope.
+   871→          const targetDist = T.legChain * 0.9;
+   872→          const f = clamp((targetDist - dist) * M.quadServoK, 0, M.quadPushMax) * anchor.activation;
+   873→          const ul = Math.hypot(dx, dy) || 1e-6;
+   874→          // Direccion axial con sesgo vertical (reaccion del suelo ~vertical al de pie).
+   875→          const bx = (dx / ul) * (1 - M.quadUpBias);
+   876→          const by = (dy / ul) * (1 - M.quadUpBias) + M.quadUpBias;
+   877→          const bl = Math.hypot(bx, by) || 1e-6;
+   878→          addForce(T.pelvis, (bx / bl) * f, (by / bl) * f, 0);
+   879→          // BALANCE: llevar el COM sobre el apoyo (feedback tipo SIMBICON); sin el,
+   880→          // un apoyo lateral nunca sostiene de verdad. Solo desde el pie que esta
+   881→          // montando (si hay step-up) o desde los apoyos si nadie monta. Escalado por
+   882→          // la carga REAL de la pierna frente a los brazos: un pie que descansa no
+   883→          // vuelca el cuerpo (evita sobrecargar el brazo contrario en cascada).
+   884→          if (stepUpFoot === null || stepUpFoot === anchor.limb) {
+   885→            const weightShare = clamp(f / (f + handLoadN + 60), 0.15, 1);
+   886→            const fb = clamp((anchor.point.x - pelvis.pos.x) * 400, -M.balanceMax, M.balanceMax) * anchor.activation * weightShare;
+   887→            addForce(T.pelvis, fb, 0, 0);
+   888→            // 3a ley de Newton: parte de la reaccion entra por el pie al pin, de modo que
+   889→            // el apoyo MEDIDO carga de verdad al estar de pie (fatiga de piernas real).
+   890→            addForce(anchor.particle, -(bx / bl) * f * 0.5 - fb * 0.4, -(by / bl) * f * 0.5, 0);
+   891→          } else {
+   892→            addForce(anchor.particle, -(bx / bl) * f * 0.5, -(by / bl) * f * 0.5, 0);
+   893→          }
+   894→        }
+   895→        // PSOAS/STEP-UP: el pie por ENCIMA de la cadera sube el cuerpo hacia la presa
+   896→        // (montar el escalon). Es lo que convierte "apoyar un pie" en ascender. La
+   897→        // componente vertical del vector hacia la presa regula el empuje solo: al
+   898→        // acercarse la pelvis al nivel del pie la fuerza se hace horizontal (COM sobre
+   899→        // el apoyo) y el cuadriceps toma el relevo por encima. Solo el pie MAS ALTO
+   900→        // monta (arbitracion: transferencia de peso al escalon).
+   901→        if (stepUpFoot === anchor.limb && dy / dist < 0.02) {
+   902→          const boost = 0.9 + 0.3 * this.climbDrive;
+   903→          // Esvaimiento por proximidad: al acercarse la pelvis al nivel del pie la
+   904→          // fuerza cede (sin sobregiro mas alla de la postura natural de pie).
+   905→          const taper = clamp(-dy / 0.45, 0.55, 1);
+   906→          const f = M.stepUpMax * anchor.activation * boost * taper;
+   907→          const ux = -dx / dist;
+   908→          const uy = -dy / dist;
+   909→          const uz = -dz / dist;
+   910→          addForce(T.pelvis, ux * f, uy * f, uz * f);
+   911→          addForce(anchor.particle, -ux * f * 0.35, -uy * f * 0.35, -uz * f * 0.35);
+   912→        }
+   913→      } else {
+   914→        // TRACCION DE BRAZOS (impulso de subida del jugador): mano por encima del
+   915→        // hombro y brazo ESTIRADO (compuerta de holgura) tira del pecho hacia el
+   916→        // anclaje. Con piernas de apoyo es el "subirse" que sube los hombros; el
+   917→        // servo de pierna limita la postura y evita el pliegue.
+   918→        if (this.climbDrive > 0.02 && dy / dist < -0.1) {
+   919→          // Holgura medida desde la RAIZ (hombro): en postura plegada el pecho puede
+   920→          // estar alto con el hombro colgando bajo y el brazo estirado; el pull debe
+   921→          // evaluar el brazo real, no la posicion del pecho.
+   922→          const rdx = anchor.point.x - root.pos.x;
+   923→          const rdy = anchor.point.y - root.pos.y;
+   924→          const rdz = anchor.point.z - root.pos.z;
+   925→          const rd = Math.hypot(rdx, rdy, rdz) || 1e-6;
+   926→          const slack = rd - T.armChain * 0.9;
+   927→          const cdx = anchor.point.x - chest.pos.x;
+   928→          const cdy = anchor.point.y - chest.pos.y;
+   929→          const cdz = anchor.point.z - chest.pos.z;
+   930→          const cd = Math.hypot(cdx, cdy, cdz) || 1e-6;
+   931→          if (slack > 0) {
+   932→            const gate = clamp(slack / (T.armChain * 0.2), 0.4, 1);
+   933→            // Durante un step-up la pierna manda: los brazos asisten al 60%.
+   934→            const assist = stepUpFoot === null ? 1 : 0.6;
+   935→            // Margen de agarre: no se puede tirar mas fuerte que el agarre restante
+   936→            // (un brazo al limite no tira: evita saturar el pin y la sobrecarga).
+   937→            const headroom = clamp(1 - anchor.loadN / anchor.maxForce, 0, 1);
+   938→            const f = M.armPullMax * anchor.activation * this.climbDrive * gate * assist * headroom;
+   939→            addForce(T.chest, (cdx / cd) * f, (cdy / cd) * f, (cdz / cd) * f);
+   940→            addForce(rootIdx, (cdx / cd) * f * 0.35, (cdy / cd) * f * 0.35, (cdz / cd) * f * 0.35);
+   941→          }
+   942→        }
+   943→      }
+   944→    }
+   945→
+   946→    // TONO POSTURAL: pecho sobre pelvis y cabeza sobre pecho (anti-muneco de trapo).
+   947→    // Escala con el numero de apoyos y con el tono global (ADR-008): cuerpo libre =
+   948→    // ragdoll puro; tono bajo (caida) = cuerpo flacido pero sin pliegues imposibles
+   949→    // (los limites y folds siguen activos: son anatomia pasiva, no musculo).
+   950→    const toneScale = Math.min(1, this.anchors.size / 2) * (0.15 + 0.85 * this.tone);
+   951→    const tex = pelvis.pos.x - chest.pos.x;
+   952→    const tey = pelvis.pos.y + T.spineLen * 0.97 - chest.pos.y;
+   953→    const tez = pelvis.pos.z - chest.pos.z;
+   954→    const teLen = Math.hypot(tex, tey, tez) || 1e-6;
+   955→    const coreF = Math.min(M.coreMax * toneScale, teLen * 400);
+   956→    addForce(T.chest, (tex / teLen) * coreF, (tey / teLen) * coreF, (tez / teLen) * coreF);
+   957→    const nex = chest.pos.x - head.pos.x;
+   958→    const ney = chest.pos.y + 0.2 - head.pos.y;
+   959→    const nez = chest.pos.z - head.pos.z;
+   960→    const neLen = Math.hypot(nex, ney, nez) || 1e-6;
+   961→    const neckF = Math.min(M.neckMax * toneScale, neLen * 300);
+   962→    addForce(T.head, (nex / neLen) * neckF, (ney / neLen) * neckF, (nez / neLen) * neckF);
+   963→
+   964→    // PEGADO A LA PARED con cualquier anclaje: la colision del cuerpo con la cara del
+   965→    // muro impide colgar en la vertical exacta de los pines (las presas sobresalen), y
+   966→    // sin fuerza de centrado el cuerpo queda 0.1-0.2 m por detras, offset que devora
+   967→    // el alcance util. Generalizada al SEGMENTO que gobierna el cuerpo: la fuerza
+   968→    // empuja a lo largo de -normal y se atenua con la horizontalidad de la cara
+   969→    // (en un techo no hay "pegado": colgar no es apoyarse).
+   970→    if (this.anchors.size > 0) {
+   971→      const REST_DIST = 0.26;
+   972→      const leanOf = (px: number, py: number, pz: number): { fx: number; fy: number; fz: number } => {
+   973→        const plane = this.governingPlane(px, py, pz);
+   974→        const d = (px - plane.p.x) * plane.n.x + (py - plane.p.y) * plane.n.y + (pz - plane.p.z) * plane.n.z;
+   975→        // Escala por verticalidad de la cara: |n.z| = 1 en pared vertical, 0 en techo.
+   976→        const scale = Math.min(1, Math.abs(plane.n.z) + Math.abs(plane.n.x));
+   977→        const f = clamp((REST_DIST - d) * 400 * scale, -M.wallLeanMax, M.wallLeanMax);
+   978→        return { fx: plane.n.x * f, fy: plane.n.y * f, fz: plane.n.z * f };
+   979→      };
+   980→      const lp = leanOf(pelvis.pos.x, pelvis.pos.y, pelvis.pos.z);
+   981→      const lc = leanOf(chest.pos.x, chest.pos.y, chest.pos.z);
+   982→      addForce(T.pelvis, lp.fx, lp.fy, lp.fz);
+   983→      addForce(T.chest, lc.fx, lc.fy, lc.fz);
+   984→    }
+   985→
+   986→    // Tope de fuerza muscular por particula axial: la suma de musculos nunca puede
+   987→    // superar el techo (estabilidad de Verlet con las masas de pelvis/pecho).
+   988→    const cap = (idx: number, capN: number): void => {
+   989→      const f = forces.get(idx);
+   990→      if (!f) return;
+   991→      const l = vLen(f);
+   992→      if (l > capN) forces.set(idx, vScale(f, capN / l));
+   993→    };
+   994→    cap(T.pelvis, M.muscleForceCapPelvis);
+   995→    cap(T.chest, M.muscleForceCapChest);
+   996→
+   997→    // Instantanea para diagnostico (solo particulas axiales y raices).
+   998→    this.lastMuscleForces.clear();
+   999→    for (const idx of [T.pelvis, T.chest, T.head]) {
+  1000→      const f = forces.get(idx);
+  1001→      if (f) this.lastMuscleForces.set(idx, f);
+  1002→    }
+  1003→  }
+  1004→
+  1005→  private solveSticks(): void {
+  1006→    for (const s of this.sticks) {
+  1007→      const pa = this.particles[s.a];
+  1008→      const pb = this.particles[s.b];
+  1009→      const w = pa.invMass + pb.invMass;
+  1010→      if (w <= 0) continue;
+  1011→      const d = vSub(pb.pos, pa.pos);
+  1012→      const len = vLen(d);
+  1013→      if (len < 1e-9) continue;
+  1014→      const diff = (len - s.rest) / len;
+  1015→      const k = s.stiffness;
+  1016→      pa.pos = vAdd(pa.pos, vScale(d, (diff * pa.invMass * k) / w));
+  1017→      pb.pos = vSub(pb.pos, vScale(d, (diff * pb.invMass * k) / w));
+  1018→    }
+  1019→  }
+  1020→
+  1021→  private solveAngles(): void {
+  1022→    // Limites articulares DUROS (ADR-008): la rigidez de los datos ya no escala la
+  1023→    // correccion de la violacion; jointLimitStiffness (1 = duro) garantiza que ni
+  1024→    // colgando ni en caida el angulo cruce el rango anatomico. La flexion DENTRO del
+  1025→    // rango sigue libre (el constraint solo actua al violar).
+  1026→    const k = clamp(this.env.balance.jointLimitStiffness, 0, 1);
+  1027→    for (const c of this.angles) {
+  1028→      const pj = this.particles[c.j];
+  1029→      const pa = this.particles[c.a];
+  1030→      const pb = this.particles[c.b];
+  1031→      const va = vSub(pa.pos, pj.pos);
+  1032→      const vb = vSub(pb.pos, pj.pos);
+  1033→      const la = vLen(va);
+  1034→      const lb = vLen(vb);
+  1035→      if (la < 1e-9 || lb < 1e-9) {
+  1036→        c.currentAngle = Number.isFinite(la) && Number.isFinite(lb) ? c.currentAngle : c.currentAngle;
+  1037→        continue;
+  1038→      }
+  1039→      const ang = angleBetween(va, vb);
+  1040→      c.currentAngle = ang;
+  1041→      const target = clamp(ang, c.min, c.max);
+  1042→      if (Math.abs(target - ang) < 1e-5) continue;
+  1043→      const axis = vCross(va, vb);
+  1044→      const axisLen = vLen(axis);
+  1045→      if (axisLen < 1e-9) continue;
+  1046→      const rot = rotateAroundAxis(vb, vScale(axis, 1 / axisLen), target - ang);
+  1047→      const delta = vSub(rot, vb);
+  1048→      const w = pa.invMass + pb.invMass;
+  1049→      if (w <= 0) continue;
+  1050→      pb.pos = vAdd(pb.pos, vScale(delta, (pb.invMass * k) / w));
+  1051→      pa.pos = vSub(pa.pos, vScale(delta, (pa.invMass * k) / w));
+  1052→    }
+  1053→  }
+  1054→
+  1055→  /**
+  1056→   * Sentido de flexion (ADR-008): mantiene el vertice articular en el lado anatomico
+  1057→   * de la cuerda padre-hijo. El angulo no puede detectarlo (doblada al reves = mismo
+  1058→   * angulo); esto prohibe rodillas que flexionan hacia atras y codos que se meten en
+  1059→   * la pared. Correccion dura y repartida: el vertice al lado permitido, los extremos
+  1060→   * con la contra-mitad (conservacion aproximada).
+  1061→   */
+  1062→  private solveFolds(): void {
+  1063→    const k = clamp(this.env.balance.foldStrength, 0, 1);
+  1064→    for (const f of this.folds) {
+  1065→      const pj = this.particles[f.j];
+  1066→      const pa = this.particles[f.a];
+  1067→      const pb = this.particles[f.b];
+  1068→      const mx = (pa.pos.x + pb.pos.x) * 0.5;
+  1069→      const my = (pa.pos.y + pb.pos.y) * 0.5;
+  1070→      const mz = (pa.pos.z + pb.pos.z) * 0.5;
+  1071→      const side = (pj.pos.x - mx) * f.dir.x + (pj.pos.y - my) * f.dir.y + (pj.pos.z - mz) * f.dir.z;
+  1072→      f.side = side;
+  1073→      if (side >= f.minSide) continue;
+  1074→      const corr = (f.minSide - side) * k;
+  1075→      pj.pos = vAdd(pj.pos, vScale(f.dir, corr * 0.7));
+  1076→      pa.pos = vSub(pa.pos, vScale(f.dir, corr * 0.15));
+  1077→      pb.pos = vSub(pb.pos, vScale(f.dir, corr * 0.15));
+  1078→    }
+  1079→  }
+  1080→
+  1081→  /**
+  1082→   * Guinada de pelvis limitada (anti-"cadera girada"). Anatomia pasiva: la dureza
+  1083→   * sigue jointLimitStiffness. Mide el angulo de la barra de caderas respecto a la
+  1084→   * de hombros alrededor del eje columna y, si excede el tope, rota las caderas de
+  1085→   * vuelta alrededor del eje que pasa por pelvisC (sin tocar longitudes al pivote).
+  1086→   */
+  1087→  private solveTwists(): void {
+  1088→    const max = Math.max(0, this.env.balance.twistLimitRad);
+  1089→    if (max <= 0) return;
+  1090→    // Ganancia moderada por iteracion: convergencia geometrica rapida ((1-g)^12 ~ 0)
+  1091→    // sin inyectar un latigazo de momentum en caidas violentas (el tope es anatomia
+  1092→    // pasiva, no un servo duro).
+  1093→    const g = 0.6 * clamp(this.env.balance.jointLimitStiffness, 0, 1);
+  1094→    for (const t of this.twists) {
+  1095→      const pivot = this.particles[t.pivot];
+  1096→      const origin = this.particles[t.axisFrom];
+  1097→      const axisRaw = vSub(pivot.pos, origin.pos);
+  1098→      const alen = vLen(axisRaw);
+  1099→      if (alen < 1e-9) continue;
+  1100→      const axis = vScale(axisRaw, 1 / alen);
+  1101→      const p1 = this.particles[t.a1];
+  1102→      const p2 = this.particles[t.a2];
+  1103→      const q1 = this.particles[t.b1];
+  1104→      const q2 = this.particles[t.b2];
+  1105→      const rd = vSub(p2.pos, p1.pos);
+  1106→      const cd = vSub(q2.pos, q1.pos);
+  1107→      // Ambas barras proyectadas en el plano perpendicular al eje de la columna.
+  1108→      const rdPerp = vSub(rd, vScale(axis, vDot(rd, axis)));
+  1109→      const cdPerp = vSub(cd, vScale(axis, vDot(cd, axis)));
+  1110→      const rl = vLen(rdPerp);
+  1111→      const cl = vLen(cdPerp);
+  1112→      if (rl < 1e-9 || cl < 1e-9) continue;
+  1113→      const rn = vScale(rdPerp, 1 / rl);
+  1114→      const cn = vScale(cdPerp, 1 / cl);
+  1115→      const sinA = clamp(vDot(vCross(rn, cn), axis), -1, 1);
+  1116→      const cosA = clamp(vDot(rn, cn), -1, 1);
+  1117→      const ang = Math.atan2(sinA, cosA);
+  1118→      t.currentAngle = ang;
+  1119→      // El tope VIGENTE es el del tune en vivo (presets/F3), no el almacenado en el rig.
+  1120→      const over = ang - clamp(ang, -max, max);
+  1121→      if (Math.abs(over) < 1e-5) continue;
+  1122→      const corr = -over * t.stiffness * g;
+  1123→      const rotate = (idx: number): void => {
+  1124→        const p = this.particles[idx];
+  1125→        const r = vSub(p.pos, pivot.pos);
+  1126→        p.pos = vAdd(pivot.pos, rotateAroundAxis(r, axis, corr));
+  1127→      };
+  1128→      rotate(t.b1);
+  1129→      rotate(t.b2);
+  1130→    }
+  1131→  }
+  1132→
+  1133→  /**
+  1134→   * Topes de longitud de cadena (anti-muneco de goma). Dureza 1.0 SIEMPRE: es
+  1135→   * anatomia pasiva, no musculo (como los limites articulares duros de ADR-008).
+  1136→   * La tolerancia si escala con el balance: realista corta antes, ragdoll permite
+  1137→   * mas estiramiento antes de cortar. Al violarse, arrastra la raiz hacia el extremo:
+  1138→   * una presa "imposible" no alarga el brazo, sube el cuerpo (y dispara la carga).
+  1139→   */
+  1140→  private solveChainCaps(): void {
+  1141→    const tol = Math.max(1.0, this.env.balance.stretchTolerance);
+  1142→    for (const c of this.chainCaps) {
+  1143→      const max = c.limb === null ? c.base * SPINE_STRETCH_TOLERANCE : c.base * tol;
+  1144→      const pa = this.particles[c.a];
+  1145→      const pb = this.particles[c.b];
+  1146→      const w = pa.invMass + pb.invMass;
+  1147→      const d = vSub(pb.pos, pa.pos);
+  1148→      const len = vLen(d);
+  1149→      c.current = len;
+  1150→      if (w <= 0 || len <= max || len < 1e-9) continue;
+  1151→      const diff = (len - max) / len;
+  1152→      pa.pos = vAdd(pa.pos, vScale(d, (diff * pa.invMass) / w));
+  1153→      pb.pos = vSub(pb.pos, vScale(d, (diff * pb.invMass) / w));
+  1154→    }
+  1155→  }
+  1156→
+  1157→  private solveCollisions(): void {
+  1158→    for (const p of this.particles) {
+  1159→      // Suelo: los pies y el resto del cuerpo.
+  1160→      if (p.collideFloor && p.pos.y < this.env.floorY + p.radius) {
+  1161→        p.pos.y = this.env.floorY + p.radius;
+  1162→        // Friccion simple: reduce la velocidad tangencial implicita.
+  1163→        p.prev.x += (p.pos.x - p.prev.x) * 0.25;
+  1164→        p.prev.z += (p.pos.z - p.prev.z) * 0.25;
+  1165→      }
+  1166→      // Pared: los segmentos del cuerpo no atraviesan el plano frontal de NINGUN
+  1167→      // segmento (pared vertical clasica, placas, desplomes y techos del circuito).
+  1168→      // (Manos y pies quedan exentos: se apoyan en presas que sobresalen.)
+  1169→      // d = distancia con signo al plano (positiva = lado del escalador): si el
+  1170→      // centro queda a menos de su radio de la cara, se proyecta de vuelta.
+  1171→      if (p.collideWall) {
+  1172→        for (const plane of this.env.wallPlanes) {
+  1173→          if (
+  1174→            p.pos.x < plane.minX || p.pos.x > plane.maxX ||
+  1175→            p.pos.y < plane.minY || p.pos.y > plane.maxY ||
+  1176→            p.pos.z < plane.minZ || p.pos.z > plane.maxZ
+  1177→          ) {
+  1178→            continue;
+  1179→          }
+  1180→          const d = (p.pos.x - plane.p.x) * plane.n.x + (p.pos.y - plane.p.y) * plane.n.y + (p.pos.z - plane.p.z) * plane.n.z;
+  1181→          if (d >= p.radius) continue;
+  1182→          const push = p.radius - d;
+  1183→          p.pos.x += plane.n.x * push;
+  1184→          p.pos.y += plane.n.y * push;
+  1185→          p.pos.z += plane.n.z * push;
+  1186→        }
+  1187→      }
+  1188→    }
+  1189→  }
+  1190→}
+  1191→
+  1192→function clampVecMag(v: V3, max: number): V3 {
+  1193→  const l = vLen(v);
+  1194→  if (l <= max || l < 1e-12) return v;
+  1195→  return vScale(v, max / l);
+  1196→}
+  1197→
+  1198→function jointUtilization(c: AngleConstraint): number {
+  1199→  const mid = (c.min + c.max) / 2;
+  1200→  const half = (c.max - c.min) / 2;
+  1201→  if (half <= 1e-9) return 0;
+  1202→  return clamp(Math.abs(c.currentAngle - mid) / half, 0, 1);
+  1203→}
+  1204→
+  1205→export { vDot, angleBetween };
+  1206→
