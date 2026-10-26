@@ -68,6 +68,11 @@ export interface InteractionCallbacks {
   onAccept(limb: LimbId, holdId: string): void;
   onReject(limb: LimbId, holdId: string | null, reason: string): void;
   onArrival(limb: LimbId, holdId: string): void;
+  /** Soltar en el aire (cut loose): el jugador suelta una extremidad anclada lejos
+   * de su presa y sin ninguna presa cerca: la extremidad queda LIBRE (cuelga).
+   * Fisica creible bajo techo: sin esto el pie no puede dejar de empujar y la
+   * cadera no viaja bajo el plano (los ganchos profundos quedan fuera de cadena). */
+  onRelease(limb: LimbId): void;
 }
 
 export interface DragPreview {
@@ -86,6 +91,8 @@ export class InteractionController {
   readonly assist = new Map<LimbId, { holdId: string; elapsed: number }>();
 
   private preview: DragPreview | null = null;
+  /** Ultimo punto de arrastre (para decidir el soltar en el aire en endDrag). */
+  private lastDragPoint: V3 | null = null;
 
   constructor(
     private readonly world: InteractionWorld,
@@ -115,6 +122,7 @@ export class InteractionController {
       // Sin interseccion: conservar el ultimo objetivo valido (7.1).
       return;
     }
+    this.lastDragPoint = wallPoint;
     const clamped = this.clampToWall(wallPoint);
     const snap = this.findSnap(clamped, this.selected);
     const validity = snap ? (this.validateHold(this.selected, snap) ? "valid" : "invalid") : "none";
@@ -141,7 +149,19 @@ export class InteractionController {
         this.cb.onReject(limb, preview.snappedHoldId, this.lastRejectReason ?? "objetivo_invalido");
       }
     } else {
-      this.cb.onReject(limb, null, this.world.challenge.rules.allowFreeTarget ? "objetivo_libre" : "debe_terminar_en_presa");
+      // Sin presa en el objetivo: soltar en el aire (cut loose) si la extremidad
+      // esta anclada y el punto de suelta queda LEJOS de su presa (arrastre
+      // intencional al vacio); un desliz cercano conserva el ancla (perdon).
+      const anchorHold = this.world.anchorHoldOf(limb);
+      const releasePoint = preview?.target ?? this.lastDragPoint;
+      const far = !!anchorHold && !!releasePoint
+        ? vLen(vSub(this.holdPoint(anchorHold), releasePoint)) > 0.45
+        : false;
+      if (anchorHold && far) {
+        this.cb.onRelease(limb);
+      } else {
+        this.cb.onReject(limb, null, this.world.challenge.rules.allowFreeTarget ? "objetivo_libre" : "debe_terminar_en_presa");
+      }
     }
     this.lastRejectReason = null;
   }

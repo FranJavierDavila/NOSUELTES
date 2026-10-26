@@ -146,6 +146,9 @@ export class GameScene {
   private wallTopY = 4.85;
   /** Semiancho de la pared cargada (travesias hasta el borde quedan en cuadro). */
   private wallHalfWidth = 2.5;
+  /** True si la ultima wallPlanePointNear devolvio una PRESA (mapa centrado en presa):
+   * el offset de agarre del teclado no debe aplicarse (desplaziaria el objetivo). */
+  lastWallPointWasHold = false;
   /** Distancia base de camara segun pared (crece con techo/altura del circuito). */
   private camBaseDist = 7.8;
   private camDist = 7.8;
@@ -955,10 +958,16 @@ export class GameScene {
     const t = performance.now() / 1000;
     if (!aiming) {
       const roofPull = Math.max(0, -target.z) * 0.85;
+      // Elevacion bajo techo (bloqueo de apuntado detectado verificando rutas):
+      // con la camara a la altura del plano del techo la travesia se ve DE CANTO
+      // (todas las presas caben en ~20 px) y los rayos rasgan el plano (>10x de
+      // amplificacion por pixel). Elevando la camara segun la profundidad bajo el
+      // plano, la travesia se expande en pantalla y el angulo de incidencia mejora.
+      const roofLift = Math.max(0, -target.z) * 1.05;
       const breathe = Math.sin(t * 0.45) * 0.035;
       const desiredPos = new Vector3(
         target.x * 0.22,
-        target.y + 1.12 + breathe,
+        target.y + 1.12 + roofLift + breathe,
         -(this.camDist) - roofPull
       );
       this.camera.position.addInPlace(desiredPos.subtract(this.camera.position).scale(Math.min(1, dt * 3.4)));
@@ -1195,22 +1204,95 @@ export class GameScene {
    * Proyeccion del cursor al PLANO DE PRESAS del segmento que gobierna `ref`
    * (posicion de la raiz de la extremidad arrastrada). En circuito inclinado cada
    * segmento tiene su propio plano: es lo que hace posible arrastrar bajo un techo.
+   *
+   * SELECCION DE PLANO POR EXPLICACION (bloqueo real detectado verificando las
+   * rutas: en la frontera vertical->techo las presas del borde (h2, z=-0.16) son
+   * gobernadas por el plano VERTICAL y h4 (z=-0.69) quedaba 0,5 m DETRAS del plano
+   * de arrastre: fuera de su pozo de snap, imposible de apuntar). Ahora el rayo del
+   * cursor se intersecta con TODOS los planos de presas y gana el segmento cuya
+   * presa mas cercana mejor explica la interseccion (minima distancia 3D). En pared
+   * de un solo segmento el resultado es identico al comportamiento probado; en una
+   * frontera el plano salta al segmento correcto en cuanto el cursor senala una
+   * presa del siguiente tramo.
    */
   wallPlanePointNear(x: number, y: number, ref: { x: number; y: number; z: number }): Vector3 | null {
     if (this.wallFrames.length === 0) return null;
+    this.lastWallPointWasHold = false;
+    // CAMINO RAPIDO CENTRADO EN PRESA (bloqueo real detectado verificando rutas):
+    // bajo el techo la camara ve la travesia casi de canto (presas a 2 px entre si)
+    // y en la frontera vertical->techo el plano del segmento puede quedar DETRAS de
+    // la presa objetivo (h4 a 0,5 m del plano vertical): la interseccion continua
+    // nunca alcanza su pozo de snap. Si una presa proyecta a <48 px del cursor, el
+    // objetivo ES esa presa: determinista ante compresion y rasante, y la presa
+    // que el jugador senala es exactamente la elegida. Lejos de cualquier presa,
+    // mapeo continuo (interseccion con el plano mejor explicado por una presa).
+    const near = this.nearestHoldOnScreenCss(x, y, 48);
+    if (near) {
+      // El objetivo es una presa REAL: el offset de agarre debe NO aplicarse
+      // (limbLoop.ts lo consulta) o desplazaria el objetivo fuera de la presa.
+      this.lastWallPointWasHold = true;
+      return near;
+    }
+    const ray = this.scene.createPickingRay(x, y, Matrix.Identity(), this.camera);
+    const holdOff = 0.055; // las presas sobresalen 5,5 cm de la cara (z=-0.18 en vertical)
+    let bestPoint: Vector3 | null = null;
+    let bestHoldDist = Number.POSITIVE_INFINITY;
+    let bestT = Number.POSITIVE_INFINITY;
+    for (const frame of this.wallFrames) {
+      const n = frame.normal;
+      const f = facePoint(frame);
+      const px = f.x + n.x * holdOff;
+      const py = f.y + n.y * holdOff;
+      const pz = f.z + n.z * holdOff;
+      const denom = ray.direction.x * n.x + ray.direction.y * n.y + ray.direction.z * n.z;
+      if (Math.abs(denom) < 1e-5) continue;
+      const t = ((px - ray.origin.x) * n.x + (py - ray.origin.y) * n.y + (pz - ray.origin.z) * n.z) / denom;
+      if (t <= 0.05) continue;
+      const p = ray.origin.add(ray.direction.scale(t));
+      // presa mas cercana a esta interseccion (distancia 3D)
+      let hd = Number.POSITIVE_INFINITY;
+      for (const mesh of this.holdMeshes.values()) {
+        const d = Vector3.Distance(mesh.position, p);
+        if (d < hd) hd = d;
+      }
+      // gana la interseccion mejor explicada por una presa real; empate ->
+      // la interseccion mas cercana a la camara (t menor)
+      if (hd < bestHoldDist - 0.02 || (Math.abs(hd - bestHoldDist) <= 0.02 && t < bestT)) {
+        bestHoldDist = hd;
+        bestT = t;
+        bestPoint = p;
+      }
+    }
+    if (bestPoint && bestHoldDist <= 0.6) return bestPoint;
+    // Sin presa que explique el rayo: plano del segmento de la extremidad (comportamiento original).
     const frame = segmentAtPoint(this.wallFrames, ref);
     const n = frame.normal;
     const f = facePoint(frame);
-    const holdOff = 0.055; // las presas sobresalen 5,5 cm de la cara (z=-0.18 en vertical)
     const px = f.x + n.x * holdOff;
     const py = f.y + n.y * holdOff;
     const pz = f.z + n.z * holdOff;
-    const ray = this.scene.createPickingRay(x, y, Matrix.Identity(), this.camera);
     const denom = ray.direction.x * n.x + ray.direction.y * n.y + ray.direction.z * n.z;
     if (Math.abs(denom) < 1e-5) return null;
     const t = ((px - ray.origin.x) * n.x + (py - ray.origin.y) * n.y + (pz - ray.origin.z) * n.z) / denom;
     if (t <= 0.05) return null;
     return ray.origin.add(ray.direction.scale(t));
+  }
+
+  /** Presa cuyo proyecto en pantalla (px CSS) esta mas cerca del cursor, dentro de un radio. */
+  private nearestHoldOnScreenCss(x: number, y: number, maxPx: number): Vector3 | null {
+    let best: Vector3 | null = null;
+    let bestD = maxPx;
+    for (const mesh of this.holdMeshes.values()) {
+      if (!mesh.isEnabled()) continue;
+      const p = mesh.position;
+      const s = this.projectToScreenCss(p.x, p.y, p.z);
+      const d = Math.hypot(s.x - x, s.y - y);
+      if (d < bestD) {
+        bestD = d;
+        best = p.clone();
+      }
+    }
+    return best;
   }
 
   /** Normal de escape en un punto (hacia el escalador): para FX y mecanica GAS. */

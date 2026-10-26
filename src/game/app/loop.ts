@@ -881,6 +881,13 @@ export class GameApp {
           window.setTimeout(() => this.scene.setHoldInvalid(holdId, false), 450);
         }
       },
+      onRelease: (limb) => {
+        // Soltar en el aire (cut loose): la extremidad queda libre y cuelga.
+        this.solver.clearTarget(limb);
+        const a = this.solver.releaseAnchor(limb);
+        this.events.emit({ type: "GripReleased", limb, holdId: a?.holdId ?? "", reason: "PLAYER_RELEASE" });
+        this.refreshHoldOccupancy();
+      },
       onArrival: (limb, holdId) => {
         this.solver.clearTarget(limb);
         const hold = holdById.get(holdId)!;
@@ -1878,7 +1885,10 @@ export class GameApp {
       if (!this.interaction?.dragging) return;
       const point = dragPoint(e.clientX - rect.left, e.clientY - rect.top);
       // Agarre por teclado: el objetivo conserva el offset inicial (agarrar no salta).
-      const target = point && this.keyboardLimb && this.grabOffset ? { x: point.x + this.grabOffset.x, y: point.y + this.grabOffset.y, z: point.z } : point;
+      // Si el mapeo devolvio una PRESA real (mapa centrado en presa), el offset no se
+      // aplica: desplaziaria el objetivo fuera de la presa senalada.
+      const holdCentric = point !== null && this.scene.lastWallPointWasHold;
+      const target = point && this.keyboardLimb && this.grabOffset && !holdCentric ? { x: point.x + this.grabOffset.x, y: point.y + this.grabOffset.y, z: point.z } : point;
       this.interaction.updateDrag(target ? v3(target.x, target.y, target.z) : null);
       const preview = this.interaction.getPreview();
       if (preview?.snappedHoldId) {
@@ -2034,14 +2044,16 @@ export class GameApp {
     this.interaction!.beginDrag(limb);
     if (this.machine.state === "READY") this.machine.transition("PLAYING");
     this.keyboardLimb = limb;
-    // Offset inicial: objetivo = posicion actual de la extremidad (limbPos - cursor),
-    // asi agarrar NO salta: la extremidad solo responde al MOVIMIENTO del cursor.
     const limbPos = this.solver.positionOfLimb(limb);
     const lp = { x: limbPos.x, y: limbPos.y, z: limbPos.z };
     const cursor = this.wallFrames.length > 0
       ? this.scene.wallPlanePointNear(this.pointerX, this.pointerY, lp)
       : this.scene.wallPlanePoint(this.pointerX, this.pointerY, this.wall.holds[0]?.position[2] ?? -0.18);
-    this.grabOffset = cursor ? { x: limbPos.x - cursor.x, y: limbPos.y - cursor.y } : { x: 0, y: 0 };
+    // Offset inicial: objetivo = posicion actual de la extremidad (limbPos - cursor),
+    // asi agarrar NO salta: la extremidad solo responde al MOVIMIENTO del cursor.
+    // Con mapa centrado en presa el offset es identidad (la presa inicial ES el objetivo).
+    const holdCentricPress = cursor !== null && this.scene.lastWallPointWasHold;
+    this.grabOffset = cursor && !holdCentricPress ? { x: limbPos.x - cursor.x, y: limbPos.y - cursor.y } : { x: 0, y: 0 };
     this.applyKeyboardDragTarget();
     this.hud.toast(t("toast.limbGrabbed", { limb: limbLabelOf(limb), key: GameApp.KEY_OF_LIMB[limb] }), "info");
   }
@@ -2069,7 +2081,10 @@ export class GameApp {
       ? this.scene.wallPlanePointNear(this.pointerX, this.pointerY, lp)
       : this.scene.wallPlanePoint(this.pointerX, this.pointerY, this.wall.holds[0]?.position[2] ?? -0.18);
     const base = point ?? { x: lp.x, y: lp.y, z: lp.z };
-    const target = this.grabOffset ? { x: base.x + this.grabOffset.x, y: base.y + this.grabOffset.y, z: base.z } : base;
+    // Con mapa centrado en presa el offset no se aplica: el objetivo ES la presa.
+    const target = this.grabOffset && !this.scene.lastWallPointWasHold
+      ? { x: base.x + this.grabOffset.x, y: base.y + this.grabOffset.y, z: base.z }
+      : base;
     this.interaction.updateDrag(v3(target.x, target.y, target.z));
   }
 

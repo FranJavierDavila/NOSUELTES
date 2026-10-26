@@ -200,22 +200,38 @@ def follow_feet(count, y0, dy, xb, xa, drift=0.0):
     return out
 
 
-def ruta_of(hands_n, feet_rounds):
+def ruta_of(hands_n, feet_steps):
     """Ruta con el ritmo probado. Arranque DE PIE (circuito): el PRIMER paso es el
     pie IZQUIERDO - al pisar con el derecho primero el peso se traslada a ese lado
     y fa1 queda fuera de alcance de la pierna izquierda (fisica real). Alternando
-    izquierda->derecha el cuerpo queda centrado entre los dos apoyos."""
+    izquierda->derecha el cuerpo queda centrado entre los dos apoyos.
+
+    feet_steps: cola ordenada de (limb, hold) que se intercala UN pie por movimiento
+    de mano (mismo ritmo 1:1 del ritmo probado) hasta agotarse; despues la escalera
+    de manos sigue hasta la ULTIMA presa h{hands_n} (la version anterior cortaba la
+    escalera con las rondas de pies y dejaba el salto final a la cima fuera de
+    alcance: bloqueo real detectado por la auditoria en E4/E5)."""
     ruta = [("foot_l", "fa1"), ("foot_r", "fb1"), ("hand_r", "h1"), ("hand_l", "h2")]
-    for i in range(feet_rounds):
-        ruta.append(("foot_r", f"fb{i+2}"))
-        if 2 * i + 3 <= hands_n:
-            ruta.append(("hand_r", f"h{2*i+3}"))
-        ruta.append(("foot_l", f"fa{i+2}"))
-        if 2 * i + 4 <= hands_n:
-            ruta.append(("hand_l", f"h{2*i+4}"))
+    fi = 0
+    for k in range(3, hands_n + 1):
+        if fi < len(feet_steps):
+            ruta.append(feet_steps[fi])
+            fi += 1
+        ruta.append(("hand_r" if k % 2 == 1 else "hand_l", f"h{k}"))
     ruta.append(("hand_r", "top"))
     ruta.append(("hand_l", "top"))
     return ruta
+
+
+def feet_queue(feet_rounds, rests=()):
+    """Cola de pasos de pie: fb/fa de seguimiento + descansos finales (frest/ganchos).
+    fb*/x+ -> pie derecho, fa*/x- -> pie izquierdo (coherente con follow_feet)."""
+    out = []
+    for i in range(2, feet_rounds + 1):
+        out.append(("foot_r", f"fb{i}"))
+        out.append(("foot_l", f"fa{i}"))
+    out.extend(rests)
+    return out
 
 
 def stage_cfg(idx, wall_id, name, height, segments, time_s, blurb, hand_route, feet_plan,
@@ -244,7 +260,7 @@ def build_all():
     st = stage_cfg(1, "wall_circuit_01", "LA PLACA", 5.5, segs, 300,
                    "5,5 m de recorrido: placa a +18 grados y tramo vertical. Presas grandes, pies generosos y la regla nueva: un pie en presa de mano carga x2.",
                    hands, feet, (-0.40, 0.40, 2.02), (0.10, 5.30), 0.145, 0.135)
-    st["ruta"] = ruta_of(10, 5)
+    st["ruta"] = ruta_of(10, feet_queue(5, rests=(("foot_l", "frest2"),)))
     stages.append(st)
 
     # --- E2 EL BALCON (5,6 m): vertical + desplome -32. Pies mas escasos.
@@ -258,7 +274,7 @@ def build_all():
     st = stage_cfg(2, "wall_circuit_02", "EL BALCON", 5.6, segs, 340,
                    "5,6 m de recorrido: vertical y luego desplome de -32 grados hasta el balcon. Los pies se vuelven oro: buscalos, son escasos.",
                    hands, feet, (-0.38, 0.38, 2.02), (0.05, 5.42), 0.13, 0.12)
-    st["ruta"] = ruta_of(11, 5)
+    st["ruta"] = ruta_of(11, feet_queue(5, rests=(("foot_r", "frest1"), ("foot_l", "frest2"))))
     stages.append(st)
 
     # --- E3 EL DESPLOME (5,2 m): vertical corto + -55. Menos pies, mas brazo.
@@ -272,7 +288,7 @@ def build_all():
     st = stage_cfg(3, "wall_circuit_03", "EL DESPLOME", 5.2, segs, 380,
                    "5,2 m de recorrido: salida vertical y desplome de -55 grados. El cuerpo pesa el doble en los brazos: alterna y descansa.",
                    hands, feet, (-0.36, 0.36, 2.00), (0.0, 5.05), 0.125, 0.115)
-    st["ruta"] = ruta_of(11, 4)
+    st["ruta"] = ruta_of(11, feet_queue(4, rests=(("foot_r", "frest1"), ("foot_l", "frest2"))))
     stages.append(st)
 
     # --- E4 LA CUEVA (5,4 m): vertical + -75 + labio inclinado final.
@@ -288,7 +304,7 @@ def build_all():
     st = stage_cfg(4, "wall_circuit_04", "LA CUEVA", 5.4, segs, 420,
                    "5,4 m de recorrido: vertical, pared de -75 grados y labio final. Roza el techo: solo los ganchos de pie te salvan.",
                    hands, feet, (-0.34, 0.34, 1.80), (0.0, 4.98), 0.12, 0.11)
-    st["ruta"] = ruta_of(12, 4)
+    st["ruta"] = ruta_of(12, feet_queue(4, rests=(("foot_r", "frest1"), ("foot_l", "frest2"))))
     stages.append(st)
 
     # --- E5 EL TECHO (5,8 m de recorrido): vertical + TECHO -90 + labio -55 final.
@@ -299,14 +315,36 @@ def build_all():
                          drift_r=[0.02, 0.02, 0.0, -0.02, -0.02, 0.0, 0.02],
                          drift_l=[-0.02, 0.0, 0.02, 0.02, 0.0, -0.02])
     feet = follow_feet(3, 0.70, 0.72, 0.48, -0.48)
-    # Ganchos de pie EN el techo (los descansos que pide el jugador).
-    feet.append(("fgancho1", 0.40, 3.55))
-    feet.append(("fgancho2", -0.40, 4.00))
-    feet.append(("fgancho3", 0.38, 4.45))
+    # Ganchos de pie EN el techo (los descansos que pide el jugador). PROFUNDIDAD
+    # CALIBRADA por E2E (bloqueo detectado verificando rutas): el primer gancho a
+    # z=-0,8 es alcanzable por la cadena de pierna (0,76 m) con los pies aun en la
+    # pared vertical (cadera z~-0,2: dist 3D 0,64 <= 0,76); cada gancho siguiente
+    # se alcanza desde el anterior con las manos ya profundas. A z>=-1,35 la
+    # cadera anclada atras deja el gancho a 1,15 m: fuera de la pierna.
+    feet.append(("fgancho1", 0.40, 3.00))
+    feet.append(("fgancho2", -0.40, 3.90))
+    feet.append(("fgancho3", 0.38, 4.35))
     st = stage_cfg(5, "wall_circuit_05", "EL TECHO", 5.8, segs, 520,
                    "5,8 m de recorrido: techo horizontal de verdad. Se avanza COLGADO, con ganchos de pie de descanso y el labio final hacia arriba.",
                    hands, feet, (-0.34, 0.34, 1.96), (0.0, 5.60), 0.12, 0.115)
-    st["ruta"] = ruta_of(13, 3)
+    # Ruta del techo con FISICA REAL (calibrada por E2E + cadena PBD): los ganchos
+    # profundos exigen la cadera bajo el techo, y los pines de los pies en la pared
+    # vertical la retienen (1,15 m > pierna 0,76). Secuencia de escalador real:
+    # escalerilla hasta el borde, SOLTAR los pies (cut loose, hold ""), cuelgar y
+    # avanzar con las manos, enganchando cada descanso con la cadera ya profunda.
+    st["ruta"] = [
+        ("foot_l", "fa1"), ("foot_r", "fb1"), ("hand_r", "h1"), ("hand_l", "h2"),
+        ("foot_r", "fb2"), ("hand_r", "h3"), ("foot_l", "fa2"), ("hand_l", "h4"),
+        ("foot_r", "fb3"), ("hand_r", "h5"), ("foot_l", "fa3"), ("hand_l", "h6"),
+        ("foot_r", ""), ("foot_l", ""),                       # cut loose: la cadera viaja bajo el techo
+        ("hand_r", "h7"),
+        ("foot_r", "fgancho1"), ("hand_l", "h8"),              # descanso derecho
+        ("foot_l", "fgancho2"), ("hand_r", "h9"),              # descanso izquierdo
+        ("foot_r", ""),                                        # desenganchar: con el pie en fgancho1 la
+        ("foot_r", "fgancho3"), ("hand_l", "h10"),             # cadera no baja hasta el tercer gancho
+        ("hand_r", "h11"), ("hand_l", "h12"), ("hand_r", "h13"),
+        ("hand_l", "top"), ("hand_r", "top"),
+    ]
     stages.append(st)
     return stages
 

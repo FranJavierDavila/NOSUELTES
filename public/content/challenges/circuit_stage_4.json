@@ -44,6 +44,5 @@
     ],
     "stableDurationSeconds": 0.5,
     "stabilityThreshold": 0.65
-  },
-  "instructionEn": "Vertical route: climb with real physics and get both hands to the top hold, holding the posture."
+  }
 }
