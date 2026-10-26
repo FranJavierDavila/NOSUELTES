@@ -82,7 +82,9 @@ fallen_at = None
 anchors_empty_at = None
 landed_at = None
 tone_at_fall = None
-while time.time() - t0 < 9:
+# La REPETICION EPICA prolonga la secuencia (~6 s de playback antes del
+# auto-reintento): la ventana de observacion se amplia en consonancia.
+while time.time() - t0 < 18:
     st = state()
     now = time.time() - t0
     for j in (ev('JSON.stringify(window.__NS.joints())') or []):

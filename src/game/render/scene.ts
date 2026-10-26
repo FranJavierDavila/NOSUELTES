@@ -150,8 +150,11 @@ export class GameScene {
   private camBaseDist = 7.8;
   private camDist = 7.8;
   /** Estado cinematico: zoom-in al caer (drama) y al completar (celebracion). */
-  private camMode: "play" | "fallen" | "success" = "play";
+  private camMode: "play" | "fallen" | "success" | "replay" = "play";
   private camModeLeft = 0;
+  /** Modo replay: lado de rodaje (±1, elegido al entrar) y tiempo dentro del modo. */
+  private replaySide = 0;
+  private replayT = 0;
   private lastPelvis = { x: 0, y: 2, z: 0 };
   /** Escombros comedicoss (carton del GAS): balistica manual y giro. */
   private debris: { mesh: Mesh; vel: Vector3; spin: Vector3; rot: Vector3; life: number; mat: StandardMaterial }[] = [];
@@ -914,8 +917,15 @@ export class GameScene {
    * - respiracion sutil en reposo y sacudida de impacto sobre el punto de mira.
    * Sin balanceo lateral ni roll: el picking en espacio de pantalla debe ser estable.
    */
-  updateCamera(dt: number, pelvis: { x: number; y: number; z: number }, recenter: boolean, mode: "play" | "fallen" | "success" = "play", aiming = false): void {
+  updateCamera(dt: number, pelvis: { x: number; y: number; z: number }, recenter: boolean, mode: "play" | "fallen" | "success" | "replay" = "play", aiming = false): void {
     if (mode !== "play") {
+      if (mode !== this.camMode) {
+        // Entrada en un modo cinematico: el replay reinicia su lado y su push-in.
+        if (mode === "replay") {
+          this.replaySide = 0;
+          this.replayT = 0;
+        }
+      }
       this.camMode = mode;
       this.camModeLeft = 1.5;
     } else if (this.camModeLeft > 0) {
@@ -930,8 +940,45 @@ export class GameScene {
     const speed = pelvisFinite ? dPelvis / Math.max(1e-4, dt) : 0;
     this.lastPelvis = { x: pelvis.x, y: pelvis.y, z: pelvis.z };
 
-    const deadzoneHalf = 0.55;
     const target = this.camFollow;
+
+    // --- MODO REPLAY (repeticion epica): perfil lateral 3/4 con push-in lento ---
+    // Camara DISTINTA a la de juego (peticion del jugador: "replay"): se coloca a
+    // un lado del cuerpo (el lado con hueco), algo mas baja, y se acerca despacio
+    // durante el playback. El punto de mira sigue la pelvis REPRODUCIDA suave.
+    if (mode === "replay" && pelvisFinite) {
+      if (this.replaySide === 0) this.replaySide = pelvis.x >= 0 ? -1 : 1;
+      this.replayT += dt;
+      const push = Math.min(1, this.replayT / 4.2);
+      const side = this.replaySide;
+      target.x += (pelvis.x - target.x) * Math.min(1, dt * 3.6);
+      target.y += (Math.max(0.9, pelvis.y) + 0.15 - target.y) * Math.min(1, dt * 3.6);
+      target.z += (pelvis.z * 0.5 - target.z) * Math.min(1, dt * 2.4);
+      const distGoal = 3.9 - push * 1.15;
+      this.camDist += (distGoal - this.camDist) * Math.min(1, dt * 2.2);
+      const desiredPos = new Vector3(
+        target.x + side * this.camDist * 0.62,
+        target.y + 0.38 + Math.sin(performance.now() / 1000 * 0.5) * 0.03,
+        -this.camDist * 0.55 - 0.7
+      );
+      this.camera.position.addInPlace(desiredPos.subtract(this.camera.position).scale(Math.min(1, dt * 2.8)));
+      if (!Number.isFinite(this.camera.position.x + this.camera.position.y + this.camera.position.z)) {
+        this.camera.position.copyFrom(desiredPos);
+      }
+      const look = new Vector3(target.x, target.y + 0.1, target.z);
+      if (this.shakeAmp > 0.0006) {
+        look.x += Math.sin(performance.now() / 1000 * 47) * this.shakeAmp;
+        look.y += Math.cos(performance.now() / 1000 * 39) * this.shakeAmp * 0.7;
+        this.camera.setTarget(look);
+        this.shakeAmp *= Math.exp(-dt * 5.2);
+      } else {
+        this.shakeAmp = 0;
+        this.camera.setTarget(look);
+      }
+      return;
+    }
+
+    const deadzoneHalf = 0.55;
     if (recenter) {
       target.copyFrom(this.camTargetBase);
       this.camDist = this.camBaseDist;
@@ -1024,13 +1071,14 @@ export class GameScene {
   }
 
   /** Diagnostico de camara (hook __NS.camera): estado del seguimiento, distancia y posicion. */
-  cameraDebug(): { targetY: number; targetX: number; dist: number; posY: number; posZ: number } {
+  cameraDebug(): { targetY: number; targetX: number; dist: number; posY: number; posZ: number; mode: string } {
     return {
       targetY: Math.round(this.camFollow.y * 100) / 100,
       targetX: Math.round(this.camFollow.x * 100) / 100,
       dist: Math.round(this.camDist * 100) / 100,
       posY: Math.round(this.camera.position.y * 100) / 100,
-      posZ: Math.round(this.camera.position.z * 100) / 100
+      posZ: Math.round(this.camera.position.z * 100) / 100,
+      mode: this.camMode
     };
   }
 

@@ -33,6 +33,7 @@ import { DebugOverlay, type DebugData } from "../ui/debug";
 import { AudioBus } from "../ui/audio";
 import type { BalancePresetName } from "../ui/hud";
 import { computeScore, isBetter, BestRecord } from "../gameplay/score";
+import { buildFallCaption, buildMoveCaption, REPLAY_TIMING, type ReplayCaption } from "../domain/replay";
 import { TutorialOverlay, type TutorialSpotlight, type TutorialGesture } from "../ui/tutorial";
 import { TutorialEngine, buildTutorialSteps, type TutorialCtx, type TutorialStepDef } from "../gameplay/tutorial";
 import {
@@ -174,6 +175,14 @@ const FALL_RELEASE_STAGGER_S = 0.09;
 const FALL_RELEASE_FOOT_S = 0.42;
 const FALL_AUTO_RESET_S = 2.6;
 
+// REPETICION EPICA (mejora comica elegida por el jugador): la simulacion se
+// graba a 60 Hz en un buffer circular; al caer (o al encadenar una jugada
+// destacada) el footage se reproduce KINEMATICAMENTE (pos/prev de las 15
+// particulas) a camara lenta, con rótulo comico y congelado final. Cero
+// teletransportes: la fisica se congela y se devuelve EXACTA al terminar.
+const REPLAY_PARTICLES = 15;
+const REPLAY_REC_FRAMES = Math.round(REPLAY_TIMING.recCapacityS * 60);
+
 const clamp01 = (x: number | undefined): number => Math.min(1, Math.max(0, typeof x === "number" && Number.isFinite(x) ? x : 0));
 const clampRange = (x: number | undefined, min: number, max: number): number => Math.min(max, Math.max(min, typeof x === "number" && Number.isFinite(x) ? x : min));
 
@@ -212,6 +221,28 @@ export class GameApp {
   /** Mecanica GAS: fase y temporizador (aviso -> detonacion -> alivio -> cooldown). */
   private gasPhase: "idle" | "warning" | "buff" | "cooldown" = "idle";
   private gasTimer = 0;
+
+  // --- REPETICION EPICA: grabacion circular + playback kinematico ---
+  /** Ring buffer de poses (15 particulas x xyz) a 60 Hz de paso fijo. */
+  private recFrames: Float32Array[] = [];
+  private recComY: number[] = [];
+  private recCount = 0;
+  /** Repeticion en curso (caida o moviazo); null = fuera de repeticion. */
+  private replay: {
+    kind: "fall" | "move";
+    frames: Float32Array[];
+    playhead: number;
+    speed: number;
+    phase: "play" | "freeze";
+    freezeLeft: number;
+    caption: ReplayCaption;
+    /** Moviazo: estado vivo (pos+prev) para devolver el cuerpo EXACTO al acabar. */
+    saved: Float32Array | null;
+  } | null = null;
+  /** Datos de la caida en curso (COM al declararse + motivo) para la caption. */
+  private fallInfo: { reason: string } | null = null;
+  /** El moviazo (FLUJO x5) solo se muestra una vez por intento. */
+  private moveReplayShown = false;
 
   private challenge!: ChallengeDefinition;
   private wall!: WallDefinition;
@@ -506,6 +537,14 @@ export class GameApp {
     this.autoStartPending = this.challenge.start.autoStart;
     this.fallReleaseQueue = [];
     this.fallAutoReset = -1;
+    // La repeticion muere con el respawn; la grabacion empieza limpia.
+    this.replay = null;
+    this.hud.hideReplay();
+    this.fallInfo = null;
+    this.moveReplayShown = false;
+    this.recFrames = [];
+    this.recComY = [];
+    this.recCount = 0;
     this.machine.transition("RESETTING");
     // Despues de la transicion: en FALLEN el objetivo seria el tono flacido de la
     // caida; al re-spawnear el escalador vuelve a estar vivo (tono calibrado).
@@ -780,6 +819,9 @@ export class GameApp {
   // --- Pipeline por paso fijo ---
 
   private fixedStep(dt: number): void {
+    // REPETICION en curso: la fisica esta congelada (el playback escribe poses);
+    // los pasos que drenen el acumulador de este frame son no-ops.
+    if (this.replay) return;
     const result = this.solver.step(dt);
 
     // ERROR GUARD (9.2): carga no finita / NaN / energia anomala.
@@ -925,6 +967,13 @@ export class GameApp {
         this.scene.burstDust(new Vector3(pv.pos.x, 0.06, pv.pos.z), 42);
         this.scene.shake(0.055);
       }
+      // REPETICION EPICA: asentado el cuerpo (aterrizaje ~0.7 s), se repite la
+      // caida con rótulo comico. El auto-reset queda en manos del replay (skip
+      // con clic/Espacio/R/Esc; sin skip, reintento al terminar el congelado).
+      if (!this.tutorial && this.replay === null && this.fallTimer >= REPLAY_TIMING.fallStartS) {
+        this.startFallReplay();
+        return;
+      }
       if (this.fallAutoReset > 0) {
         this.fallAutoReset -= dt;
         if (this.fallAutoReset <= 0) {
@@ -932,6 +981,171 @@ export class GameApp {
           this.spawn();
         }
       }
+    }
+
+    // REPETICION EPICA: un snapshot por paso fijo (60 Hz) de las 15 particulas.
+    this.recordSnapshot();
+  }
+
+  // --- REPETICION EPICA (mejora comica elegida por el jugador) ---
+
+  /** Un snapshot por paso fijo: poses + COM (para la caption) en ring buffer. */
+  private recordSnapshot(): void {
+    if (this.replay) return;
+    const st = this.machine.state;
+    if (st !== "PLAYING" && st !== "FALLEN" && st !== "READY") return;
+    const slot = this.recCount % REPLAY_REC_FRAMES;
+    let f = this.recFrames[slot];
+    if (!f) {
+      f = new Float32Array(REPLAY_PARTICLES * 3);
+      this.recFrames[slot] = f;
+    }
+    for (let i = 0; i < REPLAY_PARTICLES; i++) {
+      const p = this.solver.getParticle(i);
+      f[i * 3] = p.pos.x;
+      f[i * 3 + 1] = p.pos.y;
+      f[i * 3 + 2] = p.pos.z;
+    }
+    this.recComY[slot] = this.solver.centerOfMass().y;
+    this.recCount++;
+  }
+
+  /** Ultimos `wanted` snapshots en orden cronologico (footage del replay). */
+  private extractClip(wanted: number): { frames: Float32Array[]; comY: number[] } {
+    const total = Math.min(wanted, this.recCount);
+    const frames: Float32Array[] = [];
+    const comY: number[] = [];
+    for (let j = total; j > 0; j--) {
+      const slot = (((this.recCount - j) % REPLAY_REC_FRAMES) + REPLAY_REC_FRAMES) % REPLAY_REC_FRAMES;
+      const f = this.recFrames[slot];
+      if (f) {
+        frames.push(f);
+        comY.push(this.recComY[slot] ?? 0);
+      }
+    }
+    return { frames, comY };
+  }
+
+  /** Arranca la repeticion de la caida (llamado desde fixedStep en FALLEN). */
+  private startFallReplay(): void {
+    const { frames, comY } = this.extractClip(Math.round(REPLAY_TIMING.fallClipS * 60));
+    if (frames.length < 12) return; // sin footage util (caida instantanea tras cargar)
+    // Altura de vuelo: pico del COM antes de soltar vs valle tras aterrizar.
+    const fallTail = Math.min(frames.length, Math.round((REPLAY_TIMING.fallStartS + 0.4) * 60));
+    const tail = comY.slice(Math.max(0, comY.length - fallTail));
+    const head = comY.slice(0, Math.max(1, comY.length - fallTail + 6));
+    const dropM = head.length > 0 && tail.length > 0 ? Math.max(0, Math.max(...head) - Math.min(...tail)) : 0;
+    // Como ACABO el cuerpo: orientacion del torso y extension de extremidades.
+    const last = frames[frames.length - 1];
+    const dy = last[1 * 3 + 1] - last[4 * 3 + 1];
+    const spine = Math.hypot(last[1 * 3] - last[4 * 3], dy, last[1 * 3 + 2] - last[4 * 3 + 2]) || 1e-6;
+    const endUpDot = dy / spine;
+    const cx = (last[4 * 3] + last[1 * 3]) / 2;
+    const cy = (last[4 * 3 + 1] + last[1 * 3 + 1]) / 2;
+    const cz = (last[4 * 3 + 2] + last[1 * 3 + 2]) / 2;
+    let spread = 0;
+    for (const i of [9, 10, 13, 14]) {
+      spread += Math.hypot(last[i * 3] - cx, last[i * 3 + 1] - cy, last[i * 3 + 2] - cz);
+    }
+    spread /= 4;
+    const caption = buildFallCaption(dropM, endUpDot, spread, this.fallInfo?.reason ?? "fall");
+    // El auto-reset queda EN MANOS del replay: reintento al terminar/saltar.
+    this.fallAutoReset = -1;
+    this.replay = { kind: "fall", frames, playhead: 0, speed: REPLAY_TIMING.fallSpeed, phase: "play", freezeLeft: 0, caption, saved: null };
+    this.audio.ensure();
+    this.audio.playReplayWhoosh();
+    this.hud.showReplay(caption);
+    this.events.emit({ type: "Message", text: `REPETICIÓN: ${caption.title} · ${caption.meta}`, tone: "info" });
+  }
+
+  /** Mini repeticion de la jugada destacada (cadena FLUJO), una vez por intento. */
+  private startMoveReplay(): void {
+    if (this.machine.state !== "PLAYING" || this.replay || this.tutorial) return;
+    const { frames } = this.extractClip(Math.round(REPLAY_TIMING.moveClipS * 60));
+    if (frames.length < 12) return;
+    // Estado vivo completo (pos+prev): al acabar el playback el cuerpo sigue
+    // EXACTAMENTE donde estaba (sin salto, sin trampa fisica).
+    const saved = new Float32Array(REPLAY_PARTICLES * 6);
+    for (let i = 0; i < REPLAY_PARTICLES; i++) {
+      const p = this.solver.getParticle(i);
+      saved[i * 6] = p.pos.x;
+      saved[i * 6 + 1] = p.pos.y;
+      saved[i * 6 + 2] = p.pos.z;
+      saved[i * 6 + 3] = p.prev.x;
+      saved[i * 6 + 4] = p.prev.y;
+      saved[i * 6 + 5] = p.prev.z;
+    }
+    const caption = buildMoveCaption(REPLAY_TIMING.moveChainTrigger);
+    this.moveReplayShown = true;
+    if (this.interaction?.dragging) {
+      if (this.keyboardLimb) this.endKeyboardDrag();
+      else this.interaction.cancelDrag();
+    }
+    this.replay = { kind: "move", frames, playhead: 0, speed: REPLAY_TIMING.moveSpeed, phase: "play", freezeLeft: 0, caption, saved };
+    this.audio.ensure();
+    this.audio.playReplayWhoosh();
+    this.hud.showReplay(caption);
+  }
+
+  /** Avance del playback (render): escribe poses kinematicas en el solver. */
+  private updateReplay(dtFrame: number): void {
+    const r = this.replay!;
+    const lastIdx = r.frames.length - 1;
+    if (r.phase === "play") {
+      r.playhead += dtFrame * 60 * r.speed;
+      if (r.playhead >= lastIdx) {
+        r.playhead = lastIdx;
+        r.phase = "freeze";
+        r.freezeLeft = r.kind === "fall" ? REPLAY_TIMING.fallFreezeS : REPLAY_TIMING.moveFreezeS;
+        this.scene.shake(0.02);
+        this.audio.playReplayFreeze();
+        this.hud.setReplayPhase("freeze");
+      }
+      const i0 = Math.min(lastIdx, Math.floor(r.playhead));
+      const i1 = Math.min(lastIdx, i0 + 1);
+      const f = r.playhead - i0;
+      const A = r.frames[i0];
+      const B = r.frames[i1];
+      for (let i = 0; i < REPLAY_PARTICLES; i++) {
+        const p = this.solver.getParticle(i);
+        const x = A[i * 3] + (B[i * 3] - A[i * 3]) * f;
+        const y = A[i * 3 + 1] + (B[i * 3 + 1] - A[i * 3 + 1]) * f;
+        const z = A[i * 3 + 2] + (B[i * 3 + 2] - A[i * 3 + 2]) * f;
+        p.pos = v3(x, y, z);
+        p.prev = v3(x, y, z);
+      }
+    } else {
+      r.freezeLeft -= dtFrame;
+      if (r.freezeLeft <= 0) this.endReplay();
+    }
+  }
+
+  /** Fin natural del replay: moviazo = restaurar el cuerpo; caida = reintento. */
+  private endReplay(): void {
+    const r = this.replay;
+    if (!r) return;
+    this.replay = null;
+    this.hud.hideReplay();
+    if (r.kind === "move" && r.saved) {
+      for (let i = 0; i < REPLAY_PARTICLES; i++) {
+        const p = this.solver.getParticle(i);
+        p.pos = v3(r.saved[i * 6], r.saved[i * 6 + 1], r.saved[i * 6 + 2]);
+        p.prev = v3(r.saved[i * 6 + 3], r.saved[i * 6 + 4], r.saved[i * 6 + 5]);
+      }
+    } else {
+      this.spawn();
+    }
+  }
+
+  /** Salta la repeticion en curso (clic/Espacio/R/Esc/menu). */
+  private skipReplay(): void {
+    if (!this.replay) return;
+    if (this.replay.kind === "fall") {
+      this.replay = null;
+      this.hud.hideReplay();
+      this.spawn();
+    } else {
+      this.endReplay();
     }
   }
 
@@ -1075,6 +1289,29 @@ export class GameApp {
     }
 
     const state = this.machine.state;
+    // REPETICION EPICA: pipeline reducido — poses reproducidas, camara lateral
+    // y FX; sin picking, previews, HUD de vitals ni stepping de fisica.
+    if (this.replay) {
+      this.updateReplay(dtFrame);
+      if (!this.replay) {
+        // El replay acabó (o se saltó) en este mismo frame: spawn/restauración
+        // ya ejecutados; el cuadro normal vuelve el próximo frame.
+        this.scene.render();
+        return;
+      }
+      this.scene.syncRagdoll(this.solver, 1);
+      this.scene.setLimbLabelEmphasis(null);
+      this.scene.setSelectionRing(null, this.solver);
+      this.scene.clearHoldHighlights();
+      this.scene.showDragPreview(null, this.solver);
+      this.scene.showReachPreview(null, this.solver, true);
+      this.hud.setRejectHint(null);
+      const rp = this.solver.getParticle(P.pelvisC);
+      this.scene.updateCamera(dtFrame, rp.pos, false, "replay");
+      this.scene.tickFx(dtFrame);
+      this.scene.render();
+      return;
+    }
     const stepping = state !== "PAUSED" && state !== "LOADING" && !this.paused;
     if (stepping) {
       // GAS: el aviso y el alivio avanzan con el juego (congelados en pausa).
@@ -1422,6 +1659,11 @@ export class GameApp {
             this.hud.toast("Pie en presa de mano: esa pierna carga x2 (el dedo no es una mano)", "warn");
           }
         }
+        // MOVIAZO: cadena de flujo destacada -> mini repeticion (una por intento).
+        if (!this.tutorial && !this.moveReplayShown && this.flowCount >= REPLAY_TIMING.moveChainTrigger
+            && this.machine.state === "PLAYING" && !this.replay) {
+          this.startMoveReplay();
+        }
         break;
       }
       case "HoldRejected": {
@@ -1445,6 +1687,8 @@ export class GameApp {
         this.hintOnce("overload", "SOBRECARGA: el chip rojo cuenta los segundos que aguanta el agarre (~4,5 s en sobrecarga continua). Alivia esa extremidad ya", "error");
         break;
       case "FallStarted":
+        // Datos para la caption de la REPETICION (motivo; el COM lo da el buffer).
+        this.fallInfo = { reason: e.reason };
         if (e.reason === "postura_imposible") {
           // La caida explica la FISICA: sin manos no se sostiene boca abajo.
           this.hud.toast("POSTURA IMPOSIBLE: sin manos no te sostienes boca abajo ni en horizontal. El cuerpo pesa", "error");
@@ -1489,6 +1733,11 @@ export class GameApp {
 
     this.on(canvas, "pointerdown", (e) => {
       this.audio.ensure();
+      // REPETICION en curso: cualquier clic la salta (no inicia arrastres).
+      if (this.replay) {
+        this.skipReplay();
+        return;
+      }
       if (e.button !== 0) return;
       if (!(this.machine.state === "READY" || this.machine.state === "PLAYING")) return;
       const rect = canvas.getBoundingClientRect();
@@ -1547,6 +1796,11 @@ export class GameApp {
       const ev = e as KeyboardEvent;
       switch (ev.code) {
         case "KeyR":
+          // Durante una repeticion, R la salta (cae => reintento inmediato).
+          if (this.replay) {
+            this.skipReplay();
+            break;
+          }
           this.requestReset();
           break;
         case "KeyH":
@@ -1558,6 +1812,11 @@ export class GameApp {
           break;
         case "Space":
           ev.preventDefault();
+          // Durante una repeticion, Espacio la salta (no pausa).
+          if (this.replay) {
+            this.skipReplay();
+            break;
+          }
           this.togglePause();
           break;
         case "KeyC":
@@ -1591,6 +1850,11 @@ export class GameApp {
           this.toggleKeyboardGrab("foot_r");
           break;
         case "Escape":
+          // Durante una repeticion, Esc la salta.
+          if (this.replay) {
+            this.skipReplay();
+            break;
+          }
           this.cancelKeyboardGrab();
           this.interaction?.cancelDrag();
           break;
@@ -1710,6 +1974,8 @@ export class GameApp {
    */
   private openMenu(): void {
     this.audio.ensure();
+    // Una repeticion en curso no vive bajo el menu: se salta (cae => respawn).
+    this.skipReplay();
     this.cancelKeyboardGrab();
     this.interaction?.cancelDrag();
     this.scene.clearHoldHighlights();
@@ -1921,7 +2187,10 @@ export class GameApp {
       champion: boolean;
     };
     debugLimbInfo: () => Record<string, { zone: string; anchored: boolean; holdId: string | null; loadN: number; ratio: number; fatigue: number; overloadS: number | null; stretch: number }>;
-    camera: () => { targetY: number; targetX: number; dist: number; posY: number; posZ: number };
+    camera: () => { targetY: number; targetX: number; dist: number; posY: number; posZ: number; mode: string };
+    replay: () => { active: boolean; kind?: string; phase?: string; frames?: number; playhead?: number; caption?: string };
+    replaySkip: () => boolean;
+    relieve: () => boolean;
   } {
     return {
       state: () => this.machine.state,
@@ -2036,28 +2305,37 @@ export class GameApp {
           const a = this.solver.releaseAnchor(h);
           if (a) this.refreshHoldOccupancy();
         }
-        // Ancla los pies que esten libres a la presa mas cercana. PREFERENCIA por
-        // presas de pie (type "foot"): si un pie queda en una presa de mano a media
-        // pared el cuerpo cuelga en diagonal y el pendulo lo re-erguye una y otra
-        // vez (badTimer nunca acumula) — el fixture enmascara la regla que prueba.
+        // Ancla los pies a presas de pie POR DEBAJO del cuerpo que se va a colocar.
+        // Leccion (dos veces aprendida): anclar el pie a la presa "mas cercana" deja
+        // los anclajes ENCIMA del COM (el cuerpo llega elevado del ciclo de agarres
+        // previo) y la exencion legitima de colgadura enmascara la regla que este
+        // fixture pretende probar. Eleccion determinista: presas de tipo pie, las
+        // mas BAJAS de la pared (y distintas por pie).
+        const bodyY = Math.max(1.1, this.solver.getParticle(P.pelvisC).pos.y);
+        const footHolds = this.wall.holds
+          .filter((h) => h.type === "foot" && h.allowedLimbs.includes("foot_l") && h.position[1] < bodyY - 0.25)
+          .sort((a, b) => a.position[1] - b.position[1]);
+        const anchorFoot = (f: LimbId, hold: import("../types").HoldDefinition | undefined): void => {
+          if (!hold) return;
+          this.solver.createAnchor(f, hold.id, v3(hold.position[0], hold.position[1], hold.position[2]), this.anchorMaxForceFor(f));
+        };
         for (const f of ["foot_l", "foot_r"] as LimbId[]) {
-          if (this.solver.hasAnchor(f)) continue;
-          const pos = this.solver.positionOfLimb(f);
-          let best: { id: string; s: number } | null = null;
-          for (const hold of this.wall.holds) {
-            if (!hold.allowedLimbs.includes(f)) continue;
-            const d = Math.hypot(hold.position[0] - pos.x, hold.position[1] - pos.y, hold.position[2] - pos.z);
-            const score = d + (hold.type === "foot" ? 0 : 2.5);
-            if (!best || score < best.s) best = { id: hold.id, s: score };
-          }
-          if (best) {
-            const hold = this.holdDefById.get(best.id)!;
-            this.solver.createAnchor(f, hold.id, v3(hold.position[0], hold.position[1], hold.position[2]), this.anchorMaxForceFor(f));
+          const lowHold = f === "foot_l" ? footHolds[0] : footHolds[1] ?? footHolds[0];
+          const a = this.solver.getAnchor(f);
+          if (a) {
+            // Ya anclado: si su presa NO queda por debajo del cuerpo, reancla bajo.
+            if (a.point.y >= bodyY - 0.25) {
+              this.solver.releaseAnchor(f);
+              anchorFoot(f, lowHold);
+            }
+          } else {
+            anchorFoot(f, lowHold);
           }
         }
-        // Postura horizontal: pecho al nivel de la pelvis (upDot ~ 0).
-        const pelvis = this.solver.getParticle(P.pelvisC);
-        const y = Math.max(1.1, pelvis.pos.y);
+        // Postura horizontal: pecho al nivel de la pelvis (upDot ~ 0). Las piernas
+        // se colocan hacia sus anclajes (rodilla a mitad de camino): sin esto el
+        // pendulo estira/re-erguye el cuerpo y el badTimer no acumula.
+        const y = bodyY;
         const place = (idx: number, px2: number, py2: number, pz2: number): void => {
           const p = this.solver.getParticle(idx);
           p.pos = v3(px2, py2, pz2);
@@ -2075,6 +2353,17 @@ export class GameApp {
         place(P.elbowR, px0 + 0.62, y - 0.1, -0.45);
         place(P.handL, px0 + 0.7, y + 0.14, -0.55);
         place(P.handR, px0 + 0.72, y - 0.12, -0.55);
+        // Piernas hacia sus anclajes bajos (pie en la presa, rodilla a mitad).
+        for (const f of ["foot_l", "foot_r"] as LimbId[]) {
+          const a = this.solver.getAnchor(f);
+          if (!a) continue;
+          const kneeIdx = f === "foot_l" ? P.kneeL : P.kneeR;
+          const footIdx = f === "foot_l" ? P.footL : P.footR;
+          const hipIdx = f === "foot_l" ? P.hipL : P.hipR;
+          const hp = this.solver.getParticle(hipIdx).pos;
+          place(footIdx, a.point.x, a.point.y, Math.max(a.point.z, -0.4));
+          place(kneeIdx, (hp.x + a.point.x) / 2 + (f === "foot_l" ? -0.04 : 0.04), (hp.y + a.point.y) / 2, (hp.z + a.point.z) / 2);
+        }
         return true;
       },
       posture: () => {
@@ -2146,6 +2435,23 @@ export class GameApp {
           };
         }
         return out;
+      },
+      // REPETICION EPICA: estado del playback (E2E) y salto manual.
+      replay: () => this.replay
+        ? { active: true, kind: this.replay.kind, phase: this.replay.phase, frames: this.replay.frames.length, playhead: Math.round(this.replay.playhead * 10) / 10, caption: this.replay.caption.title }
+        : { active: false },
+      replaySkip: () => {
+        const had = this.replay !== null;
+        this.skipReplay();
+        return had;
+      },
+      // Solo diagnostico E2E (mismo patron que forceSuccess): alivia la fatiga
+      // como el GAS. La preparacion x2 del E2E encadena 8 movimientos colgado de
+      // las manos a ritmo de CLI (~40 s de tension continua): un humano aguanta
+      // esa secuencia, el rig E2E no. La mecanica x2 medida no depende de esto.
+      relieve: () => {
+        this.bio.relieveFatigue(0.4);
+        return true;
       }
     };
   }

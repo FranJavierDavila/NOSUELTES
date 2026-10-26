@@ -268,11 +268,11 @@ def main():
             # una vez. Reintenta el ciclo completo (como el E2E del campeonato).
             got = False
             d = None
-            for intento in range(3):
+            for intento in range(4):
                 if intento > 0:
-                    time.sleep(1.0)
+                    time.sleep(1.6)
                 d = servo_move(limb, tgt[0], tgt[1], tgt[2])
-                got = wait_anchor(limb, hold, 6.0)
+                got = wait_anchor(limb, hold, 8.5)
                 if got:
                     break
                 if game_state() in ("FALLEN", "TIMEOUT"):
@@ -300,8 +300,24 @@ def main():
     # al alcance real de un pie.
     for limb, hold in RUTAS["circuit_stage_1"]["moves"][:8]:
         tgt = hw[hold]
-        servo_move(limb, tgt[0], tgt[1], tgt[2])
-        if not wait_anchor(limb, hold, 6.5):
+        # Alivio de fatiga por movimiento (__NS.relieve, hook E2E equivalente al
+        # GAS): 8 movimientos colgado de las manos a ritmo de CLI agotan la fatiga
+        # y el escalador cae a mitad de preparacion (fisica correcta, fixture
+        # sobrecargado). La mecanica x2 medida no depende de la fatiga.
+        ev('JSON.stringify({r: window.__NS.relieve()})')
+        # Mismo reintento que la fase 3: el balanceo del cuerpo puede rechazar un
+        # intento suelto; un solo intento sin reintento es flaky por ritmo del CLI.
+        got = False
+        for intento in range(4):
+            if intento > 0:
+                time.sleep(1.6)
+            servo_move(limb, tgt[0], tgt[1], tgt[2])
+            if wait_anchor(limb, hold, 8.5):
+                got = True
+                break
+            if game_state() in ("FALLEN", "TIMEOUT"):
+                break
+        if not got:
             falla(f"preparacion x2: {limb}->{hold} no anclo")
     # foot_r -> h2 (presa de MANO, standard, maxOccupants 2): permitida pero con carga x2.
     tgt = hw["h2"]

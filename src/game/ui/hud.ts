@@ -181,6 +181,24 @@ export class Hud {
 
         <div id="hud-banner" class="absolute left-1/2 top-1/3 hidden -translate-x-1/2 rounded-xl bg-zinc-950/85 px-8 py-5 text-center backdrop-blur border border-zinc-700"></div>
 
+        <div id="hud-replay" class="absolute inset-0 hidden">
+          <div id="hud-replay-bar-t" class="absolute left-0 top-0 h-[7vh] w-full -translate-y-full bg-zinc-950 transition-transform duration-300"></div>
+          <div id="hud-replay-bar-b" class="absolute bottom-0 left-0 h-[7vh] w-full translate-y-full bg-zinc-950 transition-transform duration-300"></div>
+          <div class="absolute left-6 top-[8.5vh]">
+            <div class="flex items-center gap-2">
+              <span class="inline-block h-2.5 w-2.5 animate-pulse rounded-full bg-red-500"></span>
+              <span class="text-[11px] font-black uppercase tracking-[0.25em] text-red-400">Repetición</span>
+            </div>
+            <div id="hud-replay-title" class="mt-1 text-3xl font-black tracking-tight text-zinc-100 drop-shadow-lg transition-all duration-200"></div>
+            <div id="hud-replay-meta" class="mt-0.5 text-sm font-bold text-amber-300"></div>
+          </div>
+          <div id="hud-replay-style" class="absolute bottom-[8.5vh] left-6 max-w-[55vw] text-lg font-bold text-zinc-200 drop-shadow"></div>
+          <div class="absolute bottom-[8.5vh] right-6 text-right">
+            <div id="hud-replay-sub" class="text-[12px] text-zinc-400"></div>
+            <div class="mt-0.5 text-[11px] text-zinc-500">clic / Espacio: continuar</div>
+          </div>
+        </div>
+
         <div id="hud-toasts" class="absolute left-1/2 top-24 flex w-max -translate-x-1/2 flex-col items-center gap-1"></div>
 
         <div id="hud-keys" class="absolute bottom-3 left-4 rounded bg-zinc-950/60 px-3 py-1.5 text-[11px] text-zinc-500 backdrop-blur">
@@ -201,6 +219,7 @@ export class Hud {
               <li><b>Lo posible y lo imposible, en vivo</b>: mientras arrastras, si una presa se marca en rojo el aviso central dice el motivo (fuera de alcance, ocupada, cruce imposible…). En Realista/Equilibrado se rechaza el cruce total de una mano por detrás del hombro contrario (el cruce moderado de escalada es legal); en Ragdoll el cuerpo es libre.</li>
               <li><b>Tipos de presa</b>: <b style="color:#3fb26f">verde</b> salida, <b style="color:#8a97a8">gris</b> manos, <b style="color:#d97b2f">naranja</b> pies, <b style="color:#e0b13e">ámbar</b> cima.</li>
               <li><b>R</b>: reiniciar la prueba. <b>Espacio</b>: pausa. <b>T</b>: tutorial guiado. <b>F3</b>: overlay de depuracion. <b>C</b>: recentrar camara. <b>F4</b>: vista ortografica. <b>M</b>: sonido.</li>
+              <li><b>Repetición épica</b>: cada caída (y cada cadena de flujo destacada) se repite en cámara lenta con rótulo cómico y congelado final — clic o Espacio la salta.</li>
               <li><b>GAS (tecla P)</b>: retortijón de aviso (2 s) y… ¡PUM! Sonido, nube y <b>cartón eyectado</b>. Beneficio real pero comico: impulso hacia arriba y fatiga aliviada 6 s — sirve para encadenar algunos agarres imposibles. Recarga 22 s. El cuerpo pesa: el gas no es un jet privado.</li>
               <li><b>Física sin trampas</b>: sin manos ancladas, el cuerpo solo se sostiene de pie (torso erguido) o colgando DEBAJO de los apoyos. Quedar boca abajo o en horizontal sin manos es <b>caída garantizada</b>. Y en el circuito, un pie en presa de mano carga <b>x2</b>: el dedo del pie no es una mano.</li>
               <li><b>Circuito</b>: cinco escenarios con ángulos crecientes (placa, desplome, cueva y TECHO horizontal). Se avanza colgado; los ganchos de pie (presas naranjas) son los descansos. Supera un escenario para desbloquear el siguiente.</li>
@@ -585,6 +604,57 @@ export class Hud {
     if (champ && !champ.champion && champ.nextLabel) {
       this.banner.querySelector("#hud-next-stage")?.addEventListener("click", () => champ.onNext());
     }
+  }
+
+  /** Overlay de REPETICION EPICA: letterbox, badge REC, titulo/meta/estilo y
+   * motivo. visible durante el playback + congelado; hideReplay lo retira.
+   * Ademas ATENUA todo el HUD normal: el replay es un momento cinematografico
+   * y los paneles compiten con el rótulo (encuadre limpio). */
+  private static readonly REPLAY_DIM_IDS = ["hud-info", "hud-challenges", "hud-vitals", "hud-keys", "hud-flow", "hud-gas", "hud-progress-wrap", "hud-overload", "hud-reject", "hud-banner", "hud-toasts"];
+
+  private setReplayDim(on: boolean): void {
+    for (const id of Hud.REPLAY_DIM_IDS) {
+      const el = this.rootEl.querySelector(`#${id}`) as HTMLElement | null;
+      if (!el) continue;
+      el.classList.toggle("opacity-0", on);
+      el.classList.toggle("transition-opacity", true);
+      el.classList.toggle("duration-300", true);
+      if (on) el.classList.add("pointer-events-none");
+      else el.classList.remove("pointer-events-none");
+    }
+  }
+
+  showReplay(c: { title: string; meta: string; style: string; sub: string }): void {
+    const root = this.rootEl.querySelector("#hud-replay") as HTMLElement | null;
+    if (!root) return;
+    (root.querySelector("#hud-replay-title") as HTMLElement).textContent = c.title;
+    (root.querySelector("#hud-replay-meta") as HTMLElement).textContent = c.meta;
+    (root.querySelector("#hud-replay-style") as HTMLElement).textContent = c.style;
+    (root.querySelector("#hud-replay-sub") as HTMLElement).textContent = c.sub;
+    root.classList.remove("hidden");
+    (root.querySelector("#hud-replay-bar-t") as HTMLElement).classList.remove("-translate-y-full");
+    (root.querySelector("#hud-replay-bar-b") as HTMLElement).classList.remove("translate-y-full");
+    this.setReplayDim(true);
+    this.setReplayPhase("play");
+  }
+
+  /** Fase del playback: en el congelado el titulo crece y el remate se enciende. */
+  setReplayPhase(phase: "play" | "freeze"): void {
+    const root = this.rootEl.querySelector("#hud-replay") as HTMLElement | null;
+    if (!root) return;
+    const title = root.querySelector("#hud-replay-title") as HTMLElement | null;
+    const style = root.querySelector("#hud-replay-style") as HTMLElement | null;
+    if (title) title.className = `mt-1 font-black tracking-tight drop-shadow-lg transition-all duration-200 ${phase === "freeze" ? "text-4xl text-amber-300 scale-105" : "text-3xl text-zinc-100"}`;
+    if (style) style.className = `absolute bottom-[8.5vh] left-6 max-w-[55vw] text-lg font-bold drop-shadow ${phase === "freeze" ? "text-amber-200" : "text-zinc-200"}`;
+  }
+
+  hideReplay(): void {
+    const root = this.rootEl.querySelector("#hud-replay") as HTMLElement | null;
+    if (!root) return;
+    root.classList.add("hidden");
+    (root.querySelector("#hud-replay-bar-t") as HTMLElement).classList.add("-translate-y-full");
+    (root.querySelector("#hud-replay-bar-b") as HTMLElement).classList.add("translate-y-full");
+    this.setReplayDim(false);
   }
 
   /** Chip del GAS: aviso (ambar, cuenta atras), alivio (verde) o recarga (gris). */

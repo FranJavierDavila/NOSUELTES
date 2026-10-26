@@ -183,6 +183,69 @@ export class AudioBus {
     flap.stop(end + 0.05);
   }
 
+  /** Whoosh de arranque de la REPETICION EPICA: barrido de ruido descendente,
+   * sutil (tono equilibrado): anuncia "vamos a verlo otra vez" sin sobrecargar. */
+  playReplayWhoosh(): void {
+    if (!this.ctx || !this.master || !this.noiseBuffer) return;
+    const ctx = this.ctx;
+    const when = ctx.currentTime;
+    const dur = 0.5;
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.noiseBuffer;
+    noise.loop = true;
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.Q.value = 1.1;
+    bp.frequency.setValueAtTime(2100, when);
+    bp.frequency.exponentialRampToValueAtTime(320, when + dur);
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0.0002, when);
+    env.gain.linearRampToValueAtTime(0.16, when + 0.08);
+    env.gain.exponentialRampToValueAtTime(0.001, when + dur);
+    noise.connect(bp).connect(env).connect(this.master);
+    noise.start(when);
+    noise.stop(when + dur + 0.05);
+  }
+
+  /** Congelado final de la repeticion: "shutter" fotografico (dos tics + fondo). */
+  playReplayFreeze(): void {
+    if (!this.ctx || !this.master || !this.noiseBuffer) return;
+    const ctx = this.ctx;
+    const tick = (at: number, hz: number, gain: number): void => {
+      const noise = ctx.createBufferSource();
+      noise.buffer = this.noiseBuffer!;
+      noise.loop = true;
+      const bp = ctx.createBiquadFilter();
+      bp.type = "bandpass";
+      bp.frequency.value = hz;
+      bp.Q.value = 2.5;
+      const env = ctx.createGain();
+      env.gain.setValueAtTime(gain, at);
+      env.gain.exponentialRampToValueAtTime(0.0008, at + 0.07);
+      noise.connect(bp).connect(env).connect(this.master!);
+      noise.start(at);
+      noise.stop(at + 0.1);
+    };
+    const now = ctx.currentTime;
+    tick(now, 2600, 0.14);
+    tick(now + 0.11, 1900, 0.11);
+    // Fondo grave: el "peso" del vinilo parado.
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.value = 300;
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(110, now + 0.1);
+    osc.frequency.exponentialRampToValueAtTime(58, now + 0.42);
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0.0002, now + 0.1);
+    env.gain.linearRampToValueAtTime(0.2, now + 0.16);
+    env.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+    osc.connect(lp).connect(env).connect(this.master);
+    osc.start(now + 0.1);
+    osc.stop(now + 0.5);
+  }
+
   private renderAll(voices: ScheduledVoice[]): void {
     if (!this.ctx) return;
     const base = this.ctx.currentTime;
