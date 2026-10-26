@@ -28,11 +28,14 @@ def ev(js):
     for _ in range(3):
         try:
             d = json.loads(raw)
-            if isinstance(d, str):
-                raw = d; continue
-            return d
         except Exception:
             return None
+        # Un string plano ("PLAYING") es el resultado final: no se re-parsea
+        # (json.loads("PLAYING") falla y devolvia None: el famoso "flake").
+        if isinstance(d, str) and (d.startswith('"') or d.startswith('{') or d.startswith('[')):
+            raw = d
+            continue
+        return d
     return None
 
 def console_errors():

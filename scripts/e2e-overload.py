@@ -103,7 +103,8 @@ def chip_text():
 
 first = chip_text()
 print("chip central:", first)
-if not first or "CEDE EN" not in first.upper():
+# El chip es bilingue (ES "cede en" / EN "opens in"); acepta ambos.
+if not first or ("CEDE EN" not in first.upper() and "OPENS IN" not in first.upper()):
     fail(f"el chip central no muestra la cuenta atras: {first}")
 shot("overload-1-chip.png")
 

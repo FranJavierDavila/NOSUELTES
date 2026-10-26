@@ -2307,6 +2307,7 @@ export class GameApp {
     gas: () => string;
     gasTrigger: () => string;
     forceProne: () => boolean;
+    forceSlabStand: () => boolean;
     posture: () => { upDot: number; hands: number; feet: number; badTimer: number; grace: number };
     circuit: () => {
       stages: { id: string; index: number; name: string; heightM: number; unlocked: boolean; best: { score: number; timeS: number; stars: number } | null }[];
@@ -2500,6 +2501,69 @@ export class GameApp {
         }
         return true;
       },
+      // Solo diagnostico E2E (espejo de forceProne para el caso POSITIVO): coloca
+      // el cuerpo DE PIE, erguido, con ambos pies anclados a presas del SEGMENTO
+      // INCLINADO (normal n.y >= SLAB_NORMAL_Y) y las manos sueltas. La regla de
+      // postura debe considerarlo LEGAL (la inclinacion de la pared lo permite
+      // fisicamente) y el cuerpo debe permanecer en PLAYING sin caer.
+      forceSlabStand: () => {
+        if (!(this.machine.state === "PLAYING" || this.machine.state === "READY")) return false;
+        for (const h of ["hand_l", "hand_r"] as LimbId[]) {
+          const a = this.solver.releaseAnchor(h);
+          if (a) this.refreshHoldOccupancy();
+        }
+        // Presas cuyo punto vive en un segmento con normal suficientemente vertical
+        // (losa). Determinista: las dos mas BAJAS que cumplan, una por pie.
+        const slabHolds = this.wall.holds
+          .filter((h) => {
+            const n = this.solver.planeNormalAt(h.position[0], h.position[1], h.position[2]);
+            return n.y >= GameApp.SLAB_NORMAL_Y;
+          })
+          .sort((a, b) => a.position[1] - b.position[1]);
+        if (slabHolds.length < 2) return false;
+        const anchorFoot = (f: LimbId, hold: import("../types").HoldDefinition): void => {
+          this.solver.createAnchor(f, hold.id, v3(hold.position[0], hold.position[1], hold.position[2]), this.anchorMaxForceFor(f));
+        };
+        anchorFoot("foot_l", slabHolds[0]);
+        anchorFoot("foot_r", slabHolds[1] ?? slabHolds[0]);
+        // Cuerpo ERGUIDO sobre los pies: pelvis a legChain*0.8 por encima, columna
+        // vertical, brazos colgando sueltos, rodillas casi rectas.
+        const fl = this.solver.getAnchor("foot_l")!;
+        const fr = this.solver.getAnchor("foot_r")!;
+        const fx = (fl.point.x + fr.point.x) / 2;
+        const fy = (fl.point.y + fr.point.y) / 2;
+        const fz = (fl.point.z + fr.point.z) / 2 + 0.02;
+        const legUp = this.rig?.legChain ?? 0.76;
+        const pelvisY = fy + Math.min(0.72, legUp * 0.82);
+        const spine = 0.55;
+        const place = (idx: number, px2: number, py2: number, pz2: number): void => {
+          const p = this.solver.getParticle(idx);
+          p.pos = v3(px2, py2, pz2);
+          p.prev = v3(px2, py2, pz2);
+        };
+        place(P.pelvisC, fx, pelvisY, fz);
+        place(P.hipL, fx - 0.14, pelvisY - 0.02, fz);
+        place(P.hipR, fx + 0.14, pelvisY - 0.02, fz);
+        place(P.chest, fx, pelvisY + spine * 0.97, fz);
+        place(P.shL, fx - 0.18, pelvisY + spine * 0.88, fz);
+        place(P.shR, fx + 0.18, pelvisY + spine * 0.88, fz);
+        place(P.head, fx, pelvisY + spine * 0.97 + 0.24, fz);
+        place(P.elbowL, fx - 0.22, pelvisY + spine * 0.55, fz - 0.08);
+        place(P.elbowR, fx + 0.22, pelvisY + spine * 0.55, fz - 0.08);
+        place(P.handL, fx - 0.24, pelvisY + spine * 0.2, fz - 0.1);
+        place(P.handR, fx + 0.24, pelvisY + spine * 0.2, fz - 0.1);
+        for (const f of ["foot_l", "foot_r"] as LimbId[]) {
+          const a = this.solver.getAnchor(f);
+          if (!a) continue;
+          const kneeIdx = f === "foot_l" ? P.kneeL : P.kneeR;
+          const footIdx = f === "foot_l" ? P.footL : P.footR;
+          const hipIdx = f === "foot_l" ? P.hipL : P.hipR;
+          const hp = this.solver.getParticle(hipIdx).pos;
+          place(footIdx, a.point.x, a.point.y, Math.max(a.point.z, -0.4));
+          place(kneeIdx, (hp.x + a.point.x) / 2, (hp.y + a.point.y) / 2, (hp.z + a.point.z) / 2);
+        }
+        return true;
+      },
       posture: () => {
         const anchors = this.solver.anchorHoldIds();
         const chest = this.solver.getParticle(P.chest).pos;
@@ -2511,8 +2575,21 @@ export class GameApp {
         for (const a of anchors) {
           const anchor = this.solver.getAnchor(a.limb);
           if (!anchor) continue;
-          if (com.y < anchor.point.y - 0.12 && Math.abs(com.x - anchor.point.x) <= 0.85) {
+          if (com.y < anchor.point.y - 0.12 && Math.abs(com.x - anchor.point.x) <= 0.9) {
             hangs = true;
+            break;
+          }
+        }
+        // ¿De pie en LOSA? (la exencion de inclinacion: normal vertical del segmento)
+        let slab = false;
+        for (const a of anchors) {
+          if (!a.limb.startsWith("foot")) continue;
+          const anchor = this.solver.getAnchor(a.limb);
+          if (!anchor) continue;
+          if (anchor.point.y > pelvis.y - 0.05) continue;
+          const n = this.solver.planeNormalAt(anchor.point.x, anchor.point.y, anchor.point.z);
+          if (n.y >= GameApp.SLAB_NORMAL_Y) {
+            slab = true;
             break;
           }
         }
@@ -2530,6 +2607,7 @@ export class GameApp {
           grace: POSTURE_GRACE_S,
           floor,
           hangs,
+          slab,
           com: { x: Math.round(com.x * 100) / 100, y: Math.round(com.y * 100) / 100 }
         };
       },

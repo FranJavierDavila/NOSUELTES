@@ -1001,6 +1001,41 @@ export class PbdSolver {
     // ragdoll puro; tono bajo (caida) = cuerpo flacido pero sin pliegues imposibles
     // (los limites y folds siguen activos: son anatomia pasiva, no musculo).
     const toneScale = Math.min(1, this.anchors.size / 2) * (0.15 + 0.85 * this.tone);
+    // EQUILIBRIO DE PIE SIN MANOS (regla de losa, SIMBICON extendido a 2 ejes):
+    // de pie en pared inclinada sin manos, el COM debe quedarse sobre la base de
+    // apoyo TAMBIEN en z (el cuerpo tiende a volcar hacia atras, fuera de la pared).
+    // Tiron horizontal completo (x y z) del pecho+pelvis hacia un punto de apoyo
+    // ligeramente separado de la cara (apoyo plantar). Solo con las manos libres:
+    // con manos ancladas el equilibrio lo gestionan ellas y el volcado no es caida.
+    if (feetSupporting && handLoadN <= 1) {
+      let handsAnchored = 0;
+      let fx = 0;
+      let fy = Infinity;
+      let fz = 0;
+      let slabNy = 0;
+      for (const anchor of this.anchors.values()) {
+        if (anchor.limb.startsWith("hand")) {
+          handsAnchored++;
+          continue;
+        }
+        fx += anchor.point.x;
+        fz += anchor.point.z;
+        fy = Math.min(fy, anchor.point.y);
+        const n = this.planeNormalAt(anchor.point.x, anchor.point.y, anchor.point.z);
+        slabNy = Math.max(slabNy, n.y);
+      }
+      if (handsAnchored === 0 && fy !== Infinity && pelvis.pos.y > fy + 0.05 && slabNy >= 0.25) {
+        const sx = fx / 2;
+        const sz = fz / 2 + 0.14; // apoyo plantar: 14 cm fuera de la cara
+        const pull = 340;
+        const gx = clamp((sx - pelvis.pos.x) * 420, -pull, pull);
+        const gz = clamp((sz - pelvis.pos.z) * 420, -pull, pull);
+        const cx = clamp((sx - chest.pos.x) * 420, -pull, pull);
+        const cz = clamp((sz - chest.pos.z) * 420, -pull, pull);
+        addForce(T.pelvis, gx, 0, gz);
+        addForce(T.chest, cx, 0, cz);
+      }
+    }
     const tex = pelvis.pos.x - chest.pos.x;
     const tey = pelvis.pos.y + T.spineLen * 0.97 - chest.pos.y;
     const tez = pelvis.pos.z - chest.pos.z;

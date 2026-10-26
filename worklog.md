@@ -377,3 +377,19 @@ Stage Summary:
 - Audio completamente renovado: cero sintesis molesta; narrador deportivo con voz pregrabada en ambos idiomas y chistes.
 - App bilingue ES/EN (texto + voz) con selector al comienzo, pantalla inicial imagen+GO! y todas las configuraciones en Ajustes.
 - El audio EN se genero al final (cuota TTS); si un wav falta, el narrador muestra el texto sin voz (degradacion graceful).
+
+---
+Task ID: 18-b (continuacion)
+Agent: Z.ai (principal)
+Task: Regla de losa caso positivo (de pie sin manos) + balance de pie 2 ejes + fix del helper ev() E2E.
+
+Work Log:
+- La regla de postura detectaba la losa (slab:true) pero el ragdoll NO mantenia el equilibrio de pie: volcaba hacia atras (fuera de la pared) y acababa colgado invertido de los pies (upDot < 0) -> caida correcta por la regla, pero el caso legitimo era injugable.
+- SOLVER: balance de pie sin manos extendido a 2 ejes (SIMBICON extendido): con pies de apoyo, manos libres y segmento de losa (n.y >= 0.25), tiron horizontal completo (x y z) de pelvis+pecho hacia un punto de apoyo plantar (14 cm fuera de la cara) — el cuerpo se queda DE PIE en la placa (upDot ~0.7-0.9 sostenido).
+- FIXTURE forceSlabStand (espejo de forceProne, mismo patron E2E documentado): ancla pies a las dos presas mas bajas de segmento inclinado y coloca el cuerpo erguido. e2e-losa.py nuevo: PASS (PLAYING sostenido sin manos en losa; y la variante invertida SI cae).
+- BUG REAL descubierto en los helpers E2E (no era flake del CLI): ev() re-parseaba strings planos ("PLAYING") -> json.loads("PLAYING") fallaba -> None. Corregido en 12 scripts: el desenrollado solo aplica a JSON doble-codificado. e2e-ascenso ahora reporta SUCCESS de verdad (antes "estado final: None").
+- e2e-overload: check del chip bilingue (ES "cede en" / EN "opens in").
+
+Stage Summary:
+- Caso positivo de losa verificado de punta a punta: sin manos, de pie, PLAYING estable en la placa; en vertical/desplome cae (forceProne). La fisica distingue ambos casos por la normal del segmento.
+- Suite E2E 13/13 en verde con lecturas fiables; 118 unit tests.
