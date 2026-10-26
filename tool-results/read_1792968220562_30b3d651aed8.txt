@@ -1,0 +1,562 @@
+     1→/**
+     2→ * Presentacion 3D con Babylon.js (secciones 5, 12): escena, pared, presas, ragdoll
+     3→ * visual, camara con zona muerta, preview de alcance e indicadores.
+     4→ * La presentacion NO es fuente de verdad de las reglas: solo refleja el estado del solver.
+     5→ */
+     6→// Imports granulares de Babylon (tree-shaking): el import raiz arrastra el motor
+     7→// completo y colapsa la compilacion por memoria. Cada builder se registra via side-effect.
+     8→import { Engine } from "@babylonjs/core/Engines/engine";
+     9→import { AbstractEngine } from "@babylonjs/core/Engines/abstractEngine";
+    10→import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
+    11→import { Scene } from "@babylonjs/core/scene";
+    12→import { Camera } from "@babylonjs/core/Cameras/camera";
+    13→import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
+    14→import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
+    15→import { HighlightLayer } from "@babylonjs/core/Layers/highlightLayer";
+    16→import { Mesh } from "@babylonjs/core/Meshes/mesh";
+    17→import type { LinesMesh } from "@babylonjs/core/Meshes/linesMesh";
+    18→import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
+    19→import "@babylonjs/core/Meshes/Builders/boxBuilder";
+    20→import "@babylonjs/core/Meshes/Builders/groundBuilder";
+    21→import "@babylonjs/core/Meshes/Builders/sphereBuilder";
+    22→import "@babylonjs/core/Meshes/Builders/capsuleBuilder";
+    23→import "@babylonjs/core/Meshes/Builders/torusBuilder";
+    24→import "@babylonjs/core/Meshes/Builders/planeBuilder";
+    25→import "@babylonjs/core/Meshes/Builders/linesBuilder";
+    26→import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
+    27→import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
+    28→import { ParticleSystem } from "@babylonjs/core/Particles/particleSystem";
+    29→import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
+    30→import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
+    31→import { AxesViewer } from "@babylonjs/core/Debug/axesViewer";
+    32→import "@babylonjs/core/Culling/ray";
+    33→import "@babylonjs/core/Culling/ray.core";
+    34→import { HoldDefinition, LimbId, LoadZone, WallDefinition } from "../types";
+    35→import { LIMB_IDS } from "../types";
+    36→import { RagdollRig } from "../physics/pbd/ragdoll";
+    37→import { PbdSolver } from "../physics/pbd/solver";
+    38→import type { DragPreview } from "../gameplay/interaction";
+    39→
+    40→export interface DebugFlags {
+    41→  axes: boolean;
+    42→  joints: boolean;
+    43→  reach: boolean;
+    44→  raycast: boolean;
+    45→}
+    46→
+    47→const HOLD_COLORS: Record<string, string> = {
+    48→  start: "#3fb26f",
+    49→  standard: "#8a97a8",
+    50→  foot: "#d97b2f",
+    51→  top: "#e0b13e",
+    52→  zone: "#b06fc9"
+    53→};
+    54→
+    55→const ACCENT_VALID = Color3.FromHexString("#3fb26f");
+    56→const ACCENT_INVALID = Color3.FromHexString("#e05252");
+    57→const ACCENT_SELECT = Color3.FromHexString("#e0b13e");
+    58→
+    59→// Paleta de zona de carga (identica al HUD lateral): normal/tension/sobrecarga.
+    60→const ZONE_COLORS: Record<string, Color3> = {
+    61→  NORMAL: Color3.FromHexString("#3fb26f"),
+    62→  STRAINED: Color3.FromHexString("#e0b13e"),
+    63→  OVERLOADED: Color3.FromHexString("#e05252"),
+    64→  ERROR_GUARD: Color3.FromHexString("#e05252")
+    65→};
+    66→
+    67→// Marcas de orientacion corporal: la mochila senala la espalda (-z, hacia la
+    68→// camara) y los marcadores teca la cara frontal (+z, hacia la pared).
+    69→const BAG_COLOR = "#8a5f38";
+    70→const MARKER_COLOR = "#2fb8b0";
+    71→// Identidad de lados: etiquetas IZQ/DER flotantes y chips del HUD comparten paleta.
+    72→// Azul = lado izquierdo del personaje, rosa = lado derecho (nunca verde/ambar/rojo,
+    73→// reservados a la zona de carga).
+    74→const SIDE_L_COLOR = "#58a6ff";
+    75→const SIDE_R_COLOR = "#ff6f91";
+    76→const LIMB_SIDE_COLOR: Record<LimbId, string> = {
+    77→  hand_l: SIDE_L_COLOR,
+    78→  foot_l: SIDE_L_COLOR,
+    79→  hand_r: SIDE_R_COLOR,
+    80→  foot_r: SIDE_R_COLOR
+    81→};
+    82→const LIMB_SIDE_TEXT: Record<LimbId, string> = {
+    83→  hand_l: "IZQ",
+    84→  foot_l: "IZQ",
+    85→  hand_r: "DER",
+    86→  foot_r: "DER"
+    87→};
+    88→const HAND_BASE = "#dfe4ea";
+    89→const FOOT_BASE = "#b9c0ca";
+    90→const SEG_BASE = "#5d6672";
+    91→
+    92→export class GameScene {
+    93→  readonly scene: Scene;
+    94→  readonly engine: AbstractEngine;
+    95→  readonly backend: string;
+    96→  private readonly highlight: HighlightLayer;
+    97→  private readonly camera: UniversalCamera;
+    98→  private holdMeshes = new Map<string, Mesh>();
+    99→  private holdBaseColor = new Map<string, Color3>();
+   100→  private highlightedCompatible = new Set<string>();
+   101→  private highlightedInvalid = new Set<string>();
+   102→  private tutorialHighlightedHolds = new Set<string>();
+   103→  private tutorialLimbId: LimbId | null = null;
+   104→  private tutorialLimbMesh: Mesh | null = null;
+   105→  private occupiedHolds = new Set<string>();
+   106→  private boneMeshes: { a: number; b: number; mesh: Mesh; rest: number; offZ?: number; offX?: number; offY?: number }[] = [];
+   107→  /** Etiquetas IZQ/DER flotantes (una por extremidad): identidad visual de lado. */
+   108→  private limbLabels = new Map<LimbId, Mesh>();
+   109→  private limbVisual: Record<LimbId, { hand: Mesh; segments: Mesh[]; base: Color3; segBase: Color3 }> = {
+   110→    hand_l: { hand: null as unknown as Mesh, segments: [], base: Color3.FromHexString(HAND_BASE), segBase: Color3.FromHexString(SEG_BASE) },
+   111→    hand_r: { hand: null as unknown as Mesh, segments: [], base: Color3.FromHexString(HAND_BASE), segBase: Color3.FromHexString(SEG_BASE) },
+   112→    foot_l: { hand: null as unknown as Mesh, segments: [], base: Color3.FromHexString(FOOT_BASE), segBase: Color3.FromHexString(SEG_BASE) },
+   113→    foot_r: { hand: null as unknown as Mesh, segments: [], base: Color3.FromHexString(FOOT_BASE), segBase: Color3.FromHexString(SEG_BASE) }
+   114→  };
+   115→  /** Radio de cada presa (para escalar los anillos de anclaje). */
+   116→  private holdRadius = new Map<string, number>();
+   117→  /** Anillo por extremidad sobre la presa anclada, coloreado por zona de carga. */
+   118→  private anchorRings = new Map<LimbId, Mesh>();
+   119→  private ragdollRoot: Mesh[] = [];
+   120→  private currentRig: RagdollRig | null = null;
+   121→  private selectionRing: Mesh;
+   122→  private ghostRing: Mesh;
+   123→  private ghostLine: LinesMesh;
+   124→  private reachCircle: LinesMesh;
+   125→  private axesViewer: AxesViewer | null = null;
+   126→  private jointSpheres: Mesh[] = [];
+   127→  private rayLine: LinesMesh;
+   128→  private wallMesh: Mesh | null = null;
+   129→  private debugFlags: DebugFlags = { axes: false, joints: false, reach: false, raycast: false };
+   130→  private ortho = false;
+   131→  private camTargetBase = new Vector3(0, 2.4, -0.2);
+   132→  /** Topo de la pared cargada (para que la camara siga subiendo en paredes altas). */
+   133→  private wallTopY = 4.85;
+   134→  /** Semiancho de la pared cargada (travesias hasta el borde quedan en cuadro). */
+   135→  private wallHalfWidth = 2.5;
+   136→  private lastReachRadius = 0.58;
+   137→  /** Textura radial blanca compartida (tiza, polvo, confeti usa colores propios). */
+   138→  private readonly spriteTex: DynamicTexture;
+   139→  /** Amplitud de sacudida de camara (decae exponencialmente). */
+   140→  private shakeAmp = 0;
+   141→
+   142→  private constructor(engine: AbstractEngine, scene: Scene, backend: string, canvas: HTMLCanvasElement) {
+   143→    this.engine = engine;
+   144→    this.scene = scene;
+   145→    this.backend = backend;
+   146→
+   147→    scene.clearColor = new Color4(0.055, 0.065, 0.08, 1);
+   148→    scene.fogMode = Scene.FOGMODE_EXP2;
+   149→    scene.fogDensity = 0.012;
+   150→    scene.fogColor = new Color3(0.055, 0.065, 0.08);
+   151→    scene.ambientColor = new Color3(0.1, 0.1, 0.12);
+   152→
+   153→    const hemi = new HemisphericLight("hemi", new Vector3(0.2, 1, -0.35), scene);
+   154→    hemi.intensity = 0.85;
+   155→    hemi.groundColor = new Color3(0.12, 0.12, 0.15);
+   156→    const dir = new HemisphericLight("dir2", new Vector3(-0.5, 0.6, -0.8), scene);
+   157→    dir.intensity = 0.35;
+   158→
+   159→    this.highlight = new HighlightLayer("hl", scene, { mainTextureRatio: 0.5 });
+   160→    this.highlight.innerGlow = false;
+   161→
+   162→    this.camera = new UniversalCamera("cam", new Vector3(0, 2.4, -7.8), scene);
+   163→    this.camera.inputs.clear();
+   164→    this.camera.minZ = 0.1;
+   165→    this.camera.maxZ = 60;
+   166→    this.camera.fov = 0.95;
+   167→    this.camera.setTarget(this.camTargetBase.clone());
+   168→    scene.activeCamera = this.camera;
+   169→
+   170→    // Textura de particulas: disco radial suave (tiza/polvo no pueden ser cuadrados).
+   171→    this.spriteTex = new DynamicTexture("spriteTex", { width: 64, height: 64 }, scene, false);
+   172→    const sctx = this.spriteTex.getContext() as CanvasRenderingContext2D;
+   173→    const grad = sctx.createRadialGradient(32, 32, 2, 32, 32, 30);
+   174→    grad.addColorStop(0, "rgba(255,255,255,1)");
+   175→    grad.addColorStop(0.55, "rgba(255,255,255,0.55)");
+   176→    grad.addColorStop(1, "rgba(255,255,255,0)");
+   177→    sctx.fillStyle = grad;
+   178→    sctx.fillRect(0, 0, 64, 64);
+   179→    this.spriteTex.update();
+   180→    this.spriteTex.hasAlpha = true;
+   181→
+   182→    // Anillos e indicadores persistentes.
+   183→    this.selectionRing = MeshBuilder.CreateTorus("selRing", { diameter: 0.34, thickness: 0.035, tessellation: 32 }, scene);
+   184→    this.selectionRing.material = emissiveMaterial("selRingMat", ACCENT_SELECT, scene);
+   185→    this.selectionRing.isPickable = false;
+   186→    this.selectionRing.setEnabled(false);
+   187→
+   188→    this.ghostRing = MeshBuilder.CreateTorus("ghostRing", { diameter: 0.26, thickness: 0.03, tessellation: 32 }, scene);
+   189→    this.ghostRing.material = emissiveMaterial("ghostMat", ACCENT_VALID, scene);
+   190→    this.ghostRing.isPickable = false;
+   191→    this.ghostRing.setEnabled(false);
+   192→
+   193→    this.ghostLine = MeshBuilder.CreateLines("ghostLine", { points: [Vector3.Zero(), Vector3.Zero()], updatable: true }, scene) as LinesMesh;
+   194→    this.ghostLine.color = ACCENT_VALID;
+   195→    this.ghostLine.isPickable = false;
+   196→    this.ghostLine.setEnabled(false);
+   197→
+   198→    this.reachCircle = MeshBuilder.CreateLines("reachCircle", { points: GameScene.circlePoints(0.58, 64), updatable: true }, scene) as LinesMesh;
+   199→    this.reachCircle.color = Color3.FromHexString("#7f8ea3");
+   200→    this.reachCircle.alpha = 0.55;
+   201→    this.reachCircle.isPickable = false;
+   202→    this.reachCircle.setEnabled(false);
+   203→
+   204→    this.rayLine = MeshBuilder.CreateLines("rayLine", { points: [Vector3.Zero(), Vector3.Zero()], updatable: true }, scene) as LinesMesh;
+   205→    this.rayLine.color = Color3.FromHexString("#e05252");
+   206→    this.rayLine.isPickable = false;
+   207→    this.rayLine.setEnabled(false);
+   208→
+   209→    // Torus por defecto se alinea con Y (donut tumbado): girado PI/2 en X queda
+   210→    // de cara a la camara. Se aplica tambien a los anillos existentes.
+   211→    this.selectionRing.rotation.x = Math.PI / 2;
+   212→    this.ghostRing.rotation.x = Math.PI / 2;
+   213→
+   214→    // Anillos de anclaje (uno por extremidad): heredan la zona de carga de su
+   215→    // extremidad para leer de un vistazo que apoyo esta comprometido.
+   216→    for (const limb of LIMB_IDS) {
+   217→      const ring = MeshBuilder.CreateTorus(`anchorRing_${limb}`, { diameter: 0.36, thickness: 0.03, tessellation: 40 }, scene);
+   218→      ring.material = emissiveMaterial(`anchorRingMat_${limb}`, ACCENT_VALID, scene);
+   219→      ring.rotation.x = Math.PI / 2;
+   220→      ring.isPickable = false;
+   221→      ring.setEnabled(false);
+   222→      this.anchorRings.set(limb, ring);
+   223→    }
+   224→
+   225→    void canvas;
+   226→  }
+   227→
+   228→  static async create(canvas: HTMLCanvasElement): Promise<GameScene> {
+   229→    // WebGL2 primero: es la ruta verificada en E2E y la universalmente soportada.
+   230→    // WebGPU queda como respaldo (y en iframes cross-origin suele estar bloqueado
+   231→    // por Permissions Policy, por lo que intentar primero WebGPU hacía fracasar
+   232→    // el render en el preview).
+   233→    let engine: AbstractEngine;
+   234→    let backend = "WebGL 2";
+   235→    try {
+   236→      engine = new Engine(canvas, true, { stencil: true, preserveDrawingBuffer: false }, true);
+   237→    } catch {
+   238→      const gpu = new WebGPUEngine(canvas, { antialias: true, stencil: true });
+   239→      await gpu.initAsync();
+   240→      engine = gpu;
+   241→      backend = "WebGPU";
+   242→    }
+   243→    const scene = new Scene(engine);
+   244→    scene.useRightHandedSystem = false;
+   245→    return new GameScene(engine, scene, backend, canvas);
+   246→  }
+   247→
+   248→  // --- Mundo ---
+   249→
+   250→  buildWorld(wall: WallDefinition): void {
+   251→    for (const hold of this.holdMeshes.values()) hold.dispose();
+   252→    this.holdMeshes.clear();
+   253→    this.holdBaseColor.clear();
+   254→    this.holdRadius.clear();
+   255→    this.wallMesh?.dispose();
+   256→
+   257→    const d = wall.dimensions;
+   258→    const t = wall.transform.position;
+   259→    // La camara debe poder seguir al escalador hasta cerca de la cima (campeonato:
+   260→    // paredes de 6 a 10,5 m) y encuadrar travesias hasta el borde de la pared.
+   261→    this.wallTopY = t[1] + d.height / 2;
+   262→    this.wallHalfWidth = d.width / 2;
+   263→    const wallMesh = MeshBuilder.CreateBox("wall", { width: d.width, height: d.height, depth: d.depth }, this.scene);
+   264→    wallMesh.position = new Vector3(t[0], t[1], t[2]);
+   265→    wallMesh.isPickable = true;
+   266→    wallMesh.material = wallMaterial(this.scene);
+   267→    wallMesh.receiveShadows = true;
+   268→    this.wallMesh = wallMesh;
+   269→
+   270→    const floor = MeshBuilder.CreateGround("floor", { width: 12, height: 12 }, this.scene);
+   271→    const floorMat = new StandardMaterial("floorMat", this.scene);
+   272→    floorMat.diffuseColor = Color3.FromHexString("#23262d");
+   273→    floorMat.specularColor = new Color3(0.05, 0.05, 0.05);
+   274→    floor.material = floorMat;
+   275→    floor.isPickable = true;
+   276→    floor.receiveShadows = true;
+   277→
+   278→    for (const hold of wall.holds) {
+   279→      this.addHoldMesh(hold);
+   280→    }
+   281→  }
+   282→
+   283→  private addHoldMesh(hold: HoldDefinition): void {
+   284→    const mesh = MeshBuilder.CreateSphere(`hold_${hold.id}`, { diameter: hold.radius * 2, segments: 8 }, this.scene);
+   285→    mesh.position = new Vector3(hold.position[0], hold.position[1], hold.position[2]);
+   286→    mesh.scaling.z = 0.62;
+   287→    mesh.isPickable = true;
+   288→    mesh.metadata = { holdId: hold.id };
+   289→    const color = Color3.FromHexString(HOLD_COLORS[hold.type] ?? "#8a97a8");
+   290→    const mat = new StandardMaterial(`holdMat_${hold.id}`, this.scene);
+   291→    mat.diffuseColor = color;
+   292→    mat.specularColor = new Color3(0.15, 0.15, 0.15);
+   293→    mesh.material = mat;
+   294→    this.holdMeshes.set(hold.id, mesh);
+   295→    this.holdBaseColor.set(hold.id, color);
+   296→    this.holdRadius.set(hold.id, hold.radius);
+   297→  }
+   298→
+   299→  // --- Ragdoll ---
+   300→
+   301→  spawnRagdollVisuals(rig: RagdollRig): void {
+   302→    this.despawnRagdollVisuals();
+   303→    this.currentRig = rig;
+   304→    const scene = this.scene;
+   305→    const bodyMat = sharedMaterial("bodyMat", "#4b5563", scene);
+   306→    const headMat = sharedMaterial("headMat", "#9aa3af", scene);
+   307→    const bagMat = sharedMaterial("bagMat", BAG_COLOR, scene);
+   308→    const markMat = emissiveMaterial("markMat", Color3.FromHexString(MARKER_COLOR), scene);
+   309→    // Materiales POR EXTREMIDAD: el tinte de zona (verde/ambar/rojo) se aplica
+   310→    // de forma independiente a cada brazo y cada pierna.
+   311→    const limbMats: Record<LimbId, StandardMaterial> = {
+   312→      hand_l: sharedMaterial("limbMat_hand_l", SEG_BASE, scene),
+   313→      hand_r: sharedMaterial("limbMat_hand_r", SEG_BASE, scene),
+   314→      foot_l: sharedMaterial("limbMat_foot_l", SEG_BASE, scene),
+   315→      foot_r: sharedMaterial("limbMat_foot_r", SEG_BASE, scene)
+   316→    };
+   317→    const segOfLimb: Record<LimbId, Mesh[]> = { hand_l: [], hand_r: [], foot_l: [], foot_r: [] };
+   318→
+   319→    const P = rig.particles;
+   320→    const dist = (ia: number, ib: number): number =>
+   321→      Vector3.Distance(
+   322→        new Vector3(P[ia].pos.x, P[ia].pos.y, P[ia].pos.z),
+   323→        new Vector3(P[ib].pos.x, P[ib].pos.y, P[ib].pos.z)
+   324→      );
+   325→    const seg = (name: string, ia: number, ib: number, radius: number, mat: StandardMaterial, limb?: LimbId): void => {
+   326→      const rest = dist(ia, ib);
+   327→      const mesh = MeshBuilder.CreateCapsule(name, { radius, height: rest + radius * 2, tessellation: 10, capSubdivisions: 6 }, scene);
+   328→      mesh.material = mat;
+   329→      mesh.isPickable = false;
+   330→      mesh.rotationQuaternion = Quaternion.Identity();
+   331→      this.boneMeshes.push({ a: ia, b: ib, mesh, rest });
+   332→      this.ragdollRoot.push(mesh);
+   333→      if (limb) segOfLimb[limb].push(mesh);
+   334→    };
+   335→
+   336→    seg("torso", 1, 4, 0.155, bodyMat);
+   337→    seg("pelvisBar", 5, 6, 0.095, bodyMat);
+   338→    seg("shoulderBar", 2, 3, 0.075, bodyMat);
+   339→    seg("neck", 1, 0, 0.055, bodyMat);
+   340→    seg("upperArmL", 2, 7, 0.058, limbMats.hand_l, "hand_l");
+   341→    seg("forearmL", 7, 9, 0.05, limbMats.hand_l, "hand_l");
+   342→    seg("upperArmR", 3, 8, 0.058, limbMats.hand_r, "hand_r");
+   343→    seg("forearmR", 8, 10, 0.05, limbMats.hand_r, "hand_r");
+   344→    seg("thighL", 5, 11, 0.075, limbMats.foot_l, "foot_l");
+   345→    seg("shinL", 11, 13, 0.062, limbMats.foot_l, "foot_l");
+   346→    seg("thighR", 6, 12, 0.075, limbMats.foot_r, "foot_r");
+   347→    seg("shinR", 12, 14, 0.062, limbMats.foot_r, "foot_r");
+   348→
+   349→    const head = MeshBuilder.CreateSphere("head", { diameter: 0.24, segments: 12 }, scene);
+   350→    head.material = headMat;
+   351→    head.isPickable = false;
+   352→    this.boneMeshes.push({ a: 0, b: 0, mesh: head, rest: 1 });
+   353→    this.ragdollRoot.push(head);
+   354→
+   355→    // --- Marcas de orientacion frente/espalda ---
+   356→    // El cuerpo vive en un plano paralelo a la pared: espalda = -z (hacia la
+   357→    // camara), frente = +z (hacia la pared). La mochila (grande, en -z) es la
+   358→    // referencia de espalda; el visor facial y los discos de rodilla/codo (+z)
+   359→    // marcan el frente. La sincronizacion aplica offZ/offX/offY en el mundo.
+   360→    const torsoLen = dist(1, 4);
+   361→    const bag = MeshBuilder.CreateBox("backpack", { width: 0.26, height: torsoLen * 0.84, depth: 0.105 }, scene);
+   362→    bag.material = bagMat;
+   363→    bag.isPickable = false;
+   364→    bag.rotationQuaternion = Quaternion.Identity();
+   365→    this.boneMeshes.push({ a: 1, b: 4, mesh: bag, rest: torsoLen, offZ: -0.225 });
+   366→    this.ragdollRoot.push(bag);
+   367→    // Banda vertical clara sobre la cara externa de la mochila (refleja el turquesa
+   368→    // de los marcadores frontales: mismo color = lados opuestos del mismo eje).
+   369→    const bagStripe = MeshBuilder.CreateBox("backpackStripe", { width: 0.06, height: torsoLen * 0.78, depth: 0.02 }, scene);
+   370→    bagStripe.material = markMat;
+   371→    bagStripe.isPickable = false;
+   372→    bagStripe.rotationQuaternion = Quaternion.Identity();
+   373→    this.boneMeshes.push({ a: 1, b: 4, mesh: bagStripe, rest: torsoLen, offZ: -0.283 });
+   374→    this.ragdollRoot.push(bagStripe);
+   375→    // Tirantes sobre los hombros: refuerzan la lectura "esto es la espalda" incluso
+   376→    // en silueta (se ven desde detras, a diferencia de las marcas frontales).
+   377→    const strapMat = sharedMaterial("strapMat", "#33281e", scene);
+   378→    for (const [idx, nm] of [[2, "strapL"], [3, "strapR"]] as const) {
+   379→      const strap = MeshBuilder.CreateBox(nm, { width: 0.07, height: 0.13, depth: 0.05 }, scene);
+   380→      strap.material = strapMat;
+   381→      strap.isPickable = false;
+   382→      strap.rotationQuaternion = Quaternion.Identity();
+   383→      this.boneMeshes.push({ a: idx, b: idx, mesh: strap, rest: 1, offZ: -0.1, offY: 0.015 });
+   384→      this.ragdollRoot.push(strap);
+   385→    }
+   386→
+   387→    const eyeMat = sharedMaterial("eyeMat", "#141821", scene);
+   388→    const marker = (name: string, idx: number, offZ: number, d: number, zScale: number, offX = 0, offY = 0, mat: StandardMaterial = markMat): void => {
+   389→      const disc = MeshBuilder.CreateSphere(name, { diameter: d, segments: 8 }, scene);
+   390→      disc.material = mat;
+   391→      disc.scaling.z = zScale;
+   392→      disc.isPickable = false;
+   393→      // Punto anclado (a === b): la sincronizacion solo copia posicion (+offsets).
+   394→      this.boneMeshes.push({ a: idx, b: idx, mesh: disc, rest: 1, offZ, offX, offY });
+   395→      this.ragdollRoot.push(disc);
+   396→    };
+   397→    // Cara: visor amplio + dos ojos oscuros. Al girar la cabeza (ragdoll) el frente
+   398→    // se reconoce al instante; de frente a la pared, la mochila cubre el papel inverso.
+   399→    marker("faceVisor", 0, 0.125, 0.19, 0.32);
+   400→    marker("eyeL", 0, 0.13, 0.05, 0.5, -0.04, 0.025, eyeMat);
+   401→    marker("eyeR", 0, 0.13, 0.05, 0.5, 0.04, 0.025, eyeMat);
+   402→    marker("kneeMarkL", 11, 0.05, 0.09, 0.3);
+   403→    marker("kneeMarkR", 12, 0.05, 0.09, 0.3);
+   404→    marker("elbowMarkL", 7, 0.055, 0.075, 0.35);
+   405→    marker("elbowMarkR", 8, 0.055, 0.075, 0.35);
+   406→
+   407→    const grips: [LimbId, number, string, string][] = [
+   408→      ["hand_l", 9, "handL", HAND_BASE],
+   409→      ["hand_r", 10, "handR", HAND_BASE],
+   410→      ["foot_l", 13, "footL", FOOT_BASE],
+   411→      ["foot_r", 14, "footR", FOOT_BASE]
+   412→    ];
+   413→    for (const [limb, idx, name, color] of grips) {
+   414→      const mesh = MeshBuilder.CreateSphere(name, { diameter: 0.15, segments: 8 }, scene);
+   415→      mesh.material = sharedMaterial(`${name}Mat`, color, scene);
+   416→      mesh.isPickable = true;
+   417→      mesh.metadata = { limbId: limb };
+   418→      mesh.rotationQuaternion = Quaternion.Identity();
+   419→      // Sincronizada con el solver como articulacion de un solo punto (a === b).
+   420→      this.boneMeshes.push({ a: idx, b: idx, mesh, rest: 1 });
+   421→      this.limbVisual[limb] = {
+   422→        hand: mesh,
+   423→        segments: segOfLimb[limb],
+   424→        base: Color3.FromHexString(color),
+   425→        segBase: Color3.FromHexString(SEG_BASE)
+   426→      };
+   427→      this.ragdollRoot.push(mesh);
+   428→    }
+   429→
+   430→    // --- Etiquetas de lado (IZQ/DER) ---
+   431→    // Carteles flotantes SIEMPRE visibles sobre cada mano y bajo cada pie: eliminan
+   432→    // la ambiguedad izquierda/derecha del muneco visto de espaldas. renderingGroupId
+   433→    // 1 = se dibujan sobre el cuerpo (nunca ocultas); billboard = siempre de cara.
+   434→    const LIMB_LABEL_IDX: Record<LimbId, number> = { hand_l: 9, hand_r: 10, foot_l: 13, foot_r: 14 };
+   435→    const LIMB_LABEL_DY: Record<LimbId, number> = { hand_l: 0.185, hand_r: 0.185, foot_l: -0.21, foot_r: -0.21 };
+   436→    for (const limb of LIMB_IDS) {
+   437→      const label = this.makeSideLabel(`limbLabel_${limb}`, LIMB_SIDE_TEXT[limb], LIMB_SIDE_COLOR[limb]);
+   438→      this.boneMeshes.push({ a: LIMB_LABEL_IDX[limb], b: LIMB_LABEL_IDX[limb], mesh: label, rest: 1, offZ: -0.07, offY: LIMB_LABEL_DY[limb] });
+   439→      this.limbLabels.set(limb, label);
+   440→      this.ragdollRoot.push(label);
+   441→    }
+   442→
+   443→    // Esferas de depuracion por particula.
+   444→    this.jointSpheres = [];
+   445→    for (let i = 0; i < P.length; i++) {
+   446→      const s = MeshBuilder.CreateSphere(`joint_${i}`, { diameter: 0.07, segments: 6 }, scene);
+   447→      s.material = emissiveMaterial(`jointMat_${i}`, Color3.FromHexString("#e05252"), scene);
+   448→      s.isPickable = false;
+   449→      s.setEnabled(false);
+   450→      this.jointSpheres.push(s);
+   451→    }
+   452→  }
+   453→
+   454→  /** Cartel de lado (IZQ/DER): plano billboard con texto en DynamicTexture. */
+   455→  private makeSideLabel(name: string, text: string, color: string): Mesh {
+   456→    const tex = new DynamicTexture(`${name}Tex`, { width: 128, height: 64 }, this.scene, false);
+   457→    const ctx = tex.getContext() as CanvasRenderingContext2D;
+   458→    ctx.clearRect(0, 0, 128, 64);
+   459→    ctx.textAlign = "center";
+   460→    ctx.textBaseline = "middle";
+   461→    ctx.font = "bold 46px Arial, sans-serif";
+   462→    // Halo oscuro: legible tanto sobre la pared clara como sobre el colchon oscuro.
+   463→    ctx.fillStyle = "rgba(8,10,14,0.85)";
+   464→    ctx.fillText(text, 66, 37);
+   465→    ctx.fillText(text, 62, 33);
+   466→    ctx.fillStyle = color;
+   467→    ctx.fillText(text, 64, 35);
+   468→    tex.update();
+   469→    tex.hasAlpha = true;
+   470→    const plane = MeshBuilder.CreatePlane(name, { width: 0.24, height: 0.12 }, this.scene);
+   471→    const mat = new StandardMaterial(`${name}Mat`, this.scene);
+   472→    mat.disableLighting = true;
+   473→    mat.emissiveColor = Color3.FromHexString(color);
+   474→    mat.opacityTexture = tex;
+   475→    mat.backFaceCulling = false;
+   476→    plane.material = mat;
+   477→    plane.billboardMode = Mesh.BILLBOARDMODE_ALL;
+   478→    plane.renderingGroupId = 1;
+   479→    plane.isPickable = false;
+   480→    plane.applyFog = false;
+   481→    return plane;
+   482→  }
+   483→
+   484→  /** Enfatiza la etiqueta de la extremidad apuntada/arrastrada (el resto a tamano normal). */
+   485→  setLimbLabelEmphasis(limb: LimbId | null): void {
+   486→    for (const [id, mesh] of this.limbLabels) {
+   487→      if (mesh.isDisposed()) continue;
+   488→      const active = id === limb;
+   489→      mesh.scaling.setAll(active ? 1.5 : 1);
+   490→      (mesh.material as StandardMaterial).alpha = active ? 1 : 0.92;
+   491→    }
+   492→  }
+   493→
+   494→  /** Diagnostico E2E: pantalla (px) de cada etiqueta de lado. */
+   495→  limbLabelDebug(): { limb: LimbId; x: number; y: number }[] {
+   496→    const out: { limb: LimbId; x: number; y: number }[] = [];
+   497→    for (const [limb, mesh] of this.limbLabels) {
+   498→      if (mesh.isDisposed() || !mesh.isEnabled()) continue;
+   499→      const s = this.projectToScreenCss(mesh.position.x, mesh.position.y, mesh.position.z);
+   500→      out.push({ limb, x: s.x, y: s.y });
+   501→    }
+   502→    return out;
+   503→  }
+   504→
+   505→  despawnRagdollVisuals(): void {
+   506→    // Las etiquetas de lado llevan material y textura PROPIOS (DynamicTexture con
+   507→    // el texto): se liberan aqui para no filtrar por cada respawn; el resto de
+   508→    // boneMeshes comparte materiales y se libera solo como malla.
+   509→    const labelSet = new Set(this.limbLabels.values());
+   510→    for (const label of labelSet) {
+   511→      if (!label.isDisposed()) label.dispose(false, true);
+   512→    }
+   513→    this.boneMeshes = this.boneMeshes.filter((b) => !labelSet.has(b.mesh));
+   514→    for (const b of this.boneMeshes) b.mesh.dispose();
+   515→    for (const m of this.jointSpheres) m.dispose();
+   516→    this.boneMeshes = [];
+   517→    this.jointSpheres = [];
+   518→    this.limbLabels.clear();
+   519→    this.ragdollRoot = [];
+   520→    this.currentRig = null;
+   521→  }
+   522→
+   523→  /** Copia posiciones del solver a los meshes con interpolacion entre pasos. */
+   524→  syncRagdoll(solver: PbdSolver, alpha: number): void {
+   525→    void this.currentRig;
+   526→    const tmpA = new Vector3();
+   527→    const tmpB = new Vector3();
+   528→    for (const bone of this.boneMeshes) {
+   529→      const pa = solver.getParticle(bone.a);
+   530→      const pb = solver.getParticle(bone.b);
+   531→      if (!pa || !pb) continue;
+   532→      if (bone.a === bone.b) {
+   533→        tmpA.set(pa.pos.x, pa.pos.y, pa.pos.z);
+   534→        bone.mesh.position.copyFrom(tmpA);
+   535→        // Marcas puntuales (visor, ojos, etiquetas): desplazamiento pared-camara y lateral.
+   536→        if (bone.offZ) bone.mesh.position.z += bone.offZ;
+   537→        if (bone.offX) bone.mesh.position.x += bone.offX;
+   538→        if (bone.offY) bone.mesh.position.y += bone.offY;
+   539→        continue;
+   540→      }
+   541→      const ax = pa.prev.x + (pa.pos.x - pa.prev.x) * alpha;
+   542→      const ay = pa.prev.y + (pa.pos.y - pa.prev.y) * alpha;
+   543→      const az = pa.prev.z + (pa.pos.z - pa.prev.z) * alpha;
+   544→      const bx = pb.prev.x + (pb.pos.x - pb.prev.x) * alpha;
+   545→      const by = pb.prev.y + (pb.pos.y - pb.prev.y) * alpha;
+   546→      const bz = pb.prev.z + (pb.pos.z - pb.prev.z) * alpha;
+   547→      tmpA.set(ax, ay, az);
+   548→      tmpB.set(bx, by, bz);
+   549→      const mesh = bone.mesh;
+   550→      mesh.position.set((ax + bx) / 2 + (bone.offX ?? 0), (ay + by) / 2 + (bone.offY ?? 0), (az + bz) / 2 + (bone.offZ ?? 0));
+   551→      const dir = tmpB.subtract(tmpA);
+   552→      const len = Math.max(dir.length(), 1e-5);
+   553→      const d = dir.scale(1 / len);
+   554→      const ref = Math.abs(d.y) < 0.95 ? new Vector3(0, 1, 0) : new Vector3(1, 0, 0);
+   555→      const xAxis = Vector3.Cross(ref, d).normalize();
+   556→      const zAxis = Vector3.Cross(xAxis, d).normalize();
+   557→      if (!mesh.rotationQuaternion) mesh.rotationQuaternion = Quaternion.Identity();
+   558→      Quaternion.RotationQuaternionFromAxisToRef(xAxis, d, zAxis, mesh.rotationQuaternion);
+   559→      mesh.scaling.y = Math.min(1.35, len / bone.rest);
+   560→    }
+
+[showing lines 1-560 of 1174; use offset=561 with limit to continue reading]

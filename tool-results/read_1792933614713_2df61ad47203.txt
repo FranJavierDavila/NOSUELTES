@@ -1,0 +1,1141 @@
+     1→/**
+     2→ * Presentacion 3D con Babylon.js (secciones 5, 12): escena, pared, presas, ragdoll
+     3→ * visual, camara con zona muerta, preview de alcance e indicadores.
+     4→ * La presentacion NO es fuente de verdad de las reglas: solo refleja el estado del solver.
+     5→ */
+     6→// Imports granulares de Babylon (tree-shaking): el import raiz arrastra el motor
+     7→// completo y colapsa la compilacion por memoria. Cada builder se registra via side-effect.
+     8→import { Engine } from "@babylonjs/core/Engines/engine";
+     9→import { AbstractEngine } from "@babylonjs/core/Engines/abstractEngine";
+    10→import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
+    11→import { Scene } from "@babylonjs/core/scene";
+    12→import { Camera } from "@babylonjs/core/Cameras/camera";
+    13→import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
+    14→import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
+    15→import { HighlightLayer } from "@babylonjs/core/Layers/highlightLayer";
+    16→import { Mesh } from "@babylonjs/core/Meshes/mesh";
+    17→import type { LinesMesh } from "@babylonjs/core/Meshes/linesMesh";
+    18→import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
+    19→import "@babylonjs/core/Meshes/Builders/boxBuilder";
+    20→import "@babylonjs/core/Meshes/Builders/groundBuilder";
+    21→import "@babylonjs/core/Meshes/Builders/sphereBuilder";
+    22→import "@babylonjs/core/Meshes/Builders/capsuleBuilder";
+    23→import "@babylonjs/core/Meshes/Builders/torusBuilder";
+    24→import "@babylonjs/core/Meshes/Builders/planeBuilder";
+    25→import "@babylonjs/core/Meshes/Builders/linesBuilder";
+    26→import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
+    27→import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
+    28→import { ParticleSystem } from "@babylonjs/core/Particles/particleSystem";
+    29→import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
+    30→import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
+    31→import { AxesViewer } from "@babylonjs/core/Debug/axesViewer";
+    32→import "@babylonjs/core/Culling/ray";
+    33→import "@babylonjs/core/Culling/ray.core";
+    34→import { HoldDefinition, LimbId, LoadZone, WallDefinition } from "../types";
+    35→import { LIMB_IDS } from "../types";
+    36→import { RagdollRig } from "../physics/pbd/ragdoll";
+    37→import { PbdSolver } from "../physics/pbd/solver";
+    38→import type { DragPreview } from "../gameplay/interaction";
+    39→
+    40→export interface DebugFlags {
+    41→  axes: boolean;
+    42→  joints: boolean;
+    43→  reach: boolean;
+    44→  raycast: boolean;
+    45→}
+    46→
+    47→const HOLD_COLORS: Record<string, string> = {
+    48→  start: "#3fb26f",
+    49→  standard: "#8a97a8",
+    50→  foot: "#d97b2f",
+    51→  top: "#e0b13e",
+    52→  zone: "#b06fc9"
+    53→};
+    54→
+    55→const ACCENT_VALID = Color3.FromHexString("#3fb26f");
+    56→const ACCENT_INVALID = Color3.FromHexString("#e05252");
+    57→const ACCENT_SELECT = Color3.FromHexString("#e0b13e");
+    58→
+    59→// Paleta de zona de carga (identica al HUD lateral): normal/tension/sobrecarga.
+    60→const ZONE_COLORS: Record<string, Color3> = {
+    61→  NORMAL: Color3.FromHexString("#3fb26f"),
+    62→  STRAINED: Color3.FromHexString("#e0b13e"),
+    63→  OVERLOADED: Color3.FromHexString("#e05252"),
+    64→  ERROR_GUARD: Color3.FromHexString("#e05252")
+    65→};
+    66→
+    67→// Marcas de orientacion corporal: la mochila senala la espalda (-z, hacia la
+    68→// camara) y los marcadores teca la cara frontal (+z, hacia la pared).
+    69→const BAG_COLOR = "#8a5f38";
+    70→const MARKER_COLOR = "#2fb8b0";
+    71→// Identidad de lados: etiquetas IZQ/DER flotantes y chips del HUD comparten paleta.
+    72→// Azul = lado izquierdo del personaje, rosa = lado derecho (nunca verde/ambar/rojo,
+    73→// reservados a la zona de carga).
+    74→const SIDE_L_COLOR = "#58a6ff";
+    75→const SIDE_R_COLOR = "#ff6f91";
+    76→const LIMB_SIDE_COLOR: Record<LimbId, string> = {
+    77→  hand_l: SIDE_L_COLOR,
+    78→  foot_l: SIDE_L_COLOR,
+    79→  hand_r: SIDE_R_COLOR,
+    80→  foot_r: SIDE_R_COLOR
+    81→};
+    82→const LIMB_SIDE_TEXT: Record<LimbId, string> = {
+    83→  hand_l: "IZQ",
+    84→  foot_l: "IZQ",
+    85→  hand_r: "DER",
+    86→  foot_r: "DER"
+    87→};
+    88→const HAND_BASE = "#dfe4ea";
+    89→const FOOT_BASE = "#b9c0ca";
+    90→const SEG_BASE = "#5d6672";
+    91→
+    92→export class GameScene {
+    93→  readonly scene: Scene;
+    94→  readonly engine: AbstractEngine;
+    95→  readonly backend: string;
+    96→  private readonly highlight: HighlightLayer;
+    97→  private readonly camera: UniversalCamera;
+    98→  private holdMeshes = new Map<string, Mesh>();
+    99→  private holdBaseColor = new Map<string, Color3>();
+   100→  private highlightedCompatible = new Set<string>();
+   101→  private highlightedInvalid = new Set<string>();
+   102→  private tutorialHighlightedHolds = new Set<string>();
+   103→  private tutorialLimbId: LimbId | null = null;
+   104→  private tutorialLimbMesh: Mesh | null = null;
+   105→  private occupiedHolds = new Set<string>();
+   106→  private boneMeshes: { a: number; b: number; mesh: Mesh; rest: number; offZ?: number; offX?: number; offY?: number }[] = [];
+   107→  /** Etiquetas IZQ/DER flotantes (una por extremidad): identidad visual de lado. */
+   108→  private limbLabels = new Map<LimbId, Mesh>();
+   109→  private limbVisual: Record<LimbId, { hand: Mesh; segments: Mesh[]; base: Color3; segBase: Color3 }> = {
+   110→    hand_l: { hand: null as unknown as Mesh, segments: [], base: Color3.FromHexString(HAND_BASE), segBase: Color3.FromHexString(SEG_BASE) },
+   111→    hand_r: { hand: null as unknown as Mesh, segments: [], base: Color3.FromHexString(HAND_BASE), segBase: Color3.FromHexString(SEG_BASE) },
+   112→    foot_l: { hand: null as unknown as Mesh, segments: [], base: Color3.FromHexString(FOOT_BASE), segBase: Color3.FromHexString(SEG_BASE) },
+   113→    foot_r: { hand: null as unknown as Mesh, segments: [], base: Color3.FromHexString(FOOT_BASE), segBase: Color3.FromHexString(SEG_BASE) }
+   114→  };
+   115→  /** Radio de cada presa (para escalar los anillos de anclaje). */
+   116→  private holdRadius = new Map<string, number>();
+   117→  /** Anillo por extremidad sobre la presa anclada, coloreado por zona de carga. */
+   118→  private anchorRings = new Map<LimbId, Mesh>();
+   119→  private ragdollRoot: Mesh[] = [];
+   120→  private currentRig: RagdollRig | null = null;
+   121→  private selectionRing: Mesh;
+   122→  private ghostRing: Mesh;
+   123→  private ghostLine: LinesMesh;
+   124→  private reachCircle: LinesMesh;
+   125→  private axesViewer: AxesViewer | null = null;
+   126→  private jointSpheres: Mesh[] = [];
+   127→  private rayLine: LinesMesh;
+   128→  private wallMesh: Mesh | null = null;
+   129→  private debugFlags: DebugFlags = { axes: false, joints: false, reach: false, raycast: false };
+   130→  private ortho = false;
+   131→  private camTargetBase = new Vector3(0, 2.4, -0.2);
+   132→  private lastReachRadius = 0.58;
+   133→  /** Textura radial blanca compartida (tiza, polvo, confeti usa colores propios). */
+   134→  private readonly spriteTex: DynamicTexture;
+   135→  /** Amplitud de sacudida de camara (decae exponencialmente). */
+   136→  private shakeAmp = 0;
+   137→
+   138→  private constructor(engine: AbstractEngine, scene: Scene, backend: string, canvas: HTMLCanvasElement) {
+   139→    this.engine = engine;
+   140→    this.scene = scene;
+   141→    this.backend = backend;
+   142→
+   143→    scene.clearColor = new Color4(0.055, 0.065, 0.08, 1);
+   144→    scene.fogMode = Scene.FOGMODE_EXP2;
+   145→    scene.fogDensity = 0.012;
+   146→    scene.fogColor = new Color3(0.055, 0.065, 0.08);
+   147→    scene.ambientColor = new Color3(0.1, 0.1, 0.12);
+   148→
+   149→    const hemi = new HemisphericLight("hemi", new Vector3(0.2, 1, -0.35), scene);
+   150→    hemi.intensity = 0.85;
+   151→    hemi.groundColor = new Color3(0.12, 0.12, 0.15);
+   152→    const dir = new HemisphericLight("dir2", new Vector3(-0.5, 0.6, -0.8), scene);
+   153→    dir.intensity = 0.35;
+   154→
+   155→    this.highlight = new HighlightLayer("hl", scene, { mainTextureRatio: 0.5 });
+   156→    this.highlight.innerGlow = false;
+   157→
+   158→    this.camera = new UniversalCamera("cam", new Vector3(0, 2.4, -7.8), scene);
+   159→    this.camera.inputs.clear();
+   160→    this.camera.minZ = 0.1;
+   161→    this.camera.maxZ = 60;
+   162→    this.camera.fov = 0.95;
+   163→    this.camera.setTarget(this.camTargetBase.clone());
+   164→    scene.activeCamera = this.camera;
+   165→
+   166→    // Textura de particulas: disco radial suave (tiza/polvo no pueden ser cuadrados).
+   167→    this.spriteTex = new DynamicTexture("spriteTex", { width: 64, height: 64 }, scene, false);
+   168→    const sctx = this.spriteTex.getContext() as CanvasRenderingContext2D;
+   169→    const grad = sctx.createRadialGradient(32, 32, 2, 32, 32, 30);
+   170→    grad.addColorStop(0, "rgba(255,255,255,1)");
+   171→    grad.addColorStop(0.55, "rgba(255,255,255,0.55)");
+   172→    grad.addColorStop(1, "rgba(255,255,255,0)");
+   173→    sctx.fillStyle = grad;
+   174→    sctx.fillRect(0, 0, 64, 64);
+   175→    this.spriteTex.update();
+   176→    this.spriteTex.hasAlpha = true;
+   177→
+   178→    // Anillos e indicadores persistentes.
+   179→    this.selectionRing = MeshBuilder.CreateTorus("selRing", { diameter: 0.34, thickness: 0.035, tessellation: 32 }, scene);
+   180→    this.selectionRing.material = emissiveMaterial("selRingMat", ACCENT_SELECT, scene);
+   181→    this.selectionRing.isPickable = false;
+   182→    this.selectionRing.setEnabled(false);
+   183→
+   184→    this.ghostRing = MeshBuilder.CreateTorus("ghostRing", { diameter: 0.26, thickness: 0.03, tessellation: 32 }, scene);
+   185→    this.ghostRing.material = emissiveMaterial("ghostMat", ACCENT_VALID, scene);
+   186→    this.ghostRing.isPickable = false;
+   187→    this.ghostRing.setEnabled(false);
+   188→
+   189→    this.ghostLine = MeshBuilder.CreateLines("ghostLine", { points: [Vector3.Zero(), Vector3.Zero()], updatable: true }, scene) as LinesMesh;
+   190→    this.ghostLine.color = ACCENT_VALID;
+   191→    this.ghostLine.isPickable = false;
+   192→    this.ghostLine.setEnabled(false);
+   193→
+   194→    this.reachCircle = MeshBuilder.CreateLines("reachCircle", { points: GameScene.circlePoints(0.58, 64), updatable: true }, scene) as LinesMesh;
+   195→    this.reachCircle.color = Color3.FromHexString("#7f8ea3");
+   196→    this.reachCircle.alpha = 0.55;
+   197→    this.reachCircle.isPickable = false;
+   198→    this.reachCircle.setEnabled(false);
+   199→
+   200→    this.rayLine = MeshBuilder.CreateLines("rayLine", { points: [Vector3.Zero(), Vector3.Zero()], updatable: true }, scene) as LinesMesh;
+   201→    this.rayLine.color = Color3.FromHexString("#e05252");
+   202→    this.rayLine.isPickable = false;
+   203→    this.rayLine.setEnabled(false);
+   204→
+   205→    // Torus por defecto se alinea con Y (donut tumbado): girado PI/2 en X queda
+   206→    // de cara a la camara. Se aplica tambien a los anillos existentes.
+   207→    this.selectionRing.rotation.x = Math.PI / 2;
+   208→    this.ghostRing.rotation.x = Math.PI / 2;
+   209→
+   210→    // Anillos de anclaje (uno por extremidad): heredan la zona de carga de su
+   211→    // extremidad para leer de un vistazo que apoyo esta comprometido.
+   212→    for (const limb of LIMB_IDS) {
+   213→      const ring = MeshBuilder.CreateTorus(`anchorRing_${limb}`, { diameter: 0.36, thickness: 0.03, tessellation: 40 }, scene);
+   214→      ring.material = emissiveMaterial(`anchorRingMat_${limb}`, ACCENT_VALID, scene);
+   215→      ring.rotation.x = Math.PI / 2;
+   216→      ring.isPickable = false;
+   217→      ring.setEnabled(false);
+   218→      this.anchorRings.set(limb, ring);
+   219→    }
+   220→
+   221→    void canvas;
+   222→  }
+   223→
+   224→  static async create(canvas: HTMLCanvasElement): Promise<GameScene> {
+   225→    // WebGL2 primero: es la ruta verificada en E2E y la universalmente soportada.
+   226→    // WebGPU queda como respaldo (y en iframes cross-origin suele estar bloqueado
+   227→    // por Permissions Policy, por lo que intentar primero WebGPU hacía fracasar
+   228→    // el render en el preview).
+   229→    let engine: AbstractEngine;
+   230→    let backend = "WebGL 2";
+   231→    try {
+   232→      engine = new Engine(canvas, true, { stencil: true, preserveDrawingBuffer: false }, true);
+   233→    } catch {
+   234→      const gpu = new WebGPUEngine(canvas, { antialias: true, stencil: true });
+   235→      await gpu.initAsync();
+   236→      engine = gpu;
+   237→      backend = "WebGPU";
+   238→    }
+   239→    const scene = new Scene(engine);
+   240→    scene.useRightHandedSystem = false;
+   241→    return new GameScene(engine, scene, backend, canvas);
+   242→  }
+   243→
+   244→  // --- Mundo ---
+   245→
+   246→  buildWorld(wall: WallDefinition): void {
+   247→    for (const hold of this.holdMeshes.values()) hold.dispose();
+   248→    this.holdMeshes.clear();
+   249→    this.holdBaseColor.clear();
+   250→    this.holdRadius.clear();
+   251→    this.wallMesh?.dispose();
+   252→
+   253→    const d = wall.dimensions;
+   254→    const t = wall.transform.position;
+   255→    const wallMesh = MeshBuilder.CreateBox("wall", { width: d.width, height: d.height, depth: d.depth }, this.scene);
+   256→    wallMesh.position = new Vector3(t[0], t[1], t[2]);
+   257→    wallMesh.isPickable = true;
+   258→    wallMesh.material = wallMaterial(this.scene);
+   259→    wallMesh.receiveShadows = true;
+   260→    this.wallMesh = wallMesh;
+   261→
+   262→    const floor = MeshBuilder.CreateGround("floor", { width: 12, height: 12 }, this.scene);
+   263→    const floorMat = new StandardMaterial("floorMat", this.scene);
+   264→    floorMat.diffuseColor = Color3.FromHexString("#23262d");
+   265→    floorMat.specularColor = new Color3(0.05, 0.05, 0.05);
+   266→    floor.material = floorMat;
+   267→    floor.isPickable = true;
+   268→    floor.receiveShadows = true;
+   269→
+   270→    for (const hold of wall.holds) {
+   271→      this.addHoldMesh(hold);
+   272→    }
+   273→  }
+   274→
+   275→  private addHoldMesh(hold: HoldDefinition): void {
+   276→    const mesh = MeshBuilder.CreateSphere(`hold_${hold.id}`, { diameter: hold.radius * 2, segments: 8 }, this.scene);
+   277→    mesh.position = new Vector3(hold.position[0], hold.position[1], hold.position[2]);
+   278→    mesh.scaling.z = 0.62;
+   279→    mesh.isPickable = true;
+   280→    mesh.metadata = { holdId: hold.id };
+   281→    const color = Color3.FromHexString(HOLD_COLORS[hold.type] ?? "#8a97a8");
+   282→    const mat = new StandardMaterial(`holdMat_${hold.id}`, this.scene);
+   283→    mat.diffuseColor = color;
+   284→    mat.specularColor = new Color3(0.15, 0.15, 0.15);
+   285→    mesh.material = mat;
+   286→    this.holdMeshes.set(hold.id, mesh);
+   287→    this.holdBaseColor.set(hold.id, color);
+   288→    this.holdRadius.set(hold.id, hold.radius);
+   289→  }
+   290→
+   291→  // --- Ragdoll ---
+   292→
+   293→  spawnRagdollVisuals(rig: RagdollRig): void {
+   294→    this.despawnRagdollVisuals();
+   295→    this.currentRig = rig;
+   296→    const scene = this.scene;
+   297→    const bodyMat = sharedMaterial("bodyMat", "#4b5563", scene);
+   298→    const headMat = sharedMaterial("headMat", "#9aa3af", scene);
+   299→    const bagMat = sharedMaterial("bagMat", BAG_COLOR, scene);
+   300→    const markMat = emissiveMaterial("markMat", Color3.FromHexString(MARKER_COLOR), scene);
+   301→    // Materiales POR EXTREMIDAD: el tinte de zona (verde/ambar/rojo) se aplica
+   302→    // de forma independiente a cada brazo y cada pierna.
+   303→    const limbMats: Record<LimbId, StandardMaterial> = {
+   304→      hand_l: sharedMaterial("limbMat_hand_l", SEG_BASE, scene),
+   305→      hand_r: sharedMaterial("limbMat_hand_r", SEG_BASE, scene),
+   306→      foot_l: sharedMaterial("limbMat_foot_l", SEG_BASE, scene),
+   307→      foot_r: sharedMaterial("limbMat_foot_r", SEG_BASE, scene)
+   308→    };
+   309→    const segOfLimb: Record<LimbId, Mesh[]> = { hand_l: [], hand_r: [], foot_l: [], foot_r: [] };
+   310→
+   311→    const P = rig.particles;
+   312→    const dist = (ia: number, ib: number): number =>
+   313→      Vector3.Distance(
+   314→        new Vector3(P[ia].pos.x, P[ia].pos.y, P[ia].pos.z),
+   315→        new Vector3(P[ib].pos.x, P[ib].pos.y, P[ib].pos.z)
+   316→      );
+   317→    const seg = (name: string, ia: number, ib: number, radius: number, mat: StandardMaterial, limb?: LimbId): void => {
+   318→      const rest = dist(ia, ib);
+   319→      const mesh = MeshBuilder.CreateCapsule(name, { radius, height: rest + radius * 2, tessellation: 10, capSubdivisions: 6 }, scene);
+   320→      mesh.material = mat;
+   321→      mesh.isPickable = false;
+   322→      mesh.rotationQuaternion = Quaternion.Identity();
+   323→      this.boneMeshes.push({ a: ia, b: ib, mesh, rest });
+   324→      this.ragdollRoot.push(mesh);
+   325→      if (limb) segOfLimb[limb].push(mesh);
+   326→    };
+   327→
+   328→    seg("torso", 1, 4, 0.155, bodyMat);
+   329→    seg("pelvisBar", 5, 6, 0.095, bodyMat);
+   330→    seg("shoulderBar", 2, 3, 0.075, bodyMat);
+   331→    seg("neck", 1, 0, 0.055, bodyMat);
+   332→    seg("upperArmL", 2, 7, 0.058, limbMats.hand_l, "hand_l");
+   333→    seg("forearmL", 7, 9, 0.05, limbMats.hand_l, "hand_l");
+   334→    seg("upperArmR", 3, 8, 0.058, limbMats.hand_r, "hand_r");
+   335→    seg("forearmR", 8, 10, 0.05, limbMats.hand_r, "hand_r");
+   336→    seg("thighL", 5, 11, 0.075, limbMats.foot_l, "foot_l");
+   337→    seg("shinL", 11, 13, 0.062, limbMats.foot_l, "foot_l");
+   338→    seg("thighR", 6, 12, 0.075, limbMats.foot_r, "foot_r");
+   339→    seg("shinR", 12, 14, 0.062, limbMats.foot_r, "foot_r");
+   340→
+   341→    const head = MeshBuilder.CreateSphere("head", { diameter: 0.24, segments: 12 }, scene);
+   342→    head.material = headMat;
+   343→    head.isPickable = false;
+   344→    this.boneMeshes.push({ a: 0, b: 0, mesh: head, rest: 1 });
+   345→    this.ragdollRoot.push(head);
+   346→
+   347→    // --- Marcas de orientacion frente/espalda ---
+   348→    // El cuerpo vive en un plano paralelo a la pared: espalda = -z (hacia la
+   349→    // camara), frente = +z (hacia la pared). La mochila (grande, en -z) es la
+   350→    // referencia de espalda; el visor facial y los discos de rodilla/codo (+z)
+   351→    // marcan el frente. La sincronizacion aplica offZ/offX/offY en el mundo.
+   352→    const torsoLen = dist(1, 4);
+   353→    const bag = MeshBuilder.CreateBox("backpack", { width: 0.26, height: torsoLen * 0.84, depth: 0.105 }, scene);
+   354→    bag.material = bagMat;
+   355→    bag.isPickable = false;
+   356→    bag.rotationQuaternion = Quaternion.Identity();
+   357→    this.boneMeshes.push({ a: 1, b: 4, mesh: bag, rest: torsoLen, offZ: -0.225 });
+   358→    this.ragdollRoot.push(bag);
+   359→    // Banda vertical clara sobre la cara externa de la mochila (refleja el turquesa
+   360→    // de los marcadores frontales: mismo color = lados opuestos del mismo eje).
+   361→    const bagStripe = MeshBuilder.CreateBox("backpackStripe", { width: 0.06, height: torsoLen * 0.78, depth: 0.02 }, scene);
+   362→    bagStripe.material = markMat;
+   363→    bagStripe.isPickable = false;
+   364→    bagStripe.rotationQuaternion = Quaternion.Identity();
+   365→    this.boneMeshes.push({ a: 1, b: 4, mesh: bagStripe, rest: torsoLen, offZ: -0.283 });
+   366→    this.ragdollRoot.push(bagStripe);
+   367→    // Tirantes sobre los hombros: refuerzan la lectura "esto es la espalda" incluso
+   368→    // en silueta (se ven desde detras, a diferencia de las marcas frontales).
+   369→    const strapMat = sharedMaterial("strapMat", "#33281e", scene);
+   370→    for (const [idx, nm] of [[2, "strapL"], [3, "strapR"]] as const) {
+   371→      const strap = MeshBuilder.CreateBox(nm, { width: 0.07, height: 0.13, depth: 0.05 }, scene);
+   372→      strap.material = strapMat;
+   373→      strap.isPickable = false;
+   374→      strap.rotationQuaternion = Quaternion.Identity();
+   375→      this.boneMeshes.push({ a: idx, b: idx, mesh: strap, rest: 1, offZ: -0.1, offY: 0.015 });
+   376→      this.ragdollRoot.push(strap);
+   377→    }
+   378→
+   379→    const eyeMat = sharedMaterial("eyeMat", "#141821", scene);
+   380→    const marker = (name: string, idx: number, offZ: number, d: number, zScale: number, offX = 0, offY = 0, mat: StandardMaterial = markMat): void => {
+   381→      const disc = MeshBuilder.CreateSphere(name, { diameter: d, segments: 8 }, scene);
+   382→      disc.material = mat;
+   383→      disc.scaling.z = zScale;
+   384→      disc.isPickable = false;
+   385→      // Punto anclado (a === b): la sincronizacion solo copia posicion (+offsets).
+   386→      this.boneMeshes.push({ a: idx, b: idx, mesh: disc, rest: 1, offZ, offX, offY });
+   387→      this.ragdollRoot.push(disc);
+   388→    };
+   389→    // Cara: visor amplio + dos ojos oscuros. Al girar la cabeza (ragdoll) el frente
+   390→    // se reconoce al instante; de frente a la pared, la mochila cubre el papel inverso.
+   391→    marker("faceVisor", 0, 0.125, 0.19, 0.32);
+   392→    marker("eyeL", 0, 0.13, 0.05, 0.5, -0.04, 0.025, eyeMat);
+   393→    marker("eyeR", 0, 0.13, 0.05, 0.5, 0.04, 0.025, eyeMat);
+   394→    marker("kneeMarkL", 11, 0.05, 0.09, 0.3);
+   395→    marker("kneeMarkR", 12, 0.05, 0.09, 0.3);
+   396→    marker("elbowMarkL", 7, 0.055, 0.075, 0.35);
+   397→    marker("elbowMarkR", 8, 0.055, 0.075, 0.35);
+   398→
+   399→    const grips: [LimbId, number, string, string][] = [
+   400→      ["hand_l", 9, "handL", HAND_BASE],
+   401→      ["hand_r", 10, "handR", HAND_BASE],
+   402→      ["foot_l", 13, "footL", FOOT_BASE],
+   403→      ["foot_r", 14, "footR", FOOT_BASE]
+   404→    ];
+   405→    for (const [limb, idx, name, color] of grips) {
+   406→      const mesh = MeshBuilder.CreateSphere(name, { diameter: 0.15, segments: 8 }, scene);
+   407→      mesh.material = sharedMaterial(`${name}Mat`, color, scene);
+   408→      mesh.isPickable = true;
+   409→      mesh.metadata = { limbId: limb };
+   410→      mesh.rotationQuaternion = Quaternion.Identity();
+   411→      // Sincronizada con el solver como articulacion de un solo punto (a === b).
+   412→      this.boneMeshes.push({ a: idx, b: idx, mesh, rest: 1 });
+   413→      this.limbVisual[limb] = {
+   414→        hand: mesh,
+   415→        segments: segOfLimb[limb],
+   416→        base: Color3.FromHexString(color),
+   417→        segBase: Color3.FromHexString(SEG_BASE)
+   418→      };
+   419→      this.ragdollRoot.push(mesh);
+   420→    }
+   421→
+   422→    // --- Etiquetas de lado (IZQ/DER) ---
+   423→    // Carteles flotantes SIEMPRE visibles sobre cada mano y bajo cada pie: eliminan
+   424→    // la ambiguedad izquierda/derecha del muneco visto de espaldas. renderingGroupId
+   425→    // 1 = se dibujan sobre el cuerpo (nunca ocultas); billboard = siempre de cara.
+   426→    const LIMB_LABEL_IDX: Record<LimbId, number> = { hand_l: 9, hand_r: 10, foot_l: 13, foot_r: 14 };
+   427→    const LIMB_LABEL_DY: Record<LimbId, number> = { hand_l: 0.185, hand_r: 0.185, foot_l: -0.21, foot_r: -0.21 };
+   428→    for (const limb of LIMB_IDS) {
+   429→      const label = this.makeSideLabel(`limbLabel_${limb}`, LIMB_SIDE_TEXT[limb], LIMB_SIDE_COLOR[limb]);
+   430→      this.boneMeshes.push({ a: LIMB_LABEL_IDX[limb], b: LIMB_LABEL_IDX[limb], mesh: label, rest: 1, offZ: -0.07, offY: LIMB_LABEL_DY[limb] });
+   431→      this.limbLabels.set(limb, label);
+   432→      this.ragdollRoot.push(label);
+   433→    }
+   434→
+   435→    // Esferas de depuracion por particula.
+   436→    this.jointSpheres = [];
+   437→    for (let i = 0; i < P.length; i++) {
+   438→      const s = MeshBuilder.CreateSphere(`joint_${i}`, { diameter: 0.07, segments: 6 }, scene);
+   439→      s.material = emissiveMaterial(`jointMat_${i}`, Color3.FromHexString("#e05252"), scene);
+   440→      s.isPickable = false;
+   441→      s.setEnabled(false);
+   442→      this.jointSpheres.push(s);
+   443→    }
+   444→  }
+   445→
+   446→  /** Cartel de lado (IZQ/DER): plano billboard con texto en DynamicTexture. */
+   447→  private makeSideLabel(name: string, text: string, color: string): Mesh {
+   448→    const tex = new DynamicTexture(`${name}Tex`, { width: 128, height: 64 }, this.scene, false);
+   449→    const ctx = tex.getContext() as CanvasRenderingContext2D;
+   450→    ctx.clearRect(0, 0, 128, 64);
+   451→    ctx.textAlign = "center";
+   452→    ctx.textBaseline = "middle";
+   453→    ctx.font = "bold 46px Arial, sans-serif";
+   454→    // Halo oscuro: legible tanto sobre la pared clara como sobre el colchon oscuro.
+   455→    ctx.fillStyle = "rgba(8,10,14,0.85)";
+   456→    ctx.fillText(text, 66, 37);
+   457→    ctx.fillText(text, 62, 33);
+   458→    ctx.fillStyle = color;
+   459→    ctx.fillText(text, 64, 35);
+   460→    tex.update();
+   461→    tex.hasAlpha = true;
+   462→    const plane = MeshBuilder.CreatePlane(name, { width: 0.24, height: 0.12 }, this.scene);
+   463→    const mat = new StandardMaterial(`${name}Mat`, this.scene);
+   464→    mat.disableLighting = true;
+   465→    mat.emissiveColor = Color3.FromHexString(color);
+   466→    mat.opacityTexture = tex;
+   467→    mat.backFaceCulling = false;
+   468→    plane.material = mat;
+   469→    plane.billboardMode = Mesh.BILLBOARDMODE_ALL;
+   470→    plane.renderingGroupId = 1;
+   471→    plane.isPickable = false;
+   472→    plane.applyFog = false;
+   473→    return plane;
+   474→  }
+   475→
+   476→  /** Enfatiza la etiqueta de la extremidad apuntada/arrastrada (el resto a tamano normal). */
+   477→  setLimbLabelEmphasis(limb: LimbId | null): void {
+   478→    for (const [id, mesh] of this.limbLabels) {
+   479→      if (mesh.isDisposed()) continue;
+   480→      const active = id === limb;
+   481→      mesh.scaling.setAll(active ? 1.5 : 1);
+   482→      (mesh.material as StandardMaterial).alpha = active ? 1 : 0.92;
+   483→    }
+   484→  }
+   485→
+   486→  /** Diagnostico E2E: pantalla (px) de cada etiqueta de lado. */
+   487→  limbLabelDebug(): { limb: LimbId; x: number; y: number }[] {
+   488→    const out: { limb: LimbId; x: number; y: number }[] = [];
+   489→    for (const [limb, mesh] of this.limbLabels) {
+   490→      if (mesh.isDisposed() || !mesh.isEnabled()) continue;
+   491→      const s = this.projectToScreenCss(mesh.position.x, mesh.position.y, mesh.position.z);
+   492→      out.push({ limb, x: s.x, y: s.y });
+   493→    }
+   494→    return out;
+   495→  }
+   496→
+   497→  despawnRagdollVisuals(): void {
+   498→    // Las etiquetas de lado llevan material y textura PROPIOS (DynamicTexture con
+   499→    // el texto): se liberan aqui para no filtrar por cada respawn; el resto de
+   500→    // boneMeshes comparte materiales y se libera solo como malla.
+   501→    const labelSet = new Set(this.limbLabels.values());
+   502→    for (const label of labelSet) {
+   503→      if (!label.isDisposed()) label.dispose(false, true);
+   504→    }
+   505→    this.boneMeshes = this.boneMeshes.filter((b) => !labelSet.has(b.mesh));
+   506→    for (const b of this.boneMeshes) b.mesh.dispose();
+   507→    for (const m of this.jointSpheres) m.dispose();
+   508→    this.boneMeshes = [];
+   509→    this.jointSpheres = [];
+   510→    this.limbLabels.clear();
+   511→    this.ragdollRoot = [];
+   512→    this.currentRig = null;
+   513→  }
+   514→
+   515→  /** Copia posiciones del solver a los meshes con interpolacion entre pasos. */
+   516→  syncRagdoll(solver: PbdSolver, alpha: number): void {
+   517→    void this.currentRig;
+   518→    const tmpA = new Vector3();
+   519→    const tmpB = new Vector3();
+   520→    for (const bone of this.boneMeshes) {
+   521→      const pa = solver.getParticle(bone.a);
+   522→      const pb = solver.getParticle(bone.b);
+   523→      if (!pa || !pb) continue;
+   524→      if (bone.a === bone.b) {
+   525→        tmpA.set(pa.pos.x, pa.pos.y, pa.pos.z);
+   526→        bone.mesh.position.copyFrom(tmpA);
+   527→        // Marcas puntuales (visor, ojos, etiquetas): desplazamiento pared-camara y lateral.
+   528→        if (bone.offZ) bone.mesh.position.z += bone.offZ;
+   529→        if (bone.offX) bone.mesh.position.x += bone.offX;
+   530→        if (bone.offY) bone.mesh.position.y += bone.offY;
+   531→        continue;
+   532→      }
+   533→      const ax = pa.prev.x + (pa.pos.x - pa.prev.x) * alpha;
+   534→      const ay = pa.prev.y + (pa.pos.y - pa.prev.y) * alpha;
+   535→      const az = pa.prev.z + (pa.pos.z - pa.prev.z) * alpha;
+   536→      const bx = pb.prev.x + (pb.pos.x - pb.prev.x) * alpha;
+   537→      const by = pb.prev.y + (pb.pos.y - pb.prev.y) * alpha;
+   538→      const bz = pb.prev.z + (pb.pos.z - pb.prev.z) * alpha;
+   539→      tmpA.set(ax, ay, az);
+   540→      tmpB.set(bx, by, bz);
+   541→      const mesh = bone.mesh;
+   542→      mesh.position.set((ax + bx) / 2 + (bone.offX ?? 0), (ay + by) / 2 + (bone.offY ?? 0), (az + bz) / 2 + (bone.offZ ?? 0));
+   543→      const dir = tmpB.subtract(tmpA);
+   544→      const len = Math.max(dir.length(), 1e-5);
+   545→      const d = dir.scale(1 / len);
+   546→      const ref = Math.abs(d.y) < 0.95 ? new Vector3(0, 1, 0) : new Vector3(1, 0, 0);
+   547→      const xAxis = Vector3.Cross(ref, d).normalize();
+   548→      const zAxis = Vector3.Cross(xAxis, d).normalize();
+   549→      if (!mesh.rotationQuaternion) mesh.rotationQuaternion = Quaternion.Identity();
+   550→      Quaternion.RotationQuaternionFromAxisToRef(xAxis, d, zAxis, mesh.rotationQuaternion);
+   551→      mesh.scaling.y = Math.min(1.35, len / bone.rest);
+   552→    }
+   553→  }
+   554→
+   555→  syncJointDebug(solver: PbdSolver): void {
+   556→    for (let i = 0; i < this.jointSpheres.length; i++) {
+   557→      const p = solver.getParticle(i);
+   558→      if (!p) continue;
+   559→      this.jointSpheres[i].position.set(p.pos.x, p.pos.y, p.pos.z);
+   560→    }
+   561→  }
+   562→
+   563→  // --- Estados visuales de presas ---
+   564→
+   565→  setHoldCompatible(holdId: string, on: boolean): void {
+   566→    if (on) this.highlightedCompatible.add(holdId);
+   567→    else this.highlightedCompatible.delete(holdId);
+   568→    this.refreshHoldHighlight(holdId);
+   569→  }
+   570→
+   571→  setHoldInvalid(holdId: string, on: boolean): void {
+   572→    if (on) this.highlightedInvalid.add(holdId);
+   573→    else this.highlightedInvalid.delete(holdId);
+   574→    this.refreshHoldHighlight(holdId);
+   575→  }
+   576→
+   577→  clearHoldHighlights(): void {
+   578→    for (const id of [...this.highlightedCompatible]) this.setHoldCompatible(id, false);
+   579→    for (const id of [...this.highlightedInvalid]) this.setHoldInvalid(id, false);
+   580→  }
+   581→
+   582→  setHoldOccupied(holdId: string, occupied: boolean): void {
+   583→    if (occupied) this.occupiedHolds.add(holdId);
+   584→    else this.occupiedHolds.delete(holdId);
+   585→    const mesh = this.holdMeshes.get(holdId);
+   586→    const mat = mesh?.material as StandardMaterial | undefined;
+   587→    const base = this.holdBaseColor.get(holdId);
+   588→    if (mat && base) {
+   589→      mat.diffuseColor = occupied ? base.scale(0.45) : base;
+   590→    }
+   591→  }
+   592→
+   593→  private refreshHoldHighlight(holdId: string): void {
+   594→    const mesh = this.holdMeshes.get(holdId);
+   595→    if (!mesh) return;
+   596→    this.highlight.removeMesh(mesh);
+   597→    if (this.highlightedInvalid.has(holdId)) {
+   598→      this.highlight.addMesh(mesh, ACCENT_INVALID);
+   599→    } else if (this.tutorialHighlightedHolds.has(holdId)) {
+   600→      this.highlight.addMesh(mesh, ACCENT_SELECT);
+   601→    } else if (this.highlightedCompatible.has(holdId)) {
+   602→      this.highlight.addMesh(mesh, ACCENT_VALID);
+   603→    }
+   604→  }
+   605→
+   606→  // --- Resaltados del tutorial (prioridad media, gestionados cada frame) ---
+   607→
+   608→  setTutorialHoldHighlight(holdId: string | null): void {
+   609→    const next = new Set(holdId ? [holdId] : []);
+   610→    for (const id of this.tutorialHighlightedHolds) {
+   611→      if (!next.has(id)) {
+   612→        this.tutorialHighlightedHolds.delete(id);
+   613→        this.refreshHoldHighlight(id);
+   614→      }
+   615→    }
+   616→    for (const id of next) {
+   617→      if (!this.tutorialHighlightedHolds.has(id)) {
+   618→        this.tutorialHighlightedHolds.add(id);
+   619→        this.refreshHoldHighlight(id);
+   620→      }
+   621→    }
+   622→  }
+   623→
+   624→  setTutorialLimbHighlight(limb: LimbId | null): void {
+   625→    // La malla se recrea en cada reset: seguimos la IDENTIDAD de la malla, no el id.
+   626→    const raw = limb ? this.limbVisual[limb]?.hand ?? null : null;
+   627→    const want = raw && !raw.isDisposed() ? raw : null;
+   628→    if (want === this.tutorialLimbMesh && limb === this.tutorialLimbId) return;
+   629→    if (this.tutorialLimbMesh) {
+   630→      this.highlight.removeMesh(this.tutorialLimbMesh);
+   631→      this.tutorialLimbMesh = null;
+   632→    }
+   633→    this.tutorialLimbId = limb;
+   634→    if (want) {
+   635→      this.highlight.addMesh(want, ACCENT_SELECT);
+   636→      this.tutorialLimbMesh = want;
+   637→    }
+   638→  }
+   639→
+   640→  // --- Indicadores de extremidades ---
+   641→
+   642→  /** Anillo de extremidad: "grab" (arrastre activo) o "hover" (iman sutil del cursor). */
+   643→  setSelectionRing(limb: LimbId | null, solver: PbdSolver, mode: "grab" | "hover" = "grab"): void {
+   644→    if (!limb) {
+   645→      this.selectionRing.setEnabled(false);
+   646→      return;
+   647→    }
+   648→    const pp = this.limbPickPos(limb, solver);
+   649→    const mat = this.selectionRing.material as StandardMaterial;
+   650→    if (mode === "hover") {
+   651→      this.selectionRing.scaling.setAll(0.86);
+   652→      mat.alpha = 0.5;
+   653→    } else {
+   654→      this.selectionRing.scaling.setAll(1);
+   655→      mat.alpha = 1;
+   656→    }
+   657→    this.selectionRing.setEnabled(true);
+   658→    this.selectionRing.position.set(pp.x, pp.y, pp.z - 0.06);
+   659→  }
+   660→
+   661→  /** Tinte de zona por extremidad (9.5 + retroalimentacion del HUD): la
+   662→   * extremidad fijada se tine con la paleta del panel lateral (verde normal,
+   663→   * ambar tension, rojo sobrecarga con pulso); libre, color base neutro.
+   664→   * Aplica al agarre (mano/pie) y a los dos segmentos de su cadena.
+   665→   * urgency (0..1): presion de fallo del temporizador de sobrecarga — acelera
+   666→   * el parpadeo y sube el brillo a medida que el agarre se acerca a ceder. */
+   667→  updateLimbTint(limb: LimbId, anchored: boolean, zone: LoadZone, urgency = 0): void {
+   668→    const visual = this.limbVisual[limb];
+   669→    if (!visual?.hand || visual.hand.isDisposed()) return;
+   670→    const zoneColor = ZONE_COLORS[zone] ?? ZONE_COLORS.NORMAL;
+   671→    const overloading = zone === "OVERLOADED" || zone === "ERROR_GUARD";
+   672→    const u = overloading ? Math.min(1, Math.max(0, urgency)) : 0;
+   673→    const period = 700 - 380 * u;
+   674→    const wave = 0.5 + 0.5 * Math.sin((Date.now() % period) / period * Math.PI * 2);
+   675→    const glow = anchored ? (overloading ? 0.2 + 0.4 * wave + 0.3 * u : 0.18) : 0;
+   676→    const tint = anchored ? Color3.Lerp(visual.base, zoneColor, 0.8) : visual.base;
+   677→    const segTint = anchored ? Color3.Lerp(visual.segBase, zoneColor, 0.62) : visual.segBase;
+   678→    const handMat = visual.hand.material as StandardMaterial;
+   679→    handMat.diffuseColor = tint;
+   680→    handMat.emissiveColor = zoneColor.scale(glow);
+   681→    for (const segMesh of visual.segments) {
+   682→      if (segMesh.isDisposed()) continue;
+   683→      const m = segMesh.material as StandardMaterial;
+   684→      m.diffuseColor = segTint;
+   685→      m.emissiveColor = zoneColor.scale(glow * 0.6);
+   686→    }
+   687→  }
+   688→
+   689→  /** Anillo sobre la presa anclada de una extremidad: hereda su zona de carga
+   690→   * (verde/ambar/rojo) con pulso en sobrecarga, para saber que apoyo esta
+   691→   * comprometido sin mirar el panel lateral. La urgencia (0..1) acelera el
+   692→   * pulso y lo agranda: la presa "late" mas fuerte cuanto antes cedera. */
+   693→  setAnchorRing(limb: LimbId, holdId: string | null, zone: LoadZone, urgency = 0): void {
+   694→    const ring = this.anchorRings.get(limb);
+   695→    if (!ring) return;
+   696→    const holdMesh = holdId ? this.holdMeshes.get(holdId) : undefined;
+   697→    if (!holdId || !holdMesh) {
+   698→      ring.setEnabled(false);
+   699→      return;
+   700→    }
+   701→    const r = this.holdRadius.get(holdId) ?? 0.14;
+   702→    const overloading = zone === "OVERLOADED" || zone === "ERROR_GUARD";
+   703→    const u = overloading ? Math.min(1, Math.max(0, urgency)) : 0;
+   704→    const period = 700 - 380 * u;
+   705→    const wave = 0.5 + 0.5 * Math.sin((Date.now() % period) / period * Math.PI * 2);
+   706→    const zoneColor = ZONE_COLORS[zone] ?? ZONE_COLORS.NORMAL;
+   707→    const mat = ring.material as StandardMaterial;
+   708→    if (overloading) {
+   709→      mat.emissiveColor = Color3.Lerp(zoneColor, Color3.FromHexString("#ffffff"), 0.4 * wave + 0.3 * u);
+   710→    } else {
+   711→      mat.emissiveColor = zoneColor;
+   712→    }
+   713→    ring.scaling.setAll(((r + 0.05) / 0.18) * (overloading ? 1 + (0.1 + 0.2 * u) * wave : 1));
+   714→    // La presa es una esfera aplanada en z (0.62): el anillo flota justo delante
+   715→    // de su cara frontal; mano y pie apilados en la misma presa van a cotas distintas.
+   716→    const zOff = r * 0.62 + 0.03 + (limb.startsWith("foot") ? 0.035 : 0);
+   717→    ring.setEnabled(true);
+   718→    ring.position.set(holdMesh.position.x, holdMesh.position.y, holdMesh.position.z - zOff);
+   719→  }
+   720→
+   721→  // --- Preview de arrastre ---
+   722→
+   723→  showDragPreview(preview: DragPreview | null, solver: PbdSolver): void {
+   724→    if (!preview) {
+   725→      this.ghostRing.setEnabled(false);
+   726→      this.ghostLine.setEnabled(false);
+   727→      return;
+   728→    }
+   729→    const limbIdx = solver.particleOfLimb(preview.limb);
+   730→    const from = solver.getParticle(limbIdx);
+   731→    const color = preview.validity === "valid" ? ACCENT_VALID : preview.validity === "invalid" ? ACCENT_INVALID : Color3.FromHexString("#9aa3af");
+   732→    const ghostMat = this.ghostRing.material as StandardMaterial;
+   733→    ghostMat.emissiveColor = color;
+   734→    this.ghostLine.color = color;
+   735→    this.ghostRing.setEnabled(true);
+   736→    this.ghostRing.position.set(preview.target.x, preview.target.y, preview.target.z - 0.02);
+   737→    this.ghostLine.setEnabled(true);
+   738→    MeshBuilder.CreateLines("ghostLine", {
+   739→      instance: this.ghostLine,
+   740→      points: [
+   741→        new Vector3(from.pos.x, from.pos.y, from.pos.z),
+   742→        new Vector3(preview.target.x, preview.target.y, preview.target.z)
+   743→      ]
+   744→    });
+   745→  }
+   746→
+   747→  showReachPreview(limb: LimbId | null, solver: PbdSolver, valid: boolean): void {
+   748→    if (!limb) {
+   749→      this.reachCircle.setEnabled(false);
+   750→      return;
+   751→    }
+   752→    const chainRoot = this.chainRootPosition(limb, solver);
+   753→    const radius = this.lastReachRadius;
+   754→    this.reachCircle.setEnabled(true);
+   755→    MeshBuilder.CreateLines("reachCircle", { instance: this.reachCircle, points: GameScene.circlePoints(radius, 64, chainRoot) });
+   756→    this.reachCircle.color = valid ? ACCENT_VALID : ACCENT_INVALID;
+   757→  }
+   758→
+   759→  private chainRootPosition(limb: LimbId, solver: PbdSolver): Vector3 {
+   760→    // Hombro/cadera aproximados por particulas fijas del rig.
+   761→    const idx = limb.startsWith("hand") ? (limb === "hand_l" ? 2 : 3) : limb === "foot_l" ? 5 : 6;
+   762→    const p = solver.getParticle(idx);
+   763→    return new Vector3(p.pos.x, p.pos.y, p.pos.z);
+   764→  }
+   765→
+   766→  setReachRadius(radius: number): void {
+   767→    this.lastReachRadius = radius;
+   768→  }
+   769→
+   770→  // --- Particulas de juice (tiza, polvo, confeti) ---
+   771→
+   772→  /** Sistema one-shot: emite N particulas y se destruye solo. */
+   773→  private burst(
+   774→    name: string,
+   775→    emitter: Vector3,
+   776→    count: number,
+   777→    c1: Color4,
+   778→    c2: Color4,
+   779→    dir1: Vector3,
+   780→    dir2: Vector3,
+   781→    opts: { sizeMin: number; sizeMax: number; lifeMin: number; lifeMax: number; gravity?: Vector3; emitTime?: number; scaleGravity?: number }
+   782→  ): void {
+   783→    const ps = new ParticleSystem(name, Math.max(32, count + 16), this.scene);
+   784→    ps.particleTexture = this.spriteTex;
+   785→    ps.emitter = emitter.clone();
+   786→    ps.minEmitBox = new Vector3(-0.03, -0.03, -0.03);
+   787→    ps.maxEmitBox = new Vector3(0.03, 0.03, 0.03);
+   788→    ps.color1 = c1;
+   789→    ps.color2 = c2;
+   790→    ps.colorDead = new Color4(c1.r, c1.g, c1.b, 0);
+   791→    ps.minSize = opts.sizeMin;
+   792→    ps.maxSize = opts.sizeMax;
+   793→    ps.minLifeTime = opts.lifeMin;
+   794→    ps.maxLifeTime = opts.lifeMax;
+   795→    ps.emitRate = count / Math.max(0.04, opts.emitTime ?? 0.1);
+   796→    ps.direction1 = dir1;
+   797→    ps.direction2 = dir2;
+   798→    if (opts.gravity) ps.gravity = opts.gravity;
+   799→    ps.blendMode = ParticleSystem.BLENDMODE_STANDARD;
+   800→    ps.minAngularSpeed = -Math.PI;
+   801→    ps.maxAngularSpeed = Math.PI;
+   802→    ps.updateSpeed = 0.012;
+   803→    ps.targetStopDuration = opts.emitTime ?? 0.1;
+   804→    ps.disposeOnStop = true;
+   805→    ps.start();
+   806→  }
+   807→
+   808→  /** Tiza: bocada blanca al fijar una mano (la firma visual del escalador). */
+   809→  burstChalk(pos: Vector3, count = 26): void {
+   810→    this.burst(
+   811→      "chalkBurst",
+   812→      pos,
+   813→      count,
+   814→      new Color4(1, 1, 1, 0.85),
+   815→      new Color4(0.82, 0.85, 0.9, 0.6),
+   816→      new Vector3(-0.55, 0.35, -1.1),
+   817→      new Vector3(0.55, 1.15, -0.15),
+   818→      { sizeMin: 0.035, sizeMax: 0.1, lifeMin: 0.25, lifeMax: 0.6, gravity: new Vector3(0, -2.4, 0), emitTime: 0.08 }
+   819→    );
+   820→  }
+   821→
+   822→  /** Polvo del colchon al impactar el cuerpo. */
+   823→  burstDust(pos: Vector3, count = 40): void {
+   824→    this.burst(
+   825→      "dustBurst",
+   826→      pos,
+   827→      count,
+   828→      new Color4(0.55, 0.5, 0.42, 0.7),
+   829→      new Color4(0.4, 0.38, 0.34, 0.45),
+   830→      new Vector3(-0.9, 0.4, -0.5),
+   831→      new Vector3(0.9, 1.4, 0.1),
+   832→      { sizeMin: 0.08, sizeMax: 0.22, lifeMin: 0.4, lifeMax: 0.9, gravity: new Vector3(0, -1.1, 0), emitTime: 0.12 }
+   833→    );
+   834→  }
+   835→
+   836→  /** Confeti de celebracion: tres tandas de colores desde la presa cima. */
+   837→  burstConfetti(pos: Vector3): void {
+   838→    const colors: [Color4, Color4][] = [
+   839→      [new Color4(1, 0.72, 0.2, 1), new Color4(1, 0.55, 0.15, 0.9)],
+   840→      [new Color4(0.2, 0.8, 0.75, 1), new Color4(0.15, 0.65, 0.85, 0.9)],
+   841→      [new Color4(0.95, 0.35, 0.35, 1), new Color4(0.9, 0.45, 0.55, 0.9)]
+   842→    ];
+   843→    for (let k = 0; k < colors.length; k++) {
+   844→      const p = pos.add(new Vector3((k - 1) * 0.18, 0.05 + k * 0.04, -0.02));
+   845→      this.burst(
+   846→        `confetti${k}`,
+   847→        p,
+   848→        46,
+   849→        colors[k][0],
+   850→        colors[k][1],
+   851→        new Vector3(-1.4, 1.2, -0.7),
+   852→        new Vector3(1.4, 2.6, 0.3),
+   853→        { sizeMin: 0.05, sizeMax: 0.13, lifeMin: 0.9, lifeMax: 1.9, gravity: new Vector3(0, -3.2, 0), emitTime: 0.22 }
+   854→      );
+   855→    }
+   856→  }
+   857→
+   858→  /** Sacudida de camara (se acumula la maxima y decae sola en updateCamera). */
+   859→  shake(amp: number): void {
+   860→    this.shakeAmp = Math.min(0.09, Math.max(this.shakeAmp, amp));
+   861→  }
+   862→
+   863→  // --- Camara ---
+   864→
+   865→  updateCamera(dt: number, pelvis: { x: number; y: number; z: number }, recenter: boolean): void {
+   866→    const deadzoneHalf = 0.55;
+   867→    const target = this.camera.target;
+   868→    if (recenter) {
+   869→      target.copyFrom(this.camTargetBase);
+   870→    } else if (pelvis) {
+   871→      const desiredY = Math.min(4.2, Math.max(1.0, pelvis.y));
+   872→      const dy = desiredY - target.y;
+   873→      if (Math.abs(dy) > deadzoneHalf) {
+   874→        target.y += (dy - Math.sign(dy) * deadzoneHalf) * Math.min(1, dt * 3);
+   875→      }
+   876→      const desiredX = Math.min(1.6, Math.max(-1.6, pelvis.x));
+   877→      const dx = desiredX - target.x;
+   878→      if (Math.abs(dx) > deadzoneHalf) {
+   879→        target.x += (dx - Math.sign(dx) * deadzoneHalf) * Math.min(1, dt * 3);
+   880→      }
+   881→    }
+   882→    target.z = this.camTargetBase.z;
+   883→
+   884→    // La mutacion de camera.target no reorienta a una FreeCamera: hay que llamar
+   885→    // a setTarget. Ademas aplicamos la sacudida sobre el punto de mira.
+   886→    if (this.shakeAmp > 0.0006) {
+   887→      const t = performance.now() / 1000;
+   888→      const look = new Vector3(
+   889→        target.x + Math.sin(t * 47) * this.shakeAmp,
+   890→        target.y + Math.cos(t * 39) * this.shakeAmp * 0.7,
+   891→        target.z
+   892→      );
+   893→      this.camera.setTarget(look);
+   894→      this.shakeAmp *= Math.exp(-dt * 5.2);
+   895→    } else {
+   896→      this.shakeAmp = 0;
+   897→      this.camera.setTarget(new Vector3(target.x, target.y, target.z));
+   898→    }
+   899→
+   900→    if (this.ortho) {
+   901→      const aspect = this.engine.getRenderWidth() / Math.max(1, this.engine.getRenderHeight());
+   902→      const halfH = 3.1;
+   903→      this.camera.orthoLeft = -halfH * aspect;
+   904→      this.camera.orthoRight = halfH * aspect;
+   905→      this.camera.orthoBottom = -halfH;
+   906→      this.camera.orthoTop = halfH;
+   907→    }
+   908→  }
+   909→
+   910→  toggleOrtho(): boolean {
+   911→    this.ortho = !this.ortho;
+   912→    this.camera.mode = this.ortho ? Camera.ORTHOGRAPHIC_CAMERA : Camera.PERSPECTIVE_CAMERA;
+   913→    return this.ortho;
+   914→  }
+   915→
+   916→  // --- Debug ---
+   917→
+   918→  setDebugFlags(flags: Partial<DebugFlags>): void {
+   919→    this.debugFlags = { ...this.debugFlags, ...flags };
+   920→    this.axesViewer?.dispose();
+   921→    if (this.debugFlags.axes) {
+   922→      this.axesViewer = new AxesViewer(this.scene, 1.2);
+   923→      this.axesViewer.xAxis.position.set(0, 0.02, -0.5);
+   924→    }
+   925→    for (const s of this.jointSpheres) s.setEnabled(this.debugFlags.joints);
+   926→    this.rayLine.setEnabled(this.debugFlags.raycast);
+   927→    if (!this.debugFlags.reach) this.reachCircle.setEnabled(false);
+   928→  }
+   929→
+   930→  getDebugFlags(): DebugFlags {
+   931→    return { ...this.debugFlags };
+   932→  }
+   933→
+   934→  showRay(origin: Vector3, end: Vector3): void {
+   935→    if (!this.debugFlags.raycast) return;
+   936→    MeshBuilder.CreateLines("rayLine", { instance: this.rayLine, points: [origin, end] });
+   937→  }
+   938→
+   939→  /** Diagnostico: mesh mas cercano sin predicado. */
+   940→  pickNearestDebug(x: number, y: number): { name: string; dist: number } | null {
+   941→    const pick = this.scene.pick(x, y, (m) => m.isPickable, false, this.camera);
+   942→    if (!pick.hit || !pick.pickedMesh) return null;
+   943→    return { name: pick.pickedMesh.name, dist: Math.round(pick.distance * 1000) / 1000 };
+   944→  }
+   945→
+   946→  /** Diagnostico: estado de los meshes de extremidades. */
+   947→  handMeshDebug(): { name: string; pickable: boolean; enabled: boolean; pos: { x: number; y: number; z: number } }[] {
+   948→    return ("handL,handR,footL,footR")
+   949→      .split(",")
+   950→      .map((n) => {
+   951→        const m = this.scene.getMeshByName(n);
+   952→        if (!m) return { name: n, pickable: false, enabled: false, pos: { x: 0, y: 0, z: 0 } };
+   953→        return {
+   954→          name: n,
+   955→          pickable: m.isPickable,
+   956→          enabled: m.isEnabled(),
+   957→          pos: { x: Math.round(m.position.x * 100) / 100, y: Math.round(m.position.y * 100) / 100, z: Math.round(m.position.z * 100) / 100 }
+   958→        };
+   959→      });
+   960→  }
+   961→
+   962→  /** Diagnostico: tamano de render vs CSS. */
+   963→  renderSizeDebug(): { w: number; h: number; cssW: number; cssH: number } {
+   964→    const c = this.engine.getRenderingCanvas();
+   965→    return {
+   966→      w: this.engine.getRenderWidth(),
+   967→      h: this.engine.getRenderHeight(),
+   968→      cssW: c?.clientWidth ?? 0,
+   969→      cssH: c?.clientHeight ?? 0
+   970→    };
+   971→  }
+   972→
+   973→  /** Proyeccion de un punto del mundo a coordenadas de pantalla (diagnostico). */
+   974→  projectToScreen(x: number, y: number, z: number): { x: number; y: number } {
+   975→    const engine = this.scene.getEngine();
+   976→    const p = Vector3.Project(
+   977→      new Vector3(x, y, z),
+   978→      Matrix.Identity(),
+   979→      this.scene.getTransformMatrix(),
+   980→      this.scene.activeCamera!.viewport.toGlobal(engine.getRenderWidth(), engine.getRenderHeight())
+   981→    );
+   982→    return { x: Math.round(p.x), y: Math.round(p.y) };
+   983→  }
+   984→
+   985→  /**
+   986→   * Proyeccion a pixeles CSS relativos al canvas, lista para overlays DOM/SVG
+   987→   * (el motor renderiza a devicePixelRatio con adaptToDeviceRatio=true).
+   988→   */
+   989→  projectToScreenCss(x: number, y: number, z: number): { x: number; y: number } {
+   990→    const p = this.projectToScreen(x, y, z);
+   991→    const canvas = this.engine.getRenderingCanvas();
+   992→    const renderW = this.engine.getRenderWidth();
+   993→    const scale = canvas && renderW > 0 ? canvas.clientWidth / renderW : 1;
+   994→    return { x: p.x * scale, y: p.y * scale };
+   995→  }
+   996→
+   997→  // --- Picking ---
+   998→
+   999→  /** Radio de iman en pixeles CSS por tipo de extremidad: los pies, mas grandes
+  1000→   * (son los mas dificiles de clicar: queja del usuario de agilidad). */
+  1001→  private static readonly PICK_MAGNET_PX: Record<string, number> = { hand: 46, foot: 60 };
+  1002→
+  1003→  /** Posicion de picking/visual de una extremidad: cuando mano y pie comparten presa
+  1004→   * (maxOccupants 2) coinciden en el mundo y seria imposible elegir; el pie se marca
+  1005→   * 7 cm por debajo y la mano 3 cm por encima (apilado legible y seleccionable). */
+  1006→  limbPickPos(limb: LimbId, solver: PbdSolver): { x: number; y: number; z: number } {
+  1007→    const p = solver.positionOfLimb(limb);
+  1008→    const holdId = solver.getAnchor(limb)?.holdId;
+  1009→    if (!holdId) return { x: p.x, y: p.y, z: p.z };
+  1010→    const shared = LIMB_IDS.some((other) => other !== limb && solver.getAnchor(other)?.holdId === holdId);
+  1011→    if (!shared) return { x: p.x, y: p.y, z: p.z };
+  1012→    const dy = limb.startsWith("foot") ? -0.07 : 0.03;
+  1013→    return { x: p.x, y: p.y + dy, z: p.z };
+  1014→  }
+  1015→
+  1016→  /** Seleccion de extremidad (7): 1) raycast exacto contra el mesh; 2) iman en espacio
+  1017→   * de pantalla: la extremidad proyectada mas cercana al cursor dentro de su radio.
+  1018→   * La pared bloquea el raycast directo (AT-03); el iman solo alcanza extremidades
+  1019→   * visibles delante del plano frontal. */
+  1020→  pickLimb(x: number, y: number, solver?: PbdSolver): LimbId | null {
+  1021→    const pick = this.scene.pick(
+  1022→      x,
+  1023→      y,
+  1024→      (m) => !!(m.metadata as { limbId?: LimbId } | undefined)?.limbId,
+  1025→      false,
+  1026→      this.camera
+  1027→    );
+  1028→    if (pick.hit && pick.pickedMesh) {
+  1029→      const wallPick = this.scene.pick(x, y, (m) => m.name === "wall", false, this.camera);
+  1030→      if (!(wallPick.hit && wallPick.distance < pick.distance - 0.15)) {
+  1031→        const meta = pick.pickedMesh.metadata as { limbId?: LimbId };
+  1032→        if (meta.limbId) return meta.limbId;
+  1033→      }
+  1034→    }
+  1035→    if (!solver) return null;
+  1036→    // Iman: proyecta las 4 extremidades y elige la mas cercana al cursor (px CSS).
+  1037→    let best: LimbId | null = null;
+  1038→    let bestDist = Infinity;
+  1039→    for (const limb of LIMB_IDS) {
+  1040→      const pp = this.limbPickPos(limb, solver);
+  1041→      const s = this.projectToScreenCss(pp.x, pp.y, pp.z);
+  1042→      const kind = limb.startsWith("hand") ? "hand" : "foot";
+  1043→      const radius = GameScene.PICK_MAGNET_PX[kind];
+  1044→      const d = Math.hypot(s.x - x, s.y - y);
+  1045→      if (d <= radius && d < bestDist) {
+  1046→        bestDist = d;
+  1047→        best = limb;
+  1048→      }
+  1049→    }
+  1050→    return best;
+  1051→  }
+  1052→
+  1053→  /** Proyeccion del cursor sobre el plano paralelo a la pared a la profundidad de agarre (7.1). */
+  1054→  wallPlanePoint(x: number, y: number, zPlane: number): Vector3 | null {
+  1055→    const ray = this.scene.createPickingRay(x, y, Matrix.Identity(), this.camera);
+  1056→    if (Math.abs(ray.direction.z) < 1e-6) return null;
+  1057→    const t = (zPlane - ray.origin.z) / ray.direction.z;
+  1058→    if (t <= 0) return null;
+  1059→    return ray.origin.add(ray.direction.scale(t));
+  1060→  }
+  1061→
+  1062→  /** Distancia de la pared a lo largo del rayo, para depuracion de raycast. */
+  1063→  wallDistance(x: number, y: number): number {
+  1064→    const pick = this.scene.pick(x, y, (m) => m.name === "wall", false, this.camera);
+  1065→    return pick.hit ? pick.distance : Infinity;
+  1066→  }
+  1067→
+  1068→  // --- Ciclo ---
+  1069→
+  1070→  render(): void {
+  1071→    this.scene.render();
+  1072→  }
+  1073→
+  1074→  resize(): void {
+  1075→    this.engine.resize();
+  1076→  }
+  1077→
+  1078→  dispose(): void {
+  1079→    this.axesViewer?.dispose();
+  1080→    this.engine.dispose();
+  1081→  }
+  1082→
+  1083→  private static circlePoints(radius: number, segments: number, center?: Vector3): Vector3[] {
+  1084→    const pts: Vector3[] = [];
+  1085→    const c = center ?? Vector3.Zero();
+  1086→    for (let i = 0; i <= segments; i++) {
+  1087→      const a = (i / segments) * Math.PI * 2;
+  1088→      pts.push(new Vector3(c.x + Math.cos(a) * radius, c.y + Math.sin(a) * radius, c.z));
+  1089→    }
+  1090→    return pts;
+  1091→  }
+  1092→}
+  1093→
+  1094→function wallMaterial(scene: Scene): StandardMaterial {
+  1095→  const mat = new StandardMaterial("wallMat", scene);
+  1096→  const tex = new DynamicTexture("wallTex", { width: 512, height: 512 }, scene, false);
+  1097→  const ctx = tex.getContext() as CanvasRenderingContext2D;
+  1098→  ctx.fillStyle = "#5d646e";
+  1099→  ctx.fillRect(0, 0, 512, 512);
+  1100→  ctx.strokeStyle = "rgba(30,34,40,0.35)";
+  1101→  ctx.lineWidth = 2;
+  1102→  for (let i = 0; i <= 8; i++) {
+  1103→    const p = (i / 8) * 512;
+  1104→    ctx.beginPath();
+  1105→    ctx.moveTo(p, 0);
+  1106→    ctx.lineTo(p, 512);
+  1107→    ctx.stroke();
+  1108→    ctx.beginPath();
+  1109→    ctx.moveTo(0, p);
+  1110→    ctx.lineTo(512, p);
+  1111→    ctx.stroke();
+  1112→  }
+  1113→  ctx.fillStyle = "rgba(255,255,255,0.05)";
+  1114→  for (let i = 0; i < 900; i++) {
+  1115→    ctx.fillRect(Math.random() * 512, Math.random() * 512, 2, 2);
+  1116→  }
+  1117→  tex.update();
+  1118→  mat.diffuseTexture = tex;
+  1119→  mat.specularColor = new Color3(0.06, 0.06, 0.06);
+  1120→  return mat;
+  1121→}
+  1122→
+  1123→function sharedMaterial(name: string, hex: string, scene: Scene): StandardMaterial {
+  1124→  const existing = scene.getMaterialByName(name) as StandardMaterial | null;
+  1125→  if (existing) return existing;
+  1126→  const mat = new StandardMaterial(name, scene);
+  1127→  mat.diffuseColor = Color3.FromHexString(hex);
+  1128→  mat.specularColor = new Color3(0.12, 0.12, 0.12);
+  1129→  return mat;
+  1130→}
+  1131→
+  1132→function emissiveMaterial(name: string, color: Color3, scene: Scene): StandardMaterial {
+  1133→  const mat = new StandardMaterial(name, scene);
+  1134→  mat.emissiveColor = color;
+  1135→  mat.diffuseColor = Color3.Black();
+  1136→  mat.specularColor = Color3.Black();
+  1137→  mat.disableLighting = true;
+  1138→  return mat;
+  1139→}
+  1140→
+  1141→

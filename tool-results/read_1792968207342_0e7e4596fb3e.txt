@@ -1,0 +1,702 @@
+     1→     1→/**
+     2→     2→ * Orquestador del bucle de juego (secciones 2, 10, 13): paso fijo de fisica a 60 Hz con
+     3→     3→ * acumulador y render independiente (30-144 FPS), pipeline por tick, maquina de estados,
+     4→     4→ * reset idempotente y entrada de raton/teclado.
+     5→     5→ */
+     6→     6→import {
+     7→     7→  BodyProfileDefinition,
+     8→     8→  ChallengeDefinition,
+     9→     9→  ChallengeType,
+    10→    10→  CharacterDefinition,
+    11→    11→  GameEvent,
+    12→    12→  GameState,
+    13→    13→  LimbId,
+    14→    14→  LoadZone,
+    15→    15→  WallDefinition
+    16→    16→} from "../types";
+    17→    17→import { LIMB_IDS } from "../types";
+    18→    18→import { ContentRepository, browserJsonLoader, type ContentBundle } from "../content/repository";
+    19→    19→import { EventBus } from "../gameplay/events";
+    20→    20→import { GameStateMachine } from "../gameplay/state-machine";
+    21→    21→import { InteractionController, postureRulesForTone, type InteractionWorld, type PostureRules } from "../gameplay/interaction";
+    22→    22→import { BiomechanicsSystem, computeStability } from "../domain/biomechanics";
+    23→    23→import { ChallengeEvaluator } from "../domain/challenge";
+    24→    24→import { PbdSolver } from "../physics/pbd/solver";
+    25→    25→import type { BalanceTuning } from "../physics/pbd/solver";
+    26→    26→import { P, spawnRagdoll, type RagdollRig } from "../physics/pbd/ragdoll";
+    27→    27→import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+    28→    28→import { GameScene } from "../render/scene";
+    29→    29→import { Hud } from "../ui/hud";
+    30→    30→import type { ChallengeOption } from "../ui/hud";
+    31→    31→import { DebugOverlay, type DebugData } from "../ui/debug";
+    32→    32→import { AudioBus } from "../ui/audio";
+    33→    33→import type { BalancePresetName } from "../ui/hud";
+    34→    34→import { computeScore, isBetter, BestRecord } from "../gameplay/score";
+    35→    35→import { TutorialOverlay, type TutorialSpotlight, type TutorialGesture } from "../ui/tutorial";
+    36→    36→import { TutorialEngine, buildTutorialSteps, type TutorialCtx, type TutorialStepDef } from "../gameplay/tutorial";
+    37→    37→import {
+    38→    38→  CHAMPIONSHIP_STAGES,
+    39→    39→  STAGE_BY_CHALLENGE,
+    40→    40→  stageOf,
+    41→    41→  isStageUnlocked,
+    42→    42→  currentStageIndex,
+    43→    43→  totalStars,
+    44→    44→  maxStars,
+    45→    45→  isChampion,
+    46→    46→  nextStageId
+    47→    47→} from "../domain/championship";
+    48→    48→import { v3, lerp } from "../physics/pbd/math";
+    49→    49→
+    50→    50→const CHALLENGE_LABELS: Record<ChallengeType, string> = {
+    51→    51→  reach_top: "ALCANZAR",
+    52→    52→  stabilize: "ESTABILIZAR",
+    53→    53→  recover: "RECUPERAR"
+    54→    54→};
+    55→    55→
+    56→    56→const CHALLENGE_DESCRIPTIONS: Record<ChallengeType, string> = {
+    57→    57→  reach_top: "Pared vertical con ruta de presas: lleva ambas manos a la presa final y mantén la postura.",
+    58→    58→  stabilize: "Empiezas colgando: restablece una postura estable y sostenla sobre el umbral.",
+    59→    59→  recover: "Postura desequilibrada pero recuperable: recupera apoyos y estabilidad antes del timeout."
+    60→    60→};
+    61→    61→
+    62→    62→/** Overrides por ID de desafio (variantes con etiqueta propia, p.ej. VELOCIDAD). */
+    63→    63→const TRAINING_META: Record<string, { label: string; description: string }> = {
+    64→    64→  challenge_speed_run: {
+    65→    65→    label: "VELOCIDAD",
+    66→    66→    description: "Contrarreloj: la misma cima, 60 segundos. Encadena el flujo y no caigas."
+    67→    67→  }
+    68→    68→};
+    69→    69→
+    70→    70→/** Etiquetas de las 5 etapas del campeonato, derivadas del modulo puro. */
+    71→    71→const CHAMPIONSHIP_META: Record<string, { label: string; description: string }> = Object.fromEntries(
+    72→    72→  CHAMPIONSHIP_STAGES.map((s) => [
+    73→    73→    s.challengeId,
+    74→    74→    { label: `ETAPA ${s.index} · ${s.name}`, description: s.blurb }
+    75→    75→  ])
+    76→    76→);
+    77→    77→
+    78→    78→const CHALLENGE_META: Record<string, { label: string; description: string }> = {
+    79→    79→  ...CHAMPIONSHIP_META,
+    80→    80→  ...TRAINING_META
+    81→    81→};
+    82→    82→
+    83→    83→/** Etiquetas compactas del selector lateral para las pruebas de entrenamiento. */
+    84→    84→const TRAINING_SHORT: Record<string, string> = {
+    85→    85→  challenge_reach_top: "Alcanzar",
+    86→    86→  challenge_stabilize_pose: "Estabilizar",
+    87→    87→  challenge_recover_swing: "Recuperar",
+    88→    88→  challenge_speed_run: "Velocidad"
+    89→    89→};
+    90→    90→
+    91→    91→/** Presets de balance fisico (ADR-008) seleccionables en el menu. */
+    92→    92→const PRESET_TUNES: Record<BalancePresetName, BalanceTuning> = {
+    93→    93→  realista: { postureTone: 0.95, jointLimitStiffness: 1.0, foldStrength: 1.0, toneFloor: 0.08, stretchTolerance: 1.05, twistLimitRad: 0.3 },
+    94→    94→  equilibrado: { postureTone: 0.75, jointLimitStiffness: 1.0, foldStrength: 0.85, toneFloor: 0.12, stretchTolerance: 1.1, twistLimitRad: 0.45 },
+    95→    95→  ragdoll: { postureTone: 0.5, jointLimitStiffness: 0.85, foldStrength: 0.6, toneFloor: 0.25, stretchTolerance: 1.2, twistLimitRad: 0.85 }
+    96→    96→};
+    97→    97→
+    98→    98→const REJECT_LABELS: Record<string, string> = {
+    99→    99→  extremidad_no_permitida: "esa presa no admite esa extremidad",
+   100→   100→  presa_ocupada: "la presa ya esta ocupada",
+   101→   101→  fuera_de_alcance: "fuera de alcance",
+   102→   102→  regla_del_desafio: "regla del desafio",
+   103→   103→  debe_terminar_en_presa: "debes terminar el movimiento en una presa",
+   104→   104→  alcance_insuficiente: "la extremidad no llego a la presa",
+   105→   105→  objetivo_invalido: "objetivo invalido",
+   106→   106→  objetivo_libre: "objetivo libre no permitido",
+   107→   107→  presa_inexistente: "presa inexistente",
+   108→   108→  cruce_imposible: "el cruce de mano es imposible (postura imposible)",
+   109→   109→  a_traves_del_cuerpo: "la extremidad atravesaría el torso (postura imposible)"
+   110→   110→};
+   111→   111→
+   112→   112→/** Etiquetas legibles de extremidad para avisos (el HUD tiene las suyas). */
+   113→   113→const LIMB_LABEL_ES: Record<LimbId, string> = {
+   114→   114→  hand_l: "Mano izq.",
+   115→   115→  hand_r: "Mano der.",
+   116→   116→  foot_l: "Pie izq.",
+   117→   117→  foot_r: "Pie der."
+   118→   118→};
+   119→   119→
+   120→   120→const MAX_STEPS_PER_FRAME = 6;
+   121→   121→
+   122→   122→// Combo de flujo: movimientos encadenados en menos de FLOW_WINDOW_S multiplican
+   123→   123→// la puntuacion (chip FLUJO xN). Una pausa larga o una caida rompen la cadena.
+   124→   124→const FLOW_WINDOW_S = 6;
+   125→   125→const FLOW_MAX_CHAIN = 9;
+   126→   126→const FLOW_BONUS_PER_STEP = 50;
+   127→   127→
+   128→   128→// Cinemática lenta al declararse la caida (drama) y escala de tiempo objetivo.
+   129→   129→const SLOWMO_DURATION_S = 0.85;
+   130→   130→const SLOWMO_SCALE = 0.32;
+   131→   131→
+   132→   132→// FX de aterrizaje: el cuerpo toca el colchon ~0.7 s despues de abrirse los agarres.
+   133→   133→const LANDING_FX_AT_S = 0.68;
+   134→   134→
+   135→   135→// Secuencia de caida (ADR-008): declarada la caida, los agarres se abren ESCALONADOS
+   136→   136→// (las manos resbalan primero, los pies saltan despues), el tono postural cae a
+   137→   137→// flacido y el cuerpo cae de verdad. Nunca queda "colgado" esperando el reset: el
+   138→   138→// reintento llega solo tras asentarse el cuerpo en el colchon.
+   139→   139→const FALL_RELEASE_HAND_S = 0.26;
+   140→   140→const FALL_RELEASE_STAGGER_S = 0.09;
+   141→   141→const FALL_RELEASE_FOOT_S = 0.42;
+   142→   142→const FALL_AUTO_RESET_S = 2.6;
+   143→   143→
+   144→   144→const clamp01 = (x: number | undefined): number => Math.min(1, Math.max(0, typeof x === "number" && Number.isFinite(x) ? x : 0));
+   145→   145→const clampRange = (x: number | undefined, min: number, max: number): number => Math.min(max, Math.max(min, typeof x === "number" && Number.isFinite(x) ? x : min));
+   146→   146→
+   147→   147→export interface GameAppOptions {
+   148→   148→  canvas: HTMLCanvasElement;
+   149→   149→  hudRoot: HTMLElement;
+   150→   150→  debugRoot: HTMLElement;
+   151→   151→}
+   152→   152→
+   153→   153→export class GameApp {
+   154→   154→  private readonly events = new EventBus();
+   155→   155→  private readonly repo = new ContentRepository();
+   156→   156→  private bundle!: ContentBundle;
+   157→   157→  private scene!: GameScene;
+   158→   158→  private hud!: Hud;
+   159→   159→  private debug!: DebugOverlay;
+   160→   160→  private readonly audio = new AudioBus();
+   161→   161→  private solver!: PbdSolver;
+   162→   162→  private readonly machine: GameStateMachine;
+   163→   163→  private bio!: BiomechanicsSystem;
+   164→   164→  private evaluator: ChallengeEvaluator | null = null;
+   165→   165→  private interaction: InteractionController | null = null;
+   166→   166→  private tutorial: TutorialEngine | null = null;
+   167→   167→  private tutorialUi!: TutorialOverlay;
+   168→   168→  private readonly tutorialHintsShown = new Set<string>();
+   169→   169→  /** Posicion mundo de cada presa para proyectar spotlights del tutorial. */
+   170→   170→  private holdPosById = new Map<string, readonly [number, number, number]>();
+   171→   171→
+   172→   172→  private challenge!: ChallengeDefinition;
+   173→   173→  private wall!: WallDefinition;
+   174→   174→  private character!: CharacterDefinition;
+   175→   175→  private profile!: BodyProfileDefinition;
+   176→   176→  private rig: RagdollRig | null = null;
+   177→   177→
+   178→   178→  private gameTime = 0;
+   179→   179→  private accumulator = 0;
+   180→   180→  private lastFrame = 0;
+   181→   181→  private raf = 0;
+   182→   182→  private disposed = false;
+   183→   183→  private paused = false;
+   184→   184→  private recenterOnce = false;
+   185→   185→
+   186→   186→  private settleTimer = 0;
+   187→   187→  private autoStartPending = false;
+   188→   188→  private guardActive = false;
+   189→   189→  private guardCooldown = 0;
+   190→   190→  /** Secuencia de caida: cola de liberacion escalonada y auto-reintento. */
+   191→   191→  private fallTimer = 0;
+   192→   192→  private fallReleaseQueue: { limb: LimbId; at: number }[] = [];
+   193→   193→  private fallLandedFx = false;
+   194→   194→  /** Escala de tiempo actual (slow-motion cinematografico al caer). */
+   195→   195→  private timeScale = 1;
+   196→   196→  private slowmoLeft = 0;
+   197→   197→  // Puntuacion / flujo / caidas del desafio cargado.
+   198→   198→  private flowCount = 0;
+   199→   199→  private lastGrabAt = -1e9;
+   200→   200→  private flowBonus = 0;
+   201→   201→  private fallCount = 0;
+   202→   202→  private peakFatigue = 0;
+   203→   203→  private fallAutoReset = -1;
+   204→   204→  /** Balance realismo/ragdoll (ADR-008), persistido y calibrable en F3. */
+   205→   205→  private tune: BalanceTuning = { jointLimitStiffness: 1.0, foldStrength: 0.85, postureTone: 0.75, toneFloor: 0.12, stretchTolerance: 1.1, twistLimitRad: 0.45 };
+   206→   206→  /** Cuenta atras de fallo por extremidad (sobrecarga continua), refrescada cada frame. */
+   207→   207→  private readonly limbOverload = new Map<LimbId, { seconds: number; frac: number }>();
+   208→   208→  /** Reglas de postura imposible vigentes (derivadas del tono postural). Objeto
+   209→   209→   * vivo: se recalcula en setTune/applyPreset y la interaccion lo lee cada uso. */
+   210→   210→  private postureRules: PostureRules = postureRulesForTone(0.75);
+   211→   211→  /** Presion de fallo maxima 0..1 (alimenta latidos/gruñidos de panico del audio). */
+   212→   212→  private overloadPressure = 0;
+   213→   213→  /** Ultimo aviso de sobrecarga (con memoria 0.6 s: el pendulo hace oscilar la
+   214→   214→   * carga alrededor del umbral y sin memoria el chip central parpadearia). */
+   215→   215→  private lastWorst: { label: string; seconds: number; frac: number } | null = null;
+   216→   216→  private lastWorstAt = -1e9;
+   217→   217→
+   218→   218→  private fpsFrames = 0;
+   219→   219→  private fpsElapsed = 0;
+   220→   220→  private fps = 60;
+   221→   221→  private physicsMs = 0;
+   222→   222→  private hudAccum = 0;
+   223→   223→  private pointerX = -1;
+   224→   224→  private pointerY = -1;
+   225→   225→  private pointerInside = false;
+   226→   226→  /** Agarre por TECLADO (1-4): seleccion directa sin punteria. La extremidad queda
+   227→   227→   * "en la mano" con un offset respecto al cursor para que nada salte al agarrar. */
+   228→   228→  private keyboardLimb: LimbId | null = null;
+   229→   229→  private grabOffset: { x: number; y: number } | null = null;
+   230→   230→  private readonly eventLog: string[] = [];
+   231→   231→
+   232→   232→  private lastSnapshot = {
+   233→   233→    stability: 0,
+   234→   234→    com: { x: 0, y: 0, z: 0 },
+   235→   235→    supportCount: 0
+   236→   236→  };
+   237→   237→  private anchorMaxForce = 420;
+   238→   238→  private followForce = 240;
+   239→   239→
+   240→   240→  /** Pin por extremidad: los pies soportan el peso corporal (ADR-007). */
+   241→   241→  private anchorMaxForceFor(limb: LimbId): number {
+   242→   242→    const legFactor = this.character?.physical.legForceFactor ?? 2.2;
+   243→   243→    return limb.startsWith("foot") ? this.anchorMaxForce * legFactor : this.anchorMaxForce;
+   244→   244→  }
+   245→   245→
+   246→   246→  private readonly canvas: HTMLCanvasElement;
+   247→   247→  private listeners: { target: EventTarget; type: string; fn: EventListenerOrEventListenerObject }[] = [];
+   248→   248→
+   249→   249→  private constructor(
+   250→   250→    private readonly opts: GameAppOptions,
+   251→   251→    private readonly onReady: () => void
+   252→   252→  ) {
+   253→   253→    this.canvas = opts.canvas;
+   254→   254→    this.machine = new GameStateMachine((e) => this.events.emit(e));
+   255→   255→  }
+   256→   256→
+   257→   257→  static async create(opts: GameAppOptions, onReady: () => void): Promise<GameApp> {
+   258→   258→    const app = new GameApp(opts, onReady);
+   259→   259→    await app.init();
+   260→   260→    return app;
+   261→   261→  }
+   262→   262→
+   263→   263→  private async init(): Promise<void> {
+   264→   264→    this.bundle = await this.repo.load(browserJsonLoader, "/content");
+   265→   265→    this.scene = await GameScene.create(this.canvas);
+   266→   266→
+   267→   267→    const challengeIds = this.repo.listChallengeIds();
+   268→   268→    this.hud = new Hud(
+   269→   269→      this.opts.hudRoot,
+   270→   270→      this.events,
+   271→   271→      this.buildChallengeOptions(),
+   272→   272→      (id) => {
+   273→   273→        // Candado del campeonato: una etapa solo es jugable si las anteriores
+   274→   274→        // estan superadas. El aviso explica POR QUE no se abre (control determinista).
+   275→   275→        const stage = stageOf(id);
+   276→   276→        if (stage && !isStageUnlocked(stage.index, this.championshipBests())) {
+   277→   277→          this.audio.ensure();
+   278→   278→          this.hud.toast(`ETAPA ${stage.index} · ${stage.name} bloqueada: supera primero la etapa ${stage.index - 1}`, "warn");
+   279→   279→          return;
+   280→   280→        }
+   281→   281→        this.audio.ensure();
+   282→   282→        this.loadChallenge(id);
+   283→   283→      },
+   284→   284→      () => this.onIntroDismissed(),
+   285→   285→      (preset) => this.applyPreset(preset)
+   286→   286→    );
+   287→   287→    this.debug = new DebugOverlay(this.opts.debugRoot, (flag, value) => {
+   288→   288→      this.scene.setDebugFlags({ [flag]: value });
+   289→   289→      this.debug.setFlagCheckbox(flag, value);
+   290→   290→    }, (key, value) => {
+   291→   291→      this.setTune({ [key]: value });
+   292→   292→    });
+   293→   293→    this.debug.setTuneValues({ postureTone: this.tune.postureTone, jointLimitStiffness: this.tune.jointLimitStiffness, foldStrength: this.tune.foldStrength, stretchTolerance: this.tune.stretchTolerance, twistLimitRad: this.tune.twistLimitRad });
+   294→   294→    this.hud.setBackend(this.scene.backend);
+   295→   295→    this.tutorialUi = new TutorialOverlay(
+   296→   296→      this.opts.hudRoot,
+   297→   297→      () => this.tutorial?.advance(),
+   298→   298→      () => this.stopTutorial(true)
+   299→   299→    );
+   300→   300→
+   301→   301→    this.events.on((e) => this.onGameEvent(e));
+   302→   302→    // Registro circular de eventos para diagnostico E2E (window.__NS.events()).
+   303→   303→    this.events.on((e) => {
+   304→   304→      this.eventLog.push(`${(performance.now() / 1000).toFixed(1)} ${e.type}${"reason" in e && typeof e.reason === "string" ? ":" + e.reason : ""}${"limb" in e && e.limb ? ":" + e.limb : ""}`);
+   305→   305→      if (this.eventLog.length > 40) this.eventLog.shift();
+   306→   306→    });
+   307→   307→    this.loadTune();
+   308→   308→    this.postureRules = postureRulesForTone(this.tune.postureTone);
+   309→   309→    this.attachInput();
+   310→   310→    this.hud.setPresetActive(this.presetName);
+   311→   311→
+   312→   312→    await this.loadChallenge(challengeIds[0]);
+   313→   313→    this.lastFrame = performance.now() / 1000;
+   314→   314→    this.raf = requestAnimationFrame(this.frame);
+   315→   315→    this.onReady();
+   316→   316→  }
+   317→   317→
+   318→   318→  // --- Carga de desafio y reset (10.2) ---
+   319→   319→
+   320→   320→  async loadChallenge(id: string): Promise<void> {
+   321→   321→    this.stopTutorial(false);
+   322→   322→    this.challenge = this.repo.getChallenge(id);
+   323→   323→    this.character = this.repo.getCharacter(this.challenge.characterId);
+   324→   324→    this.profile = this.repo.getBodyProfile(this.character.bodyProfileId);
+   325→   325→    this.wall = this.repo.getWall(this.challenge.wallId);
+   326→   326→    this.holdPosById = new Map(this.wall.holds.map((h) => [h.id, h.position] as const));
+   327→   327→    this.bio = new BiomechanicsSystem(this.character, this.profile);
+   328→   328→    this.evaluator = new ChallengeEvaluator(this.challenge);
+   329→   329→
+   330→   330→    const strengthFactor = lerp(this.profile.biomech.strengthFactorMin, this.profile.biomech.strengthFactorMax, this.character.virtues.strength);
+   331→   331→    this.anchorMaxForce = this.character.physical.baseGripForce * strengthFactor;
+   332→   332→    this.followForce = this.character.physical.baseGripForce * this.character.control.gripAssist * this.character.control.targetFollowStrength;
+   333→   333→
+   334→   334→    this.solver = new PbdSolver({
+   335→   335→      gravity: v3(...this.profile.sim.gravity),
+   336→   336→      damping: this.profile.sim.damping,
+   337→   337→      iterations: this.profile.sim.iterations,
+   338→   338→      floorY: 0,
+   339→   339→      wallFrontZ: this.wall.transform.position[2] - this.wall.dimensions.depth / 2,
+   340→   340→      tremorAmplitude: this.profile.sim.tremorAmplitude,
+   341→   341→      loadEstimatorGain: this.profile.biomech.loadEstimatorGain
+   342→   342→    });
+   343→   343→
+   344→   344→    this.scene.buildWorld(this.wall);
+   345→   345→    this.hud.setChallenge(this.challenge, CHALLENGE_META[id]?.label ?? CHALLENGE_LABELS[this.challenge.type]);
+   346→   346→    // Chip permanente de campeonato (panel superior izquierdo) mientras se juega una etapa.
+   347→   347→    const stage = stageOf(id);
+   348→   348→    this.hud.setChampionshipStatus(
+   349→   349→      stage ? `Campeonato · etapa ${stage.index}/5 · ${stage.name} (${stage.heightM} m)` : null
+   350→   350→    );
+   351→   351→    this.buildInteraction();
+   352→   352→    this.spawn();
+   353→   353→  }
+   354→   354→
+   355→   355→  /**
+   356→   356→   * Recreacion del estado inicial (10.2): libera constraints, destruye y recrea el
+   357→   357→   * ragdoll, restaura fatiga/timers/progreso y espera resetSettleSeconds.
+   358→   358→   * Idempotente: reconstruye todo desde datos; N reinicios no duplican recursos.
+   359→   359→   */
+   360→   360→  private spawn(): void {
+   361→   361→    const holdById = new Map(this.wall.holds.map((h) => [h.id, h]));
+   362→   362→    this.interaction?.cancelDrag();
+   363→   363→    this.interaction?.cancelAssistAll();
+   364→   364→    this.keyboardLimb = null;
+   365→   365→    this.grabOffset = null;
+   366→   366→    this.scene.clearHoldHighlights();
+   367→   367→    for (const hold of this.wall.holds) this.scene.setHoldOccupied(hold.id, false);
+   368→   368→
+   369→   369→    this.scene.despawnRagdollVisuals();
+   370→   370→    this.rig = spawnRagdoll(this.solver, this.profile, this.character, this.wall, this.challenge, holdById, (limb) => this.anchorMaxForceFor(limb));
+   371→   371→    this.scene.spawnRagdollVisuals(this.rig);
+   372→   372→
+   373→   373→    this.bio.reset();
+   374→   374→    this.evaluator?.reset();
+   375→   375→    this.gameTime = 0;
+   376→   376→    this.accumulator = 0;
+   377→   377→    this.guardActive = false;
+   378→   378→    this.lastSnapshot = { stability: 0, com: { x: 0, y: 0, z: 0 }, supportCount: 0 };
+   379→   379→
+   380→   380→    // El combo de flujo se rompe con cada respawn (intento nuevo); el conteo de
+   381→   381→    // caidas persiste para la puntuacion del desafio cargado.
+   382→   382→    this.flowCount = 0;
+   383→   383→    this.flowBonus = 0;
+   384→   384→    this.peakFatigue = 0;
+   385→   385→    this.timeScale = 1;
+   386→   386→    this.slowmoLeft = 0;
+   387→   387→    this.fallLandedFx = false;
+   388→   388→    this.hud.setFlow(0);
+   389→   389→    this.lastWorst = null;
+   390→   390→    this.limbOverload.clear();
+   391→   391→    this.overloadPressure = 0;
+   392→   392→
+   393→   393→    // Marcar presas ocupadas por los anclajes iniciales creados en spawnRagdoll.
+   394→   394→    for (const req of this.challenge.start.requiredAnchors) {
+   395→   395→      this.scene.setHoldOccupied(req.holdId, true);
+   396→   396→    }
+   397→   397→
+   398→   398→    this.settleTimer = this.profile.sim.resetSettleSeconds;
+   399→   399→    this.autoStartPending = this.challenge.start.autoStart;
+   400→   400→    this.fallReleaseQueue = [];
+   401→   401→    this.fallAutoReset = -1;
+   402→   402→    this.machine.transition("RESETTING");
+   403→   403→    // Despues de la transicion: en FALLEN el objetivo seria el tono flacido de la
+   404→   404→    // caida; al re-spawnear el escalador vuelve a estar vivo (tono calibrado).
+   405→   405→    this.applyTuneToSolver();
+   406→   406→    this.events.emit({ type: "Message", text: `Prueba ${CHALLENGE_META[this.challenge.id]?.label ?? CHALLENGE_LABELS[this.challenge.type]} cargada`, tone: "info" });
+   407→   407→  }
+   408→   408→
+   409→   409→  // --- Balance realismo/ragdoll (ADR-008): persistencia y aplicacion ---
+   410→   410→
+   411→   411→  private static readonly TUNE_KEY = "ns.tune.v1";
+   412→   412→  private static readonly PRESET_KEY = "ns.tune.preset.v1";
+   413→   413→  /** Preset de balance activo (null = calibracion manual con sliders F3). */
+   414→   414→  private presetName: BalancePresetName | null = null;
+   415→   415→
+   416→   416→  /** Aplica un preset del menu, lo persiste y lo marca como activo en el HUD. */
+   417→   417→  applyPreset(name: BalancePresetName): void {
+   418→   418→    // setTune limpia el preset activo (cualquier ajuste pasa por el); volver a
+   419→   419→    // marcar aqui deja el estado coherente: preset aplicado y persistido.
+   420→   420→    this.setTune({ ...PRESET_TUNES[name] });
+   421→   421→    this.presetName = name;
+   422→   422→    try {
+   423→   423→      window.localStorage.setItem(GameApp.PRESET_KEY, name);
+   424→   424→    } catch {
+   425→   425→      /* sin persistencia */
+   426→   426→    }
+   427→   427→    this.hud.setPresetActive(name);
+   428→   428→    this.debug.setTuneValues({ postureTone: this.tune.postureTone, jointLimitStiffness: this.tune.jointLimitStiffness, foldStrength: this.tune.foldStrength, stretchTolerance: this.tune.stretchTolerance, twistLimitRad: this.tune.twistLimitRad });
+   429→   429→    this.events.emit({ type: "Message", text: `Balance ${name}: tono ${this.tune.postureTone.toFixed(2)}, límites ${this.tune.jointLimitStiffness.toFixed(2)}, pliegue ${this.tune.foldStrength.toFixed(2)}, estiramiento ×${this.tune.stretchTolerance.toFixed(2)}`, tone: "info" });
+   430→   430→  }
+   431→   431→
+   432→   432→  private loadTune(): void {
+   433→   433→    try {
+   434→   434→      const preset = window.localStorage.getItem(GameApp.PRESET_KEY) as BalancePresetName | null;
+   435→   435→      if (preset && preset in PRESET_TUNES) this.presetName = preset;
+   436→   436→    } catch {
+   437→   437→      this.presetName = null;
+   438→   438→    }
+   439→   439→    if (this.presetName) {
+   440→   440→      this.tune = { ...PRESET_TUNES[this.presetName] };
+   441→   441→      return;
+   442→   442→    }
+   443→   443→    try {
+   444→   444→      const raw = window.localStorage.getItem(GameApp.TUNE_KEY);
+   445→   445→      if (raw) {
+   446→   446→        const t = JSON.parse(raw) as Partial<BalanceTuning>;
+   447→   447→        this.tune = {
+   448→   448→          jointLimitStiffness: clamp01(t.jointLimitStiffness ?? 1.0),
+   449→   449→          foldStrength: clamp01(t.foldStrength ?? 0.85),
+   450→   450→          postureTone: clamp01(t.postureTone ?? 0.75),
+   451→   451→          toneFloor: clamp01(t.toneFloor ?? 0.12),
+   452→   452→          stretchTolerance: clampRange(t.stretchTolerance ?? 1.1, 1.02, 1.35),
+   453→   453→          twistLimitRad: clampRange(t.twistLimitRad ?? 0.45, 0, 1.2)
+   454→   454→        };
+   455→   455→      }
+   456→   456→    } catch {
+   457→   457→      /* sin persistencia: defaults */
+   458→   458→    }
+   459→   459→  }
+   460→   460→
+   461→   461→  private saveTune(): void {
+   462→   462→    try {
+   463→   463→      window.localStorage.setItem(GameApp.TUNE_KEY, JSON.stringify(this.tune));
+   464→   464→    } catch {
+   465→   465→      /* sin persistencia */
+   466→   466→    }
+   467→   467→  }
+   468→   468→
+   469→   469→  setTune(patch: Partial<BalanceTuning>): BalanceTuning {
+   470→   470→    this.tune = {
+   471→   471→      jointLimitStiffness: clamp01(patch.jointLimitStiffness ?? this.tune.jointLimitStiffness),
+   472→   472→      foldStrength: clamp01(patch.foldStrength ?? this.tune.foldStrength),
+   473→   473→      postureTone: clamp01(patch.postureTone ?? this.tune.postureTone),
+   474→   474→      toneFloor: clamp01(patch.toneFloor ?? this.tune.toneFloor),
+   475→   475→      stretchTolerance: clampRange(patch.stretchTolerance ?? this.tune.stretchTolerance, 1.02, 1.35),
+   476→   476→      twistLimitRad: clampRange(patch.twistLimitRad ?? this.tune.twistLimitRad, 0, 1.2)
+   477→   477→    };
+   478→   478→    // Las reglas de postura imposible siguen al tono: preset realista = estricto.
+   479→   479→    this.postureRules = postureRulesForTone(this.tune.postureTone);
+   480→   480→    // Un ajuste manual (sliders F3 o __NS.setTune) deja de corresponder al preset.
+   481→   481→    this.presetName = null;
+   482→   482→    try {
+   483→   483→      window.localStorage.removeItem(GameApp.PRESET_KEY);
+   484→   484→    } catch {
+   485→   485→      /* sin persistencia */
+   486→   486→    }
+   487→   487→    this.hud?.setPresetActive(null);
+   488→   488→    this.applyTuneToSolver();
+   489→   489→    this.saveTune();
+   490→   490→    return { ...this.tune };
+   491→   491→  }
+   492→   492→
+   493→   493→  private applyTuneToSolver(): void {
+   494→   494→    if (!this.solver) return;
+   495→   495→    this.solver.env.balance.jointLimitStiffness = this.tune.jointLimitStiffness;
+   496→   496→    this.solver.env.balance.foldStrength = this.tune.foldStrength;
+   497→   497→    this.solver.env.balance.postureTone = this.tune.postureTone;
+   498→   498→    this.solver.env.balance.toneFloor = this.tune.toneFloor;
+   499→   499→    this.solver.env.balance.stretchTolerance = this.tune.stretchTolerance;
+   500→   500→    this.solver.env.balance.twistLimitRad = this.tune.twistLimitRad;
+   501→   501→    // En FALLEN el tono objetivo sigue siendo el flacido; en el resto, el calibrado.
+   502→   502→    this.solver.setToneTarget(this.machine.state === "FALLEN" ? this.tune.toneFloor : this.tune.postureTone);
+   503→   503→  }
+   504→   504→
+   505→   505→  requestReset(): void {
+   506→   506→    if (this.machine.state === "LOADING" || this.machine.state === "RESETTING") return;
+   507→   507→    this.events.emit({ type: "ResetStarted" });
+   508→   508→    this.spawn();
+   509→   509→  }
+   510→   510→
+   511→   511→  // --- Records por desafio (localStorage) y campeonato ---
+   512→   512→
+   513→   513→  private static bestKey(id: string): string {
+   514→   514→    return `ns.best.${id}`;
+   515→   515→  }
+   516→   516→
+   517→   517→  private loadBest(id: string): BestRecord | null {
+   518→   518→    try {
+   519→   519→      const raw = window.localStorage.getItem(GameApp.bestKey(id));
+   520→   520→      return raw ? (JSON.parse(raw) as BestRecord) : null;
+   521→   521→    } catch {
+   522→   522→      return null;
+   523→   523→    }
+   524→   524→  }
+   525→   525→
+   526→   526→  /** Records de las 5 etapas del campeonato (fuente de verdad del progreso). */
+   527→   527→  private championshipBests(): Map<string, BestRecord | null> {
+   528→   528→    const m = new Map<string, BestRecord | null>();
+   529→   529→    for (const s of CHAMPIONSHIP_STAGES) m.set(s.challengeId, this.loadBest(s.challengeId));
+   530→   530→    return m;
+   531→   531→  }
+   532→   532→
+   533→   533→  /** Opciones del menu: campeonato primero (con candados y estrellas), luego entrenamiento. */
+   534→   534→  private buildChallengeOptions(): ChallengeOption[] {
+   535→   535→    const bests = this.championshipBests();
+   536→   536→    const champ: ChallengeOption[] = CHAMPIONSHIP_STAGES.map((s) => ({
+   537→   537→      id: s.challengeId,
+   538→   538→      label: CHALLENGE_META[s.challengeId]?.label ?? `ETAPA ${s.index} · ${s.name}`,
+   539→   539→      short: `E${s.index} · ${s.name}`,
+   540→   540→      description: s.blurb,
+   541→   541→      best: bests.get(s.challengeId) ?? null,
+   542→   542→      group: "campeonato",
+   543→   543→      locked: !isStageUnlocked(s.index, bests),
+   544→   544→      stageIndex: s.index,
+   545→   545→      heightM: s.heightM
+   546→   546→    }));
+   547→   547→    const training: ChallengeOption[] = this.repo.listChallengeIds()
+   548→   548→      .filter((id) => !STAGE_BY_CHALLENGE.has(id))
+   549→   549→      .map((id) => {
+   550→   550→        const c = this.repo.getChallenge(id);
+   551→   551→        const meta = CHALLENGE_META[id];
+   552→   552→        const label = meta?.label ?? CHALLENGE_LABELS[c.type];
+   553→   553→        return {
+   554→   554→          id,
+   555→   555→          label,
+   556→   556→          short: TRAINING_SHORT[id] ?? label,
+   557→   557→          description: meta?.description ?? CHALLENGE_DESCRIPTIONS[c.type],
+   558→   558→          best: this.loadBest(id),
+   559→   559→          group: "entrenamiento" as const,
+   560→   560→          locked: false
+   561→   561→        };
+   562→   562→      });
+   563→   563→    return [...champ, ...training];
+   564→   564→  }
+   565→   565→
+   566→   566→  private saveBest(id: string, rec: BestRecord): boolean {
+   567→   567→    const prev = this.loadBest(id);
+   568→   568→    if (prev && !isBetter(rec, prev)) return false;
+   569→   569→    try {
+   570→   570→      window.localStorage.setItem(GameApp.bestKey(id), JSON.stringify(rec));
+   571→   571→    } catch {
+   572→   572→      /* sin persistencia */
+   573→   573→    }
+   574→   574→    return true;
+   575→   575→  }
+   576→   576→
+   577→   577→  // --- Interaccion ---
+   578→   578→
+   579→   579→  private buildInteraction(): void {
+   580→   580→    const holdById = new Map(this.wall.holds.map((h) => [h.id, h]));
+   581→   581→    const world: InteractionWorld = {
+   582→   582→      holdById,
+   583→   583→      challenge: this.challenge,
+   584→   584→      character: this.character,
+   585→   585→      profile: this.profile,
+   586→   586→      wall: this.wall,
+   587→   587→      anchorHoldOf: (limb) => this.solver.getAnchor(limb)?.holdId,
+   588→   588→      holdOccupancy: (holdId) => {
+   589→   589→        let n = 0;
+   590→   590→        for (const limb of LIMB_IDS) {
+   591→   591→          if (this.solver.getAnchor(limb)?.holdId === holdId) n++;
+   592→   592→          if (this.interaction?.assistHoldOf(limb) === holdId) n++;
+   593→   593→        }
+   594→   594→        return n;
+   595→   595→      },
+   596→   596→      chainRootOf: (limb) => {
+   597→   597→        const idx = limb === "hand_l" ? P.shL : limb === "hand_r" ? P.shR : limb === "foot_l" ? P.hipL : P.hipR;
+   598→   598→        const p = this.solver.getParticle(idx);
+   599→   599→        return v3(p.pos.x, p.pos.y, p.pos.z);
+   600→   600→      },
+   601→   601→      limbPositionOf: (limb) => this.solver.positionOfLimb(limb),
+   602→   602→      chainLengthOf: (limb) => {
+   603→   603→        if (!this.rig) return 0.6;
+   604→   604→        const base = limb.startsWith("hand") ? this.rig.armChain : this.rig.legChain;
+   605→   605→        return base * this.character.physical.reachScale;
+   606→   606→      },
+   607→   607→      postureRules: () => this.postureRules
+   608→   608→    };
+   609→   609→    this.interaction = new InteractionController(world, {
+   610→   610→      onSelectChanged: () => undefined,
+   611→   611→      onAccept: (limb, holdId) => {
+   612→   612→        const existing = this.solver.getAnchor(limb);
+   613→   613→        if (existing) {
+   614→   614→          this.solver.releaseAnchor(limb);
+   615→   615→          this.events.emit({ type: "GripReleased", limb, holdId: existing.holdId, reason: "PLAYER_RELEASE" });
+   616→   616→        }
+   617→   617→        const hold = holdById.get(holdId)!;
+   618→   618→        this.solver.setTarget(limb, v3(hold.position[0], hold.position[1], hold.position[2]), this.followForce);
+   619→   619→        this.refreshHoldOccupancy();
+   620→   620→      },
+   621→   621→      onReject: (limb, holdId, reason) => {
+   622→   622→        this.solver.clearTarget(limb);
+   623→   623→        this.events.emit({ type: "HoldRejected", limb, holdId, reason });
+   624→   624→        if (holdId) {
+   625→   625→          this.scene.setHoldInvalid(holdId, true);
+   626→   626→          window.setTimeout(() => this.scene.setHoldInvalid(holdId, false), 450);
+   627→   627→        }
+   628→   628→      },
+   629→   629→      onArrival: (limb, holdId) => {
+   630→   630→        this.solver.clearTarget(limb);
+   631→   631→        const hold = holdById.get(holdId)!;
+   632→   632→        this.solver.createAnchor(limb, holdId, v3(hold.position[0], hold.position[1], hold.position[2]), this.anchorMaxForceFor(limb));
+   633→   633→        // ADR-007: cada apoyo consolidado reactiva el impulso de subida (el cuerpo
+   634→   634→        // se reorganiza hacia la nueva postura: step-up del pie, pull de brazos).
+   635→   635→        this.solver.pulseClimbDrive();
+   636→   636→        this.events.emit({ type: "HoldAcquired", limb, holdId });
+   637→   637→        this.refreshHoldOccupancy();
+   638→   638→      }
+   639→   639→    });
+   640→   640→  }
+   641→   641→
+   642→   642→  private refreshHoldOccupancy(): void {
+   643→   643→    const anchored = new Set<string>();
+   644→   644→    for (const limb of LIMB_IDS) {
+   645→   645→      const a = this.solver.getAnchor(limb);
+   646→   646→      if (a) anchored.add(a.holdId);
+   647→   647→    }
+   648→   648→    for (const hold of this.wall.holds) {
+   649→   649→      this.scene.setHoldOccupied(hold.id, anchored.has(hold.id));
+   650→   650→    }
+   651→   651→  }
+   652→   652→
+   653→   653→  // --- Pipeline por paso fijo ---
+   654→   654→
+   655→   655→  private fixedStep(dt: number): void {
+   656→   656→    const result = this.solver.step(dt);
+   657→   657→
+   658→   658→    // ERROR GUARD (9.2): carga no finita / NaN / energia anomala.
+   659→   659→    if ((result.nanError || result.energySpike) && !this.guardActive) {
+   660→   660→      this.guardActive = true;
+   661→   661→      this.guardCooldown = 0.4;
+   662→   662→      this.lastGuardError = result.nanError ? "nan" : "energia";
+   663→   663→      this.events.emit({ type: "Message", text: "ERROR GUARD: simulacion no finita; reiniciando prueba", tone: "error" });
+   664→   664→      this.machine.transition("ERROR");
+   665→   665→    }
+   666→   666→    if (this.machine.state === "ERROR") {
+   667→   667→      this.guardCooldown -= dt;
+   668→   668→      if (this.guardCooldown <= 0) {
+   669→   669→        this.spawn();
+   670→   670→        return;
+   671→   671→      }
+   672→   672→      return;
+   673→   673→    }
+   674→   674→
+   675→   675→    const anchors = this.solver.anchorHoldIds();
+   676→   676→
+   677→   677→    // Biomecanica solo cuando el desafio esta activo (fatiga congelada en pausa/resultado).
+   678→   678→    if (this.machine.state === "PLAYING") {
+   679→   679→      const bioResult = this.bio.update(dt, result, anchors.map((a) => ({ limb: a.limb, holdId: a.holdId })), this.solver.tremor);
+   680→   680→      // En tutorial la fatiga y las zonas se miden (numeros reales en el paso
+   681→   681→      // de vitals) pero la sobrecarga NO libera agarres: el onboarding no puede
+   682→   682→      // guiar hacia una caida por mover lento.
+   683→   683→      for (const limb of this.tutorial ? [] : bioResult.overloadReleases) {
+   684→   684→        const anchor = this.solver.releaseAnchor(limb);
+   685→   685→        if (anchor) {
+   686→   686→          this.events.emit({ type: "GripReleased", limb, holdId: anchor.holdId, reason: "OVERLOAD" });
+   687→   687→          this.refreshHoldOccupancy();
+   688→   688→        }
+   689→   689→      }
+   690→   690→      for (const limb of bioResult.strainStarted) this.events.emit({ type: "StrainStarted", limb });
+   691→   691→      for (const limb of bioResult.overloadStarted) this.events.emit({ type: "OverloadStarted", limb });
+   692→   692→
+   693→   693→      // Asistencia de viaje hacia la presa aceptada (7.2).
+   694→   694→      this.interaction?.tick(dt);
+   695→   695→
+   696→   696→      const anchorsNow = this.solver.anchorHoldIds();
+   697→   697→      const stability = computeStability(this.bio, result, anchorsNow.map((a) => ({ limb: a.limb, holdId: a.holdId })), this.solver, this.profile);
+   698→   698→      this.lastSnapshot = {
+   699→   699→        stability,
+   700→   700→        com: result.com,
+
+[showing lines 1-700 of 1672; use offset=701 with limit to continue reading]
