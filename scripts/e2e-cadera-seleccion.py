@@ -39,7 +39,11 @@ def fail(msg):
 
 ab("open", "http://localhost:3000/")
 time.sleep(4)
-try: ab("find", "text", "Comenzar", "click")
+import e2e_lib as lib
+try:
+    lib.enter(ab)
+except Exception:
+    pass
 except Exception: pass
 time.sleep(2.5)
 try: ab("eval", "document.getElementById('tut-skip')?.click()")

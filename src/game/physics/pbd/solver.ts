@@ -186,6 +186,17 @@ export interface BalanceTuning {
   /** Tope de guinada de la pelvis (rad): 0.30 = realista (cadera cuadrada),
    *  0.85 = ragdoll (giro libre casi total). 0 desactiva el tope. */
   twistLimitRad: number;
+  /**
+   * Proyeccion de velocidad del pin (0..1): fraccion de la velocidad inducida por la
+   * correccion posicional del anclaje que se NEUTRALIZA en Verlet (prev += correccion).
+   * Basis cientifico: el update de velocidad de PBD debe calcularse DESPUES de proyectar
+   * restricciones (Muller et al. 2007, "Position Based Dynamics", sec. 4); si no, cada
+   * correccion del pin inyecta "momento fantasma" que bomba el pendulo (el bailoteo
+   * al colgar). 1 = ancla puramente posicional (estable), 0 = legado (oscila).
+   * XPBD/Small Steps (Macklin et al. 2016/2019) lo resuelven con substeps; aqui se
+   * aplica el equivalente directo sobre el pin, sin tocar la calibracion de carga.
+   */
+  pinVelKill: number;
 }
 
 /**
@@ -306,6 +317,9 @@ export class PbdSolver {
   private lastMuscleForces = new Map<number, V3>();
   /** Amplitud de tremor por extremidad, la fija la capa biomecanica (0..1). */
   readonly tremor: Record<LimbId, number> = { hand_l: 0, hand_r: 0, foot_l: 0, foot_r: 0 };
+  /** Ventana de asentamiento tras el spawn: damping extra para matar la energia
+   *  residual de la semilla (el personaje aparece QUIETO, no balancendose). */
+  private settleLeft = 0;
 
   constructor(env: Partial<SolverEnv> = {}) {
     this.env = {
@@ -356,7 +370,8 @@ export class PbdSolver {
         postureTone: env.balance?.postureTone ?? 0.75,
         toneFloor: env.balance?.toneFloor ?? 0.12,
         stretchTolerance: env.balance?.stretchTolerance ?? 1.1,
-        twistLimitRad: env.balance?.twistLimitRad ?? 0.45
+        twistLimitRad: env.balance?.twistLimitRad ?? 0.45,
+        pinVelKill: env.balance?.pinVelKill ?? 0.4
       }
     };
     this.tone = this.env.balance.postureTone;
@@ -413,6 +428,18 @@ export class PbdSolver {
   /** Fija el tono postural objetivo (F3 / secuencia de caida). */
   setToneTarget(t: number): void {
     this.toneTarget = clamp(t, 0, 1);
+  }
+
+  /** Activa la ventana de asentamiento (damping reforzado) tras el spawn. */
+  markSettle(seconds: number): void {
+    this.settleLeft = Math.max(this.settleLeft, seconds);
+  }
+
+  /** Normal del plano de pared que gobierna un punto (regla de losa: de pie sin
+   *  manos solo en pared reclinada fisicamente). Unitaria, lado escalador. */
+  planeNormalAt(px: number, py: number, pz: number): { x: number; y: number; z: number } {
+    const pl = this.governingPlane(px, py, pz);
+    return { x: pl.n.x, y: pl.n.y, z: pl.n.z };
   }
 
   /** Tono postural actual (0..1), para HUD/debug. */
@@ -676,12 +703,16 @@ export class PbdSolver {
     // anomalias reales del solver).
     const g = this.env.gravity;
     const vCap = this.env.muscles.vMaxSpeed * dt;
+    // Asentamiento post-spawn: damping reforzado durante la ventana (la semilla no
+    // deja balanceo inicial; ver markSettle).
+    if (this.settleLeft > 0) this.settleLeft -= dt;
+    const damping = this.settleLeft > 0 ? Math.min(this.env.damping, 0.9) : this.env.damping;
     for (let i = 0; i < this.particles.length; i++) {
       const p = this.particles[i];
       if (p.invMass <= 0) continue;
       const f = forces.get(i);
       const a = f ? vAdd(g, vScale(f, p.invMass)) : g;
-      const vel = vScale(vSub(p.pos, p.prev), this.env.damping);
+      const vel = vScale(vSub(p.pos, p.prev), damping);
       p.prev = vClone(p.pos);
       let next = vAdd(vAdd(p.pos, vel), vScale(a, dt * dt));
       const newVel = vSub(next, p.prev);
@@ -752,6 +783,28 @@ export class PbdSolver {
       anchor.stretch = vLen(vSub(anchor.point, this.particles[anchor.particle].pos));
       anchorLoads[anchor.limb] = anchor.loadN;
       anchorStretch[anchor.limb] = anchor.stretch;
+    }
+    // PROYECCION DE VELOCIDAD DEL PIN (Muller et al. 2007): la correccion posicional
+    // del anclaje no debe convertirse en velocidad. Se devuelve parte de la
+    // correccion acumulada al prev (prev += corr): el pin mantiene la posicion pero
+    // deja la cantidad de movimiento como estaba, asi el pendulo LATERAL decae por
+    // damping y no lo bombea el propio constraint (fin del bailoteo al colgar).
+    // La carga medida (arriba) se lee ANTES de tocar prev: calibracion intacta.
+    // SELECTIVO POR EJE: el "bailoteo" es pendular horizontal (x/z), asi que la
+    // parte horizontal se neutraliza completa; la vertical se deja casi intacta
+    // (solo kill*0.3) para no alterar la via de carga estatica (peso -> cadena ->
+    // pin) de la que depende el estimador de carga y la fatiga calibrada.
+    const kill = clamp(this.env.balance.pinVelKill, 0, 1);
+    if (kill > 0) {
+      const yKill = kill * 0.3;
+      for (const anchor of this.anchors.values()) {
+        const net = pinCorrection.get(anchor.limb);
+        if (!net) continue;
+        const p = this.particles[anchor.particle];
+        p.prev.x += net.x * kill;
+        p.prev.y += net.y * yKill;
+        p.prev.z += net.z * kill;
+      }
     }
 
     // 5) Guardas: NaN, energia y limites del mundo.

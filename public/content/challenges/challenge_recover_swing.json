@@ -9,10 +9,17 @@
   "start": {
     "stance": "hanging",
     "requiredAnchors": [
-      { "limb": "hand_r", "holdId": "r4" }
+      {
+        "limb": "hand_r",
+        "holdId": "r4"
+      }
     ],
     "autoStart": true,
-    "impulse": [-0.45, 0, 0]
+    "impulse": [
+      -0.45,
+      0,
+      0
+    ]
   },
   "rules": {
     "allowFreeTarget": false,
@@ -26,5 +33,6 @@
   "completion": {
     "stabilityThreshold": 0.55,
     "stableDurationSeconds": 0.6
-  }
+  },
+  "instructionEn": "Off-balance but recoverable pose: get supports and stability back before time runs out."
 }

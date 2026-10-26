@@ -25,7 +25,11 @@ def ev(js):
 
 ab("open", "http://localhost:3000/")
 time.sleep(4)
-try: ab("find", "text", "Comenzar", "click")
+import e2e_lib as lib
+try:
+    lib.enter(ab)
+except Exception:
+    pass
 except Exception: pass
 time.sleep(2.5)
 try: ab("eval", "document.getElementById('tut-skip')?.click()")
@@ -123,8 +127,9 @@ if replay_at is not None and not ov:
     fallos.append("el overlay del HUD no es visible durante el playback")
 cam = ev('JSON.stringify(window.__NS.camera())') or {}
 print("camara:", cam)
-if replay_at is not None and cam.get("mode") != "replay":
-    fallos.append(f"la camara no entro en modo replay: {cam.get('mode')}")
+# Sin camaras cinematicas (peticion del jugador): la camara es SIEMPRE la de juego.
+if cam.get("mode") != "play":
+    fallos.append(f"la camara debe permanecer en modo play: {cam.get('mode')}")
 ab("screenshot", "download/replay-1-playback.png")
 
 # --- 4) Playback avanza y llega a freeze.

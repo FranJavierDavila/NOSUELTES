@@ -9,11 +9,21 @@
   "start": {
     "stance": "hanging",
     "requiredAnchors": [
-      { "limb": "hand_l", "holdId": "mid_l" },
-      { "limb": "hand_r", "holdId": "mid_r" }
+      {
+        "limb": "hand_l",
+        "holdId": "mid_l"
+      },
+      {
+        "limb": "hand_r",
+        "holdId": "mid_r"
+      }
     ],
     "autoStart": false,
-    "impulse": [0, 0, 0]
+    "impulse": [
+      0,
+      0,
+      0
+    ]
   },
   "rules": {
     "allowFreeTarget": false,
@@ -27,5 +37,6 @@
   "completion": {
     "stabilityThreshold": 0.6,
     "stableDurationSeconds": 3.0
-  }
+  },
+  "instructionEn": "You start hanging: restore a stable pose and hold it above the threshold."
 }

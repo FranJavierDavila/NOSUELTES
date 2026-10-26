@@ -19,7 +19,11 @@
       }
     ],
     "autoStart": false,
-    "impulse": [0, 0, 0]
+    "impulse": [
+      0,
+      0,
+      0
+    ]
   },
   "rules": {
     "allowFreeTarget": false,
@@ -31,9 +35,15 @@
     "fallGraceSeconds": 0.3
   },
   "completion": {
-    "holdIds": ["top"],
-    "requiredLimbs": ["hand_l", "hand_r"],
+    "holdIds": [
+      "top"
+    ],
+    "requiredLimbs": [
+      "hand_l",
+      "hand_r"
+    ],
     "stableDurationSeconds": 0.35,
     "stabilityThreshold": 0.6
-  }
+  },
+  "instructionEn": "Time trial: same summit, 60 seconds. Chain the flow and don't fall."
 }

@@ -34,19 +34,32 @@ ok = True
 ab("open", "http://localhost:3000/")
 time.sleep(4)
 
-# (1) Menu: VELOCIDAD y presets presentes
+# (1) Pantalla inicial (imagen + GO!) y AJUSTES con presets y selector de idioma.
+go_visible = ev("!document.getElementById('hud-start')?.classList.contains('hidden')")
+ab("eval", "document.getElementById('hud-start-settings')?.click()")
+time.sleep(0.6)
+set_body = ev('JSON.stringify(document.getElementById("hud-settings")?.innerText ?? "")') or ""
+tiene_presets = all(w in str(set_body) for w in ("Realista", "Equilibrado", "Ragdoll"))
+tiene_lang = "ES" in str(set_body) and "EN" in str(set_body)
+print(f"ajustes: presets={tiene_presets} idioma={tiene_lang}")
+if not (tiene_presets and tiene_lang):
+    print("FALLO: ajustes incompletos"); ok = False
+shot("juice-1-menu.png")
+ab("eval", "document.getElementById('hud-settings-close')?.click()")
+time.sleep(0.4)
+
+# Entrar al juego y abrir el menu de pruebas para verificar VELOCIDAD.
+ab("eval", "document.getElementById('hud-start-go')?.click()")
+time.sleep(2.0)
+ab("eval", "document.getElementById('hud-menu-btn')?.click()")
+time.sleep(0.8)
 body = ev('JSON.stringify(document.getElementById("hud-intro")?.innerText ?? "")') or ""
 tiene_vel = "VELOCIDAD" in str(body)
-tiene_presets = all(w in str(body) for w in ("Realista", "Equilibrado", "Ragdoll"))
-print(f"menu: VELOCIDAD={tiene_vel} presets={tiene_presets}")
-if not (tiene_vel and tiene_presets):
-    print("FALLO: menu incompleto"); ok = False
-shot("juice-1-menu.png")
-
-# Cerrar el menu (bloquea el raton) y saltar tutorial si arranca
-try: ab("find", "text", "Comenzar", "click")
-except Exception: pass
-time.sleep(1.5)
+print(f"menu pruebas: VELOCIDAD={tiene_vel}")
+if not tiene_vel:
+    print("FALLO: menu sin VELOCIDAD"); ok = False
+ab("eval", "document.getElementById('hud-intro-dismiss')?.click()")
+time.sleep(1.0)
 try: ab("eval", "document.getElementById('tut-skip')?.click()")
 except Exception: pass
 time.sleep(1.0)
@@ -117,7 +130,7 @@ try: ab("eval", "localStorage.removeItem('ns.tune.preset.v1')")
 except Exception: pass
 time.sleep(0.5)
 shot("juice-3-caida.png")
-time.sleep(2.5)  # deja el auto-reset terminar
+time.sleep(9.0)  # la repeticion epica (~6 s) precede al auto-reset
 st2 = ev('window.__NS.state()')
 print("estado tras auto-reset:", st2)
 

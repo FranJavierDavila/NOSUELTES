@@ -197,8 +197,8 @@ def main():
 
     # Captura del menu con la seccion Campeonato visible.
     ab("screenshot", "download/campeonato-1-menu.png")
-    ab("find", "text", "Comenzar", "click")
-    time.sleep(2.0)
+    import e2e_lib as lib
+    lib.enter(ab)
     ab("eval", "document.getElementById('tut-skip')?.click()")
     time.sleep(1.5)
     if "--preset" in sys.argv:

@@ -149,15 +149,7 @@ export class GameScene {
   /** Distancia base de camara segun pared (crece con techo/altura del circuito). */
   private camBaseDist = 7.8;
   private camDist = 7.8;
-  /** Estado cinematico: zoom-in al caer (drama) y al completar (celebracion). */
-  private camMode: "play" | "fallen" | "success" | "replay" = "play";
-  private camModeLeft = 0;
-  /** Modo replay: lado de rodaje (±1, elegido al entrar) y tiempo dentro del modo. */
-  private replaySide = 0;
-  private replayT = 0;
   private lastPelvis = { x: 0, y: 2, z: 0 };
-  /** Escombros comedicoss (carton del GAS): balistica manual y giro. */
-  private debris: { mesh: Mesh; vel: Vector3; spin: Vector3; rot: Vector3; life: number; mat: StandardMaterial }[] = [];
   private lastReachRadius = 0.58;
   /** Textura radial blanca compartida (tiza, polvo, confeti usa colores propios). */
   private readonly spriteTex: DynamicTexture;
@@ -290,8 +282,6 @@ export class GameScene {
     const roof = framesRoofFactor(this.wallFrames);
     this.camBaseDist = Math.min(10.6, 7.8 + 2.3 * roof + Math.max(0, this.wallTopY - 6) * 0.28);
     this.camDist = this.camBaseDist;
-    this.camMode = "play";
-    this.camModeLeft = 0;
     const wallMat = wallMaterial(this.scene);
     for (const frame of this.wallFrames) {
       const segMesh = MeshBuilder.CreateBox(`wall_seg_${frame.index}`, { width: d.width, height: frame.height, depth: d.depth }, this.scene);
@@ -908,31 +898,12 @@ export class GameScene {
   // --- Camara ---
 
   /**
-   * Camara de seguimiento cinematografico (peticion del jugador: "una camara que
-   * permita un seguimiento muy bueno y espectacular"):
-   * - sigue la pelvis con zona muerta (x/y) y mirada adelantada (+0.35 arriba);
-   * - distancia ADAPTATIVA: se aleja con la velocidad (pendulos y saltos entran en
-   *   cuadro), se acerca en caida (drama, junto al slow-mo) y al completar;
-   * - retrocede cuando el escalador avanza bajo un techo hacia la camara (circuito);
-   * - respiracion sutil en reposo y sacudida de impacto sobre el punto de mira.
-   * Sin balanceo lateral ni roll: el picking en espacio de pantalla debe ser estable.
+   * Camara de seguimiento UNICA (peticion del jugador: "eliminar la dinamica de
+   * camaras cinematicas que nos sacan de la experiencia"): sin modos fallen/
+   * success/replay ni zooms dramaticos. Solo el seguimiento con zona muerta, la
+   * distancia adaptativa a la velocidad y la sacudida de impacto.
    */
-  updateCamera(dt: number, pelvis: { x: number; y: number; z: number }, recenter: boolean, mode: "play" | "fallen" | "success" | "replay" = "play", aiming = false): void {
-    if (mode !== "play") {
-      if (mode !== this.camMode) {
-        // Entrada en un modo cinematico: el replay reinicia su lado y su push-in.
-        if (mode === "replay") {
-          this.replaySide = 0;
-          this.replayT = 0;
-        }
-      }
-      this.camMode = mode;
-      this.camModeLeft = 1.5;
-    } else if (this.camModeLeft > 0) {
-      this.camModeLeft -= dt;
-      if (this.camModeLeft <= 0) this.camMode = "play";
-    }
-
+  updateCamera(dt: number, pelvis: { x: number; y: number; z: number }, recenter: boolean, aiming = false): void {
     const dPelvis = Math.hypot(pelvis.x - this.lastPelvis.x, pelvis.y - this.lastPelvis.y, pelvis.z - this.lastPelvis.z);
     // Guarda finita: una pelvis no finita congela el seguimiento (nunca deriva la
     // camara hacia el vacio); las guardas de mundo de loop.ts reinician la prueba.
@@ -941,42 +912,6 @@ export class GameScene {
     this.lastPelvis = { x: pelvis.x, y: pelvis.y, z: pelvis.z };
 
     const target = this.camFollow;
-
-    // --- MODO REPLAY (repeticion epica): perfil lateral 3/4 con push-in lento ---
-    // Camara DISTINTA a la de juego (peticion del jugador: "replay"): se coloca a
-    // un lado del cuerpo (el lado con hueco), algo mas baja, y se acerca despacio
-    // durante el playback. El punto de mira sigue la pelvis REPRODUCIDA suave.
-    if (mode === "replay" && pelvisFinite) {
-      if (this.replaySide === 0) this.replaySide = pelvis.x >= 0 ? -1 : 1;
-      this.replayT += dt;
-      const push = Math.min(1, this.replayT / 4.2);
-      const side = this.replaySide;
-      target.x += (pelvis.x - target.x) * Math.min(1, dt * 3.6);
-      target.y += (Math.max(0.9, pelvis.y) + 0.15 - target.y) * Math.min(1, dt * 3.6);
-      target.z += (pelvis.z * 0.5 - target.z) * Math.min(1, dt * 2.4);
-      const distGoal = 3.9 - push * 1.15;
-      this.camDist += (distGoal - this.camDist) * Math.min(1, dt * 2.2);
-      const desiredPos = new Vector3(
-        target.x + side * this.camDist * 0.62,
-        target.y + 0.38 + Math.sin(performance.now() / 1000 * 0.5) * 0.03,
-        -this.camDist * 0.55 - 0.7
-      );
-      this.camera.position.addInPlace(desiredPos.subtract(this.camera.position).scale(Math.min(1, dt * 2.8)));
-      if (!Number.isFinite(this.camera.position.x + this.camera.position.y + this.camera.position.z)) {
-        this.camera.position.copyFrom(desiredPos);
-      }
-      const look = new Vector3(target.x, target.y + 0.1, target.z);
-      if (this.shakeAmp > 0.0006) {
-        look.x += Math.sin(performance.now() / 1000 * 47) * this.shakeAmp;
-        look.y += Math.cos(performance.now() / 1000 * 39) * this.shakeAmp * 0.7;
-        this.camera.setTarget(look);
-        this.shakeAmp *= Math.exp(-dt * 5.2);
-      } else {
-        this.shakeAmp = 0;
-        this.camera.setTarget(look);
-      }
-      return;
-    }
 
     const deadzoneHalf = 0.55;
     if (recenter) {
@@ -1013,9 +948,9 @@ export class GameScene {
     // Distancia adaptativa + posicion (suavizadas). MIENTRAS SE ARRASTRA la
     // posicion queda CONGELADA: el jugador esta apuntando con el cursor y el
     // mapeo cursor->presa no puede moverse bajo sus pies (control determinista).
-    const zoomGoal = this.camMode === "fallen" ? -1.4 : this.camMode === "success" ? -0.85 : Math.min(1.15, speed * 0.13);
+    const zoomGoal = Math.min(1.15, speed * 0.13);
     const distGoal = Math.min(12, Math.max(5.2, this.camBaseDist + (Number.isFinite(zoomGoal) ? zoomGoal : 0)));
-    this.camDist += (distGoal - this.camDist) * Math.min(1, dt * (this.camMode === "play" ? 2.6 : 4.2));
+    this.camDist += (distGoal - this.camDist) * Math.min(1, dt * 2.6);
     if (!Number.isFinite(this.camDist)) this.camDist = this.camBaseDist;
     const t = performance.now() / 1000;
     if (!aiming) {
@@ -1078,7 +1013,7 @@ export class GameScene {
       dist: Math.round(this.camDist * 100) / 100,
       posY: Math.round(this.camera.position.y * 100) / 100,
       posZ: Math.round(this.camera.position.z * 100) / 100,
-      mode: this.camMode
+      mode: "play"
     };
   }
 
@@ -1286,65 +1221,34 @@ export class GameScene {
   }
 
   /**
-   * FX del GAS (peticion del jugador: "toques de humos sorprendentes"): nube verde
-   * desde el trasero + UN TROZO DE CARTON eyectado que vuela girando y cae. El
-   * carton es balistica manual (nada de fisica del solver): nace evidente y muere solo.
+   * FX del GAS (peticion del jugador: "el PEDO debe lanzar GAS, no una caja
+   * marron"): SOLO nube de gas verde-oliva desde el trasero, con cuerpo (dos
+   * estallidos: jet inicial + nube persistente que flota y sube). Sin carton,
+   * sin escombros: particulas puras que nacen y mueren solas.
    */
   spawnFartBlast(pos: Vector3, away: Vector3): void {
-    // Nube de gas: verde oliva, sube y se disipa.
+    // Jet inicial: verde vivo, rapido, hacia fuera de la pared.
     this.burst(
-      "gasBurst",
+      "gasJet",
       pos.clone(),
-      34,
-      new Color4(0.55, 0.75, 0.25, 0.55),
-      new Color4(0.42, 0.62, 0.2, 0.35),
-      new Vector3(away.x - 0.6, 0.15, away.z - 0.6),
-      new Vector3(away.x + 0.6, 1.15, away.z + 0.6),
-      { sizeMin: 0.12, sizeMax: 0.34, lifeMin: 0.6, lifeMax: 1.5, gravity: new Vector3(0, 0.55, 0), emitTime: 0.24 }
+      26,
+      new Color4(0.62, 0.82, 0.28, 0.6),
+      new Color4(0.45, 0.65, 0.22, 0.4),
+      new Vector3(away.x * 1.6 - 0.4, 0.1, away.z * 1.6 - 0.4),
+      new Vector3(away.x * 2.6 + 0.4, 0.9, away.z * 2.6 + 0.4),
+      { sizeMin: 0.1, sizeMax: 0.26, lifeMin: 0.35, lifeMax: 0.8, gravity: new Vector3(0, 0.4, 0), emitTime: 0.16 }
     );
-    // Carton: caja marron que sale disparada con giro y cae con drag.
-    const carton = MeshBuilder.CreateBox("fartCarton", { width: 0.2, height: 0.14, depth: 0.035 }, this.scene);
-    const mat = new StandardMaterial("fartCartonMat", this.scene);
-    mat.diffuseColor = Color3.FromHexString("#b08a5a");
-    mat.specularColor = new Color3(0.05, 0.05, 0.05);
-    carton.material = mat;
-    carton.rotationQuaternion = Quaternion.Identity();
-    carton.position.copyFrom(pos);
-    carton.isPickable = false;
-    const spin = new Vector3((Math.random() - 0.5) * 14, (Math.random() - 0.5) * 14, (Math.random() - 0.5) * 10);
-    const rot = new Vector3(Math.random() * 6.28, Math.random() * 6.28, Math.random() * 6.28);
-    const vel = new Vector3(
-      away.x * (2.1 + Math.random() * 0.7) + (Math.random() - 0.5) * 0.7,
-      0.4 + Math.random() * 0.5,
-      away.z * (2.1 + Math.random() * 0.7) + (Math.random() - 0.5) * 0.7
+    // Nube persistente: mas grande, flota y sube despacio (se queda en la cara).
+    this.burst(
+      "gasCloud",
+      pos.clone().addInPlace(new Vector3(away.x * 0.5, 0.1, away.z * 0.5)),
+      40,
+      new Color4(0.5, 0.7, 0.24, 0.5),
+      new Color4(0.36, 0.52, 0.18, 0.3),
+      new Vector3(away.x * 0.4 - 0.7, 0.05, away.z * 0.4 - 0.7),
+      new Vector3(away.x * 0.9 + 0.7, 1.35, away.z * 0.9 + 0.7),
+      { sizeMin: 0.16, sizeMax: 0.42, lifeMin: 0.9, lifeMax: 2.1, gravity: new Vector3(0, 0.62, 0), emitTime: 0.4 }
     );
-    this.debris.push({ mesh: carton, vel, spin, rot, life: 2.4, mat });
-  }
-
-  /** Integracion de escombros (llamar cada frame de render con dt real). */
-  tickFx(dt: number): void {
-    for (let i = this.debris.length - 1; i >= 0; i--) {
-      const d = this.debris[i];
-      d.life -= dt;
-      // Gravedad suave + drag de papel: el carton planea un poco antes de caer.
-      d.vel.y -= 3.6 * dt;
-      d.vel.scaleInPlace(Math.max(0, 1 - 0.55 * dt));
-      d.mesh.position.addInPlace(d.vel.scale(dt));
-      if (d.mesh.position.y < 0.03) {
-        d.mesh.position.y = 0.03;
-        d.vel.y = Math.abs(d.vel.y) * 0.25;
-        d.vel.scaleInPlace(0.7);
-      }
-      const q = d.mesh.rotationQuaternion ?? Quaternion.Identity();
-      d.rot.addInPlace(d.spin.scale(dt));
-      Quaternion.RotationYawPitchRollToRef(d.rot.x, d.rot.y, d.rot.z, q);
-      d.mesh.rotationQuaternion = q;
-      if (d.life < 0.45) d.mat.alpha = Math.max(0, d.life / 0.45);
-      if (d.life <= 0) {
-        d.mesh.dispose();
-        this.debris.splice(i, 1);
-      }
-    }
   }
 
   /** Distancia de la pared a lo largo del rayo, para depuracion de raycast. */

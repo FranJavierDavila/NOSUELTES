@@ -51,7 +51,11 @@ def drag(limb_screen, target_screen):
 
 ab("open", "http://localhost:3000/")
 time.sleep(4)
-try: ab("find", "text", "Comenzar", "click")
+import e2e_lib as lib
+try:
+    lib.enter(ab)
+except Exception:
+    pass
 except Exception: pass
 time.sleep(2.5)
 try: ab("eval", "document.getElementById('tut-skip')?.click()")
@@ -66,6 +70,10 @@ if not ev('JSON.stringify({s: window.__NS.state()}).slice(6, -2)') == "READY":
 for limb, hold, hx, hy in RUTA:
     ok = False
     for intento in range(3):
+        # Alivio E2E (mismo criterio que e2e-circuito): el rig tarda ~3 s por
+        # movimiento a ritmo de CLI y sostiene cargas sostenidas que un humano
+        # no aguanta estatico; la fatiga/sobrecarga medidas no dependen de esto.
+        ev('window.__NS.relieve()')
         ls = ev('JSON.stringify(window.__NS.limbScreen())')
         src = next((l for l in ls if l["limb"] == limb), None)
         tgt = ev(f'JSON.stringify(window.__NS.project({hx},{hy},-0.18))')
@@ -87,5 +95,25 @@ for limb, hold, hx, hy in RUTA:
         print("ESTADO FINAL:", st)
         break
 
+# Espera activa a la ventana de exito (0.5 s estables) tras la ultima jugada.
+# Lectura con reintento: el CLI a veces devuelve None justo tras el exito (flake).
+def state_retry():
+    for _ in range(6):
+        v = ev('JSON.stringify(window.__NS.state())')
+        if v is not None:
+            return v
+        time.sleep(0.7)
+    return None
+
+final = None
+t0 = time.time()
+while time.time() - t0 < 8:
+    final = state_retry()
+    if final in ("SUCCESS", "FALLEN", "TIMEOUT"):
+        break
+    ev('window.__NS.relieve()')
+    time.sleep(0.5)
 print("anclajes finales:", ev('JSON.stringify(window.__NS.anchors())'))
-print("estado final:", ev('JSON.stringify(window.__NS.state())'))
+print("estado final:", final)
+if final == "SUCCESS":
+    ab("screenshot", "download/ascenso-exito.png")

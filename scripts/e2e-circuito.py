@@ -126,8 +126,9 @@ def open_page():
     ab("open", URL)
     time.sleep(2.5)
     ab("console", "--clear")
-    # Cierra el intro si esta visible.
-    ab("eval", "(() => { const b = document.querySelector('#hud-intro-dismiss'); if (b && !document.querySelector('#hud-intro').classList.contains('hidden')) b.click(); return 'ok'; })()")
+    # Cierra el intro si esta visible (pantalla inicial GO!).
+    import e2e_lib as lib
+    lib.enter(ab)
     time.sleep(1.2)
 
 def falla(msg):

@@ -30,7 +30,8 @@ import { GameScene } from "../render/scene";
 import { Hud } from "../ui/hud";
 import type { ChallengeOption } from "../ui/hud";
 import { DebugOverlay, type DebugData } from "../ui/debug";
-import { AudioBus } from "../ui/audio";
+import { Narrator } from "../ui/narrator";
+import { i18n, t, type Locale } from "../ui/i18n";
 import type { BalancePresetName } from "../ui/hud";
 import { computeScore, isBetter, BestRecord } from "../gameplay/score";
 import { buildFallCaption, buildMoveCaption, REPLAY_TIMING, type ReplayCaption } from "../domain/replay";
@@ -57,54 +58,40 @@ import {
 } from "../domain/championship";
 import { v3, lerp } from "../physics/pbd/math";
 
-const CHALLENGE_LABELS: Record<ChallengeType, string> = {
-  reach_top: "ALCANZAR",
-  stabilize: "ESTABILIZAR",
-  recover: "RECUPERAR"
-};
-
-const CHALLENGE_DESCRIPTIONS: Record<ChallengeType, string> = {
-  reach_top: "Pared vertical con ruta de presas: lleva ambas manos a la presa final y mantén la postura.",
-  stabilize: "Empiezas colgando: restablece una postura estable y sostenla sobre el umbral.",
-  recover: "Postura desequilibrada pero recuperable: recupera apoyos y estabilidad antes del timeout."
-};
-
-/** Overrides por ID de desafio (variantes con etiqueta propia, p.ej. VELOCIDAD). */
-const TRAINING_META: Record<string, { label: string; description: string }> = {
-  challenge_speed_run: {
-    label: "VELOCIDAD",
-    description: "Contrarreloj: la misma cima, 60 segundos. Encadena el flujo y no caigas."
+/** Etiquetas y descripciones localizadas (i18n). Los metadatos por ID derivan
+ * de campeonato.ts (nombres/blurb) y del tipo de desafio para entrenamiento. */
+const challengeTypeLabel = (type: ChallengeType): string => t(`challenge.${type}.label`);
+const challengeTypeDescription = (type: ChallengeType): string => t(`challenge.${type}.desc`);
+const challengeMeta = (id: string): { label: string; description: string } | null => {
+  const s = CHAMPIONSHIP_STAGES.find((x) => x.challengeId === id);
+  if (s) {
+    return {
+      label: t("challenge.stage", { n: s.index, name: t(`stage.champ${s.index}`) }),
+      description: t(`stage.blurb.champ${s.index}`)
+    };
   }
+  const c = CIRCUIT_STAGES.find((x) => x.challengeId === id);
+  if (c) {
+    return {
+      label: t("challenge.scenario", { n: c.index, name: t(`stage.circuit${c.index}`) }),
+      description: t(`stage.blurb.circuit${c.index}`)
+    };
+  }
+  if (id === "challenge_speed_run") {
+    return { label: t("challenge.speed.label"), description: t("challenge.speed.desc") };
+  }
+  return null;
 };
-
-/** Etiquetas de las 5 etapas del campeonato, derivadas del modulo puro. */
-const CHAMPIONSHIP_META: Record<string, { label: string; description: string }> = Object.fromEntries(
-  CHAMPIONSHIP_STAGES.map((s) => [
-    s.challengeId,
-    { label: `ETAPA ${s.index} · ${s.name}`, description: s.blurb }
-  ])
-);
-
-/** Etiquetas de los 5 escenarios del CIRCUITO (angulos/techos, peticion del jugador). */
-const CIRCUIT_META: Record<string, { label: string; description: string }> = Object.fromEntries(
-  CIRCUIT_STAGES.map((s) => [
-    s.challengeId,
-    { label: `ESCENARIO ${s.index} · ${s.name}`, description: s.blurb }
-  ])
-);
-
-const CHALLENGE_META: Record<string, { label: string; description: string }> = {
-  ...CHAMPIONSHIP_META,
-  ...CIRCUIT_META,
-  ...TRAINING_META
+const stageNameOf = (id: string): string => {
+  const s = CHAMPIONSHIP_STAGES.find((x) => x.challengeId === id);
+  if (s) return t(`stage.champ${s.index}`);
+  const c = CIRCUIT_STAGES.find((x) => x.challengeId === id);
+  return c ? t(`stage.circuit${c.index}`) : id;
 };
-
-/** Etiquetas compactas del selector lateral para las pruebas de entrenamiento. */
-const TRAINING_SHORT: Record<string, string> = {
-  challenge_reach_top: "Alcanzar",
-  challenge_stabilize_pose: "Estabilizar",
-  challenge_recover_swing: "Recuperar",
-  challenge_speed_run: "Velocidad"
+const rejectLabel = (reason: string): string => {
+  const key = `reject.${reason}`;
+  const v = t(key);
+  return v === key ? reason : v;
 };
 
 // Mecanica GAS (comedia fisica, peticion del jugador: "una flatulencia que se
@@ -122,33 +109,23 @@ const GAS_RELIEF = 0.16;
 // posturas malas sin castigo; SOSTENERLAS si es caida garantizada.
 const POSTURE_GRACE_S = 0.24;
 
-/** Presets de balance fisico (ADR-008) seleccionables en el menu. */
+/** Presets de balance fisico (ADR-008 + XPBD pinVelKill) seleccionables en Ajustes. */
 const PRESET_TUNES: Record<BalancePresetName, BalanceTuning> = {
-  realista: { postureTone: 0.95, jointLimitStiffness: 1.0, foldStrength: 1.0, toneFloor: 0.08, stretchTolerance: 1.05, twistLimitRad: 0.3 },
-  equilibrado: { postureTone: 0.75, jointLimitStiffness: 1.0, foldStrength: 0.85, toneFloor: 0.12, stretchTolerance: 1.1, twistLimitRad: 0.45 },
-  ragdoll: { postureTone: 0.5, jointLimitStiffness: 0.85, foldStrength: 0.6, toneFloor: 0.25, stretchTolerance: 1.2, twistLimitRad: 0.85 }
+  realista: { postureTone: 0.95, jointLimitStiffness: 1.0, foldStrength: 1.0, toneFloor: 0.08, stretchTolerance: 1.05, twistLimitRad: 0.3, pinVelKill: 0.55 },
+  equilibrado: { postureTone: 0.75, jointLimitStiffness: 1.0, foldStrength: 0.85, toneFloor: 0.12, stretchTolerance: 1.1, twistLimitRad: 0.45, pinVelKill: 0.4 },
+  ragdoll: { postureTone: 0.5, jointLimitStiffness: 0.85, foldStrength: 0.6, toneFloor: 0.25, stretchTolerance: 1.2, twistLimitRad: 0.85, pinVelKill: 0.2 }
 };
 
-const REJECT_LABELS: Record<string, string> = {
-  extremidad_no_permitida: "esa presa no admite esa extremidad",
-  presa_ocupada: "la presa ya esta ocupada",
-  fuera_de_alcance: "fuera de alcance",
-  regla_del_desafio: "regla del desafio",
-  debe_terminar_en_presa: "debes terminar el movimiento en una presa",
-  alcance_insuficiente: "la extremidad no llego a la presa",
-  objetivo_invalido: "objetivo invalido",
-  objetivo_libre: "objetivo libre no permitido",
-  presa_inexistente: "presa inexistente",
-  cruce_imposible: "el cruce de mano es imposible (postura imposible)",
-  a_traves_del_cuerpo: "la extremidad atravesaría el torso (postura imposible)"
-};
-
-/** Etiquetas legibles de extremidad para avisos (el HUD tiene las suyas). */
-const LIMB_LABEL_ES: Record<LimbId, string> = {
-  hand_l: "Mano izq.",
-  hand_r: "Mano der.",
-  foot_l: "Pie izq.",
-  foot_r: "Pie der."
+/**
+ * Fisica por modo (peticion del jugador: que los modos se NOTEN y el realista no
+ * baile): damping global del Verlet (realista amortigua el pendulo; ragdoll lo
+ * conserva) y escala de fuerza muscular (realista 100%, equilibrado 6% mas de
+ * ayuda, ragdoll flojit: los musculos apenas sostienen).
+ */
+const PRESET_PHYSICS: Record<BalancePresetName, { damping: number; muscleScale: number }> = {
+  realista: { damping: 0.968, muscleScale: 1.0 },
+  equilibrado: { damping: 0.985, muscleScale: 1.06 },
+  ragdoll: { damping: 0.995, muscleScale: 0.8 }
 };
 
 const MAX_STEPS_PER_FRAME = 6;
@@ -185,6 +162,7 @@ const REPLAY_REC_FRAMES = Math.round(REPLAY_TIMING.recCapacityS * 60);
 
 const clamp01 = (x: number | undefined): number => Math.min(1, Math.max(0, typeof x === "number" && Number.isFinite(x) ? x : 0));
 const clampRange = (x: number | undefined, min: number, max: number): number => Math.min(max, Math.max(min, typeof x === "number" && Number.isFinite(x) ? x : min));
+const limbLabelOf = (limb: LimbId): string => t(`limb.${limb}`);
 
 export interface GameAppOptions {
   canvas: HTMLCanvasElement;
@@ -199,7 +177,14 @@ export class GameApp {
   private scene!: GameScene;
   private hud!: Hud;
   private debug!: DebugOverlay;
-  private readonly audio = new AudioBus();
+  /** Narrador deportivo (voz pregrabada + barra de comentario). */
+  private narrator!: Narrator;
+  /** Musculos base del perfil (para escalar por preset sin acumular). */
+  private baseMuscles: import("../physics/pbd/solver").MuscleParams | null = null;
+  /** Temporizadores del narrador: chistes en reposo y linea de arranque. */
+  private jokeTimer = 24;
+  private startSpoken = false;
+  private milestoneFlags = new Set<number>();
   private solver!: PbdSolver;
   private readonly machine: GameStateMachine;
   private bio!: BiomechanicsSystem;
@@ -282,7 +267,7 @@ export class GameApp {
   private peakFatigue = 0;
   private fallAutoReset = -1;
   /** Balance realismo/ragdoll (ADR-008), persistido y calibrable en F3. */
-  private tune: BalanceTuning = { jointLimitStiffness: 1.0, foldStrength: 0.85, postureTone: 0.75, toneFloor: 0.12, stretchTolerance: 1.1, twistLimitRad: 0.45 };
+  private tune: BalanceTuning = { jointLimitStiffness: 1.0, foldStrength: 0.85, postureTone: 0.75, toneFloor: 0.12, stretchTolerance: 1.1, twistLimitRad: 0.45, pinVelKill: 0.4 };
   /** Cuenta atras de fallo por extremidad (sobrecarga continua), refrescada cada frame. */
   private readonly limbOverload = new Map<LimbId, { seconds: number; frac: number }>();
   /** Reglas de postura imposible vigentes (derivadas del tono postural). Objeto
@@ -345,6 +330,16 @@ export class GameApp {
     this.scene = await GameScene.create(this.canvas);
 
     const challengeIds = this.repo.listChallengeIds();
+    // Ajustes persistidos del narrador (encendido y volumen).
+    let narratorOn = true;
+    let narratorVol = 0.9;
+    try {
+      narratorOn = window.localStorage.getItem("ns.narrator.on") !== "0";
+      const v = Number(window.localStorage.getItem("ns.narrator.vol"));
+      if (Number.isFinite(v) && v >= 0 && v <= 1) narratorVol = v;
+    } catch {
+      /* sin persistencia */
+    }
     this.hud = new Hud(
       this.opts.hudRoot,
       this.events,
@@ -354,18 +349,15 @@ export class GameApp {
         // estan superadas. El aviso explica POR QUE no se abre (control determinista).
         const stage = stageOf(id);
         if (stage && !isStageUnlocked(stage.index, this.championshipBests())) {
-          this.audio.ensure();
-          this.hud.toast(`ETAPA ${stage.index} · ${stage.name} bloqueada: supera primero la etapa ${stage.index - 1}`, "warn");
+          this.hud.toast(t("challenge.lockedStage", { n: stage.index, name: stageNameOf(id), prev: stage.index - 1 }), "warn");
           return;
         }
         // Candado del CIRCUITO (cadena propia, independiente del campeonato).
         const cstage = circuitStageOf(id);
         if (cstage && !isCircuitStageUnlocked(cstage.index, this.championshipBests())) {
-          this.audio.ensure();
-          this.hud.toast(`ESCENARIO ${cstage.index} · ${cstage.name} bloqueado: supera primero el escenario ${cstage.index - 1}`, "warn");
+          this.hud.toast(t("challenge.lockedScenario", { n: cstage.index, name: stageNameOf(id), prev: cstage.index - 1 }), "warn");
           return;
         }
-        this.audio.ensure();
         this.loadChallenge(id);
         // Elegir prueba desde el menu CIERRA el menu (antes el muro cargaba detras
         // del modal y parecia que "no pasaba nada"). Cualquier pausa del menu queda.
@@ -375,8 +367,32 @@ export class GameApp {
       },
       () => this.onIntroDismissed(),
       () => this.openMenu(),
-      (preset) => this.applyPreset(preset)
+      (preset) => this.applyPreset(preset),
+      () => this.onStartGo(),
+      (locale) => this.setLanguage(locale),
+      (on) => {
+        this.narrator.setEnabled(on);
+        try {
+          window.localStorage.setItem("ns.narrator.on", on ? "1" : "0");
+        } catch {
+          /* sin persistencia */
+        }
+      },
+      (v) => {
+        this.narrator.setVolume(v);
+        try {
+          window.localStorage.setItem("ns.narrator.vol", String(v));
+        } catch {
+          /* sin persistencia */
+        }
+      }
     );
+    this.hud.setNarratorControls(narratorOn, narratorVol);
+    // El narrador se crea DESPUES del Hud: el constructor del HUD escribe
+    // root.innerHTML y borraria cualquier nodo anadido antes (orden critico).
+    this.narrator = new Narrator(this.opts.hudRoot);
+    this.narrator.setEnabled(narratorOn);
+    this.narrator.setVolume(narratorVol);
     this.debug = new DebugOverlay(this.opts.debugRoot, (flag, value) => {
       this.scene.setDebugFlags({ [flag]: value });
       this.debug.setFlagCheckbox(flag, value);
@@ -461,17 +477,21 @@ export class GameApp {
       tremorAmplitude: this.profile.sim.tremorAmplitude,
       loadEstimatorGain: this.profile.biomech.loadEstimatorGain
     });
+    // Musculos base del perfil + fisica del preset activo (damping/escala).
+    this.baseMuscles = { ...this.solver.env.muscles };
+    this.applyPresetPhysics();
 
     this.scene.buildWorld(this.wall);
-    this.hud.setChallenge(this.challenge, CHALLENGE_META[id]?.label ?? CHALLENGE_LABELS[this.challenge.type]);
+    this.hud.setChallenge(this.challenge, challengeMeta(id)?.label ?? challengeTypeLabel(this.challenge.type));
+    this.hud.setInstruction(this.localizedInstruction());
     // Chip permanente de campeonato/circuito (panel superior izquierdo).
     const stage = stageOf(id);
     const cstage = circuitStageOf(id);
     this.hud.setChampionshipStatus(
       stage
-        ? `Campeonato · etapa ${stage.index}/5 · ${stage.name} (${stage.heightM} m)`
+        ? t("challenge.champStatus", { n: stage.index, name: stageNameOf(id), h: stage.heightM })
         : cstage
-          ? `Circuito · escenario ${cstage.index}/5 · ${cstage.name} (${cstage.heightM} m)`
+          ? t("challenge.circuitStatus", { n: cstage.index, name: stageNameOf(id), h: cstage.heightM })
           : null
     );
     this.buildInteraction();
@@ -497,6 +517,10 @@ export class GameApp {
     const n0 = this.wallFrames[0]?.normal ?? { x: 0, y: 0, z: -1 };
     this.rig = spawnRagdoll(this.solver, this.profile, this.character, this.wall, this.challenge, holdById, (limb) => this.anchorMaxForceFor(limb), n0);
     this.scene.spawnRagdollVisuals(this.rig);
+    // Ventana de asentamiento: damping reforzado medio segundo; el personaje aparece
+    // QUIETO colgado (peticion del jugador: el modo realista no puede bailotear
+    // nada mas empezar si esta colgado y estable).
+    this.solver.markSettle(0.55);
     // Encuadre inmediato del personaje nuevo: la camara JAMAS arranca un intento
     // mirando a donde estaba el cuerpo anterior (peticion del jugador: ver al
     // personaje siempre; sin esto, un respawn tras una caida alta deja el cuadro
@@ -545,11 +569,13 @@ export class GameApp {
     this.recFrames = [];
     this.recComY = [];
     this.recCount = 0;
+    // El narrador reinicia su linea de arranque y los hitos del intento.
+    this.milestoneFlags.clear();
     this.machine.transition("RESETTING");
     // Despues de la transicion: en FALLEN el objetivo seria el tono flacido de la
     // caida; al re-spawnear el escalador vuelve a estar vivo (tono calibrado).
     this.applyTuneToSolver();
-    this.events.emit({ type: "Message", text: `Prueba ${CHALLENGE_META[this.challenge.id]?.label ?? CHALLENGE_LABELS[this.challenge.type]} cargada`, tone: "info" });
+    this.events.emit({ type: "Message", text: t("challenge.loaded", { name: challengeMeta(this.challenge.id)?.label ?? challengeTypeLabel(this.challenge.type) }), tone: "info" });
   }
 
   // --- Balance realismo/ragdoll (ADR-008): persistencia y aplicacion ---
@@ -559,12 +585,13 @@ export class GameApp {
   /** Preset de balance activo (null = calibracion manual con sliders F3). */
   private presetName: BalancePresetName | null = null;
 
-  /** Aplica un preset del menu, lo persiste y lo marca como activo en el HUD. */
+  /** Aplica un preset de Ajustes, lo persiste y lo marca como activo en el HUD. */
   applyPreset(name: BalancePresetName): void {
     // setTune limpia el preset activo (cualquier ajuste pasa por el); volver a
     // marcar aqui deja el estado coherente: preset aplicado y persistido.
     this.setTune({ ...PRESET_TUNES[name] });
     this.presetName = name;
+    this.applyPresetPhysics();
     try {
       window.localStorage.setItem(GameApp.PRESET_KEY, name);
     } catch {
@@ -572,7 +599,31 @@ export class GameApp {
     }
     this.hud.setPresetActive(name);
     this.debug.setTuneValues({ postureTone: this.tune.postureTone, jointLimitStiffness: this.tune.jointLimitStiffness, foldStrength: this.tune.foldStrength, stretchTolerance: this.tune.stretchTolerance, twistLimitRad: this.tune.twistLimitRad });
-    this.events.emit({ type: "Message", text: `Balance ${name}: tono ${this.tune.postureTone.toFixed(2)}, límites ${this.tune.jointLimitStiffness.toFixed(2)}, pliegue ${this.tune.foldStrength.toFixed(2)}, estiramiento ×${this.tune.stretchTolerance.toFixed(2)}`, tone: "info" });
+    this.events.emit({ type: "Message", text: t("toast.balance", { name, tone: this.tune.postureTone.toFixed(2), limits: this.tune.jointLimitStiffness.toFixed(2), fold: this.tune.foldStrength.toFixed(2), stretch: `×${this.tune.stretchTolerance.toFixed(2)}` }), tone: "info" });
+  }
+
+  /**
+   * Fisica del preset activo: damping global y escala muscular. Se llama tras
+   * crear el solver (loadChallenge) y al cambiar de preset. Sin preset activo
+   * (ajuste manual F3), deja damping/escala de EQUILIBRADO como base neutra.
+   */
+  private applyPresetPhysics(): void {
+    if (!this.solver || !this.baseMuscles) return;
+    const phys = PRESET_PHYSICS[this.presetName ?? "equilibrado"];
+    this.solver.env.damping = phys.damping;
+    const M = this.solver.env.muscles;
+    const B = this.baseMuscles;
+    const s = phys.muscleScale;
+    M.quadPushMax = B.quadPushMax * s;
+    M.quadServoK = B.quadServoK * s;
+    M.balanceMax = B.balanceMax * s;
+    M.stepUpMax = B.stepUpMax * s;
+    M.armPullMax = B.armPullMax * s;
+    M.coreMax = B.coreMax * s;
+    M.neckMax = B.neckMax * s;
+    M.wallLeanMax = B.wallLeanMax * s;
+    M.muscleForceCapPelvis = B.muscleForceCapPelvis * s;
+    M.muscleForceCapChest = B.muscleForceCapChest * s;
   }
 
   private loadTune(): void {
@@ -589,14 +640,15 @@ export class GameApp {
     try {
       const raw = window.localStorage.getItem(GameApp.TUNE_KEY);
       if (raw) {
-        const t = JSON.parse(raw) as Partial<BalanceTuning>;
+        const t2 = JSON.parse(raw) as Partial<BalanceTuning>;
         this.tune = {
-          jointLimitStiffness: clamp01(t.jointLimitStiffness ?? 1.0),
-          foldStrength: clamp01(t.foldStrength ?? 0.85),
-          postureTone: clamp01(t.postureTone ?? 0.75),
-          toneFloor: clamp01(t.toneFloor ?? 0.12),
-          stretchTolerance: clampRange(t.stretchTolerance ?? 1.1, 1.02, 1.35),
-          twistLimitRad: clampRange(t.twistLimitRad ?? 0.45, 0, 1.2)
+          jointLimitStiffness: clamp01(t2.jointLimitStiffness ?? 1.0),
+          foldStrength: clamp01(t2.foldStrength ?? 0.85),
+          postureTone: clamp01(t2.postureTone ?? 0.75),
+          toneFloor: clamp01(t2.toneFloor ?? 0.12),
+          stretchTolerance: clampRange(t2.stretchTolerance ?? 1.1, 1.02, 1.35),
+          twistLimitRad: clampRange(t2.twistLimitRad ?? 0.45, 0, 1.2),
+          pinVelKill: clampRange(t2.pinVelKill ?? 0.4, 0, 1)
         };
       }
     } catch {
@@ -619,7 +671,8 @@ export class GameApp {
       postureTone: clamp01(patch.postureTone ?? this.tune.postureTone),
       toneFloor: clamp01(patch.toneFloor ?? this.tune.toneFloor),
       stretchTolerance: clampRange(patch.stretchTolerance ?? this.tune.stretchTolerance, 1.02, 1.35),
-      twistLimitRad: clampRange(patch.twistLimitRad ?? this.tune.twistLimitRad, 0, 1.2)
+      twistLimitRad: clampRange(patch.twistLimitRad ?? this.tune.twistLimitRad, 0, 1.2),
+      pinVelKill: clampRange(patch.pinVelKill ?? this.tune.pinVelKill, 0, 1)
     };
     // Las reglas de postura imposible siguen al tono: preset realista = estricto.
     this.postureRules = postureRulesForTone(this.tune.postureTone);
@@ -644,6 +697,7 @@ export class GameApp {
     this.solver.env.balance.toneFloor = this.tune.toneFloor;
     this.solver.env.balance.stretchTolerance = this.tune.stretchTolerance;
     this.solver.env.balance.twistLimitRad = this.tune.twistLimitRad;
+    this.solver.env.balance.pinVelKill = this.tune.pinVelKill;
     // En FALLEN el tono objetivo sigue siendo el flacido; en el resto, el calibrado.
     this.solver.setToneTarget(this.machine.state === "FALLEN" ? this.tune.toneFloor : this.tune.postureTone);
   }
@@ -652,6 +706,39 @@ export class GameApp {
     if (this.machine.state === "LOADING" || this.machine.state === "RESETTING") return;
     this.events.emit({ type: "ResetStarted" });
     this.spawn();
+  }
+
+  /** GO! de la pantalla inicial: cierra el arranque y entra al juego (tutorial si toca). */
+  private onStartGo(): void {
+    this.hud.hideStart();
+    this.onIntroDismissed();
+  }
+
+  /** Cambio de idioma en caliente: i18n notifica al HUD; aqui se refrescan textos vivos. */
+  private setLanguage(locale: Locale): void {
+    i18n.setLocale(locale);
+    this.narrator.setLocale(locale);
+    if (this.challenge) {
+      this.hud.setChallenge(this.challenge, challengeMeta(this.challenge.id)?.label ?? challengeTypeLabel(this.challenge.type));
+      this.hud.setInstruction(this.localizedInstruction());
+      const stage = stageOf(this.challenge.id);
+      const cstage = circuitStageOf(this.challenge.id);
+      this.hud.setChampionshipStatus(
+        stage
+          ? t("challenge.champStatus", { n: stage.index, name: stageNameOf(this.challenge.id), h: stage.heightM })
+          : cstage
+            ? t("challenge.circuitStatus", { n: cstage.index, name: stageNameOf(this.challenge.id), h: cstage.heightM })
+            : null
+      );
+    }
+    this.hud.setChallengeList(this.buildChallengeOptions());
+    this.hud.toast(t("toast.langChanged"), "info");
+  }
+
+  /** Instruction del desafio en el idioma activo (JSON trae ES + instructionEn). */
+  private localizedInstruction(): string {
+    const c = this.challenge;
+    return i18n.current === "en" && c.instructionEn ? c.instructionEn : c.instruction;
   }
 
   // --- Records por desafio (localStorage) y campeonato ---
@@ -681,9 +768,9 @@ export class GameApp {
     const bests = this.championshipBests();
     const champ: ChallengeOption[] = CHAMPIONSHIP_STAGES.map((s) => ({
       id: s.challengeId,
-      label: CHALLENGE_META[s.challengeId]?.label ?? `ETAPA ${s.index} · ${s.name}`,
-      short: `E${s.index} · ${s.name}`,
-      description: s.blurb,
+      label: challengeMeta(s.challengeId)?.label ?? t("challenge.stage", { n: s.index, name: s.name }),
+      short: t("challenge.stageShort", { n: s.index }),
+      description: t(`stage.blurb.champ${s.index}`),
       best: bests.get(s.challengeId) ?? null,
       group: "campeonato",
       locked: !isStageUnlocked(s.index, bests),
@@ -692,9 +779,9 @@ export class GameApp {
     }));
     const circuit: ChallengeOption[] = CIRCUIT_STAGES.map((s) => ({
       id: s.challengeId,
-      label: CHALLENGE_META[s.challengeId]?.label ?? `ESCENARIO ${s.index} · ${s.name}`,
-      short: `C${s.index} · ${s.name}`,
-      description: s.blurb,
+      label: challengeMeta(s.challengeId)?.label ?? t("challenge.scenario", { n: s.index, name: s.name }),
+      short: t("challenge.scenarioShort", { n: s.index }),
+      description: t(`stage.blurb.circuit${s.index}`),
       best: bests.get(s.challengeId) ?? null,
       group: "circuito",
       locked: !isCircuitStageUnlocked(s.index, bests),
@@ -705,13 +792,15 @@ export class GameApp {
       .filter((id) => !STAGE_BY_CHALLENGE.has(id) && !CIRCUIT_STAGES.some((c) => c.challengeId === id))
       .map((id) => {
         const c = this.repo.getChallenge(id);
-        const meta = CHALLENGE_META[id];
-        const label = meta?.label ?? CHALLENGE_LABELS[c.type];
+        const meta = challengeMeta(id);
+        const label = meta?.label ?? challengeTypeLabel(c.type);
+        const shortKey = `challenge.training.short.${id.replace("challenge_", "")}`;
+        const shortV = t(shortKey);
         return {
           id,
           label,
-          short: TRAINING_SHORT[id] ?? label,
-          description: meta?.description ?? CHALLENGE_DESCRIPTIONS[c.type],
+          short: shortV === shortKey ? label : shortV,
+          description: meta?.description ?? challengeTypeDescription(c.type),
           best: this.loadBest(id),
           group: "entrenamiento" as const,
           locked: false
@@ -829,7 +918,7 @@ export class GameApp {
       this.guardActive = true;
       this.guardCooldown = 0.4;
       this.lastGuardError = result.nanError ? "nan" : "energia";
-      this.events.emit({ type: "Message", text: "ERROR GUARD: simulacion no finita; reiniciando prueba", tone: "error" });
+      this.events.emit({ type: "Message", text: t("toast.guard"), tone: "error" });
       this.machine.transition("ERROR");
     }
     if (this.machine.state === "ERROR") {
@@ -864,7 +953,7 @@ export class GameApp {
         this.machine.transition("FALLEN");
         this.beginFallSequence();
       } else if (this.machine.state === "READY" || this.machine.state === "RESETTING") {
-        this.events.emit({ type: "Message", text: "Reiniciando prueba: el cuerpo salio del mundo", tone: "warn" });
+        this.events.emit({ type: "Message", text: t("toast.worldLost"), tone: "warn" });
         this.spawn();
         return;
       }
@@ -1048,12 +1137,10 @@ export class GameApp {
       spread += Math.hypot(last[i * 3] - cx, last[i * 3 + 1] - cy, last[i * 3 + 2] - cz);
     }
     spread /= 4;
-    const caption = buildFallCaption(dropM, endUpDot, spread, this.fallInfo?.reason ?? "fall");
+    const caption = buildFallCaption(dropM, endUpDot, spread, this.fallInfo?.reason ?? "fall", i18n.current);
     // El auto-reset queda EN MANOS del replay: reintento al terminar/saltar.
     this.fallAutoReset = -1;
     this.replay = { kind: "fall", frames, playhead: 0, speed: REPLAY_TIMING.fallSpeed, phase: "play", freezeLeft: 0, caption, saved: null };
-    this.audio.ensure();
-    this.audio.playReplayWhoosh();
     this.hud.showReplay(caption);
     this.events.emit({ type: "Message", text: `REPETICIÓN: ${caption.title} · ${caption.meta}`, tone: "info" });
   }
@@ -1075,15 +1162,13 @@ export class GameApp {
       saved[i * 6 + 4] = p.prev.y;
       saved[i * 6 + 5] = p.prev.z;
     }
-    const caption = buildMoveCaption(REPLAY_TIMING.moveChainTrigger);
+    const caption = buildMoveCaption(REPLAY_TIMING.moveChainTrigger, i18n.current);
     this.moveReplayShown = true;
     if (this.interaction?.dragging) {
       if (this.keyboardLimb) this.endKeyboardDrag();
       else this.interaction.cancelDrag();
     }
     this.replay = { kind: "move", frames, playhead: 0, speed: REPLAY_TIMING.moveSpeed, phase: "play", freezeLeft: 0, caption, saved };
-    this.audio.ensure();
-    this.audio.playReplayWhoosh();
     this.hud.showReplay(caption);
   }
 
@@ -1098,7 +1183,6 @@ export class GameApp {
         r.phase = "freeze";
         r.freezeLeft = r.kind === "fall" ? REPLAY_TIMING.fallFreezeS : REPLAY_TIMING.moveFreezeS;
         this.scene.shake(0.02);
-        this.audio.playReplayFreeze();
         this.hud.setReplayPhase("freeze");
       }
       const i0 = Math.min(lastIdx, Math.floor(r.playhead));
@@ -1176,37 +1260,62 @@ export class GameApp {
   // --- Postura fisicamente imposible (peticion del jugador) ---
 
   /**
-   * Regla estricta de fisica elemental: SIN manos ancladas, un cuerpo con peso solo
-   * se sostiene (a) de pie —torso aproximadamente erguido, empujando con las piernas
-   * contra el suelo o las presas— o (b) COLGANDO por debajo de sus apoyos (gancho de
-   * rodilla/pie). Todo lo demas —boca abajo, horizontal, ladeado— es friccion pura y
-   * caida garantizada. El tutorial esta exento (no puede guiar hacia una caida).
+   * Regla de POSTURA IMPOSIBLE revisada (peticion del jugador: "no veo posible que
+   * el escalador solo pueda estar apoyado en las piernas y no caer; siempre debera
+   * existir un anclaje de manos para no caer, salvo que por la propia inclinacion de
+   * la pared sea fisicamente posible"). Con las manos libres el cuerpo SOLO se
+   * sostiene si:
+   *   (a) toca el colchon (esta de pie en el suelo),
+   *   (b) cuelga POR DEBAJO de un apoyo (gancho legitimo de pie/rodilla/talon), o
+   *   (c) esta DE PIE sobre una LOSA: pies por debajo de la cadera sobre una cara
+   *       inclinada (normal con componente vertical n.y >= 0.25, ~15 deg de la
+   *       vertical, como la placa del circuito) y torso erguido. En pared vertical
+   *       o desplome la cara no puede empujar el cuerpo hacia arriba: caida segura.
+   * El tutorial esta exento (no puede guiar hacia una caida).
    */
+  private static readonly SLAB_NORMAL_Y = 0.25;
+
   private impossiblePostureNow(anchors: { limb: LimbId; holdId: string }[], floorContacts: number): boolean {
     let hands = 0;
-    let feet = 0;
+    const feet: { limb: LimbId }[] = [];
     for (const a of anchors) {
       if (a.limb.startsWith("hand")) hands++;
-      else feet++;
+      else feet.push({ limb: a.limb });
     }
-    if (hands > 0 || feet === 0) return false;
-    // Tocando el colchon: esta de pie aunque suelte las manos (legal).
+    // Con al menos una mano anclada el cuerpo puede colgar/apoyarse: legal.
+    if (hands > 0 || feet.length === 0) return false;
+    // (a) Tocando el colchon: esta de pie aunque suelte las manos (legal).
     if (floorContacts > 0) return false;
+    const com = this.solver.centerOfMass();
+    // (b) Colgando por debajo de un apoyo (gancho legitimo): el COM bajo el punto
+    // de anclaje y cerca de la pared (sin colgaduras "flotantes" imposibles).
+    for (const f of feet) {
+      const anchor = this.solver.getAnchor(f.limb);
+      if (!anchor) continue;
+      if (com.y < anchor.point.y - 0.12 && Math.abs(com.x - anchor.point.x) <= 0.9) return false;
+    }
     const chest = this.solver.getParticle(P.chest).pos;
     const pelvis = this.solver.getParticle(P.pelvisC).pos;
     const spine = Math.hypot(chest.x - pelvis.x, chest.y - pelvis.y, chest.z - pelvis.z) || 1e-6;
     const upDot = (chest.y - pelvis.y) / spine;
     // Cuanto mas realista el preset, mas vertical se exige (~0.49 realista).
     const upMin = 0.4 + 0.1 * this.tune.postureTone;
-    if (upDot >= upMin) return false;
-    // ¿Cuelga DEBAJO de algun apoyo (colgadura legitima, p.ej. gancho de rodilla)?
-    const com = this.solver.centerOfMass();
-    for (const a of anchors) {
-      const anchor = this.solver.getAnchor(a.limb);
+    // (c) De pie en LOSA: al menos un pie por debajo de la cadera sobre una cara
+    // inclinada hacia el escalador + torso erguido. La inclinacion es lo que hace
+    // fisicamente posible el equilibrio sin manos (la normal empuja dentro del
+    // cono de friccion); en vertical/desplome, no.
+    let slabFoot = false;
+    for (const f of feet) {
+      const anchor = this.solver.getAnchor(f.limb);
       if (!anchor) continue;
-      const hangs = com.y < anchor.point.y - 0.12 && Math.abs(com.x - anchor.point.x) <= 0.85;
-      if (hangs) return false;
+      if (anchor.point.y > pelvis.y - 0.05) continue; // el pie no esta debajo: no es apoyo de pie
+      const n = this.solver.planeNormalAt(anchor.point.x, anchor.point.y, anchor.point.z);
+      if (n.y >= GameApp.SLAB_NORMAL_Y) {
+        slabFoot = true;
+        break;
+      }
     }
+    if (slabFoot && upDot >= upMin) return false;
     return true;
   }
 
@@ -1217,11 +1326,9 @@ export class GameApp {
     if (this.tutorial) return;
     if (!(this.machine.state === "READY" || this.machine.state === "PLAYING")) return;
     if (this.gasPhase !== "idle") return;
-    this.audio.ensure();
     this.gasPhase = "warning";
     this.gasTimer = GAS_WARN_S;
-    this.audio.playBellyRumble(GAS_WARN_S);
-    this.hud.toast("Retortijón... el GAS viene en camino. Prepáralo antes de la secuencia difícil", "warn");
+    this.hud.toast(t("toast.gasWarn"), "warn");
   }
 
   /** Avance del GAS (llamar cada frame fuera de pausa/carga). */
@@ -1246,7 +1353,7 @@ export class GameApp {
     else this.hud.setGasStatus(null);
   }
 
-  /** Detonacion: sonido, nube, CARTON, impulso comico y alivio de fatiga. */
+  /** Detonacion: nube de GAS (sin carton), impulso comico y alivio de fatiga. */
   private detonateGas(): void {
     this.gasPhase = "buff";
     this.gasTimer = GAS_BUFF_S;
@@ -1260,14 +1367,14 @@ export class GameApp {
     );
     this.scene.spawnFartBlast(butt, new Vector3(away.x, away.y, away.z));
     this.scene.shake(0.045);
-    this.audio.playFart();
     // Fisica: impulso COMICO pero contenido (velocidad, no teletransporte):
     // empujoncito hacia arriba y hacia fuera de la pared, como un cohete de bolsillo.
     this.solver.impulse(away.x * GAS_IMPULSE_AWAY, GAS_IMPULSE_UP, away.z * GAS_IMPULSE_AWAY);
     // Beneficio real: alivio de fatiga y de timers de sobrecarga (permite encadenar
     // algunos agarres mas: "permitiria avanzar algunos agarres").
     this.bio.relieveFatigue(GAS_RELIEF);
-    this.events.emit({ type: "Message", text: "¡PPPPBBBFT! Carton eyectado. Impulso de gas: fatiga aliviada 6 s", tone: "info" });
+    this.events.emit({ type: "Message", text: t("toast.gasBoom"), tone: "info" });
+    this.narrator.say({ kind: "gas" });
   }
 
   // --- Bucle de render ---
@@ -1307,8 +1414,7 @@ export class GameApp {
       this.scene.showReachPreview(null, this.solver, true);
       this.hud.setRejectHint(null);
       const rp = this.solver.getParticle(P.pelvisC);
-      this.scene.updateCamera(dtFrame, rp.pos, false, "replay");
-      this.scene.tickFx(dtFrame);
+      this.scene.updateCamera(dtFrame, rp.pos, false);
       this.scene.render();
       return;
     }
@@ -1338,7 +1444,7 @@ export class GameApp {
       if (this.settleTimer <= 0) {
         this.machine.transition(this.autoStartPending ? "PLAYING" : "READY");
         if (this.autoStartPending) {
-          this.events.emit({ type: "Message", text: "Recupera dos apoyos antes de perder el agarre", tone: "warn" });
+          this.events.emit({ type: "Message", text: t("hint.recoverTwo"), tone: "warn" });
         }
       }
     }
@@ -1384,9 +1490,9 @@ export class GameApp {
     if (this.interaction?.dragging) {
       if (preview?.snappedHoldId && preview.validity === "invalid") {
         const reason = this.interaction.pendingRejectReason() ?? this.interaction.rejectReason(preview.limb, preview.snappedHoldId);
-        this.hud.setRejectHint(reason ? `✕ ${REJECT_LABELS[reason] ?? reason}` : "Movimiento no posible");
+        this.hud.setRejectHint(reason ? `✕ ${rejectLabel(reason)}` : t("reject.noMove"));
       } else if (preview && !preview.snappedHoldId && !this.challenge.rules.allowFreeTarget) {
-        this.hud.setRejectHint("Suelta sobre una presa resaltada");
+        this.hud.setRejectHint(t("reject.dropOnHold"));
       } else {
         this.hud.setRejectHint(null);
       }
@@ -1420,19 +1526,24 @@ export class GameApp {
       this.scene.setAnchorRing(limb, this.solver.getAnchor(limb)?.holdId ?? null, zone, urgency);
     }
 
-    // Voz del escalador: respiracion y quejidos de fondo dirigidos por la fatiga
-    // y la carga reales (solo suenan con PLAYING activo; el director se resetea fuera).
-    const maxFatigue = Math.max(...LIMB_IDS.map((l) => this.bio.fatigue[l] ?? 0));
-    const maxRatio = Math.max(...LIMB_IDS.map((l) => this.bio.infoFor(l)?.ratio ?? 0));
-    if (this.machine.state === "PLAYING") this.peakFatigue = Math.max(this.peakFatigue, maxFatigue);
-    this.audio.update(dtFrame, {
-      playing: this.machine.state === "PLAYING",
-      maxFatigue,
-      maxRatio,
-      overloadRatio: this.profile.biomech.overloadRatio,
-      overload: LIMB_IDS.some((l) => this.bio.infoFor(l)?.zone === "OVERLOADED"),
-      overloadPressure: this.overloadPressure
-    });
+    // Voz del escalador ELIMINADA (peticion del jugador: los ruidos sinteticos son
+    // molestos). El audio del juego es la voz del NARRADOR: aqui solo avanza su
+    // tick y sus chistes en reposo mientras se juega.
+    this.narrator.tick(dtFrame);
+    if (state === "PLAYING" && !this.tutorial) {
+      this.jokeTimer -= dtFrame;
+      if (this.jokeTimer <= 0) {
+        this.jokeTimer = 34 + Math.random() * 18;
+        this.narrator.say({ kind: "joke" });
+      }
+      // Hito de altura (mitad de pared, una vez por intento).
+      const topY = this.scene.wallTopMeters();
+      const comY = this.solver.centerOfMass().y;
+      if (comY > topY * 0.5 && !this.milestoneFlags.has(50) && topY > 2.5) {
+        this.milestoneFlags.add(50);
+        this.narrator.say({ kind: "milestone", fraction: 0.5 });
+      }
+    }
 
     // Combo de flujo: se rompe si pasa la ventana sin fijar otra presa.
     if (this.flowCount > 0 && performance.now() / 1000 - this.lastGrabAt > FLOW_WINDOW_S) {
@@ -1441,13 +1552,10 @@ export class GameApp {
     }
 
     const pelvis = this.solver.getParticle(P.pelvisC);
-    // Camara cinematica: zoom-in de drama al caer y de celebracion al completar.
+    // Camara UNICA de seguimiento (sin modos cinematicos; peticion del jugador).
     // Con un arrastre en curso se congela la posicion (apuntado determinista).
-    const camMode = state === "FALLEN" ? "fallen" : state === "SUCCESS" ? "success" : "play";
-    this.scene.updateCamera(dtFrame, pelvis.pos, this.recenterOnce, camMode, this.interaction?.dragging ?? false);
+    this.scene.updateCamera(dtFrame, pelvis.pos, this.recenterOnce, this.interaction?.dragging ?? false);
     this.recenterOnce = false;
-    // Escombros del GAS (carton): balistica propia, fuera del paso fijo.
-    this.scene.tickFx(dtFrame);
 
     // HUD y debug a 10 Hz.
     this.hudAccum += dtFrame;
@@ -1493,7 +1601,7 @@ export class GameApp {
     }
     const nowS = performance.now() / 1000;
     if (worst) {
-      this.lastWorst = { label: LIMB_LABEL_ES[worst.limb], seconds: worst.seconds, frac: worst.frac };
+      this.lastWorst = { label: limbLabelOf(worst.limb), seconds: worst.seconds, frac: worst.frac };
       this.lastWorstAt = nowS;
     }
     const showWarning = state === "PLAYING" && !this.tutorial && this.lastWorst !== null && (worst !== null || nowS - this.lastWorstAt < 0.6);
@@ -1549,7 +1657,6 @@ export class GameApp {
   // --- Eventos y entrada ---
 
   private onGameEvent(e: GameEvent): void {
-    this.audio.play(e);
     switch (e.type) {
       case "StateChanged":
         this.hud.setState(e.to);
@@ -1584,7 +1691,7 @@ export class GameApp {
             maxStars: maxStars(),
             champion,
             seriesLabel: "campeonato",
-            nextLabel: nextStage ? `ETAPA ${nextStage.index} · ${nextStage.name}` : null,
+            nextLabel: nextStage ? t("challenge.stage", { n: nextStage.index, name: stageNameOf(nextId!) }) : null,
             onNext: () => {
               if (!nextId) return;
               this.hud.hideIntro();
@@ -1594,9 +1701,10 @@ export class GameApp {
           // Refresca menu y selector: la etapa siguiente queda desbloqueada YA.
           this.hud.setChallengeList(this.buildChallengeOptions());
           if (champion) {
-            this.hud.toast(`¡CAMPEÓN DEL CAMPEONATO! Las cinco paredes superadas (${totalStars(bests)}/${maxStars()} estrellas)`, "ok");
+            this.hud.toast(t("toast.champChampion", { stars: totalStars(bests), max: maxStars() }), "ok");
           } else if (nextStage) {
-            this.hud.toast(`Etapa superada: desbloqueas ETAPA ${nextStage.index} · ${nextStage.name}`, "ok");
+            this.hud.toast(t("toast.stageUnlocked", { n: nextStage.index, name: stageNameOf(nextId!) }), "ok");
+            this.narrator.say({ kind: "milestone", fraction: 1 });
           }
         } else if (clearedCircuit) {
           const bests = this.championshipBests();
@@ -1610,7 +1718,7 @@ export class GameApp {
             maxStars: circuitMaxStars(),
             champion: master,
             seriesLabel: "circuito",
-            nextLabel: nextStage ? `ESCENARIO ${nextStage.index} · ${nextStage.name}` : null,
+            nextLabel: nextStage ? t("challenge.scenario", { n: nextStage.index, name: stageNameOf(nextId!) }) : null,
             onNext: () => {
               if (!nextId) return;
               this.hud.hideIntro();
@@ -1619,9 +1727,10 @@ export class GameApp {
           };
           this.hud.setChallengeList(this.buildChallengeOptions());
           if (master) {
-            this.hud.toast(`¡MAESTRO DEL CIRCUITO! Los cinco escenarios superados (${circuitTotalStars(bests)}/${circuitMaxStars()} estrellas)`, "ok");
+            this.hud.toast(t("toast.circuitMaster", { stars: circuitTotalStars(bests), max: circuitMaxStars() }), "ok");
           } else if (nextStage) {
-            this.hud.toast(`Escenario superado: desbloqueas ESCENARIO ${nextStage.index} · ${nextStage.name}`, "ok");
+            this.hud.toast(t("toast.scenarioUnlocked", { n: nextStage.index, name: stageNameOf(nextId!) }), "ok");
+            this.narrator.say({ kind: "milestone", fraction: 1 });
           }
         }
         this.hud.showSuccess({
@@ -1634,10 +1743,12 @@ export class GameApp {
           champ
         });
         if (isRecord) this.hud.setBest(this.challenge.id, rec);
+        // Narrador: celebracion (antiflood interno; prioridad alta).
+        this.narrator.say({ kind: "success" });
         break;
       }
       case "ChallengeFailed":
-        this.hud.showBanner(e.reason === "TIMEOUT" ? "TIEMPO AGOTADO" : "CAIDA", "bad");
+        this.hud.showBanner(e.reason === "TIMEOUT" ? t("banner.timeout") : t("banner.fallen"), "bad");
         break;
       case "HoldAcquired": {
         // Combo de flujo: encadenar fijaciones en menos de FLOW_WINDOW_S suma bonus.
@@ -1656,24 +1767,25 @@ export class GameApp {
         if (this.footPenalty > 1 && e.limb.startsWith("foot")) {
           const hold = this.holdDefById.get(e.holdId);
           if (hold && hold.type !== "foot") {
-            this.hud.toast("Pie en presa de mano: esa pierna carga x2 (el dedo no es una mano)", "warn");
+            this.hud.toast(t("toast.footOnHand"), "warn");
           }
         }
         // MOVIAZO: cadena de flujo destacada -> mini repeticion (una por intento).
         if (!this.tutorial && !this.moveReplayShown && this.flowCount >= REPLAY_TIMING.moveChainTrigger
             && this.machine.state === "PLAYING" && !this.replay) {
           this.startMoveReplay();
+          this.narrator.say({ kind: "moviazo" });
         }
         break;
       }
       case "HoldRejected": {
-        const label = REJECT_LABELS[e.reason] ?? e.reason;
-        this.hud.toast(`Movimiento rechazado: ${label}`, "warn");
+        const label = rejectLabel(e.reason);
+        this.hud.toast(`${t("reject.moved")}: ${label}`, "warn");
         break;
       }
       case "GripReleased":
         if (e.reason === "OVERLOAD") {
-          this.hud.toast(`Sobrecarga: el agarre cedió (${e.limb})`, "error");
+          this.hud.toast(t("toast.gripReleased", { limb: limbLabelOf(e.limb) }), "error");
           // Sacudida corta + tiza al resbalar el agarre.
           this.scene.shake(0.02);
           const pos = this.holdPosById.get(e.holdId);
@@ -1681,26 +1793,31 @@ export class GameApp {
         }
         break;
       case "StrainStarted":
-        this.hintOnce("strain", "Agarre en tension: la fatiga de esa extremidad sube mas rapido", "warn");
+        this.hintOnce("strain", t("hint.strain"), "warn");
         break;
       case "OverloadStarted":
-        this.hintOnce("overload", "SOBRECARGA: el chip rojo cuenta los segundos que aguanta el agarre (~4,5 s en sobrecarga continua). Alivia esa extremidad ya", "error");
+        this.hintOnce("overload", t("hint.overload"), "error");
+        this.narrator.say({ kind: "overload" });
         break;
-      case "FallStarted":
+      case "FallStarted": {
         // Datos para la caption de la REPETICION (motivo; el COM lo da el buffer).
         this.fallInfo = { reason: e.reason };
         if (e.reason === "postura_imposible") {
           // La caida explica la FISICA: sin manos no se sostiene boca abajo.
-          this.hud.toast("POSTURA IMPOSIBLE: sin manos no te sostienes boca abajo ni en horizontal. El cuerpo pesa", "error");
+          this.hud.toast(t("toast.posture"), "error");
         } else {
-          this.hintOnce("fall", "Caída: los agarres se abren y el cuerpo cae. Se reintenta solo (o pulsa R)", "info");
+          this.hintOnce("fall", t("hint.fall"), "info");
         }
+        // Narrador: caida graduada por altura del COM al declararse.
+        const fallComY = this.solver.centerOfMass().y;
+        this.narrator.say({ kind: "fall", heightM: Math.max(0, fallComY), reason: e.reason });
         // Drama: slow-motion breve + rotura del combo + conteo de caidas.
         this.slowmoLeft = SLOWMO_DURATION_S;
         this.fallCount += 1;
         this.flowCount = 0;
         this.hud.setFlow(0);
         break;
+      }
       default:
         break;
     }
@@ -1732,7 +1849,6 @@ export class GameApp {
     };
 
     this.on(canvas, "pointerdown", (e) => {
-      this.audio.ensure();
       // REPETICION en curso: cualquier clic la salta (no inicia arrastres).
       if (this.replay) {
         this.skipReplay();
@@ -1827,8 +1943,16 @@ export class GameApp {
           this.scene.toggleOrtho();
           break;
         case "KeyM": {
-          const muted = this.audio.toggleMute();
-          this.hud.toast(muted ? "Sonido desactivado" : "Sonido activado", "info");
+          // El audio del juego es el narrador: M lo silencia/activa.
+          const on = !this.narrator.isEnabled();
+          this.narrator.setEnabled(on);
+          this.hud.setNarratorControls(on, this.narratorVolume());
+          try {
+            window.localStorage.setItem("ns.narrator.on", on ? "1" : "0");
+          } catch {
+            /* sin persistencia */
+          }
+          this.hud.toast(t(on ? "toast.narratorOn" : "toast.narratorOff"), "info");
           break;
         }
         case "KeyT":
@@ -1871,10 +1995,21 @@ export class GameApp {
   togglePause(): void {
     if (this.machine.state === "PLAYING") {
       this.machine.transition("PAUSED");
-      this.hud.toast("Pausa: fisica y timer congelados", "info");
+      this.hud.toast(t("toast.paused"), "info");
     } else if (this.machine.state === "PAUSED") {
       this.machine.transition("PLAYING");
     }
+  }
+
+  /** Volumen actual del narrador (para el check de Ajustes tras la tecla M). */
+  private narratorVolume(): number {
+    try {
+      const v = Number(window.localStorage.getItem("ns.narrator.vol"));
+      if (Number.isFinite(v) && v >= 0 && v <= 1) return v;
+    } catch {
+      /* sin persistencia */
+    }
+    return 0.9;
   }
 
   // --- Agarre por teclado (seleccion sin punteria) ---
@@ -1908,7 +2043,7 @@ export class GameApp {
       : this.scene.wallPlanePoint(this.pointerX, this.pointerY, this.wall.holds[0]?.position[2] ?? -0.18);
     this.grabOffset = cursor ? { x: limbPos.x - cursor.x, y: limbPos.y - cursor.y } : { x: 0, y: 0 };
     this.applyKeyboardDragTarget();
-    this.hud.toast(`${LIMB_LABEL_ES[limb]} agarrada (tecla ${GameApp.KEY_OF_LIMB[limb]}): muévela con el ratón y pulsa ${GameApp.KEY_OF_LIMB[limb]} para soltar`, "info");
+    this.hud.toast(t("toast.limbGrabbed", { limb: limbLabelOf(limb), key: GameApp.KEY_OF_LIMB[limb] }), "info");
   }
 
   /** Suelta normal (con validacion y asistencia de viaje) del agarre por teclado. */
@@ -1973,7 +2108,6 @@ export class GameApp {
    * partida en curso, queda en PAUSA hasta elegir prueba o continuar.
    */
   private openMenu(): void {
-    this.audio.ensure();
     // Una repeticion en curso no vive bajo el menu: se salta (cae => respawn).
     this.skipReplay();
     this.cancelKeyboardGrab();
@@ -2006,7 +2140,7 @@ export class GameApp {
       } catch {
         /* sin persistencia: el tutorial reaparecera en la proxima sesion */
       }
-      this.hud.toast("Tutorial cerrado (T para repetirlo)", "info");
+      this.hud.toast(t("tutorial.closed"), "info");
     }
     this.tutorial = null;
     this.tutorialUi.hide();
@@ -2462,7 +2596,7 @@ export class GameApp {
     for (const l of this.listeners) l.target.removeEventListener(l.type, l.fn);
     this.listeners = [];
     this.events.clear();
-    this.audio.dispose();
+    this.narrator?.dispose();
     this.scene?.dispose();
   }
 }

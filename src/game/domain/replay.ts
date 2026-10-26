@@ -4,12 +4,16 @@
  * final. Modulo PURO: captaciones de datos -> textos y timings. Sin Babylon ni
  * DOM, testeable (el juego consume las captions; la fisica vive en loop.ts).
  *
+ * Bilingue (peticion del jugador: aplicacion multi idioma): las captions aceptan
+ * el locale activo; el espanol es la base y el ingles la traduccion.
+ *
  * Tono "equilibrado" (peticion del jugador): gags claros sin sobrecargar la
  * escalada — la comedia esta en el rótulo y en el ritmo, nunca en la fisica.
  */
+import type { Locale } from "../ui/i18n";
 
 export interface ReplayCaption {
-  /** Titulo grande ( Congelado final). */
+  /** Titulo grande (Congelado final). */
   title: string;
   /** Linea de datos (metros de vuelo, cadena de flujo...). */
   meta: string;
@@ -39,18 +43,65 @@ export const REPLAY_TIMING = {
   moveChainTrigger: 5
 } as const;
 
-/** Formato espanol de metros: coma decimal y unidad. */
-export function fmtM(m: number): string {
+/** Formato de metros: coma decimal (ES) o punto (EN) y unidad. */
+export function fmtM(m: number, locale: Locale = "es"): string {
   const v = Math.max(0, Math.round(m * 10) / 10);
-  return `${v.toFixed(1).replace(".", ",")} m`;
+  const num = v.toFixed(1).replace(".", locale === "es" ? "," : ".");
+  return `${num} m`;
 }
 
+const TEXT = {
+  es: {
+    reasonPosture: "la física no negocia: sin manos no se sostiene",
+    reasonWorld: "salida del mundo: el cuerpo no puede vivir ahí",
+    reasonTimeout: "el reloj ganó esta vez",
+    reasonGrip: "el agarre dijo basta",
+    flight: "de vuelo",
+    titleLegendary: "CAÍDA LEGENDARIA",
+    titleEpic: "CAÍDA ÉPICA",
+    titleNormal: "CAÍDA",
+    titleMinor: "CAÍDA MENOR",
+    styleComet: "estilo cometa: cabeza primero",
+    styleInverted: "estilo cometa invertido: sentado con elegancia",
+    styleStar: "estilo estrella de mar",
+    styleSack: "estilo saco de patatas",
+    stylePool: ["estilo repentino", "estilo flotante", "estilo académico", "estilo sin estilo"],
+    moviazo: "¡MOVIAZO!",
+    flow: "FLUJO ×{n}",
+    moviazoStyle: "jugada destacada: la repetición no se paga",
+    moviazoSub: "la escalada continúa…"
+  },
+  en: {
+    reasonPosture: "physics does not negotiate: without hands you don't stick",
+    reasonWorld: "out of the world: the body can't live there",
+    reasonTimeout: "the clock won this time",
+    reasonGrip: "the grip said enough",
+    flight: "of airtime",
+    titleLegendary: "LEGENDARY FALL",
+    titleEpic: "EPIC FALL",
+    titleNormal: "FALL",
+    titleMinor: "MINOR FALL",
+    styleComet: "comet style: head first",
+    styleInverted: "inverted comet style: seated with elegance",
+    styleStar: "starfish style",
+    styleSack: "sack-of-potatoes style",
+    stylePool: ["sudden style", "floaty style", "academic style", "styleless style"],
+    moviazo: "BIG MOVE!",
+    flow: "FLOW ×{n}",
+    moviazoStyle: "standout play: the replay is on the house",
+    moviazoSub: "the climb continues…"
+  }
+} as const;
+
+const dictOf = (locale: Locale) => (locale === "en" ? TEXT.en : TEXT.es);
+
 /** Sub por motivo de caida (los mismos reasons del evaluador). */
-function fallReasonLine(reason: string): string {
-  if (reason === "postura_imposible") return "la física no negocia: sin manos no se sostiene";
-  if (reason === "fuera_del_mundo") return "salida del mundo: el cuerpo no puede vivir ahí";
-  if (reason === "timeout") return "el reloj ganó esta vez";
-  return "el agarre dijo basta";
+function fallReasonLine(reason: string, locale: Locale): string {
+  const d = dictOf(locale);
+  if (reason === "postura_imposible") return d.reasonPosture;
+  if (reason === "fuera_del_mundo") return d.reasonWorld;
+  if (reason === "timeout") return d.reasonTimeout;
+  return d.reasonGrip;
 }
 
 /**
@@ -60,39 +111,42 @@ function fallReasonLine(reason: string): string {
  * - erguido tras el golpe -> saco de patatas;
  * - resto -> variantes deterministas (mismo drop, mismo remate: testeable).
  */
-export function fallStyle(endUpDot: number, spread: number, dropM: number): string {
-  if (endUpDot < -0.25) return "estilo cometa: cabeza primero";
-  if (endUpDot > 0.75) return "estilo cometa invertido: sentado con elegancia";
-  if (spread > 0.62) return "estilo estrella de mar";
-  if (endUpDot > 0.55) return "estilo saco de patatas";
-  const pool = ["estilo repentino", "estilo flotante", "estilo académico", "estilo sin estilo"];
-  return pool[Math.abs(Math.round(dropM * 10)) % pool.length];
+export function fallStyle(endUpDot: number, spread: number, dropM: number, locale: Locale = "es"): string {
+  const d = dictOf(locale);
+  if (endUpDot < -0.25) return d.styleComet;
+  if (endUpDot > 0.75) return d.styleInverted;
+  if (spread > 0.62) return d.styleStar;
+  if (endUpDot > 0.55) return d.styleSack;
+  return d.stylePool[Math.abs(Math.round(dropM * 10)) % d.stylePool.length];
 }
 
 /** Titulo por altura de vuelo (mas dramatico cuanto mas grande la caida). */
-export function fallTitle(dropM: number): string {
-  if (dropM >= 1.6) return "CAÍDA LEGENDARIA";
-  if (dropM >= 0.9) return "CAÍDA ÉPICA";
-  if (dropM >= 0.45) return "CAÍDA";
-  return "CAÍDA MENOR";
+export function fallTitle(dropM: number, locale: Locale = "es"): string {
+  const d = dictOf(locale);
+  if (dropM >= 1.6) return d.titleLegendary;
+  if (dropM >= 0.9) return d.titleEpic;
+  if (dropM >= 0.45) return d.titleNormal;
+  return d.titleMinor;
 }
 
 /** Caption completa de una caida: datos + comedia. */
-export function buildFallCaption(dropM: number, endUpDot: number, spread: number, reason: string): ReplayCaption {
+export function buildFallCaption(dropM: number, endUpDot: number, spread: number, reason: string, locale: Locale = "es"): ReplayCaption {
+  const d = dictOf(locale);
   return {
-    title: fallTitle(dropM),
-    meta: `${fmtM(dropM)} de vuelo`,
-    style: fallStyle(endUpDot, spread, dropM),
-    sub: fallReasonLine(reason)
+    title: fallTitle(dropM, locale),
+    meta: `${fmtM(dropM, locale)} ${d.flight}`,
+    style: fallStyle(endUpDot, spread, dropM, locale),
+    sub: fallReasonLine(reason, locale)
   };
 }
 
 /** Caption de la jugada destacada (cadena de flujo alcanzada). */
-export function buildMoveCaption(chain: number): ReplayCaption {
+export function buildMoveCaption(chain: number, locale: Locale = "es"): ReplayCaption {
+  const d = dictOf(locale);
   return {
-    title: "¡MOVIAZO!",
-    meta: `FLUJO ×${chain}`,
-    style: "jugada destacada: la repetición no se paga",
-    sub: "la escalada continúa…"
+    title: d.moviazo,
+    meta: d.flow.replace("{n}", String(chain)),
+    style: d.moviazoStyle,
+    sub: d.moviazoSub
   };
 }

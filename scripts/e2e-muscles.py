@@ -31,11 +31,9 @@ def hip_y():
 print("== 0. abrir y empezar ==")
 ab("open", "http://localhost:3000/")
 time.sleep(4)
-try:
-    ab("find", "text", "Comenzar", "click")
-except Exception:
-    pass
-time.sleep(2.5)
+import e2e_lib as lib
+lib.enter(ab)
+time.sleep(1.0)
 try:
     ab("find", "text", "Saltar tutorial", "click")
 except Exception:

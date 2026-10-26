@@ -351,3 +351,29 @@ Work Log:
 Stage Summary:
 - REPETICION EPICA en produccion: cada caida (fuera del tutorial) se repite en camara lenta desde un angulo lateral 3/4 con letterbox, badge REC, titulo comico por altura de vuelo, estilo del aterrizaje y motivo de la fisica; congelado final con shutter sonoro; saltable con clic/Espacio/R/Esc/menu. Las cadenas FLUJO x5 ganan un mini-replay (moviazo) que CONGELA y DEVUELVE la fisica exacta. La camara de replay es un modo propio del sistema cinematografico existente.
 - La regla de postura imposible es ahora inmune al enmascaramiento del fixture (anclajes bajos deterministas + piernas colocadas); la regresion completa (11 E2E + 130 unit tests + tsc + eslint) en verde.
+
+---
+Task ID: 18
+Agent: Z.ai (principal)
+Task: Gran revision de fisica + UX (peticion del jugador): eliminar camaras cinematicas, bug de anclajes (sin manos no te sostienes), ruidos sinteticos fuera, GAS como nube de gas, modos fisico reales, papers cientificos, Narrador deportivo y aplicacion multi idioma (ES/EN) con pantalla inicial simplificada.
+
+Work Log:
+- CAMARAS: eliminados los modos fallen/success/replay y sus zooms dramaticos (scene.ts): camara UNICA de seguimiento con zona muerta; el replay epico conserva slow-mo, letterbox y rotulos pero con la camara normal de juego.
+- FISICA (papers aplicados): proyeccion de velocidad del pin SELECTIVA POR EJE (Muller et al. 2007, "Position Based Dynamics": el update de velocidad va despues de proyectar; el momento fantasma del pin bombeaba el pendulo -> el bailoteo al colgar). Horizontal se neutraliza (kill), vertical solo kill*0.3 para preservar la via de carga calibrada. markSettle(0.55) anade damping reforzado medio segundo tras cada spawn. Referencias XPBD/Small Steps (Macklin et al. 2016/2019) y SIMBICON (Yin et al. 2007) documentadas en solver.ts.
+- MODOS REALES: PRESET_PHYSICS por modo (Realista damping 0.968 + musculos 100% + kill 0.55; Equilibrado 0.985/106%/0.4; Ragdoll 0.995/80%/0.2) aplicado en applyPresetPhysics(); presets ahora en AJUSTES.
+- ANCLAJES (bug reportado): nueva regla de postura imposible: con las manos sueltas SOLO se sostiene si (a) toca el colchon, (b) cuelga por debajo de un apoyo (gancho) o (c) esta de pie en LOSA (normal del segmento con n.y >= 0.25, la placa de 18 grados del circuito) con torso erguido. En pared vertical/desplome, sin manos = caida (solver.planeNormalAt expone la normal del segmento).
+- RUIDOS: eliminados audio.ts y voice.ts (toda la sintesis WebAudio: jadeos, gruñidos, rumble, pedo sintetico, whooshes). La tecla M ahora silencia al narrador.
+- GAS: spawnFartBlast sin carton (caja marron eliminada): jet inicial + nube persistente verde-oliva de particulas que flota y sube. Impulso y alivio de fatiga intactos.
+- NARRADOR: domain/narrator.ts (puro: bancos ES/EN, variantes deterministas, prioridad/cooldown/antiflood, graduacion de caidas por altura del COM) + ui/narrator.ts (barra de comentario + voz pregrabada). Eventos: inicio, caidas (4 grados + postura), moviazo, exito, sobrecarga, hito 50%, GAS, chistes cada 34-52 s. Audios WAV por z-ai tts (voz luodo, speed 1.05) en /audio/narrator/{es,en}/ (46 archivos, scripts/gen-narrator-tts.py). 8 tests nuevos.
+- i18n: ui/i18n.ts diccionario ES/EN (~200 claves) con persistencia ns.lang y notificacion; HUD/menu/ajustes/ayuda(18 lineas)/tutorial(9 pasos)/toasts/banners/rotulos de repeticion (replay.ts acepta locale) internacionalizados; content JSON gana instructionEn (schema + tipos).
+- PANTALLA INICIAL: imagen generada (public/cover.png; reemplazable por la del jugador) sobre fondo negro + boton GO! + selector ES/EN + engranaje de Ajustes. El menu anterior pasa a ser el menu de pruebas (boton Menú) con boton Ajustes. Ajustes: idioma, balance fisico, narrador on/off, volumen.
+- ORDEN CRITICO descubierto: el constructor del HUD escribe root.innerHTML; el narrador DEBE crearse despues (la barra desaparecia si no).
+- RECALIBRACION: el kill altera el estimador de carga; bisect de pinVelKill (0.9->0.5->0.3) contra tests y sensacion: 0.55/0.4/0.15-0.2 por modo con gain 0.67 intacto; 118 tests + harness de calibracion en verde.
+- E2E: entrada comun nueva (scripts/e2e_lib.py: GO! en vez de "Comenzar"); e2e-replay exige camara play; e2e-voz reescrito para el narrador (texto visible + HEAD del wav 200 + cambio de idioma); e2e-juice adaptado (ajustes + menu + espera del auto-reset con replay ~6 s); e2e-ascenso con relieve (leccion: el rig sostiene cargas 3 s que un humano no aguanta) y lectura final robusta. 12/12 suites E2E verificadas en produccion.
+- Verificacion visual: pantalla inicial (ES/EN), panel Ajustes, partida en ingles completa, nube de GAS y barra del narrador en accion (capturas en download/).
+
+Stage Summary:
+- Fisica creible: sin bailoteo al inicio (proyeccion de velocidad + settle), sin sostenerse de piernas sin manos salvo losa, modos fisico realmente distintos.
+- Audio completamente renovado: cero sintesis molesta; narrador deportivo con voz pregrabada en ambos idiomas y chistes.
+- App bilingue ES/EN (texto + voz) con selector al comienzo, pantalla inicial imagen+GO! y todas las configuraciones en Ajustes.
+- El audio EN se genero al final (cuota TTS); si un wav falta, el narrador muestra el texto sin voz (degradacion graceful).

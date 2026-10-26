@@ -178,6 +178,8 @@ export interface ChallengeDefinition {
   characterId: string;
   wallId: string;
   instruction: string;
+  /** Instruction localized to English (optional field in the JSON, multi-language support). */
+  instructionEn?: string;
   timeLimitSeconds: number;
   start: {
     stance: "standing" | "hanging";

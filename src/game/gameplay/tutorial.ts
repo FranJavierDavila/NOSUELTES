@@ -5,6 +5,7 @@
  * advance/skip aqui. Probable de testear con vitest sin navegador.
  */
 import type { LimbId, GameState } from "../types";
+import { t } from "../ui/i18n";
 
 export interface TutorialCtx {
   state: GameState;
@@ -113,22 +114,16 @@ export function buildTutorialSteps(): TutorialStepDef[] {
   return [
     {
       id: "bienvenida",
-      title: "Este eres tú",
-      body:
-        "Tu cuerpo **cuelga de la pared**: la **mochila con tirantes** marca su espalda y la **cara con ojos** " +
-        "sus discos turquesa, el frente. Los carteles **IZQ azul** y **DER rosa** nombran el lado de cada " +
-        "mano y pie (igual que en el panel lateral). Cada extremidad se controla por separado con el raton: " +
-        "no hay teletransporte y el peso se reparte **de verdad** entre tus apoyos.",
+      title: t("tutorial.s1.title"),
+      body: t("tutorial.s1.body"),
       highlightCharacter: true,
       advance: "manual",
-      cta: "Entendido"
+      cta: t("tutorial.cta.ok")
     },
     {
       id: "agarra",
-      title: "1 · Agarra la mano",
-      body:
-        "Pulsa y **manten el clic izquierdo** sobre tu mano derecha — la del aro ambar. " +
-        "Sigue la linea punteada si te pierdes.",
+      title: t("tutorial.s2.title"),
+      body: t("tutorial.s2.body"),
       highlightLimb: "hand_r",
       gesture: { from: "hand_r", to: "r2" },
       advance: "auto",
@@ -136,10 +131,8 @@ export function buildTutorialSteps(): TutorialStepDef[] {
     },
     {
       id: "arrastra",
-      title: "2 · Llevala a la presa",
-      body:
-        "Sin soltar el boton, lleva el cursor hasta la presa resaltada. Cuando el alcance sea " +
-        "valido veras un **aro verde** sobre ella.",
+      title: t("tutorial.s3.title"),
+      body: t("tutorial.s3.body"),
       highlightHold: "r2",
       gesture: { from: "hand_r", to: "r2" },
       advance: "auto",
@@ -147,34 +140,25 @@ export function buildTutorialSteps(): TutorialStepDef[] {
     },
     {
       id: "suelta",
-      title: "3 · Suelta para fijar",
-      body:
-        "Suelta el boton **sobre la presa**. La mano viajara hasta ella y quedara anclada; " +
-        "el cuerpo se reequilibrara con fisica real.",
+      title: t("tutorial.s4.title"),
+      body: t("tutorial.s4.body"),
       highlightHold: "r2",
       advance: "auto",
       done: (ctx) => ctx.anchors.hand_r === "r2"
     },
     {
       id: "cargas",
-      title: "El peso se redistribuye",
-      body:
-        "Cada apoyo muestra su carga en vivo — **{load:hand_l}** en la mano izquierda y " +
-        "**{load:hand_r}** en la derecha. Y lo mismo sobre el personaje: la extremidad fijada y el " +
-        "**anillo de su presa** se tiñen **verde** (normal), **ambar** (tension) o **rojo parpadeante** " +
-        "(sobrecarga). Si un agarre supera su limite se suelta: mueve **un apoyo cada vez**.",
+      title: t("tutorial.s5.title"),
+      body: t("tutorial.s5.body"),
       highlightHud: "hud-limbs",
       placement: "left",
       advance: "manual",
-      cta: "Siguiente"
+      cta: t("tutorial.cta.next")
     },
     {
       id: "pies",
-      title: "4 · Sube un pie",
-      body:
-        "Arrastra tu **pie izquierdo** a la presa resaltada. Al soltar, la pierna se **extiende y " +
-        "empuja**: el cuerpo asciende y los brazos descargan. Apoyar pies es la diferencia " +
-        "entre escalar y quedarte colgado.",
+      title: t("tutorial.s6.title"),
+      body: t("tutorial.s6.body"),
       highlightHold: "foot_jug_l",
       gesture: { from: "foot_l", to: "foot_jug_l" },
       advance: "auto",
@@ -182,37 +166,29 @@ export function buildTutorialSteps(): TutorialStepDef[] {
     },
     {
       id: "vitals",
-      title: "Fatiga y estabilidad",
-      body:
-        "Este panel es tu vida: colgado solo de brazos la **fatiga sube** (ahora **{fatigue}**) y " +
-        "con apoyos de pies baja. Menos fatiga = **mas fuerza de agarre**. Durante el tutorial va " +
-        "ralentizada para que practiques sin caerte.",
+      title: t("tutorial.s7.title"),
+      body: t("tutorial.s7.body"),
       highlightHud: "hud-vitals",
       placement: "left",
       advance: "manual",
-      cta: "Siguiente"
+      cta: t("tutorial.cta.next")
     },
     {
       id: "meta",
-      title: "5 · La meta",
-      body:
-        "El ciclo para subir: **mano arriba** → **pie a un escalon alto** (el cuerpo se " +
-        "recoloca solo) → repite. Lleva **ambas manos** a la presa dorada. Si una extremidad " +
-        "pasa a **rojo (sobrecarga)**, apoya un pie o aliviala enseguida.",
+      title: t("tutorial.s8.title"),
+      body: t("tutorial.s8.body"),
       highlightHold: "top",
       advance: "manual",
-      cta: "A escalar"
+      cta: t("tutorial.cta.climb")
     },
     {
       id: "fin",
-      title: "Listo para escalar",
-      body:
-        "`R` reinicia · `Espacio` pausa · `H` ayuda · `T` repite este tutorial · `F3` metricas. " +
-        "Si un agarre falla, la caida te lo dira. Buena escalada.",
+      title: t("tutorial.s9.title"),
+      body: t("tutorial.s9.body"),
       highlightHud: "hud-keys",
       placement: "top",
       advance: "manual",
-      cta: "Empezar a jugar"
+      cta: t("tutorial.cta.play")
     }
   ];
 }

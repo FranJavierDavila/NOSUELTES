@@ -44,5 +44,6 @@
     ],
     "stableDurationSeconds": 0.5,
     "stabilityThreshold": 0.65
-  }
+  },
+  "instructionEn": "You hang from the starting holds: set your feet and climb until both hands reach the top hold."
 }

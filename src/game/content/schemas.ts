@@ -339,6 +339,7 @@ export const challengeSchema: JSONSchema7 = {
     characterId: { type: "string", minLength: 1 },
     wallId: { type: "string", minLength: 1 },
     instruction: { type: "string", minLength: 1 },
+    instructionEn: { type: "string", minLength: 1 },
     timeLimitSeconds: { type: "number", exclusiveMinimum: 0, maximum: 3600 },
     start: {
       type: "object",
