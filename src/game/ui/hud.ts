@@ -114,6 +114,7 @@ export class Hud {
     challenges: ChallengeOption[],
     onPickChallenge: (id: string) => void,
     onDismissIntro: () => void,
+    onOpenMenu: () => void,
     onPreset: (preset: BalancePresetName) => void
   ) {
     root.innerHTML = `
@@ -126,6 +127,7 @@ export class Hud {
           <div id="hud-instruction" class="mt-1 text-xs leading-relaxed text-zinc-400"></div>
           <div id="hud-champ" class="mt-1 hidden text-[11px] font-semibold text-amber-300/90"></div>
           <div class="mt-2 flex items-center gap-2">
+            <button id="hud-menu-btn" class="pointer-events-auto rounded border border-amber-500/50 bg-zinc-900 px-2 py-0.5 text-[11px] font-bold text-amber-300 transition hover:bg-amber-500 hover:text-zinc-950" title="Volver a la pantalla inicial">☰ Menú</button>
             <span id="hud-state" class="rounded bg-zinc-800 px-2 py-0.5 text-[11px] font-semibold text-zinc-300">Cargando</span>
             <span id="hud-timer" class="font-mono text-sm tabular-nums text-zinc-300">--:--</span>
             <span id="hud-paused" class="hidden rounded bg-amber-500/20 px-2 py-0.5 text-[11px] font-semibold text-amber-300">PAUSA</span>
@@ -182,7 +184,7 @@ export class Hud {
         <div id="hud-toasts" class="absolute left-1/2 top-24 flex w-max -translate-x-1/2 flex-col items-center gap-1"></div>
 
         <div id="hud-keys" class="absolute bottom-3 left-4 rounded bg-zinc-950/60 px-3 py-1.5 text-[11px] text-zinc-500 backdrop-blur">
-          Agarrar sin ratón: <b>1-4</b> (repite para soltar) · Arrastrar: clic izq. sobre mano/pie · Cancelar: clic der./Esc · Reiniciar: R · GAS: P · Pausa: Espacio · Tutorial: T · Ayuda: H · Debug: F3 · <span id="hud-backend-mini">motor…</span>
+          Agarrar sin ratón: <b>1-4</b> (repite para soltar) · Arrastrar: clic izq. sobre mano/pie · Cancelar: clic der./Esc · Reiniciar: R · GAS: P · Pausa: Espacio · <b>☰ Menú</b>: pantalla inicial · Tutorial: T · Ayuda: H · Debug: F3 · <span id="hud-backend-mini">motor…</span>
         </div>
 
         <div id="hud-help" class="pointer-events-auto absolute inset-0 hidden items-center justify-center bg-zinc-950/80 backdrop-blur">
@@ -296,6 +298,7 @@ export class Hud {
     this.renderChallengeLists(challenges);
 
     root.querySelector("#hud-help-close")!.addEventListener("click", () => this.showHelp(false));
+    root.querySelector("#hud-menu-btn")!.addEventListener("click", () => onOpenMenu());
     root.querySelector("#hud-intro-dismiss")!.addEventListener("click", () => {
       this.intro.classList.add("hidden");
       onDismissIntro();
@@ -685,6 +688,16 @@ export class Hud {
 
   hideIntro(): void {
     this.intro.classList.add("hidden");
+  }
+
+  /**
+   * Reabre el menu inicial (boton "Menú" del panel superior). Refresca records y
+   * candados; si ya se habia empezado a jugar, la rebaja pasa a "Continuar".
+   */
+  showIntro(): void {
+    this.intro.classList.remove("hidden");
+    const dismiss = this.rootEl.querySelector("#hud-intro-dismiss") as HTMLButtonElement | null;
+    if (dismiss) dismiss.textContent = "Continuar";
   }
 }
 

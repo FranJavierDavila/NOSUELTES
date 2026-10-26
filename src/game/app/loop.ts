@@ -226,11 +226,16 @@ export class GameApp {
   private disposed = false;
   private paused = false;
   private recenterOnce = false;
+  /** El menu se reabrio en partida: la rebaja del menu pausa/reanuda en vez de iniciar tutorial. */
+  private introEverDismissed = false;
+  private menuPaused = false;
 
   private settleTimer = 0;
   private autoStartPending = false;
   private guardActive = false;
   private guardCooldown = 0;
+  /** Enfriamiento de la guarda de mundo (evita respawns en cadena). */
+  private escapeCooldown = 0;
   /** Secuencia de caida: cola de liberacion escalonada y auto-reintento. */
   private fallTimer = 0;
   private fallReleaseQueue: { limb: LimbId; at: number }[] = [];
@@ -331,8 +336,14 @@ export class GameApp {
         }
         this.audio.ensure();
         this.loadChallenge(id);
+        // Elegir prueba desde el menu CIERRA el menu (antes el muro cargaba detras
+        // del modal y parecia que "no pasaba nada"). Cualquier pausa del menu queda.
+        this.introEverDismissed = true;
+        this.menuPaused = false;
+        this.hud.hideIntro();
       },
       () => this.onIntroDismissed(),
+      () => this.openMenu(),
       (preset) => this.applyPreset(preset)
     );
     this.debug = new DebugOverlay(this.opts.debugRoot, (flag, value) => {
@@ -455,6 +466,11 @@ export class GameApp {
     const n0 = this.wallFrames[0]?.normal ?? { x: 0, y: 0, z: -1 };
     this.rig = spawnRagdoll(this.solver, this.profile, this.character, this.wall, this.challenge, holdById, (limb) => this.anchorMaxForceFor(limb), n0);
     this.scene.spawnRagdollVisuals(this.rig);
+    // Encuadre inmediato del personaje nuevo: la camara JAMAS arranca un intento
+    // mirando a donde estaba el cuerpo anterior (peticion del jugador: ver al
+    // personaje siempre; sin esto, un respawn tras una caida alta deja el cuadro
+    // vacio hasta que el seguimiento baja solo).
+    this.recenterOnce = true;
 
     this.bio.reset();
     this.evaluator?.reset();
@@ -782,6 +798,36 @@ export class GameApp {
       }
       return;
     }
+
+    // GUARDA DE MUNDO: el cuerpo no puede vivir fuera de plausibilidad. Si la
+    // pelvis escapa (por encima de la pared, lateral, bajo el suelo o no finita),
+    // la prueba se reinicia: sin esto, un cuerpo perdido deja la camara mirando al
+    // vacio con un personaje invisible (reporte del jugador: "no veo el personaje
+    // y no puedo jugar").
+    const pelvisGuard = this.solver.getParticle(P.pelvisC);
+    const gx = pelvisGuard.pos.x;
+    const gy = pelvisGuard.pos.y;
+    const gz = pelvisGuard.pos.z;
+    const escapedWorld = !Number.isFinite(gx + gy + gz)
+      || gy > this.scene.wallTopMeters() + 2.5
+      || gy < -1.5
+      || Math.abs(gx) > this.wall.dimensions.width / 2 + 2.5
+      || gz < -8
+      || gz > 4;
+    if (escapedWorld && this.escapeCooldown <= 0) {
+      this.escapeCooldown = 1.2;
+      if (this.machine.state === "PLAYING") {
+        this.events.emit({ type: "FallStarted", reason: "fuera_del_mundo" });
+        this.events.emit({ type: "ChallengeFailed", reason: "FALLEN" });
+        this.machine.transition("FALLEN");
+        this.beginFallSequence();
+      } else if (this.machine.state === "READY" || this.machine.state === "RESETTING") {
+        this.events.emit({ type: "Message", text: "Reiniciando prueba: el cuerpo salio del mundo", tone: "warn" });
+        this.spawn();
+        return;
+      }
+    }
+    if (this.escapeCooldown > 0) this.escapeCooldown -= dt;
 
     const anchors = this.solver.anchorHoldIds();
 
@@ -1635,6 +1681,19 @@ export class GameApp {
   private static readonly TUTORIAL_DONE_KEY = "ns.tutorial.done.v2";
 
   private onIntroDismissed(): void {
+    // Al reabrir el menu la rebaja es "Continuar": sin reinicio de tutorial ni
+    // reanudacion rara (la pausa la abre y la cierra openMenu).
+    if (this.introEverDismissed) {
+      if (this.menuPaused && this.machine.state === "PAUSED") this.machine.transition("PLAYING");
+      this.menuPaused = false;
+      // El tutorial sigue activo: se restauran sus visuales tras el menu.
+      if (this.tutorial) {
+        this.tutorialUi.show(buildTutorialSteps().length);
+        this.syncTutorialUi();
+      }
+      return;
+    }
+    this.introEverDismissed = true;
     let done = false;
     try {
       done = window.localStorage.getItem(GameApp.TUTORIAL_DONE_KEY) === "1";
@@ -1642,6 +1701,27 @@ export class GameApp {
       /* localStorage bloqueado: mostrar el tutorial igualmente */
     }
     if (!done) this.startTutorial();
+  }
+
+  /**
+   * Boton "Menú" (peticion del jugador: "no tenemos un boton que nos permita ir a
+   * la pantalla inicial"): reabre el menu inicial en cualquier momento. Si habia
+   * partida en curso, queda en PAUSA hasta elegir prueba o continuar.
+   */
+  private openMenu(): void {
+    this.audio.ensure();
+    this.cancelKeyboardGrab();
+    this.interaction?.cancelDrag();
+    this.scene.clearHoldHighlights();
+    if (this.machine.state === "PLAYING") {
+      this.machine.transition("PAUSED");
+      this.menuPaused = true;
+    }
+    // El card del tutorial se renderiza sobre el menu: se oculta mientras el menu
+    // esta abierto (el motor del tutorial sigue activo y se restaura al continuar).
+    if (this.tutorial) this.tutorialUi.hide();
+    this.hud.setChallengeList(this.buildChallengeOptions());
+    this.hud.showIntro();
   }
 
   startTutorial(): void {
@@ -1841,6 +1921,7 @@ export class GameApp {
       champion: boolean;
     };
     debugLimbInfo: () => Record<string, { zone: string; anchored: boolean; holdId: string | null; loadN: number; ratio: number; fatigue: number; overloadS: number | null; stretch: number }>;
+    camera: () => { targetY: number; targetX: number; dist: number; posY: number; posZ: number };
   } {
     return {
       state: () => this.machine.state,
@@ -1858,7 +1939,7 @@ export class GameApp {
       pickNearest: (x: number, y: number) => this.scene.pickNearestDebug(x, y),
       handMeshes: () => this.scene.handMeshDebug(),
       renderSize: () => this.scene.renderSizeDebug(),
-      project: (x: number, y: number, z: number) => this.scene.projectToScreen(x, y, z),
+      project: (x: number, y: number, z: number) => this.scene.projectToScreenCss(x, y, z),
       anchors: () => this.solver.anchorHoldIds().map((a) => ({ limb: a.limb, hold: a.holdId, load: Math.round(a.loadN) })),
       reject: (limb: LimbId, holdId: string) => (this.interaction ? this.interaction.rejectReason(limb, holdId) : "sin-interaccion"),
       chainInfo: (limb: LimbId) => {
@@ -1870,13 +1951,15 @@ export class GameApp {
         const out: { limb: string; x: number; y: number }[] = [];
         for (const limb of LIMB_IDS) {
           const pp = this.scene.limbPickPos(limb, this.solver);
-          const s = this.scene.projectToScreen(pp.x, pp.y, pp.z);
+          // CSS px: el mismo espacio del cursor y de los eventos de puntero.
+          const s = this.scene.projectToScreenCss(pp.x, pp.y, pp.z);
           out.push({ limb, x: s.x, y: s.y });
         }
         return out;
       },
       labels: () => this.scene.limbLabelDebug(),
       pelvisY: () => this.solver.getParticle(P.pelvisC).pos.y,
+      camera: () => this.scene.cameraDebug(),
       joints: () => this.solver.debugJoints(),
       twists: () => this.solver.debugTwists(),
       grab: (limb) => {
@@ -1953,15 +2036,19 @@ export class GameApp {
           const a = this.solver.releaseAnchor(h);
           if (a) this.refreshHoldOccupancy();
         }
-        // Ancla los pies que esten libres a la presa mas cercana.
+        // Ancla los pies que esten libres a la presa mas cercana. PREFERENCIA por
+        // presas de pie (type "foot"): si un pie queda en una presa de mano a media
+        // pared el cuerpo cuelga en diagonal y el pendulo lo re-erguye una y otra
+        // vez (badTimer nunca acumula) — el fixture enmascara la regla que prueba.
         for (const f of ["foot_l", "foot_r"] as LimbId[]) {
           if (this.solver.hasAnchor(f)) continue;
           const pos = this.solver.positionOfLimb(f);
-          let best: { id: string; d: number } | null = null;
+          let best: { id: string; s: number } | null = null;
           for (const hold of this.wall.holds) {
             if (!hold.allowedLimbs.includes(f)) continue;
             const d = Math.hypot(hold.position[0] - pos.x, hold.position[1] - pos.y, hold.position[2] - pos.z);
-            if (!best || d < best.d) best = { id: hold.id, d };
+            const score = d + (hold.type === "foot" ? 0 : 2.5);
+            if (!best || score < best.s) best = { id: hold.id, s: score };
           }
           if (best) {
             const hold = this.holdDefById.get(best.id)!;
@@ -1995,12 +2082,32 @@ export class GameApp {
         const chest = this.solver.getParticle(P.chest).pos;
         const pelvis = this.solver.getParticle(P.pelvisC).pos;
         const spine = Math.hypot(chest.x - pelvis.x, chest.y - pelvis.y, chest.z - pelvis.z) || 1e-6;
+        const com = this.solver.centerOfMass();
+        // ¿Cuelga DEBAJO de algun apoyo? (la exencion de colgadura legitima)
+        let hangs = false;
+        for (const a of anchors) {
+          const anchor = this.solver.getAnchor(a.limb);
+          if (!anchor) continue;
+          if (com.y < anchor.point.y - 0.12 && Math.abs(com.x - anchor.point.x) <= 0.85) {
+            hangs = true;
+            break;
+          }
+        }
+        // Contactos de suelo (la otra exencion: apoyo real en el colchon).
+        let floor = 0;
+        for (const limb of LIMB_IDS) {
+          const p = this.solver.positionOfLimb(limb);
+          if (p.y <= 0.045) floor++;
+        }
         return {
           upDot: Math.round(((chest.y - pelvis.y) / spine) * 100) / 100,
           hands: anchors.filter((a) => a.limb.startsWith("hand")).length,
           feet: anchors.filter((a) => a.limb.startsWith("foot")).length,
           badTimer: Math.round(this.postureBadTimer * 100) / 100,
-          grace: POSTURE_GRACE_S
+          grace: POSTURE_GRACE_S,
+          floor,
+          hangs,
+          com: { x: Math.round(com.x * 100) / 100, y: Math.round(com.y * 100) / 100 }
         };
       },
       circuit: () => {

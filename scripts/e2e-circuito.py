@@ -213,7 +213,7 @@ def main():
     chip = ev('JSON.stringify({v: !document.querySelector("#hud-gas").classList.contains("hidden"), t: document.querySelector("#hud-gas-text").textContent})')
     print(f"   chip aviso: {chip}")
     t0 = time.time()
-    while time.time() - t0 < 4:
+    while time.time() - t0 < 12:  # margen: cada eval por CLI cuesta 1-2 s
         p = ev('JSON.stringify({p: window.__NS.gas()})')["p"]
         if p == "buff":
             break

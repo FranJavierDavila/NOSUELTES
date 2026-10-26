@@ -132,6 +132,16 @@ export class GameScene {
   private debugFlags: DebugFlags = { axes: false, joints: false, reach: false, raycast: false };
   private ortho = false;
   private camTargetBase = new Vector3(0, 2.4, -0.2);
+  /**
+   * Estado PROPIO del seguimiento. NUNCA leer camera.target: setTarget guarda ahi
+   * el punto de mira CON la mirada adelantada incluida (+0.35), y reutilizarlo como
+   * estado del seguimiento compone +0.35 en cada fotograma — la camara se iba varios
+   * metros POR ENCIMA del personaje (a 60 fps, ~7,5 m: el personaje salia del cuadro
+   * por abajo y el jugador veia la pared vacia). Reporte del jugador: "no veo el
+   * personaje y no puedo jugar". Las capturas E2E no lo veian porque a ~20 fps el
+   * exceso de equilibrio es pequeno (~1,2 m) y el servo apuntaba por proyeccion.
+   */
+  private camFollow = new Vector3(0, 2.4, -0.2);
   /** Topo de la pared cargada (para que la camara siga subiendo en paredes altas). */
   private wallTopY = 4.85;
   /** Semiancho de la pared cargada (travesias hasta el borde quedan en cuadro). */
@@ -913,15 +923,19 @@ export class GameScene {
       if (this.camModeLeft <= 0) this.camMode = "play";
     }
 
-    const speed = Math.hypot(pelvis.x - this.lastPelvis.x, pelvis.y - this.lastPelvis.y, pelvis.z - this.lastPelvis.z) / Math.max(1e-4, dt);
+    const dPelvis = Math.hypot(pelvis.x - this.lastPelvis.x, pelvis.y - this.lastPelvis.y, pelvis.z - this.lastPelvis.z);
+    // Guarda finita: una pelvis no finita congela el seguimiento (nunca deriva la
+    // camara hacia el vacio); las guardas de mundo de loop.ts reinician la prueba.
+    const pelvisFinite = Number.isFinite(pelvis.x + pelvis.y + pelvis.z);
+    const speed = pelvisFinite ? dPelvis / Math.max(1e-4, dt) : 0;
     this.lastPelvis = { x: pelvis.x, y: pelvis.y, z: pelvis.z };
 
     const deadzoneHalf = 0.55;
-    const target = this.camera.target;
+    const target = this.camFollow;
     if (recenter) {
       target.copyFrom(this.camTargetBase);
       this.camDist = this.camBaseDist;
-    } else if (pelvis) {
+    } else if (pelvis && pelvisFinite) {
       const yCap = Math.max(4.2, this.wallTopY + 0.6);
       const xCap = Math.max(1.6, this.wallHalfWidth - 0.45);
       const desiredY = Math.min(yCap, Math.max(1.0, pelvis.y));
@@ -937,14 +951,25 @@ export class GameScene {
       // Bajo techos el cuerpo avanza hacia la camara: el punto de mira lo sigue en z.
       const desiredZ = Math.min(0.3, Math.max(-2.6, pelvis.z * 0.55));
       target.z += (desiredZ - target.z) * Math.min(1, dt * 2.2);
+      // TOPE DURO: la zona muerta puede dejar el target a 0,55 del deseado, pero el
+      // target JAMAS sale del cuadro razonable de la pared (la camara nunca pierde
+      // al personaje, pase lo que pase con la fisica).
+      target.y = Math.min(yCap, Math.max(1.0, target.y));
+      target.x = Math.min(xCap, Math.max(-xCap, target.x));
     }
+    if (!Number.isFinite(target.y)) target.y = this.camTargetBase.y;
+    if (!Number.isFinite(target.x)) target.x = this.camTargetBase.x;
+    // Clamps de seguridad permanentes (fuera del if: tambien tras recenter).
+    target.y = Math.min(Math.max(4.2, this.wallTopY + 0.6), Math.max(1.0, target.y));
+    target.x = Math.min(Math.max(1.6, this.wallHalfWidth - 0.45), Math.max(-Math.max(1.6, this.wallHalfWidth - 0.45), target.x));
 
     // Distancia adaptativa + posicion (suavizadas). MIENTRAS SE ARRASTRA la
     // posicion queda CONGELADA: el jugador esta apuntando con el cursor y el
     // mapeo cursor->presa no puede moverse bajo sus pies (control determinista).
     const zoomGoal = this.camMode === "fallen" ? -1.4 : this.camMode === "success" ? -0.85 : Math.min(1.15, speed * 0.13);
-    const distGoal = Math.min(12, Math.max(5.2, this.camBaseDist + zoomGoal));
+    const distGoal = Math.min(12, Math.max(5.2, this.camBaseDist + (Number.isFinite(zoomGoal) ? zoomGoal : 0)));
     this.camDist += (distGoal - this.camDist) * Math.min(1, dt * (this.camMode === "play" ? 2.6 : 4.2));
+    if (!Number.isFinite(this.camDist)) this.camDist = this.camBaseDist;
     const t = performance.now() / 1000;
     if (!aiming) {
       const roofPull = Math.max(0, -target.z) * 0.85;
@@ -955,10 +980,17 @@ export class GameScene {
         -(this.camDist) - roofPull
       );
       this.camera.position.addInPlace(desiredPos.subtract(this.camera.position).scale(Math.min(1, dt * 3.4)));
+      // Recuperacion: si la posicion llego a ser no finita (causalidad rota en el
+      // render), vuelve al encuadre deseado en vez de dejar el mundo invisible.
+      if (!Number.isFinite(this.camera.position.x + this.camera.position.y + this.camera.position.z)) {
+        this.camera.position.copyFrom(desiredPos);
+      }
     }
 
     // La mutacion de camera.target no reorienta a una FreeCamera: hay que llamar a
-    // setTarget. Mirada adelantada (ves a donde vas) + sacudida de impacto.
+    // setTarget. Mirada adelantada (ves a donde vas) + sacudida de impacto. El
+    // look es un vector NUEVO: lo que setTarget guarde en camera.target nunca
+    // alimenta el seguimiento (el estado es camFollow).
     const look = new Vector3(target.x, target.y + 0.35, target.z);
     if (this.shakeAmp > 0.0006) {
       look.x += Math.sin(t * 47) * this.shakeAmp;
@@ -984,6 +1016,22 @@ export class GameScene {
     this.ortho = !this.ortho;
     this.camera.mode = this.ortho ? Camera.ORTHOGRAPHIC_CAMERA : Camera.PERSPECTIVE_CAMERA;
     return this.ortho;
+  }
+
+  /** Altura real de la cima de la pared (guardas de mundo en loop.ts). */
+  wallTopMeters(): number {
+    return this.wallTopY;
+  }
+
+  /** Diagnostico de camara (hook __NS.camera): estado del seguimiento, distancia y posicion. */
+  cameraDebug(): { targetY: number; targetX: number; dist: number; posY: number; posZ: number } {
+    return {
+      targetY: Math.round(this.camFollow.y * 100) / 100,
+      targetX: Math.round(this.camFollow.x * 100) / 100,
+      dist: Math.round(this.camDist * 100) / 100,
+      posY: Math.round(this.camera.position.y * 100) / 100,
+      posZ: Math.round(this.camera.position.z * 100) / 100
+    };
   }
 
   // --- Debug ---
@@ -1068,6 +1116,8 @@ export class GameScene {
   }
 
   // --- Picking ---
+  // (scene.pick/createPickingRay reciben pixeles CSS: el motor ya aplica el DPR.
+  //  Verificado con barrido de factores a DPR 1.5: el factor 1 acierta la presa.)
 
   /** Radio base de iman en pixeles CSS por tipo de extremidad: los pies, mas grandes
    * (son los mas dificiles de clicar: queja del usuario de agilidad). El radio real
@@ -1146,7 +1196,10 @@ export class GameScene {
     return best;
   }
 
-  /** Proyeccion del cursor sobre el plano paralelo a la pared a la profundidad de agarre (7.1). */
+  /** Proyeccion del cursor sobre el plano paralelo a la pared a la profundidad de agarre (7.1).
+   * NOTA: scene.pick/createPickingRay esperan pixeles CSS del canvas (el motor aplica
+   * internamente el devicePixelRatio con adaptToDeviceRatio=true; verificado con un
+   * barrido de factores a DPR 1.5). NO convertir a pixeles de render aqui. */
   wallPlanePoint(x: number, y: number, zPlane: number): Vector3 | null {
     const ray = this.scene.createPickingRay(x, y, Matrix.Identity(), this.camera);
     if (Math.abs(ray.direction.z) < 1e-6) return null;
