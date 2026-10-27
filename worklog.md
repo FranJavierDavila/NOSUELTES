@@ -1,6 +1,29 @@
 # Worklog
 
 ---
+Task ID: 25
+Agent: Z.ai (principal)
+Task: "Escaladores de goma" + cuerda mal → TABLA DE PORTEO con coordinación (petición del jugador: ricachón sentado en una tabla, una cuerda por lado hacia cada sherpa; si no coordinan, la tabla se desplaza y el ricachón cae)
+
+Work Log:
+- Diagnóstico de la goma: en SherpaRig.step la extremidad arrastrada seguía al puntero sin límite de alcance (dragPos solo limitado por la caja de la pared) → elasti-hombre; además los huesos cosméticos (brazo 0,66 m) eran más cortos que el alcance real de juego (colgado: hombro→presa 0,87 m) → cápsulas estiradas SIEMPRE, no solo al arrastrar.
+- Fix goma (sherpaRig.ts): objetivo de arrastre acotado a reachOf×1.25 desde la raíz (hombre/cadera) — el brazo se estira hacia el puntero y NUNCA más allá; al soltar, el viaje determinista completa la presa. Huesos igualados al alcance real: ARM 0.46+0.42=0.88, LEG 0.50+0.47=0.97. E2E: pie-cintura 0,41 m tras subir, sin estiramiento.
+- Nuevo src/game/sherpas/physics/plank.ts (PlankSystem): dos cabos verlet (extremos de la tabla) unidos por palo rígido (plankLen 1.7) y colgados de cada sherpa con cuerda UNILATERAL (≤ ropeLen 1.4, solo tira); proyección de posiciones pura (nada acumula energía); ricachón desliza por cono de rozamiento (rest 16° tras afinar de 13°) hacia el lado bajo, recentra con tabla plana, cae si |slide| ≥ 74% de media tabla o vuelco ≥ 55°; guardia grounded (centro < 0,55 m: sin castigo apoyado); tirón suave de pareja si se separan más de plankLen+2·ropeLen; cuerdas visuales analíticas sherpa→cabo con comba proporcional a holgura (estructuralmente imposible que "se pierdan por la pantalla"); addWobble/drainWobble para los impulsos del cerebro.
+- richMan.ts: modo seated — pose cinemática sentado en la tabla (sitPose: 11 cuerpos relativos a centro/ángulo/slide, se inclina con la tabla, respiración cosmética); impulsos del cerebro (pataleo, comer, ruido) derivan a bamboleo de la tabla; launchFall(dir) pasa a ragdoll libre para la caída al vacío; step() en sentado solo hace transición de masa.
+- match.ts: PlankSystem sustituye a RopeSystem A–R–B (rope.ts ELIMINADO); caída del ricachón → onTeamFell(true) con banner propio "¡EL RICACHÓN HA CAÍDO!" (propina −12), respawn re-cuelga tabla nivelada y re-sienta; balance.tick alimentado con tensiones/slide de la tabla; aviso "¡el ricachón resbala!" cada 2,5 s; cámara incluye el centro de la tabla; debug + sonda E2E con plank {tiltDeg, slide, fell}.
+- scene.ts: spawnPlank/syncPlank — tabla de madera con travesaños oscuros y nudos en los cabos, rotation.z = ángulo; hud.ts: chip "Tabla: nivelada / inclinada X° / ¡EL RICACHÓN RESBALA!" (rojo); data.ts PlankTuning opcional + tuning.json sección plank; strings ES/EN (plank.*, richFell*, howToSub/help.goal/step4 con la coordinación, subtítulo del menú "ricachón en su tabla").
+- Tests: cuerda.test.ts → tabla.test.ts (9 casos: nivelación, límites de cuerda, inclinación según desnivel, deslizamiento+caída, recentrado, guardia en suelo, tirón de separación, bamboleo finite, reparto de carga); integracion.test.ts adaptado a la tabla (cabos ≤ ropeLen, span limitado, sentado); loadShare movida a plank.ts (coop.ts actualizada); borrados scripts/debug-{rope,drift,ltotal,hang}.ts (referenciaban rope).
+- Quality gates: tsc sin errores nuevos en src (baseline tests/game intacto), eslint limpio, vitest sherpas 58/58, global 208/213 (5 fallos preexistentes de selfcollision del prototipo).
+- Deploy: build fauBIgG_ttAt-btchGxal; INCIDENTE — el :3000 seguía servido por un proceso zombi desde un directorio borrado (HTML viejo en memoria + chunks inexistentes): matado, re-daemonize, verificación de chunks OK. Ensamblado standalone corregido (.next/server + .next/BUILD_ID + static + public con el tuning nuevo; el tuning es dato runtime: reajuste sin rebuild).
+- E2E (agent-browser, ratón real trusted): menú → GO → tabla visible con ricachón sentado y cuerdas a cada lado; arrastre pierna→iman h41→anclaje→cintura 2.97→3.14→3.34 (¡SE SUBE!); desnivel 0,37 m → tabla −12,5° → ricachón resbala y CAE (fell true) → banner → respawn con tabla nivelada y propina 100→88; afinado (rest 16°/accel 2.4): un paso de ventaja → 5° y slide 0 (no castiga); iframe cross-origin (8899→3000) jugando con clicks reales sobre el iframe (el switch de frame del CLI no cambia el contexto eval en OOP, pero el ratón pasa nativo); gateway :81 → 200.
+
+Stage Summary:
+- La cuerda ya no sale de cada escalador hacia el vacío: de cada LADO de la tabla sale una cuerda hacia un sherpa, y el ricachón va SENTADO (pose estable, cero retorcidas).
+- Coordinación jugable real: subir solo con un sherpa inclina la tabla (legible en HUD y en la escena), el ricachón resbala con aviso y cae al vacío si se insiste; respawn en campamento.
+- Sin goma: extremidades acotadas al alcance y esqueleto coherente (cápsulas sin estirar en colgado/apoyo).
+- COMMIT 65d948c en main. Pendiente histórico intacto: carga lenta (parcialmente mitigada), C1–C8, D, E; push a GitHub requiere PAT nuevo.
+
+---
 Task ID: 1
 Agent: Z.ai (principal)
 Task: Prototipo de juegos basado en el documento adjunto (NO SUELTES — Arquitectura técnica del prototipo v1.0)
