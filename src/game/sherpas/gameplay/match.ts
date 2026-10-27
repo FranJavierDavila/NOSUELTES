@@ -739,10 +739,14 @@ export class SherpasMatch {
     this.d.audio.setAltitude(st.narrativeY, st.maxNarrativeY);
     const fps = this.hudFrameCount;
     this.hudFrameCount = 0;
+    const waD = this.sherpas[0].waist();
+    const wbD = this.sherpas[1].waist();
+    const rD = this.rich.pelvis();
     this.d.hud.debug(
       `${this.d.scene.backend} · ${fps} fps · tick ${this.tickMs.toFixed(1)} ms\n` +
       `T A:${this.sherpas[0].maxTension().toFixed(2)} B:${this.sherpas[1].maxTension().toFixed(2)} · cuerda ${Math.round(this.balance.snapshot.tensionA)}N/${Math.round(this.balance.snapshot.tensionB)}N\n` +
-      `ricachón: ${st.richState} · ${Math.round(this.rich.currentMass())} kg`,
+      `ricachón: ${st.richState} · ${Math.round(this.rich.currentMass())} kg\n` +
+      `A(${waD.x.toFixed(2)},${waD.y.toFixed(2)}) B(${wbD.x.toFixed(2)},${wbD.y.toFixed(2)}) R(${rD.x.toFixed(2)},${rD.y.toFixed(2)}) anclas ${this.sherpas[0].anchorsCount()}+${this.sherpas[1].anchorsCount()}`,
     );
   }
 

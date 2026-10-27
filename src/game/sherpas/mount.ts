@@ -89,6 +89,19 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
   };
 
   const begin = async (choice: HudStartChoice): Promise<void> => {
+    try {
+      await beginInner(choice);
+    } catch (err) {
+      // diagnóstico E2E: el valor puede llegar sin stack (reject(undefined) etc.)
+      const detail = err instanceof Error ? (err.stack ?? err.message)
+        : err === undefined ? "UNDEFINED (rechazo sin valor)"
+        : (() => { try { return JSON.stringify(err); } catch { return String(err); } })();
+      console.error("BEGIN FALLO >>>", detail);
+      throw err;
+    }
+  };
+
+  const beginInner = async (choice: HudStartChoice): Promise<void> => {
     if (state.disposed) return;
     if (state.match) { state.match.dispose(); state.match = null; }
     // REUTILIZA la escena del menú como escena de partida: crear un segundo

@@ -21,9 +21,18 @@ export class SherpaAudio {
     this.data = data;
   }
 
-  /** Debe llamarse dentro de un gesto del usuario (botón GO). */
+  /** Debe llamarse dentro de un gesto del usuario (botón GO).
+   *  A PRUEBA DE CUELGES: si el navegador bloquea el audio (sin gesto, políticas
+   *  autoplay), la partida ARRANCA IGUAL en silencio — el juego nunca se queda
+   *  esperando al sonido (bug E2E visto: resume() pendiente para siempre). */
   async start(): Promise<void> {
-    if (this.ctx) { await this.ctx.resume(); return; }
+    if (this.ctx) {
+      await Promise.race([
+        this.ctx.resume().catch(() => { /* audio bloqueado: silencio */ }),
+        new Promise((r) => setTimeout(r, 1500)),
+      ]);
+      return;
+    }
     const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     this.ctx = new Ctor();
     this.master = this.ctx.createGain();
@@ -45,7 +54,10 @@ export class SherpaAudio {
     this.windGain.gain.value = this.data.wind.baseGain;
     wind.connect(this.windFilter).connect(this.windGain).connect(this.master);
     wind.start();
-    await this.ctx.resume();
+    await Promise.race([
+      this.ctx.resume().catch(() => { /* audio bloqueado: silencio */ }),
+      new Promise((r) => setTimeout(r, 1500)),
+    ]);
   }
 
   suspend(): void { void this.ctx?.suspend(); }
