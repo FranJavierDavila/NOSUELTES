@@ -106,6 +106,13 @@ export interface HingeConstraint {
   limb: LimbId | null;
   /** Lectura de diagnostico: desviacion lateral actual (m). */
   dev: number;
+  /** Lectura de diagnostico: tolerancia EFECTIVA del ultimo paso (tol x
+   *  hingeTolScale, con suelo para rodilla comprimida). Solo lectura; el dato
+   *  base (tol) no se toca: los presets aprietan la bisagra EN VIVO. */
+  effTol?: number;
+  /** Lectura: la bisagra toco su tope en este paso (contacto de fin de
+   *  recorrido). La capa de cierre lo usa para el contacto inelastico. */
+  contact?: boolean;
 }
 
 /**
@@ -236,6 +243,24 @@ export interface BalanceTuning {
    * aplica el equivalente directo sobre el pin, sin tocar la calibracion de carga.
    */
   pinVelKill: number;
+  /**
+   * Escala EN VIVO de la tolerancia de bisagra (codo/rodilla; peticion del jugador:
+   * "menos ragdoll, mas predecible, no podemos tener articulaciones rotas"). El dato
+   * del perfil (hingeToleranceM ~0.2 m) permite ~40 grados de giro de goma lateral
+   * sobre un brazo de 0.3 m: la bisagra del dato es demasiado holgada para el modo
+   * realista. Este factor la aprieta por preset SIN tocar el dato base (0.45
+   * realista = ~17 grados; 0.7 equilibrado; 1.0 ragdoll comico). Es anatomia pasiva
+   * (joint limits como constraints de proyeccion; Bender et al. 2014, sec. 3.3),
+   * no musculo: no escala con el tono.
+   */
+  hingeTolScale: number;
+  /**
+   * Ventana de asentamiento tras el spawn (s): damping reforzado mientras dure.
+   * Realista 1.1 s: el personaje aparece QUIETO colgado (el bailoteo inicial era
+   * la ventana de 0.55 s cayendose antes de matar la energia de la semilla).
+   * Ragdoll 0.4 s: se conserva parte del bamboleo comico.
+   */
+  settleSeconds: number;
 }
 
 /**
@@ -339,6 +364,19 @@ const BOUNDS_DEFAULT = { minX: -4, maxX: 4, minY: 0, maxY: 9, minZ: -7, maxZ: 0.
 /** Tolerancia del tope de columna (segmento rigido: casi sin elastico). */
 const SPINE_STRETCH_TOLERANCE = 1.04;
 
+/**
+ * Suelo fisico de la bisagra de RODILLA (siempre activo, cargada o no): la
+ * rodilla legitima es MOVIL en su plano (el fémur rota en la cadera y la rodilla
+ * acompana: rana, bandera, step-up) y bajo carga esta COMPRIMIDA (no luxa).
+ * El dato (0.22 m) era casi libre; el suelo 0.19 m lo aprieta ~14% y BLOQUEA la
+ * tijera extrema (0.3+ m). Medido: el step-up (montar el escalon) exige dev
+ * ~0.19 — a 0.155 el montaje muere (rise 0.19 < 0.25 del test de musculos).
+ * El CODO si escala completo con hingeTolScale: colgado va en TENSION y ahi es
+ * donde se ve el codo de goma (peticion del jugador: "no podemos tener
+ * articulaciones rotas").
+ */
+const KNEE_FLOOR_M = 0.19;
+
 export class PbdSolver {
   readonly env: SolverEnv;
   private particles: Particle[] = [];
@@ -360,6 +398,16 @@ export class PbdSolver {
   private tone = 1;
   private toneTarget = 1;
   private lastMuscleForces = new Map<number, V3>();
+  /**
+   * Deltas de bisagra acumulados durante UN paso (indice de particula -> suma de
+   * correcciones). Las bisagras corren dentro del bucle de iteraciones y en el
+   * cierre: si solo el cierre compensa prev (como el pin), las correcciones del
+   * BUCLE quedan como velocidad fantasma (Muller et al. 2007): un luxon corregido
+   * 0.1 m regresa con 6 m/s de momento fantasma y el vertice atraviesa al otro
+   * lado (medido en el test sintetico). El cierre acumula y compensa TODO el
+   * paso: proyeccion puramente posicional, sin percutor.
+   */
+  private hingeDeltas = new Map<number, V3>();
   /** Amplitud de tremor por extremidad, la fija la capa biomecanica (0..1). */
   readonly tremor: Record<LimbId, number> = { hand_l: 0, hand_r: 0, foot_l: 0, foot_r: 0 };
   /** Ventana de asentamiento tras el spawn: damping extra para matar la energia
@@ -416,7 +464,9 @@ export class PbdSolver {
         toneFloor: env.balance?.toneFloor ?? 0.12,
         stretchTolerance: env.balance?.stretchTolerance ?? 1.1,
         twistLimitRad: env.balance?.twistLimitRad ?? 0.45,
-        pinVelKill: env.balance?.pinVelKill ?? 0.4
+        pinVelKill: env.balance?.pinVelKill ?? 0.4,
+        hingeTolScale: env.balance?.hingeTolScale ?? 0.7,
+        settleSeconds: env.balance?.settleSeconds ?? 0.55
       }
     };
     this.tone = this.env.balance.postureTone;
@@ -504,9 +554,10 @@ export class PbdSolver {
     return this.folds.map((f) => ({ id: f.id, side: f.side, minSide: f.minSide }));
   }
 
-  /** Lecturas de diagnostico de las bisagras (desviacion lateral vs tolerancia). */
-  debugHinges(): { id: string; dev: number; tol: number }[] {
-    return this.hinges.map((h) => ({ id: h.id, dev: h.dev, tol: h.tol }));
+  /** Lecturas de diagnostico de las bisagras (desviacion lateral vs tolerancia
+   *  base del dato y vs la tolerancia EFECTIVA vigente). */
+  debugHinges(): { id: string; dev: number; tol: number; effTol: number }[] {
+    return this.hinges.map((h) => ({ id: h.id, dev: h.dev, tol: h.tol, effTol: h.effTol ?? h.tol }));
   }
 
   /** Lecturas de diagnostico del guinada de pelvis (rad y tope vigente). */
@@ -794,6 +845,9 @@ export class PbdSolver {
     // 4) Proyeccion de restricciones.
     // 4a) Acumulador de reaccion por anclaje: suma de correcciones del pin este paso.
     const pinCorrection = new Map<LimbId, V3>();
+    // Deltas de bisagra del paso en blanco (se acumulan en bucle + cierre).
+    this.hingeDeltas.clear();
+    for (const h of this.hinges) h.contact = false;
     for (let iter = 0; iter < K; iter++) {
       this.solveSticks();
       // El giro ANTES de los limites articulares: los angulos se miden/corrigen sobre
@@ -857,6 +911,11 @@ export class PbdSolver {
     // cierre es una proyeccion PURAMENTE POSICIONAL: fija la frontera anatomica sin
     // bombear energia al pendulo.
     const preClosure: V3[] = this.particles.map((p) => vClone(p.pos));
+    // Los deltas de bisagra acumulados por el BUCLE se compensan aparte: el
+    // mecanismo de abajo solo cubre lo movido por el cierre (angulos + bisagras
+    // finales). Sin esto, la correccion del bucle queda como velocidad fantasma.
+    const loopHingeDeltas = new Map(this.hingeDeltas);
+    this.hingeDeltas.clear();
     this.solveAngles();
     this.solveHinges();
     for (let i = 0; i < this.particles.length; i++) {
@@ -870,6 +929,17 @@ export class PbdSolver {
         p.prev.z += dz;
       }
     }
+    // Compensacion de las correcciones de bisagra del bucle (anti velocidad
+    // fantasma; ver hingeDeltas): la bisagra es anatomia pasiva POSICIONAL.
+    for (const [idx, delta] of loopHingeDeltas) {
+      const p = this.particles[idx];
+      p.prev.x += delta.x;
+      p.prev.y += delta.y;
+      p.prev.z += delta.z;
+    }
+    // Contacto inelastico en los topes que tocaron limite este paso (anti
+    // rebote en el fin de recorrido; una vez por paso, ver settleHingeContacts).
+    this.settleHingeContacts();
     // PROYECCION DE VELOCIDAD DEL PIN (Muller et al. 2007): la correccion posicional
     // del anclaje no debe convertirse en velocidad. Se devuelve parte de la
     // correccion acumulada al prev (prev += corr): el pin mantiene la posicion pero
@@ -1281,6 +1351,12 @@ export class PbdSolver {
   }
 
   /**
+   * CORRECCION SOLO EN EL VERTICE: no arrastra los extremos (hombro/cadera y mano/
+   * pie). Los sticks ya redistribuyen la correccion por masa en la misma iteracion,
+   * y asi la bisagra NUNCA pelea con los pines ni con los musculos: en el step-up
+   * (pie por encima de la cadera) el arrastre de cadera/pie por dos bisagras a la
+   * vez robaba el impulso de la pierna y los brazos acababan sobrecargados.
+   *
    * BISAGRAS (peticion del jugador: "las articulaciones deben limitarse a angulos y
    * rotaciones fisicamente reales"): el vertice (codo/rodilla) solo puede separarse
    * de la cuerda padre-hijo DENTRO del plano de flexion. Ese plano es el que contiene
@@ -1291,40 +1367,29 @@ export class PbdSolver {
    * (cuerda paralela a la normal, brazo en cruz perpendicular a la cara): sin plano
    * definido, no actua.
    *
-   * CORRECCION SOLO EN EL VERTICE: no arrastra los extremos (hombro/cadera y mano/
-   * pie). Los sticks ya redistribuyen la correccion por masa en la misma iteracion,
-   * y asi la bisagra NUNCA pelea con los pines ni con los musculos: en el step-up
-   * (pie por encima de la cadera) el arrastre de cadera/pie por dos bisagras a la
-   * vez robaba el impulso de la pierna y los brazos acababan sobrecargados.
+   * TOLERANCIA EFECTIVA (peticion del jugador: "menos ragdoll, mas predecible"):
+   * tol del dato x balance.hingeTolScale. El dato (~0.2 m) permitia ~40 grados de
+   * giro de goma lateral sobre un brazo de 0.3 m; realista aprieta a ~0.09 m
+   * (~17 grados) sin tocar el dato base (los presets ajustan EN VIVO).
    *
-   * REGLA DE COMPRESION (rodilla): una pierna que SOSTIENE PESO (pie anclado por
-   * debajo de la cadera) esta comprimida por la reaccion y no puede luxar; ademas
-   * su valgo natural en apoyos asimetricos supera la tolerancia y la bisagra la
-   * pelearia (oscilacion de pie en placa). La bisagra de rodilla se aplica solo con
-   * el pie LIBRE (caida, cut loose) o EN TENSION (talón/gancho por encima de la
-   * cadera). El CODO siempre activo: los brazos cuelgan en TENSION al colgar, que
-   * es exactamente donde se ve el muneco de goma.
+   * REGLA DE SUELO EN RODILLA: la rodilla no escala completo (su movilidad
+   * legitima en el plano de flexion sostiene el step-up y la rana); usa el suelo
+   * KNEE_FLOOR_M siempre. El CODO si aprieta a tope: colgado va en TENSION y es
+   * el muneco de goma visible. Ver la constante para la calibracion medida.
    */
   private solveHinges(): void {
     const k = clamp(this.env.balance.jointLimitStiffness, 0, 1);
+    const scale = clamp(this.env.balance.hingeTolScale, 0.2, 1.2);
     if (k <= 0) {
       for (const h of this.hinges) h.dev = 0;
       return;
     }
     for (const h of this.hinges) {
-      // Regla de compresion: pierna que sostiene peso (pie anclado a la altura de la
-      // cadera o por debajo) = articulacion comprimida, sin luxacion posible.
-      if (h.limb !== null) {
-        const anchor = this.anchors.get(h.limb);
-        if (anchor && h.limb.startsWith("foot")) {
-          const rootIdx = this.topology?.rootOf.get(h.limb);
-          const rootY = rootIdx === undefined ? Number.NEGATIVE_INFINITY : this.particles[rootIdx].pos.y;
-          if (anchor.point.y <= rootY + 0.02) {
-            h.dev = 0;
-            continue;
-          }
-        }
-      }
+      // Suelo de rodilla (siempre): movilidad legitima + compresion bajo carga.
+      // El codo escala completo con el preset (ver KNEE_FLOOR_M y notas).
+      const isKnee = h.limb !== null && h.limb.startsWith("foot");
+      const tolUse = isKnee ? Math.max(h.tol * scale, KNEE_FLOOR_M) : h.tol * scale;
+      h.effTol = tolUse;
       const pj = this.particles[h.j];
       const pa = this.particles[h.a];
       const pb = this.particles[h.b];
@@ -1350,7 +1415,7 @@ export class PbdSolver {
       }
       const d = ((pj.pos.x - pa.pos.x) * hx + (pj.pos.y - pa.pos.y) * hy + (pj.pos.z - pa.pos.z) * hz) / hl;
       h.dev = Math.abs(d);
-      const excess = Math.abs(d) - h.tol;
+      const excess = Math.abs(d) - tolUse;
       if (excess <= 0) continue;
       const corr = excess * k;
       const s = d >= 0 ? -1 : 1;
@@ -1359,6 +1424,58 @@ export class PbdSolver {
       const fz = (hz / hl) * s * corr;
       // Solo el vertice: ver nota de diseno arriba (sin contra-correccion en pa/pb).
       pj.pos = vAdd(pj.pos, v3(fx, fy, fz));
+      // Acumula para la compensacion de prev del cierre (anti velocidad fantasma).
+      const acc = this.hingeDeltas.get(h.j);
+      this.hingeDeltas.set(h.j, acc ? v3(acc.x + fx, acc.y + fy, acc.z + fz) : v3(fx, fy, fz));
+      // Marca el contacto de fin de recorrido: el cierre lo trata como contacto
+      // INELASTICO una vez por paso (ver settleHingeContacts).
+      h.contact = true;
+    }
+  }
+
+  /**
+   * Contacto INELASTICO en los topes de bisagra (UNA vez por paso, en el cierre):
+   * el limite articular NO rebota. La proyeccion posicional pura (prev += delta)
+   * conserva el momento: bajo fuerza sostenida el vertice vive REBOTANDO en el
+   * tope (medido: 3-5 m/s de jitter con la rodilla apoyada en el limite). En el
+   * cierre se elimina la componente de velocidad SALIENTE (hacia el lado
+   * violado) de cada bisagra que toco su tope este paso; la ENTRANTE (retorno
+   * legitimo de un luxon) no se toca: sin punterazo. UNA vez por paso y no en
+   * cada iteracion: dentro del bucle se comia el empuje del cuadriceps (el
+   * apoyo de pierna perdia la descarga de brazos del test de musculos).
+   */
+  private settleHingeContacts(): void {
+    for (const h of this.hinges) {
+      if (!h.contact) continue;
+      h.contact = false;
+      const pj = this.particles[h.j];
+      const pa = this.particles[h.a];
+      const pb = this.particles[h.b];
+      const ux = pb.pos.x - pa.pos.x;
+      const uy = pb.pos.y - pa.pos.y;
+      const uz = pb.pos.z - pa.pos.z;
+      const ul = Math.hypot(ux, uy, uz);
+      if (ul < 1e-9) continue;
+      const ln = this.governingPlane(pj.pos.x, pj.pos.y, pj.pos.z).n;
+      const hx = uy * ln.z - uz * ln.y;
+      const hy = uz * ln.x - ux * ln.z;
+      const hz = ux * ln.y - uy * ln.x;
+      const hl = Math.hypot(hx, hy, hz);
+      if (hl < 1e-6) continue;
+      const d = ((pj.pos.x - pa.pos.x) * hx + (pj.pos.y - pa.pos.y) * hy + (pj.pos.z - pa.pos.z) * hz) / hl;
+      const sg = d >= 0 ? 1 : -1;
+      const nx = (hx / hl) * sg;
+      const ny = (hy / hl) * sg;
+      const nz = (hz / hl) * sg;
+      const vx = pj.pos.x - pj.prev.x;
+      const vy = pj.pos.y - pj.prev.y;
+      const vz = pj.pos.z - pj.prev.z;
+      const vn = vx * nx + vy * ny + vz * nz;
+      if (vn > 0) {
+        pj.prev.x += nx * vn;
+        pj.prev.y += ny * vn;
+        pj.prev.z += nz * vn;
+      }
     }
   }
 

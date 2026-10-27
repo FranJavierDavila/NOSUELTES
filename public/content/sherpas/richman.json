@@ -1,0 +1,12 @@
+{
+  "actions": {
+    "insult":  { "telegraphSeconds": 0.3, "armSwing": 0.6 },
+    "eat":     { "telegraphSeconds": 3.0, "massGainKg": 6, "armSwing": 1.2 },
+    "trash":   { "telegraphSeconds": 1.0, "throwImpulse": 2.2, "massLossKg": 6 },
+    "pee":     { "telegraphSeconds": 1.0, "streamSeconds": 1.5, "streamOffsetZ": -0.25 },
+    "kick":    { "telegraphSeconds": 0.8, "durationSeconds": 4.0, "legImpulse": 1.8, "kickHz": 2.2 },
+    "panic":   { "durationSeconds": 4.0, "randomImpulse": 1.4, "impulseHz": 3.0 },
+    "sleep":   { "breathHz": 0.4, "headBobM": 0.03 }
+  },
+  "swing": { "idleHz": 0.5, "idleAmpM": 0.02, "noiseImpulse": 0.05, "noiseHz": 1.0 }
+}

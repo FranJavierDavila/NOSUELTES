@@ -1,0 +1,82 @@
+{
+  "menu": {
+    "title": "SHERPAS AT THE LIMIT",
+    "subtitle": "Two sherpas, one insufferable rich man, one rope, one Everest.",
+    "start": "GO!",
+    "difficulty": "Difficulty",
+    "difficulty.tranquilo": "Chill",
+    "difficulty.normal": "Normal",
+    "difficulty.caos": "Chaos",
+    "language": "Language",
+    "resume": "Continue from {camp}",
+    "newAscent": "New ascent",
+    "loading": "Preparing the wall…",
+    "soloTest": "Solo test (control both)"
+  },
+  "hud": {
+    "altitude": "Altitude",
+    "nextCamp": "Camp",
+    "rope": "Rope",
+    "rope.taut": "taut",
+    "rope.slack": "slack",
+    "rope.overstretch": "ROPE AT THE LIMIT!",
+    "loadShare": "Load",
+    "level.ok": "Level",
+    "level.warn": "Height gap",
+    "level.bad": "BIG HEIGHT GAP!",
+    "player": "Sherpa {n}",
+    "shoo": "Shoo",
+    "propina": "Tip",
+    "campReached": "CAMP REACHED",
+    "campStats": "Time {time} · Falls {falls} · Broken anchors {broken}",
+    "resting": "Resting… limbs recover",
+    "continue": "Keep climbing",
+    "teamFall": "TEAM FALL!",
+    "teamFallSub": "The rope did its job… back to the last camp.",
+    "summit": "EVEREST SUMMIT!",
+    "summitSub": "The rich man wants a selfie. You want your pay.",
+    "voiceOff": "Voice not available in this version",
+    "birdTelegraph": "BIRD INCOMING! Press shoo",
+    "peeTelegraph": "What's that zipper doing…?",
+    "trashTelegraph": "Flying wrapper!",
+    "kickTelegraph": "Kicking in the harness!",
+    "anchorCracked": "Anchor cracked ({type})",
+    "anchorBroken": "Anchor broke!",
+    "wetAnchors": "Anchors below got wet!",
+    "gripLocked": "Limb locked {s}s"
+  },
+  "limb": { "hand_l": "L.Hand", "hand_r": "R.Hand", "foot_l": "L.Foot", "foot_r": "R.Foot" },
+  "anchor": { "roca_firme": "firm rock", "roca_suelta": "loose rock", "hielo": "ice", "hielo_fino": "thin ice", "nieve": "snow", "hielo_de_pis": "pee ice" },
+  "richman_state": {
+    "colgando": "Hanging",
+    "dormitando": "Dozing",
+    "insultando": "Insulting",
+    "comiendo": "Eating",
+    "tirando_basura": "Throwing trash",
+    "meandome": "Peeing",
+    "pataleando": "Kicking"
+  },
+  "keys": {
+    "p1": "P1: WASD aim · 1-4 grip hands/feet · R shoo",
+    "p2": "P2: Arrows aim · I/O hands · K/L feet · U shoo · or gamepad: stick + A/B/X/Y + RB",
+    "shared": "Space pause · H help · C recenter · F3 debug"
+  },
+  "settings": {
+    "title": "Settings",
+    "mute": "Mute",
+    "volume": "Volume",
+    "disablePee": "Disable pee",
+    "daltonism": "Colorblind palette",
+    "reduceShake": "Reduce camera shake",
+    "subtitles": "Subtitles always on"
+  },
+  "save": { "saved": "Progress saved at {camp}", "found": "Saved ascent found" },
+  "finale": {
+    "statsTitle": "Ascent summary",
+    "time": "Total time",
+    "falls": "Team falls",
+    "broken": "Broken anchors",
+    "propina": "Final tip",
+    "again": "Climb again"
+  }
+}

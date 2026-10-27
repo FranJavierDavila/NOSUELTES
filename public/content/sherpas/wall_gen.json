@@ -1,0 +1,9 @@
+{
+  "bandHeightM": 10,
+  "wall": { "widthM": 4.2, "zFront": -0.18, "depthM": 0.6, "holdProudM": 0.04 },
+  "sample": { "minDistanceM": 0.5, "marginXM": 0.35, "marginYM": 0.3, "holdRadiusMin": 0.1, "holdRadiusMax": 0.14 },
+  "reach": { "armReachM": 0.75, "legReachM": 0.9, "bandValidateHeightM": 1.5, "verticalBodySpanM": 1.35, "marginM": 0.1 },
+  "validator": { "maxAddsPerBand": 24, "minHoldsPerBand": 6 },
+  "camp": { "zoneHeightM": 2.2, "zoneWidthM": 2.8, "restRingRadiusM": 1.4 },
+  "start": { "yBaseM": 0.4, "maxStartSeparationM": 2.2 }
+}

@@ -1,0 +1,82 @@
+{
+  "menu": {
+    "title": "SHERPAS AL LÍMITE",
+    "subtitle": "Dos sherpas, un ricachón, una cuerda y el Everest.",
+    "start": "¡GO!",
+    "difficulty": "Dificultad",
+    "difficulty.tranquilo": "Tranquilo",
+    "difficulty.normal": "Normal",
+    "difficulty.caos": "Caos",
+    "language": "Idioma",
+    "resume": "Continuar desde {camp}",
+    "newAscent": "Nueva ascensión",
+    "loading": "Preparando la pared…",
+    "soloTest": "Probar solo (controla a ambos)"
+  },
+  "hud": {
+    "altitude": "Altitud",
+    "nextCamp": "Campamento",
+    "rope": "Cuerda",
+    "rope.taut": "tensada",
+    "rope.slack": "holgura",
+    "rope.overstretch": "¡CUERDA AL LÍMITE!",
+    "loadShare": "Carga",
+    "level.ok": "Nivelados",
+    "level.warn": "Desnivel",
+    "level.bad": "¡DESNIVEL FUERTE!",
+    "player": "Sherpa {n}",
+    "shoo": "Espantar",
+    "propina": "Propina",
+    "campReached": "CAMPAMENTO ALCANZADO",
+    "campStats": "Tiempo {time} · Caídas {falls} · Anclajes rotos {broken}",
+    "resting": "Descansando… las extremidades se recuperan",
+    "continue": "Seguir subiendo",
+    "teamFall": "¡CAÍDA DE EQUIPO!",
+    "teamFallSub": "La cuerda ha hecho su trabajo… hasta el último campamento.",
+    "summit": "¡CIMA DEL EVEREST!",
+    "summitSub": "El ricachón quiere selfi. Tú quieres cobrar.",
+    "voiceOff": "Voz no disponible en esta versión",
+    "birdTelegraph": "¡PÁJARO AL ATACAR! Pulsa espantar",
+    "peeTelegraph": "¿Qué hace ese cierre…?",
+    "trashTelegraph": "¡Envase volador!",
+    "kickTelegraph": "¡Pataleo en el arnés!",
+    "anchorCracked": "Anclaje agrietado ({type})",
+    "anchorBroken": "¡Anclaje roto!",
+    "wetAnchors": "¡Anclajes mojados abajo!",
+    "gripLocked": "Extremidad bloqueada {s}s"
+  },
+  "limb": { "hand_l": "M.Izq", "hand_r": "M.Der", "foot_l": "P.Izq", "foot_r": "P.Der" },
+  "anchor": { "roca_firme": "roca firme", "roca_suelta": "roca suelta", "hielo": "hielo", "hielo_fino": "hielo fino", "nieve": "nieve", "hielo_de_pis": "hielo de pis" },
+  "richman_state": {
+    "colgando": "Colgando",
+    "dormitando": "Dormitando",
+    "insultando": "Insultando",
+    "comiendo": "Comiendo",
+    "tirando_basura": "Tirando basura",
+    "meandome": "Meándose",
+    "pataleando": "Pataleando"
+  },
+  "keys": {
+    "p1": "J1: WASD apuntar · 1-4 agarrar manos/pies · R espantar",
+    "p2": "J2: Flechas apuntar · I/O manos · K/L pies · U espantar · o mando: stick + A/B/X/Y + RB",
+    "shared": "Espacio pausa · H ayuda · C reencuadrar · F3 depuración"
+  },
+  "settings": {
+    "title": "Ajustes",
+    "mute": "Silenciar",
+    "volume": "Volumen",
+    "disablePee": "Desactivar el pis",
+    "daltonism": "Paleta para daltonismo",
+    "reduceShake": "Reducir sacudidas de cámara",
+    "subtitles": "Subtítulos siempre activos"
+  },
+  "save": { "saved": "Progreso guardado en {camp}", "found": "Ascensión guardada encontrada" },
+  "finale": {
+    "statsTitle": "Resumen de la ascensión",
+    "time": "Tiempo total",
+    "falls": "Caídas de equipo",
+    "broken": "Anclajes rotos",
+    "propina": "Propina final",
+    "again": "Otra ascensión"
+  }
+}

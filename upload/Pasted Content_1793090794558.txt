@@ -1,0 +1,585 @@
+Sherpas al Límite — Documento de arquitectura v1.0
+Título provisional. Documento pensado para ser entregado a agentes de programación: contiene visión, contratos entre módulos, reglas de gameplay, datos, red, hitos y criterios de aceptación. Fecha: 26/10/2026.
+0. Cómo usar este documento (para los agentes)
+• Este documento es la fuente de verdad. Si algo no está definido, elige la opción más simple que cumpla los pilares de la sección 1 y déjala anotada en DECISIONS.md.
+• Todo valor numérico es un valor inicial de tuning: debe vivir en datos (sección 11), nunca hardcodeado.
+• Las interfaces de la sección 3 son contratos. Se pueden implementar en paralelo siempre que se respeten.
+• Orden de trabajo: sección 13 (hitos). Cada hito termina con criterios de aceptación comprobables.
+• Unidades: 1 unidad = 1 metro, 1 kg, segundos, Newtons. Tick de física fijo a 60 Hz.
+• El prototipo existente (ragdoll de un jugador con tensión por extremidad y suelta por umbral) se conserva como base. Se refactoriza a los módulos de este documento sin cambiar su sensación de control.
+Regla de oro: nada hardcodeado. El juego es 100 % data-driven. El código aporta mecanismos genéricos (física, máquinas de estados, condiciones, efectos, generador) y los datos deciden qué pasa, cuánto, cuándo y con qué texto, sonido o efecto. Si algo de gameplay, balance, contenido, texto, audio o interfaz está escrito en el código, es un defecto. Ver la sección 11.
+1. Visión y pilares
+Concepto: juego cooperativo de 2 jugadores. Dos sherpas ragdoll suben una pared de hielo y roca hasta la cima del Everest llevando colgado de una cuerda a un ricachón insoportable. Comedia física, tensión cooperativa y caos.
+Pilares (orden de prioridad en caso de conflicto):
+1. Cooperación física legible: el jugador debe entender siempre quién carga el peso y por qué (la cuerda, el nivel de altura y la tensión de las manos lo cuentan visualmente).
+2. Cada agarre cuenta: la tensión por extremidad es el corazón del juego. Todo evento externo debe traducirse en más tensión, menos agarres o pérdida de una extremidad.
+3. Caos cómico controlado: el ricachón y los pájaros generan presión y risa, pero nunca hacen la partida injusta. Siempre hay telegrafía y ventana de reacción.
+4. Progresión clara: campamentos base = hitos de progreso, descanso y guardado.
+2. Supuestos y decisiones abiertas
+Por defecto, el agente asume lo siguiente si el responsable no ha indicado otra cosa:
+Tema
+Decisión por defecto
+Nota
+Motor
+Web: TypeScript en el navegador (ver 2.1)
+Los contratos de la sección 3 están en pseudocódigo tipo C#: se traducen a TypeScript
+Jugadores
+2 (local en el mismo equipo y online)
+Misma ruta de código: el modo local usa un transporte loopback
+Autoridad de red
+Host autoritativo (listen-server)
+Física solo en el navegador del host, ver sección 5
+Cámara
+Una cámara compartida que encuadra a los dos sherpas y al ricachón
+Zoom dinámico
+Perspectiva
+Lateral/3D con pared frontal (como el prototipo)
+Se mantiene la del prototipo
+Idioma
+Español + claves de localización desde el día 1
+Ver sección 10
+Plataforma
+Navegador de escritorio (Chrome, Edge, Firefox)
+Mando y teclado/ratón abstraídos en InputIntent
+Voz: el juego incluirá chat de voz entre los dos jugadores, programado con tecnologías web (WebRTC). Ver sección 5.3 y el hito M4b.
+2.1 Plataforma web (decisión cerrada)
+Todo el juego se ejecuta en el navegador: simulación, render, audio, red y voz. Esta sección prevalece sobre cualquier mención genérica a motor, SocketTransport o clientes nativos en el resto del documento.
+Área
+Decisión por defecto
+Nota
+Lenguaje y build
+TypeScript + Vite
+Si la maqueta ya usa otro stack web, se mantiene y esta fila se ajusta
+Render
+Babylon.js con WebGPU y reserva a WebGL2
+Mantener la librería de la maqueta si ya existe una
+Física
+Rapier (WASM) en un Web Worker
+Ragdoll, restricciones y cuerda; debe poder ejecutarse también sin render (Node)
+Bucle
+Tick fijo de 60 Hz en el worker de física, render con interpolación
+El render nunca bloquea la simulación
+Red de juego
+RTCDataChannel (WebRTC) entre navegadores
+Snapshots por canal no fiable y sin orden; eventos por canal fiable y ordenado
+Señalización
+Servidor Node mínimo con WebSocket (salas por código)
+Sirve también al chat de voz (5.3)
+Voz
+WebRTC audio (5.3)
+Misma conexión de pares que el juego cuando sea posible
+Audio
+Web Audio API
+Capas por altura, ducking y mezcla del 5.3
+Entrada
+Teclado y ratón + Gamepad API
+Siempre a través de InputIntent
+Guardado
+IndexedDB local (progreso por campamento)
+El host guarda; el cliente recibe el campamento al reconectar
+Consecuencias para el diseño:
+• El navegador del host ejecuta la simulación autoritativa. Como la simulación es independiente del render, el mismo código puede ejecutarse más adelante en un servidor Node dedicado sin cambios de lógica.
+• Las pestañas en segundo plano se ralentizan: el host debe avisar si pierde el foco y pausar la partida de forma controlada (con aviso al compañero).
+• Política de autoplay del navegador: el audio y el micrófono arrancan tras un gesto del usuario (botón del Lobby).
+• Rendimiento: objetivo de 60 fps en un portátil con gráfica integrada; carga inicial por debajo de 15 MB y carga progresiva de assets por fase.
+• Compatibilidad: navegadores de escritorio actuales; móvil fuera de alcance.
+Decisiones abiertas (no bloquean el desarrollo, se resuelven en los hitos señalados): sistema de mejoras entre campamentos (M10), modo versus/puntuación (post-lanzamiento), clima/viento (M10).
+3. Arquitectura general
+3.1 Capas y módulos
+┌──────────────────────────────────────────────────────────┐
+│ PRESENTACIÓN  Camera · HUD · Audio · VFX · Subtítulos    │
+├──────────────────────────────────────────────────────────┤
+│ DIRECTORES    EventDirector · ProgressionDirector        │
+├──────────────────────────────────────────────────────────┤
+│ GAMEPLAY      BalanceMonitor · LoadSystem · GripFatigue  │
+│               RichManBrain · BirdSystem · CampSystem     │
+├──────────────────────────────────────────────────────────┤
+│ MUNDO         WallGenerator · AnchorRegistry · Weather   │
+├──────────────────────────────────────────────────────────┤
+│ FÍSICA        SherpaRig(x2) · RopeSystem · RichManRig    │
+│               AnchorConstraint · ForcePipeline           │
+├──────────────────────────────────────────────────────────┤
+│ NÚCLEO        GameState · EventBus · Time · DataLoader   │
+│               Net (Transport · Session · Snapshots)      │
+└──────────────────────────────────────────────────────────┘
+Regla de dependencias: una capa solo conoce a las inferiores. La comunicación hacia arriba se hace por EventBus (eventos tipados), nunca por referencia directa.
+3.2 Bucle de simulación (orden por tick fijo de 60 Hz, solo en el host)
+1. InputBuffer → genera InputIntent de cada jugador.
+2. SherpaRig.ApplyIntent (objetivos de IK/extremidades, intención de agarrar/soltar).
+3. AnchorSystem resuelve agarres (conexiones mano/pie–anclaje).
+4. RopeSystem resuelve restricciones de cuerda.
+5. Paso de física.
+6. ForcePipeline lee las fuerzas de restricciones y calcula tensión por extremidad.
+7. GripFatigue y AnchorDurability actualizan estados → pueden soltar extremidades o romper anclajes.
+8. BalanceMonitor y LoadSystem calculan métricas cooperativas.
+9. RichManBrain, BirdSystem, EventDirector (decisiones de alto nivel).
+10. ProgressionDirector (altura, campamentos, derrota).
+11. Se emite Snapshot (30 Hz) y los eventos de gameplay.
+3.3 Contratos principales (pseudocódigo)
+public struct InputIntent {
+  public int playerId;
+  public Vector2 leftHandAim, rightHandAim;     // dirección de alcance
+  public Vector2 leftFootAim, rightFootAim;     // si el esquema lo usa
+  public bool leftHandGrip, rightHandGrip;      // agarrar/soltar
+  public bool leftFootGrip, rightFootGrip;
+  public bool shoo;                             // espantar pájaro
+  public bool useItem;                          // opcional
+  public uint tick;
+}
+// Se reutiliza el esquema de control del prototipo: solo debe producir InputIntent.
+
+public enum Limb { LeftHand, RightHand, LeftFoot, RightFoot }
+
+public interface IAnchor {
+  int Id { get; }
+  AnchorType Type { get; }
+  Vector3 Position { get; }
+  float Durability { get; }          // 0..1
+  float GripQuality { get; }         // multiplica el umbral de la extremidad
+  bool IsOccupied { get; }
+  void ApplyLoad(float force, float dt);   // desgaste
+  event Action<IAnchor> Broken;
+}
+
+public interface ISherpa {
+  int PlayerId { get; }
+  float LimbTension(Limb l);         // 0..1+ (1 = en el umbral)
+  float LimbFatigue(Limb l);         // 0..1
+  bool IsGripping(Limb l);
+  IAnchor GrippedAnchor(Limb l);
+  void ForceRelease(Limb l, float lockSeconds, ReleaseCause cause);
+  Vector3 WaistPosition { get; }
+  float RopeLoadShare { get; }       // 0..1 (parte del peso del ricachón que carga)
+}
+
+public interface IRopeSystem {
+  float MaxLength { get; }
+  float CurrentTension(int endpoint);          // N en cada sherpa
+  float Slack { get; }
+  Vector3 RichManAttachPoint { get; }
+}
+
+public interface IRichMan {
+  float CurrentMass { get; }
+  RichManState State { get; }
+  void ApplyImpulse(Vector3 impulse);
+}
+3.4 Eventos del EventBus (tipados)
+LimbReleased(playerId, limb, cause), LimbGripped(playerId, limb, anchorId), AnchorCracked(anchorId), AnchorBroken(anchorId), RopeOverstretched(level), LoadImbalance(playerId, share), BirdTelegraph(birdId, targetPlayer), BirdHit(birdId, playerId, limb), RichManAction(kind), TrashThrown(position), UrineSplash(position), CampReached(campId), PlayerFell(playerId), TeamFell, InsultSaid(lineId, context).
+4. Física y rigs
+4.1 SherpaRig (extiende tu prototipo)
+Ragdoll con articulaciones motorizadas/IK. Cada extremidad tiene:
+• Objetivo de alcance (hacia dónde quiere ir la mano/pie).
+• Constraint de agarre al anclaje cuando IsGripping (resorte rígido o joint blando; debe exponer su impulso para medir fuerza).
+• Tensión T = F_constraint / F_threshold, donde F_threshold = baseGrip(limb) * anchor.GripQuality * (1 - fatigue*0.5).
+Reglas de suelta (heredadas del prototipo, ahora configurables):
+• Si T > 1 durante más de graceTime (0.15 s) → la extremidad se suelta (LimbReleased, causa Overload).
+• Fatiga: fatigue += max(0, T - 0.6) * fatigueRate * dt; fatigue -= recoverRate * dt cuando T < 0.3. Si fatigue >= 1 → suelta (causa Exhaustion).
+• Tras soltar, la extremidad queda bloqueada para agarrar durante reGripLock (0.25 s), para evitar volver a agarrar el mismo punto al instante.
+• Las caídas propias (todas las extremidades sueltas) activan el ragdoll completo y la cuerda hace de seguro.
+Valores base: alcance de brazo 0.75 m, pierna 0.9 m, masa del sherpa 70 kg, baseGrip mano 650 N, pie 900 N.
+4.2 Cuerda (RopeSystem)
+Tres cuerpos conectados: SherpaA (cintura), SherpaB (cintura) y Ricachón (arnés).
+• Dos tramos de cuerda: A–R y B–R, cada uno con longitud máxima L_seg (inicial 3.5 m) y la distancia entre A y B limitada por L_total (inicial 6 m). Es decir: los sherpas no pueden separarse más de L_total.
+• Las restricciones son unilaterales (solo tiran, no empujan), con holgura permitida. Esto da naturalidad cuando hay cuerda floja.
+• Implementación recomendada: cadena de segmentos tipo Verlet/XPBD de 12–16 nodos para el render y la colisión, con las restricciones físicas fuertes en los extremos (A, B, R). Si el motor tiene joints de cuerda fiables, se pueden usar en su lugar; el requisito es poder leer la tensión en cada extremo.
+• Sobrestiramiento: si la distancia A–B supera 0.92 * L_total, empieza a aplicarse una fuerza de tirón sobre el sherpa que tira (efecto de "gomaespuma" para dar legibilidad antes del corte duro), y se emite RopeOverstretched.
+• La cuerda no se rompe en el diseño base (decisión: no frustrar). Opcional: sobrecarga extrema desata una caída en cadena.
+4.3 Ricachón (RichManRig)
+• Ragdoll ligero (6–8 cuerpos) colgado del punto de arnés. Masa base 85 kg, variable (sección 7.1).
+• No controlado por el jugador. Su comportamiento lo dicta RichManBrain mediante animaciones procedurales + impulsos: balanceo, pataleo, cambiarse de postura.
+• Colisiona con la pared (golpe contra la roca = daño cómico/ruido y pequeña fuerza sobre los sherpas) y con los sherpas (muy ligero, para evitar que atasque).
+4.4 Reparto de carga y nivelación
+La carga se deriva de la física (no se "inventa"): el reparto sale de las tensiones de cuerda en A y B.
+• RopeLoadShare(A) = T_A / (T_A + T_B) (con protección para T_A + T_B ≈ 0 → 0.5).
+• Desnivel Δh = |A.waist.y − B.waist.y|. Cuanto mayor, más carga recibe el sherpa más alto, porque la cuerda se verticaliza sobre él.
+• BalanceMonitor expone: Δh, LoadShare, y un BalanceState: Equilibrado (Δh < 0.6 m), Aviso (0.6–1.2 m), Desequilibrado (> 1.2 m).
+• La penalización es emergente (más tensión en las manos del sherpa que carga) más una ayuda visual en HUD. No añadir penalizaciones artificiales además de la física.
+4.5 Anclajes (AnchorSystem)
+Un anclaje es un punto agarrable en la pared. Tipos y comportamiento (datos en sección 11):
+Tipo
+Agarre
+Durabilidad
+Comportamiento
+Roca firme
+1.0
+∞
+Seguro
+Roca suelta
+0.9
+Se rompe con tirones bruscos (picos de fuerza)
+Cae al romperse
+Hielo
+0.8
+Se desgasta con la carga sostenida
+Se agrieta (AnchorCracked) al 40 %, rompe al 0 %
+Hielo fino
+0.6
+Muy baja
+Rompe con la primera carga fuerte
+Nieve blanda
+0.5
+Desliza
+Pierde calidad mientras se sostiene
+Hielo de pis
+0.7
+Media
+Aparece cuando el ricachón se mea sobre un anclaje (ver 7.3)
+• Cuando un anclaje se agrieta, debe haber telegrafía visual y sonora: grietas, polvo, crujido (≥ 0.5 s antes de romper si la carga se mantiene).
+• Regeneración: los anclajes rotos no vuelven a aparecer. El generador (sección 8) garantiza que la ruta sigue siendo posible.
+5. Multijugador (2 jugadores)
+5.1 Modelo
+Host autoritativo (listen-server): el host ejecuta toda la simulación física. El cliente envía InputIntent y recibe Snapshot. Razón: ragdolls + cuerda + restricciones no son deterministas entre máquinas, así que no se usa lockstep.
+• Transporte abstraído (ITransport): implementaciones LoopbackTransport (local, mismo equipo) y SocketTransport (online, UDP fiable/no fiable). Se puede encapsular sobre el servicio de red del motor o una librería de transporte (decisión del agente, anotada en DECISIONS.md).
+• Snapshots a 30 Hz: posiciones/rotaciones de huesos principales (pelvis, torso, cabeza, 4 extremidades por sherpa, 6–8 del ricachón, nodos de cuerda comprimidos), estado de agarre por extremidad, tensiones, fatiga y estados de anclajes/eventos.
+• Interpolación en el cliente con 100 ms de buffer. Los nodos de cuerda del cliente se reconstruyen por interpolación de los extremos y un solver visual ligero.
+• Predicción local solo cosmética: el cliente mueve inmediatamente el objetivo de su propia mano (reticle/IK visual) para que el control no se sienta con lag; el estado físico real llega por snapshot.
+• Eventos de gameplay (RPC fiable): LimbReleased, AnchorBroken, BirdHit, InsultSaid, CampReached, etc.
+• Desconexión: pausa de 15 s con opción de reconexión; si no vuelve, fin de partida.
+• Latencia objetivo: jugable hasta 120 ms de ping. Para anular desincronías, el host reenvía un snapshot completo cada 2 s.
+5.2 Sesión
+Lobby (código de sala o invitación) → Ready → InGame → Resultados. El host elige dificultad y semilla. Guardado de partida por campamento (ver 8.3).
+5.3 Chat de voz entre jugadores
+Los dos jugadores podrán hablar entre sí durante toda la partida con voz integrada en el juego, implementada con tecnologías web (WebRTC) y sin depender de aplicaciones externas.
+• Tecnología: audio por WebRTC (getUserMedia + RTCPeerConnection), códec Opus a 24–32 kbps, con cancelación de eco, supresión de ruido y control automático de ganancia activados por defecto. Solo viaja audio; los datos de juego siguen por el canal de la sección 5.1.
+• Topología: conexión directa entre los dos jugadores (una sola conexión, sin servidor de medios). Cifrado nativo de WebRTC (DTLS-SRTP).
+• Señalización: reutiliza el canal de Session (Lobby) para intercambiar SDP e ICE. Servidores STUN públicos y un servidor TURN de respaldo, necesario para NAT estrictos (el alojamiento del TURN se anota en DECISIONS.md).
+• Plataforma: el juego corre completo en el navegador, por lo que el módulo usa directamente las APIs web, detrás de la misma interfaz IVoiceChat, sin cambiar el resto del código.
+• Independiente del netcode: si la voz cae, la partida continúa; se reintenta con reinicio de ICE de forma automática. La voz nunca compite con los snapshots del juego.
+• Módulo: carpeta /Voice, con la interfaz siguiente.
+interface IVoiceChat {
+  start(session: Session): Promise<void>;   // pide permiso de micrófono y conecta
+  stop(): void;
+  setMuted(muted: boolean): void;           // silenciar micrófono propio
+  setPushToTalk(enabled: boolean): void;    // alternativa a voz activa (VAD)
+  setPeerVolume(volume01: number): void;    // volumen del compañero
+  onPeerSpeaking(cb: (speaking: boolean) => void): void;
+  onStateChange(cb: (state: 'off' | 'connecting' | 'on' | 'denied' | 'failed') => void): void;
+}
+Experiencia de usuario:
+• Pantalla previa en el Lobby para elegir micrófono, probar el nivel y conceder el permiso del navegador.
+• Modo de voz activa o pulsar-para-hablar (tecla/botón configurable), silenciar propio y silenciar al compañero.
+• Indicador de "hablando" en el HUD junto a cada sherpa.
+• Si se deniega el micrófono, la partida continúa sin voz y se puede reintentar desde ajustes.
+Mezcla de audio: prioridad voz de jugadores > insultos del ricachón > ambiente y música. Cuando alguien habla, se aplica ducking de -6 dB al ambiente y la música (0.3 s de entrada, 0.5 s de salida). Extra opcional (M10): filtro suave y viento sobre la voz a mayor altura, desactivable.
+Privacidad: no se graba ni se almacena audio, el micrófono solo se activa con permiso explícito y la conexión directa expone la IP al compañero, por lo que se ofrece la opción de forzar TURN.
+Objetivos y pruebas: latencia de extremo a extremo menor de 200 ms; pruebas con dos navegadores en redes distintas, con 5 % de pérdida de paquetes, con permiso denegado y con auriculares y altavoces (prueba de eco).
+6. Gameplay cooperativo
+6.1 Reglas núcleo
+1. Cada sherpa mueve sus 4 extremidades (controles del prototipo) y debe mantener al menos tres puntos de contacto estables para avanzar con seguridad (guía de diseño, no regla dura).
+2. Nivelación: ver 4.4. El HUD muestra un indicador de nivel entre los dos sherpas.
+3. Cuerda corta: no se puede superar L_total; el sobrestiramiento fuerza compromisos (esperar al compañero).
+4. Carga del ricachón: su peso se reparte según la geometría. Si un sherpa queda sin agarres, el otro carga todo el peso: debe estabilizarse o ambos caen.
+5. Rescate: un sherpa colgando puede recuperarse alcanzando de nuevo anclajes. El compañero puede ayudar reduciendo carga acercándose a su nivel (acción emergente, no botón).
+6.2 Fallo y recuperación
+• Caída individual: el sherpa cuelga de la cuerda. No hay fallo mientras el otro pueda sostener la carga.
+• Caída de equipo: si ambos pierden todos los agarres más de 1.5 s, o la caída libre supera 12 m → TeamFell. Se reinicia desde el último campamento con un breve resumen cómico del ricachón.
+• Sin vidas: los fallos cuestan tiempo, no progreso permanente. Opcional: contador de caídas en resultados.
+6.3 Puntuación opcional (Propina)
+El ricachón tiene un medidor de Propina: sube con ascensos suaves/niveles y baja con tirones, golpes y caídas. Se muestra en los campamentos. Es solo puntuación; no condiciona el progreso.
+7. Caos: ricachón y pájaros
+7.1 RichManBrain (máquina de estados)
+Estados: Colgando (idle) → Insultando → Comiendo → TirandoBasura → Meandose → Pataleando (pánico tras un susto) → Dormitando (calma entre eventos).
+Las transiciones las propone el EventDirector (sección 7.4); el cerebro ejecuta y emite eventos. Cada acción tiene telegrafía, efecto y cooldown.
+Acción
+Telegrafía
+Efecto mecánico
+Cooldown base
+Insulto
+Burbuja de texto + voz tipo "gibberish"
+Distracción; opcionalmente +ruido en pantalla. Si es la causa (p. ej. tras un resbalón) puede subir la presión narrativa, no la tensión física
+12 s
+Mear
+Cremallera/animación + aviso "¿qué ha sido eso?" 1 s
+Chorro de partículas que cae por la pared: un sherpa por debajo recibe el golpe (visión parcial 1.5 s) y los anclajes mojados pasan a Hielo de pis (ver 4.5)
+70 s
+Comer
+Saca comida, animación 3 s
+Masa +6 kg hasta que tire la basura (carga extra visible)
+55 s
+Tirar basura
+Lanza el envoltorio con aviso sonoro
+Proyectil cae por la pared; si impacta en un sherpa → suelta una mano (1 s) y la masa del ricachón vuelve a la normal
+tras Comer
+Patalear
+Tras un susto (pájaro, caída)
+Impulsos aleatorios al ricachón: bamboleo de 4 s
+40 s
+Variación de masa: mass(t) = baseMass + foodBonus − trashDrop con transiciones suaves de 1 s (nunca saltos).
+7.2 Insultos (sistema de líneas)
+• Banco de líneas por contexto (slip, high_tension, bird_hit, camp_arrival, idle_too_long, fall, unbalanced_rope, sherpa_help).
+• Selección sin repetición reciente (memoria de las últimas 15 líneas) con pesos y filtro de fase.
+• Presentación: burbuja con retardo de 0.3 s, audio opcional (voz gibberish por sílaba o líneas grabadas), subtítulos accesibles siempre activos.
+• Guía de contenido (importante): tono absurdo, soberbia clasista de un ricachón ridículo. Los insultos apuntan a la torpeza, la lentitud, el sueldo o el egocentrismo del propio personaje. No usar insultos contra etnia, nacionalidad, religión, género o discapacidad. Evitar caricaturas de los sherpas como grupo étnico; el humor debe recaer en el ricachón.
+7.3 Mear (tratamiento visual)
+Presentación estilizada y sin desnudez: ropa técnica/arnés, un chorro de partículas amarillo claro con salpicadura. Efecto de gameplay: ver tabla 7.1 y Hielo de pis en 4.5. Todo parametrizable en datos y con opción de desactivar en ajustes.
+7.4 Pájaros (BirdSystem)
+Tipos:
+• Picador: ataca una mano. Efecto: ForceRelease(mano, lock=0.8 s, Bird).
+• Ladrón: roba un consumible o la comida del ricachón. Efecto: se pierde el objeto; opcionalmente provoca pánico del ricachón.
+Máquina de estados: Spawn → Circular (2–4 s, se ven y oyen) → Telegrafía (1.2 s, sombra/chillido, indica el objetivo) → Picado → Impacto/Robo → Huida → Despawn.
+• Selección de objetivo: el sherpa con menos extremidades en agarre estable evita ser atacado de nuevo de inmediato (equidad); en caso contrario, aleatorio ponderado por exposición.
+• Defensa: botón shoo (espantar, cooldown 3 s, coste de fatiga en una mano). Si se activa durante la telegrafía, el pájaro aborta y huye.
+• Equidad: como máximo un pájaro activo por sherpa y nunca dos ataques en menos de 6 s.
+7.5 EventDirector (el "director de caos")
+Presupuesto de caos por segundo (chaosBudget) que crece con la altura y baja tras eventos duros.
+• Elige eventos de una tabla ponderada por fase (sección 8.2).
+• Reglas de seguridad: no lanzar un evento "duro" (pájaro, basura, pis) si algún sherpa tiene tensión de extremidad > 0.85, si hay un RopeOverstretched activo o en los 5 s posteriores a un LimbReleased.
+• Máximo de dos eventos simultáneos; un evento duro por vez.
+• Los insultos son eventos "blandos" y pueden solaparse.
+8. Mundo y progresión
+8.1 WallGenerator
+Enfoque híbrido: chunks de ruta de ~10 m de altura, con parámetros de densidad.
+1. Se generan anclajes con muestreo Poisson-disk en la pared, con densidad density(h) decreciente con la altura.
+2. Se asigna el tipo de cada anclaje según la distribución de la fase (tabla 8.2).
+3. Validador de alcanzabilidad (obligatorio): debe existir, en cada banda de 1.5 m de altura, un grafo de anclajes conectados de modo que, para cualquier configuración válida de 4 extremidades, exista un siguiente paso dentro del alcance de los dos sherpas y dentro de L_total. Si falla, se añaden anclajes hasta satisfacerlo.
+4. Garantía de camino seguro: siempre existe una ruta con al menos 50 % de anclajes de roca firme para dificultades bajas; en dificultad alta se reduce, nunca a cero.
+5. Semilla determinista (seed), compartida entre host y cliente.
+8.2 Fases y campamentos
+Alturas narrativas inspiradas en la ruta real (la escala del juego es independiente: cada campamento ≈ 80–120 m de pared jugable).
+Fase
+Campamento destino
+Altura narrativa
+Densidad de agarres
+Mezcla de tipos
+Eventos
+1
+Campamento Base
+5 300 m
+100 %
+85 % roca firme, 15 % hielo
+Solo insultos
+2
+Campamento 1
+6 065 m
+80 %
+65/25/10 (firme/hielo/suelta)
++ pájaros picadores (suaves)
+3
+Campamento 2
+6 400 m
+65 %
+45/35/10 + 10 % nieve
++ comer/basura
+4
+Campamento 3
+7 200 m
+50 %
+30/45/10/15 nieve
++ mear, ladrones
+5
+Campamento 4
+7 950 m
+40 %
+20/50/10/20 (hielo fino aparece)
+Todos, frecuencia alta
+6
+Cima
+8 849 m
+30 %
+15/50/10/15/10 hielo fino
+Finale especial
+8.3 Campamentos (CampSystem)
+• Zona plana segura. Sin eventos, las extremidades se recuperan, el ricachón hace un monólogo, se guarda el progreso (CampReached).
+• Al llegar: resumen (tiempo, caídas, anclajes rotos, Propina), opción de equipo/mejoras (decisión abierta, M10).
+• Los jugadores pueden descansar el tiempo que quieran; el ricachón se queja si tardan.
+8.4 Cima (final)
+Escena de cierre con evento escrito (broma final) y créditos. Se desbloquean nueva partida+ y modo difícil (más caos, menos agarres).
+8.5 Clima (opcional, M10)
+Viento como fuerza lateral sobre sherpas y ricachón, con telegrafía de ráfagas (sonido y partículas 1.5 s antes).
+9. Cámara, entrada y UX
+• Cámara compartida: encuadra a ambos sherpas y al ricachón; zoom out cuando la separación se acerca a L_total. Suavizado crítico para no marear; limitar velocidad de rotación.
+• Input: capa InputIntent que desacopla dispositivos. Remapeo de teclas, mando, sensibilidad, inversión.
+• HUD (mínimo legible):
+    ◦ Anillo de tensión por extremidad (verde → rojo, parpadeo al superar 0.85).
+    ◦ Barra de fatiga discreta por mano.
+    ◦ Indicador de nivel entre sherpas (burbuja de nivel) y de reparto de carga.
+    ◦ Indicador de cuerda (tensión/holgura) y distancia máxima.
+    ◦ Altura actual y progreso al siguiente campamento.
+• Accesibilidad: subtítulos de insultos, daltonismo (paletas), reducción de sacudidas de cámara, opción de desactivar el pis, tiempo de agarre asistido.
+10. Presentación: audio, VFX, localización
+• Audio: capas de ambiente por altura (viento creciente), crujidos de hielo y cuerda tensa (volumen proporcional a tensión), voz gibberish del ricachón, chillidos de pájaros, música dinámica con intensidad basada en chaosBudget.
+• VFX: polvo/hielo al romper anclajes, trazo de cuerda con tensado visible, partículas de nieve, salpicadura de pis, vaho de respiración creciente con la altura.
+• Localización: todo texto por claves (es, en mínimo). Los insultos son datos localizables.
+11. Datos: el juego es 100 % data-driven
+Formatos JSON validados con JSON Schema, cargados por DataLoader y hot-reload en debug.
+// anchor_types.json
+{
+  "rock_firm":  { "gripQuality": 1.0, "durability": null },
+  "rock_loose": { "gripQuality": 0.9, "breakOnImpulse": 420 },
+  "ice":        { "gripQuality": 0.8, "durability": 1.0, "wearPerNewtonSecond": 0.0012, "crackAt": 0.4 },
+  "ice_thin":   { "gripQuality": 0.6, "durability": 0.5, "wearPerNewtonSecond": 0.004,  "crackAt": 0.5 },
+  "snow":       { "gripQuality": 0.5, "slipPerSecond": 0.08 },
+  "ice_urine":  { "gripQuality": 0.7, "durability": 0.7, "wearPerNewtonSecond": 0.002 }
+}
+// phases.json (ejemplo de una fase)
+{
+  "id": 3, "camp": "camp2", "narrativeHeight": 6400,
+  "anchorDensity": 0.65,
+  "typeWeights": { "rock_firm": 45, "ice": 35, "rock_loose": 10, "snow": 10 },
+  "events": { "insult": 1.0, "bird_pecker": 0.8, "eat": 0.5, "trash": 0.5, "pee": 0, "bird_thief": 0 },
+  "chaosBudgetPerSecond": 0.9
+}
+// insults_es.json
+{ "slip": ["¡Os pago por subir, no por resbalar!"], "camp_arrival": ["..."] }
+// tuning.json
+{
+  "limb": { "graceTime": 0.15, "reGripLock": 0.25, "fatigueRate": 0.18, "recoverRate": 0.12,
+            "baseGripHand": 650, "baseGripFoot": 900 },
+  "rope": { "segmentMax": 3.5, "totalMax": 6.0, "overstretchAt": 0.92 },
+  "richMan": { "mass": 85, "foodBonus": 6 },
+  "balance": { "warnDeltaH": 0.6, "badDeltaH": 1.2 },
+  "fall": { "teamFallSeconds": 1.5, "teamFallMeters": 12 }
+}
+11.1 Qué es dato y qué es código
+Es dato (nunca en el código): cualquier número que afecte al gameplay, al tacto, al balance o a los tiempos (umbrales, masas, longitudes, duraciones, probabilidades, cooldowns, pesos); identificadores de tipos, fases, eventos y estados; condiciones y efectos de eventos; transiciones de las máquinas de estados; curvas (densidad, presupuesto de caos, ducking); textos visibles y de accesibilidad; colores y paletas; rutas de assets; mapeos de entrada por defecto; parámetros de red, voz y cámara. Los valores numéricos citados en las secciones 4 a 9 son el contenido inicial de estos archivos.
+Es código (permitido): constantes matemáticas y conversiones de unidades, índices y bucles, constantes de formato de protocolo (cabeceras, versión de esquema) y la lógica genérica que interpreta los datos.
+Prohibido: ramas del tipo if (phase == 3) o switch por id con comportamiento especial; cualquier cadena visible al jugador en el código; números mágicos en /Physics, /Gameplay, /Events, /World, /Presentation y /Net. Un caso especial se expresa como una etiqueta o parámetro en el dato, nunca como una rama en el código.
+11.2 Catálogo de archivos de datos
+Archivo
+Define
+tuning.json
+Física, agarre, fatiga, cuerda, equilibrio, caída y tick fijo
+rigs.json
+Esqueletos del sherpa y del ricachón: huesos, longitudes, masas, límites de articulación, fuerza de motores, alcances
+anchor_types.json
+Tipos de anclaje: agarre, desgaste, grietas, color, sonido y efecto de rotura
+phases.json
+Fases y campamentos: alturas, densidad, mezcla de tipos, tabla de eventos, presupuesto de caos
+wall_gen.json
+Generador: curvas de densidad, distancias mínimas, plantillas de chunk, reglas del validador de alcanzabilidad
+events.json
+Eventos de caos: condiciones, pesos por fase, cooldowns, telegrafía y efectos
+machines.json
+Máquinas de estados del ricachón y los pájaros: estados, transiciones, duraciones, abortos
+richman.json
+Acciones del ricachón, variación de masa, animaciones por estado
+insults_<idioma>.json
+Líneas por contexto, pesos y filtros de fase
+items.json
+Consumibles y mejoras (M10)
+difficulty.json
+Presets de dificultad como multiplicadores y sobrescrituras
+input_maps.json
+Mapas de entrada por defecto (teclado, ratón, mando)
+hud.json
+Umbrales visuales, colores, paletas para daltonismo, disposición
+audio.json
+Evento a sonido, buses, curvas de ducking, capas por altura
+vfx.json
+Evento a partículas y sus parámetros
+camera.json
+Zoom, suavizado, límites de velocidad
+net.json
+Frecuencia de snapshots, buffers, tiempos de espera, reintentos
+voice.json
+Opus, servidores ICE, VAD, pulsar-para-hablar, ducking de voz
+strings_<idioma>.json
+Todos los textos de interfaz
+data.manifest.json
+Versión del conjunto de datos y hashes (generado en el build)
+11.3 Eventos y comportamientos como datos
+El código solo registra primitivas (condiciones y efectos) con un id y parámetros; los datos las componen. Añadir un evento nuevo con primitivas existentes no requiere tocar el código.
+// Código: solo primitivas genéricas, registradas por id
+conditions.register('maxLimbTension.lt', (ctx, p) => ctx.maxLimbTension() < p.value);
+conditions.register('secondsSince', (ctx, p) => ctx.secondsSince(p.event) > p.gt);
+effects.register('forceRelease', (ctx, p) => ctx.target(p.target).forceRelease(p.lockSeconds, p.cause));
+effects.register('playSfx', (ctx, p) => ctx.audio.play(p.id));
+// events.json (ejemplo)
+{
+  "id": "bird_pecker",
+  "kind": "hard",
+  "weightByPhase": { "2": 0.8, "3": 0.8, "4": 1.0, "5": 1.2, "6": 1.2 },
+  "cooldownSeconds": 12,
+  "conditions": [
+    { "type": "maxLimbTension.lt", "value": 0.85 },
+    { "type": "secondsSince", "event": "LimbReleased", "gt": 5 }
+  ],
+  "machine": "bird_pecker_fsm",
+  "telegraph": { "seconds": 1.2, "vfx": "bird_shadow", "sfx": "bird_screech" },
+  "onHit": [ { "type": "forceRelease", "target": "hitLimb", "lockSeconds": 0.8, "cause": "Bird" } ]
+}
+// machines.json (ejemplo)
+{
+  "id": "bird_pecker_fsm",
+  "initial": "circle",
+  "states": {
+    "circle":    { "durationRange": [2, 4], "next": "telegraph" },
+    "telegraph": { "duration": 1.2, "next": "dive", "abortOn": ["shoo"], "abortTo": "flee" },
+    "dive":      { "speed": 9, "next": "impact" },
+    "impact":    { "onEnter": ["onHit"], "next": "flee" },
+    "flee":      { "duration": 3, "next": "despawn" }
+  }
+}
+Los mismos principios aplican al RichManBrain (acciones, estados y transiciones), a las curvas (puntos clave en datos) y al generador de pared (plantillas de chunk y reglas).
+11.4 Capa de datos (arquitectura)
+• Carga: DataLoader lee todos los archivos al arrancar, los valida y expone acceso tipado. Ningún módulo lee archivos por su cuenta.
+• Validación: esquema JSON Schema por archivo (tipos, rangos, enumeraciones) más integridad referencial (todo id referenciado existe). En desarrollo, un error detiene la carga con un mensaje claro; en producción se rechaza el archivo inválido y se informa.
+• Tipos generados: los tipos TypeScript se generan desde los esquemas, de modo que el código no pueda usar campos que no existen.
+• Identificadores: ids de texto estables (bird_pecker, ice_thin). Sin enumeraciones numéricas en datos.
+• Capas de sobrescritura (orden de resolución): datos base, preset de dificultad, sobrescrituras de fase, ajustes de accesibilidad y, solo en desarrollo, sobrescrituras en vivo del TuningPanel.
+• Versionado: cada archivo lleva schemaVersion y hay migraciones para versiones anteriores. Las partidas guardadas registran la versión del conjunto de datos.
+• Hot-reload en desarrollo: al guardar un archivo, se recarga y se aplica sin reiniciar cuando es seguro (parámetros, textos, audio) o al reiniciar el tramo en caso contrario (rigs).
+• Red: en el saludo de la sesión se intercambia el hash de data.manifest.json. Si no coincide, se rechaza la conexión con un mensaje claro. El host manda en la simulación y el cliente solo usa los datos de presentación.
+• Edición: los datos pueden editarse a mano o con el TuningPanel, que exporta los cambios a JSON.
+11.5 Cumplimiento y aceptación
+• Lint: reglas de ESLint que prohíben números mágicos (lista de excepciones corta: 0, 1, -1) y cadenas visibles en las carpetas de la regla de oro, ejecutadas en el CI.
+• Prueba de carga: una prueba carga todos los archivos, valida esquemas y referencias, y falla ante cualquier id suelto.
+• Prueba de extensibilidad (obligatoria): añadir un tipo de anclaje nuevo, una fase nueva, un evento compuesto con primitivas existentes y un idioma nuevo debe lograrse solo editando datos. El generador, el director de eventos, la interfaz y los textos deben reflejar el cambio sin tocar código.
+• Revisión de código: todo cambio que introduzca un valor de juego en el código se rechaza.
+12. Estructura del proyecto y herramientas
+/Core          GameState, EventBus, DataLoader, Time
+/Net           ITransport, Loopback, Socket, Session, Snapshot, InputBuffer
+/Physics       SherpaRig, LimbController, AnchorConstraint, RopeSystem, RichManRig, ForcePipeline
+/Gameplay      BalanceMonitor, LoadSystem, GripFatigue, CampSystem, Fail/Recovery
+/Events        EventDirector, RichManBrain, BirdSystem, InsultSystem
+/World         WallGenerator, AnchorRegistry, Reachability, Weather
+/Presentation  CameraRig, HUD, Audio, VFX, Subtitles
+/Data          *.json
+/Tools         DebugOverlay, TuningPanel, ReplayRecorder, GeneratorPreview
+/Tests         unit + simulación headless
+Herramientas imprescindibles (hacerlas pronto):
+• DebugOverlay: tensiones, fatiga, fuerzas de cuerda, reparto de carga, estado del director de eventos, red (ping/paquetes).
+• TuningPanel: edición en vivo de tuning.json.
+• ReplayRecorder: grabación de InputIntent + semilla para reproducir bugs de física.
+• GeneratorPreview: visualiza muros por semilla y reporta fallos del validador.
+13. Plan de implementación por hitos
+Los hitos M1, M2 y M5 pueden trabajarse en paralelo si se respetan los contratos de la sección 3.
+M0 — Refactor de la base. Mover el prototipo a Physics/SherpaRig + AnchorSystem, extraer parámetros a tuning.json, crear EventBus y DebugOverlay. Aceptación: el control y la sensación de suelta por tensión son equivalentes al prototipo; la tensión por extremidad se lee por ISherpa.LimbTension.
+M0b — Capa de datos. DataLoader, esquemas JSON, tipos generados, validación, versionado, hot-reload, sobrescrituras por capas y reglas de lint, antes de añadir sistemas nuevos. Migrar todos los valores del prototipo a los archivos del catálogo 11.2. Aceptación: no queda ningún valor de gameplay en el código del prototipo; la prueba de carga y las reglas de lint pasan en el CI; cambiar tuning.json en caliente modifica la sensación del control sin recompilar.
+M1 — Anclajes con tipos. Implementar IAnchor, durabilidad, grietas y rotura, tipos del 4.5. Aceptación: un anclaje de hielo se agrieta con carga sostenida (telegrafía ≥ 0.5 s) y se rompe; roca suelta rompe con tirón brusco.
+M2 — Cuerda y ricachón. RopeSystem con 3 cuerpos, longitud máxima, lectura de tensión por extremo; RichManRig pasivo. Aceptación: los sherpas no se separan más de L_total; un desnivel > 1.2 m aumenta medible el RopeLoadShare del sherpa más alto; el ricachón cuelga y se balancea de forma estable.
+M3 — Cooperativo local (2 sherpas). Dos SherpaRig, dos InputIntent, cámara compartida, BalanceMonitor y HUD básico. Aceptación: dos jugadores pueden escalar 30 m juntos con mando/teclado; el HUD muestra nivel y carga.
+M4 — Red. ITransport, Session, Snapshot, interpolación, LoopbackTransport sustituye al modo local. Aceptación: partida online con 120 ms simulados sin desincronía visible; reconexión funcional; mismo código en local y online.
+M4b — Chat de voz. Implementar IVoiceChat con WebRTC según la sección 5.3: señalización por Session, STUN/TURN, pulsar-para-hablar o voz activa, volumen, silenciar e indicador en HUD. Aceptación: dos jugadores en redes distintas se oyen con latencia menor de 200 ms; silenciar, volumen y pulsar-para-hablar funcionan; denegar el micrófono no bloquea la partida; no se almacena ningún audio.
+M5 — Mundo y progresión. WallGenerator + validador, fases 1–6, CampSystem y guardado. Aceptación: 100 semillas generadas sin fallos del validador; llegar a cada campamento guarda el progreso y reinicia aquí tras TeamFell.
+M6 — Ricachón vivo. RichManBrain, insultos, comer/basura, pis, variación de masa, pánico. Aceptación: cada acción tiene telegrafía, efecto medible y cooldown; la masa varía de forma suave.
+M7 — Pájaros. BirdSystem, picador y ladrón, shoo, equidad. Aceptación: un pájaro nunca ataca sin telegrafía ≥ 1.2 s; el shoo en telegrafía aborta el ataque; nunca dos ataques en < 6 s.
+M8 — EventDirector y equilibrio. Presupuesto de caos, reglas de seguridad, tablas por fase. Aceptación: en simulación headless con bots, ningún evento duro se lanza violando las reglas del 7.5.
+M9 — Presentación. HUD completo, audio por capas, VFX, subtítulos, localización es/en. Aceptación: todo texto por clave; opciones de accesibilidad operativas.
+M10 — Extras. Mejoras/consumibles entre campamentos, viento, cima final, modo difícil. Aceptación: cada extra puede desactivarse por configuración sin romper el resto.
+M11 — QA y balance. Playtests, ajustes de tuning, rendimiento (objetivo 60 fps con física en el host), correcciones. Aceptación: una partida completa de 45–75 minutos sin bloqueos y con tasa de TeamFell razonable por fase (objetivo orientativo: < 1 caída por 10 min en fase 1–2).
+14. Pruebas
+• Unitarias: reparto de carga, fatiga, selección de insultos, validador de alcanzabilidad, EventDirector (reglas de seguridad).
+• Simulación headless: bots que escalan con política simple, con semillas fijas; detectan bloqueos del generador y eventos injustos.
+• Red: simulador de latencia/pérdida (80–150 ms, 2 % pérdida).
+• Regresión de física: replays con ReplayRecorder y tolerancias de posición final.
+15. Riesgos y mitigaciones
+Riesgo
+Mitigación
+Cuerda inestable (explota o tiembla)
+Restricciones unilaterales en 3 puntos fuertes, cadena visual aparte; amortiguación y límite de impulso por tick
+Física no determinista en red
+Host autoritativo + snapshots; sin lockstep
+Eventos que se sienten injustos
+Telegrafía obligatoria, reglas de seguridad, presupuesto de caos, equidad por jugador
+Pared imposible
+Validador de alcanzabilidad + semilla con camino seguro
+Contenido ofensivo
+Guía de contenido (7.2/7.3), opciones de desactivar pis, revisión de bancos de líneas
+Cámara marea
+Suavizado, límites de velocidad, opción de reducción de movimiento
+Alcance excesivo
+Los hitos M10 son opcionales; el núcleo está en M0–M9
+16. Definición de "hecho" (global)
+Se puede completar una partida online de dos jugadores desde el campamento base hasta la cima, con cuerda, ricachón, cinco tipos de anclaje, insultos, comida/basura, pis y pájaros, con chat de voz entre jugadores, guardado por campamento, HUD legible, subtítulos y ajustes de accesibilidad, sin bloqueos y a 60 fps en el host. Añadir un tipo de anclaje, un evento, una fase o un idioma requiere solo editar datos.

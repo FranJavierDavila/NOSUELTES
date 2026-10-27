@@ -1,0 +1,79 @@
+{
+  "slip": [
+    "¡Os pago por subir, no por resbalar!",
+    "¡Yo esquiaba mejor con seis años!",
+    "¡Si resbalo yo, me lo descuentas de tu propina!",
+    "¡Este hielo me parece de calidad sospechosamente baja!",
+    "¡Mi masajista sube escaleras más rápido!"
+  ],
+  "high_tension": [
+    "¿Por qué esa cuerda tiembla? ¿Es normal que tiemble?",
+    "¡No sueltes TÚ, suelta mejor el otro!",
+    "¡Yo peso lo justo! El gimnasio me ha esculpido.",
+    "¿Esta cuerda es de marca o me la habéis puesto vieja?",
+    "¡Menuda tensión! Se nota que soy un cliente exigente."
+  ],
+  "bird_hit": [
+    "¡Ese pájaro me ha mirado mal primero!",
+    "¡Aquí arriba manda la fauna! Me cae simpático.",
+    "¡Si me toca una pluma os denuncio!",
+    "¡Un cóndor no se atrevería! Y eso que soy presa fácil.",
+    "¡Qué animales tan utileros! Me han elegido a mí."
+  ],
+  "camp_arrival": [
+    "¡Por fin! ¿Aquí no hay ascensor?",
+    "¿Y el spa del campamento? Me lo prometieron.",
+    "¡Qué vistas! Casi tan buenas como mi ático.",
+    "Apunta esto: he llegado yo primero. Bueno, con ayuda.",
+    "¿Ya estamos? Yo apenas he empezado a sufrir."
+  ],
+  "idle_too_long": [
+    "¿Nos quedamos a vivir aquí o qué?",
+    "Mi abuela sube la escalera del ático más rápido.",
+    "¿Ese es el plan o estáis descargando la app?",
+    "¡El tiempo es dinero! Sobre todo el mío.",
+    "Yo pago minutos de ascensión, no minutos de museo."
+  ],
+  "fall": [
+    "¡MI CUERPO NO ESTÁ PREPARADO PARA ESTA VELOCIDAD!",
+    "¡Esto lo cuento yo en la cena de empresa!",
+    "¿Alguien ha anotado que la culpa es de la cuerda?",
+    "¡Los ricos también rebotamos!",
+    "¡Mis abogados querrán hablar con la gravedad!"
+  ],
+  "unbalanced_rope": [
+    "¿Por qué cuelgo yo de lado? ¡Soy un trofeo, no un cuadro torcido!",
+    "¡Nivelen mi elegancia, que cuesta!",
+    "Uno de los dos pesa más de lo que aparenta. No digo quién.",
+    "¡Esto se nota en mi cuello, y mi cuello cotiza!",
+    "¿Puede el equipo inferior esforzarse un poquito más?"
+  ],
+  "sherpa_help": [
+    "Gracias por salvarme. Va por cuenta de la propina… si llega.",
+    "¡Buen trabajo! Lo volvería a contratar. A uno de los dos.",
+    "¿Veis? Juntos somos imparables. Yo sobre todo.",
+    "Esto ha sido trabajo en equipo: yo pendía, vosotros tirabais.",
+    "Apuntad un favor más a mi lista de cosas que no diré en voz alta."
+  ],
+  "eating": [
+    "La altitud abre el apetito. Es ciencia.",
+    "Un victualles, por favor. Yo mantengo la línea colgando.",
+    "Comer colgado quema calorías. Netas.",
+    "Esto es una barrita energética. Fiscalmente.",
+    "No miréis. La comida del líder es sagrada."
+  ],
+  "trash": [
+    "La basura la recoge la montaña. Es reciclaje vertical.",
+    "¡Ya he comido! El envase vuela libre.",
+    "¿Que dónde tiro? Abajo hay mucho sitio.",
+    "Esto de reciclar colgado es de nota.",
+    "Si le da a alguien, es señal de que íbamos bien."
+  ],
+  "pee": [
+    "No miréis. Es hidratación circular.",
+    "La montaña agradece el riego técnico.",
+    "¿Qué ha sido eso? Nada. Un chorro de victoria.",
+    "Ojo con las agarraderas de ahí abajo.",
+    "Esto en los hoteles tiene tuberías, qué modernos."
+  ]
+}

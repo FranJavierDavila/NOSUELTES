@@ -1,0 +1,8 @@
+{
+  "snapshotHz": 30,
+  "interpBufferMs": 100,
+  "fullSnapshotSeconds": 2,
+  "reconnectPauseSeconds": 15,
+  "latencyTargetMs": 120,
+  "note": "M4 diferido: transporte loopback activo, RTCDataChannel pendiente del hito."
+}

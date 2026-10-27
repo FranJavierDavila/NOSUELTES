@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "tick": { "fixedDeltaSeconds": 0.0166667, "maxStepsPerFrame": 6 },
+  "limb": {
+    "graceTime": 0.15,
+    "reGripLock": 0.25,
+    "fatigueRate": 0.18,
+    "recoverRate": 0.12,
+    "baseGripHand": 650,
+    "baseGripFoot": 900,
+    "armReach": 0.75,
+    "legReach": 0.9,
+    "mass": 70,
+    "overloadTension": 1.0,
+    "fatigueReleaseAt": 1.0,
+    "highTension": 0.85
+  },
+  "rope": {
+    "segmentMax": 3.5,
+    "totalMax": 6.0,
+    "overstretchAt": 0.92,
+    "visualNodes": 14,
+    "nodeRadius": 0.03,
+    "slackGravity": 9.81,
+    "iterations": 24,
+    "nodeMass": 0.5,
+    "nodeDamping": 0.985,
+    "slackFactor": 0.9,
+    "maxCatchSpeed": 6.0,
+    "maxCorrectionPerTick": 0.05,
+    "waistEffectiveMass": 38.0
+  },
+  "richMan": {
+    "mass": 85,
+    "foodBonus": 6,
+    "massTransitionSeconds": 1.0,
+    "harnessOffsetY": 0.12,
+    "bumpWallSpeed": 1.6,
+    "bumpImpulseToRope": 0.25
+  },
+  "balance": { "warnDeltaH": 0.6, "badDeltaH": 1.2 },
+  "fall": { "teamFallSeconds": 1.5, "teamFallMeters": 12 },
+  "anchors": {
+    "attachSeconds": 0.22,
+    "defaultMaxForceHand": 420,
+    "defaultMaxForceFoot": 560,
+    "loadSpikeWindow": 0.12
+  }
+}

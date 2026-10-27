@@ -1,0 +1,11 @@
+{
+  "grabChalk": { "count": 10, "spread": 0.12 },
+  "crackDust": { "count": 14, "spread": 0.2, "color": "#cfd8dc" },
+  "breakBurst": { "count": 26, "spread": 0.35, "color": "#b0bec5" },
+  "snow": { "densityByPhase": { "1": 0, "2": 4, "3": 10, "4": 18, "5": 26, "6": 34 }, "fallSpeed": 0.7, "areaM": 9 },
+  "peeStream": { "count": 40, "gravity": 9.81, "splashCount": 12 },
+  "trash": { "sizeM": 0.09, "spinHz": 6 },
+  "birdShadow": { "radiusM": 0.5, "opacity": 0.45 },
+  "breathVaho": { "minNarrativeHeight": 6000, "ratePerSecond": 0.5 },
+  "confetti": { "count": 60, "spread": 1.2 }
+}

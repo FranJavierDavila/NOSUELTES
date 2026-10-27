@@ -112,14 +112,18 @@ const POSTURE_GRACE_S = 0.24;
 /** Presets de balance fisico (ADR-008 + XPBD pinVelKill) seleccionables en Ajustes. */
 const PRESET_TUNES: Record<BalancePresetName, BalanceTuning> = {
   // Peticion del jugador ("menos ragdoll, mas bloqueante, articulaciones fisicamente
-  // reales"): la dureza nueva la aportan las BISAGRAS y los rangos anatomicos
-  // estrechados. Los folds conservan su fuerza calibrada (0.85): a 1.0 empujan el
-  // cuerpo contra la pared y desplazan el equilibrio de colgado (regresion de
-  // alcance verificada en E2). Realista mantiene 1.0 (ya calibrado asi) y ragdoll
-  // sube 0.6 -> 0.7 (sin luxaciones ni en el modo comico).
-  realista: { postureTone: 0.95, jointLimitStiffness: 1.0, foldStrength: 1.0, toneFloor: 0.08, stretchTolerance: 1.05, twistLimitRad: 0.3, pinVelKill: 0.55 },
-  equilibrado: { postureTone: 0.75, jointLimitStiffness: 1.0, foldStrength: 0.85, toneFloor: 0.12, stretchTolerance: 1.1, twistLimitRad: 0.45, pinVelKill: 0.4 },
-  ragdoll: { postureTone: 0.5, jointLimitStiffness: 0.9, foldStrength: 0.7, toneFloor: 0.25, stretchTolerance: 1.2, twistLimitRad: 0.7, pinVelKill: 0.2 }
+  // reales"): la dureza nueva la aportan las BISAGRAS (hingeTolScale aprieta el
+  // giro de goma del CODO en vivo; la RODILLA conserva un suelo fisico propio
+  // KNEE_FLOOR_M porque su movilidad legitima sostiene el step-up) y el
+  // asentamiento largo al aparecer (settleSeconds: realista nace QUIETO, el
+  // bailoteo inicial era la ventana corta). pinVelKill 0.55 -> 0.7: el pendulo
+  // lateral del pin muere antes (predecible al colgar).
+  // Los folds conservan su fuerza calibrada: a 0.85 en realista empujaban el
+  // cuerpo contra la pared y desplazaban el equilibrio de colgado (regresion de
+  // alcance verificada en E2); se mantienen 1.0 / 0.85 / 0.7.
+  realista: { postureTone: 0.95, jointLimitStiffness: 1.0, foldStrength: 1.0, toneFloor: 0.08, stretchTolerance: 1.05, twistLimitRad: 0.3, pinVelKill: 0.7, hingeTolScale: 0.45, settleSeconds: 1.1 },
+  equilibrado: { postureTone: 0.75, jointLimitStiffness: 1.0, foldStrength: 0.85, toneFloor: 0.12, stretchTolerance: 1.1, twistLimitRad: 0.45, pinVelKill: 0.4, hingeTolScale: 0.7, settleSeconds: 0.55 },
+  ragdoll: { postureTone: 0.5, jointLimitStiffness: 0.9, foldStrength: 0.7, toneFloor: 0.25, stretchTolerance: 1.2, twistLimitRad: 0.7, pinVelKill: 0.2, hingeTolScale: 1.0, settleSeconds: 0.4 }
 };
 
 /**
@@ -273,7 +277,7 @@ export class GameApp {
   private peakFatigue = 0;
   private fallAutoReset = -1;
   /** Balance realismo/ragdoll (ADR-008), persistido y calibrable en F3. */
-  private tune: BalanceTuning = { jointLimitStiffness: 1.0, foldStrength: 0.85, postureTone: 0.75, toneFloor: 0.12, stretchTolerance: 1.1, twistLimitRad: 0.45, pinVelKill: 0.4 };
+  private tune: BalanceTuning = { jointLimitStiffness: 1.0, foldStrength: 0.85, postureTone: 0.75, toneFloor: 0.12, stretchTolerance: 1.1, twistLimitRad: 0.45, pinVelKill: 0.4, hingeTolScale: 0.7, settleSeconds: 0.55 };
   /** Cuenta atras de fallo por extremidad (sobrecarga continua), refrescada cada frame. */
   private readonly limbOverload = new Map<LimbId, { seconds: number; frac: number }>();
   /** Reglas de postura imposible vigentes (derivadas del tono postural). Objeto
@@ -405,7 +409,7 @@ export class GameApp {
     }, (key, value) => {
       this.setTune({ [key]: value });
     });
-    this.debug.setTuneValues({ postureTone: this.tune.postureTone, jointLimitStiffness: this.tune.jointLimitStiffness, foldStrength: this.tune.foldStrength, stretchTolerance: this.tune.stretchTolerance, twistLimitRad: this.tune.twistLimitRad });
+    this.debug.setTuneValues({ postureTone: this.tune.postureTone, jointLimitStiffness: this.tune.jointLimitStiffness, foldStrength: this.tune.foldStrength, stretchTolerance: this.tune.stretchTolerance, twistLimitRad: this.tune.twistLimitRad, hingeTolScale: this.tune.hingeTolScale });
     this.hud.setBackend(this.scene.backend);
     this.tutorialUi = new TutorialOverlay(
       this.opts.hudRoot,
@@ -523,10 +527,11 @@ export class GameApp {
     const n0 = this.wallFrames[0]?.normal ?? { x: 0, y: 0, z: -1 };
     this.rig = spawnRagdoll(this.solver, this.profile, this.character, this.wall, this.challenge, holdById, (limb) => this.anchorMaxForceFor(limb), n0);
     this.scene.spawnRagdollVisuals(this.rig);
-    // Ventana de asentamiento: damping reforzado medio segundo; el personaje aparece
-    // QUIETO colgado (peticion del jugador: el modo realista no puede bailotear
-    // nada mas empezar si esta colgado y estable).
-    this.solver.markSettle(0.55);
+    // Ventana de asentamiento: damping reforzado durante el preset vigente; el
+    // personaje aparece QUIETO colgado (peticion del jugador: el modo realista no
+    // puede bailotear nada mas empezar si esta colgado y estable). La ventana la
+    // fija el balance (settleSeconds: realista 1.1 s, equilibrado 0.55, ragdoll 0.4).
+    this.solver.markSettle(this.tune.settleSeconds);
     // Encuadre inmediato del personaje nuevo: la camara JAMAS arranca un intento
     // mirando a donde estaba el cuerpo anterior (peticion del jugador: ver al
     // personaje siempre; sin esto, un respawn tras una caida alta deja el cuadro
@@ -604,7 +609,7 @@ export class GameApp {
       /* sin persistencia */
     }
     this.hud.setPresetActive(name);
-    this.debug.setTuneValues({ postureTone: this.tune.postureTone, jointLimitStiffness: this.tune.jointLimitStiffness, foldStrength: this.tune.foldStrength, stretchTolerance: this.tune.stretchTolerance, twistLimitRad: this.tune.twistLimitRad });
+    this.debug.setTuneValues({ postureTone: this.tune.postureTone, jointLimitStiffness: this.tune.jointLimitStiffness, foldStrength: this.tune.foldStrength, stretchTolerance: this.tune.stretchTolerance, twistLimitRad: this.tune.twistLimitRad, hingeTolScale: this.tune.hingeTolScale });
     this.events.emit({ type: "Message", text: t("toast.balance", { name, tone: this.tune.postureTone.toFixed(2), limits: this.tune.jointLimitStiffness.toFixed(2), fold: this.tune.foldStrength.toFixed(2), stretch: `×${this.tune.stretchTolerance.toFixed(2)}` }), tone: "info" });
   }
 
@@ -654,7 +659,9 @@ export class GameApp {
           toneFloor: clamp01(t2.toneFloor ?? 0.12),
           stretchTolerance: clampRange(t2.stretchTolerance ?? 1.1, 1.02, 1.35),
           twistLimitRad: clampRange(t2.twistLimitRad ?? 0.45, 0, 1.2),
-          pinVelKill: clampRange(t2.pinVelKill ?? 0.4, 0, 1)
+          pinVelKill: clampRange(t2.pinVelKill ?? 0.4, 0, 1),
+          hingeTolScale: clampRange(t2.hingeTolScale ?? 0.7, 0.2, 1.2),
+          settleSeconds: clampRange(t2.settleSeconds ?? 0.55, 0.2, 2)
         };
       }
     } catch {
@@ -678,7 +685,9 @@ export class GameApp {
       toneFloor: clamp01(patch.toneFloor ?? this.tune.toneFloor),
       stretchTolerance: clampRange(patch.stretchTolerance ?? this.tune.stretchTolerance, 1.02, 1.35),
       twistLimitRad: clampRange(patch.twistLimitRad ?? this.tune.twistLimitRad, 0, 1.2),
-      pinVelKill: clampRange(patch.pinVelKill ?? this.tune.pinVelKill, 0, 1)
+      pinVelKill: clampRange(patch.pinVelKill ?? this.tune.pinVelKill, 0, 1),
+      hingeTolScale: clampRange(patch.hingeTolScale ?? this.tune.hingeTolScale, 0.2, 1.2),
+      settleSeconds: clampRange(patch.settleSeconds ?? this.tune.settleSeconds, 0.2, 2)
     };
     // Las reglas de postura imposible siguen al tono: preset realista = estricto.
     this.postureRules = postureRulesForTone(this.tune.postureTone);
@@ -704,6 +713,8 @@ export class GameApp {
     this.solver.env.balance.stretchTolerance = this.tune.stretchTolerance;
     this.solver.env.balance.twistLimitRad = this.tune.twistLimitRad;
     this.solver.env.balance.pinVelKill = this.tune.pinVelKill;
+    this.solver.env.balance.hingeTolScale = this.tune.hingeTolScale;
+    this.solver.env.balance.settleSeconds = this.tune.settleSeconds;
     // En FALLEN el tono objetivo sigue siendo el flacido; en el resto, el calibrado.
     this.solver.setToneTarget(this.machine.state === "FALLEN" ? this.tune.toneFloor : this.tune.postureTone);
   }
@@ -2330,7 +2341,7 @@ export class GameApp {
     forceProne: () => boolean;
     forceSlabStand: () => boolean;
     posture: () => { upDot: number; hands: number; feet: number; badTimer: number; grace: number };
-    hinges: () => { id: string; dev: number; tol: number }[];
+    hinges: () => { id: string; dev: number; tol: number; effTol: number }[];
     circuit: () => {
       stages: { id: string; index: number; name: string; heightM: number; unlocked: boolean; best: { score: number; timeS: number; stars: number } | null }[];
       current: number;

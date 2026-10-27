@@ -1,0 +1,29 @@
+{
+  "presets": {
+    "tranquilo": {
+      "gripQualityMultiplier": 1.15,
+      "chaosBudgetMultiplier": 0.6,
+      "birdFrequencyMultiplier": 0.6,
+      "richManActionCooldownMultiplier": 1.5,
+      "anchorWearMultiplier": 0.7,
+      "fatigueRateMultiplier": 0.8
+    },
+    "normal": {
+      "gripQualityMultiplier": 1.0,
+      "chaosBudgetMultiplier": 1.0,
+      "birdFrequencyMultiplier": 1.0,
+      "richManActionCooldownMultiplier": 1.0,
+      "anchorWearMultiplier": 1.0,
+      "fatigueRateMultiplier": 1.0
+    },
+    "caos": {
+      "gripQualityMultiplier": 0.9,
+      "chaosBudgetMultiplier": 1.5,
+      "birdFrequencyMultiplier": 1.4,
+      "richManActionCooldownMultiplier": 0.7,
+      "anchorWearMultiplier": 1.3,
+      "fatigueRateMultiplier": 1.2
+    }
+  },
+  "defaultPreset": "normal"
+}

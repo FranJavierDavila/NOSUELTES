@@ -1,0 +1,10 @@
+{
+  "opusBitrateKbps": 28,
+  "echoCancellation": true,
+  "noiseSuppression": true,
+  "autoGainControl": true,
+  "pushToTalkDefault": false,
+  "vadThreshold": 0.04,
+  "peerVolumeDefault": 1.0,
+  "note": "M4b diferido: contrato IVoiceChat presente, señalización pendiente del hito."
+}

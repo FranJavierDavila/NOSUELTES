@@ -1,0 +1,12 @@
+{
+  "baseDist": 6.8,
+  "distPerMeterSpread": 1.15,
+  "maxDist": 13.5,
+  "minDist": 4.6,
+  "smoothing": 3.0,
+  "maxPanSpeed": 6.0,
+  "lookAheadY": 0.35,
+  "deadzoneM": 0.5,
+  "ropeZoomPaddingM": 0.8,
+  "shakeDecay": 2.6
+}
