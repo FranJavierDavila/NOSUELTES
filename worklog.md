@@ -500,3 +500,21 @@ Stage Summary:
 - SHERPAS AL LIMITE es JUGABLE, ESTABLE y CONTROLABLE en el preview: fisica de juego simple (un punto + esqueleto cosmético), cuerda que tira como cuerda, nacimiento sin bailoteo, suelta/re-agarrar por intención con reasentamiento suave, carga legible sin picos.
 - Las 3 causas raiz de "incontrolable/vuelan/invisible" eliminadas con medidas (signos de cuerda, depth-write, lado de la camara).
 - Commit c15095d en main; quality gates en baseline; build de produccion ensamblado y listo para deploy cuando el :3000 del ghost lo permita.
+
+---
+Task ID: 24
+Agent: Z.ai (principal)
+Task: Preview en blanco tras reciclado del sandbox — redespliegue y verificación E2E
+
+Work Log:
+- DIAGNÓSTICO: :3000 caído (000) y el proxy :81 en 502 — el reciclado del sandbox mató el proceso servidor y el simulador iframe :8899. El worktree .sherpas-wt fue borrado por el proceso externo; sin embargo TODO el trabajo de la Task 23 (reescritura física) sobrevive en main: 90706e2 → c15095d (física de juego) → 788692e (solo worklog).
+- El standalone de producción en /home/z/my-project/.next/standalone (BUILD_ID qPQZWIwhPr97Hup-2NQG6, montado a las 15:34, posterior al código de c15095d) está completo: server.js, package.json, .next/server/app, static con BUILD_ID coincidente, node_modules y public/.
+- REDESPLEGUE: daemonize con bun server.js desde .next/standalone → :3000 responde 200; proxy :81 → 200. Simulador iframe levantado de nuevo: http.server :8899 --directory public (daemonize).
+- E2E agent-browser DIRECTO: lanzador "ELIGE TU ASCENSO" → menú sherpa (dificultad/idioma/semilla) → ¡GO! → partida VISIBLE: sherpas naranja/azul colgados, presas, ricachón morado, HUD 4+4, altímetro 5301 m, "Cuerda: tensada", Carga 50%/50%, Propina 100. Estabilidad 8 s: posiciones idénticas, cuerda pasa a "holgura" (estado vivo), propina 100→98 (evento de insulto activo). Capturas: scripts/e2e-redeploy-game.png, e2e-stab-t0.png, e2e-stab-t8.png.
+- E2E agent-browser IFRAME cross-origin (8899→3000, entorno del preview): lanzador → SHERPAS → ¡GO! → partida íntegra y visible, cero errores de página. Captura: scripts/e2e-redeploy-iframe-game.png.
+- Nota menor: el hook __SHERPAS_DEBUG expone getters (waist/anchors/tension/particles/depthProbe) pero devuelven null en esta build — la verificación de estabilidad se hizo visual (dos capturas separadas 8 s, sin deriva).
+
+Stage Summary:
+- Preview RESTAURADO: el usuario debe recargar (idealmente recarga forzada) https://preview-chat-0335df1a-0259-4d41-a59e-133f5043a4c6.space-z.ai/
+- La build servida incluye la reescritura física de la Task 23 (verlet amortiguado, cuerda que tira, depth-write, cámara correcta): colgado estable sin deriva, sin vuelos ni caídas.
+- Infraestructura viva: servidor de juego :3000 (daemonize), proxy :81, simulador iframe :8899.
