@@ -518,3 +518,21 @@ Stage Summary:
 - Preview RESTAURADO: el usuario debe recargar (idealmente recarga forzada) https://preview-chat-0335df1a-0259-4d41-a59e-133f5043a4c6.space-z.ai/
 - La build servida incluye la reescritura física de la Task 23 (verlet amortiguado, cuerda que tira, depth-write, cámara correcta): colgado estable sin deriva, sin vuelos ni caídas.
 - Infraestructura viva: servidor de juego :3000 (daemonize), proxy :81, simulador iframe :8899.
+
+---
+Task ID: 25
+Agent: Z.ai (principal)
+Task: Reporte del jugador: carga lentísima + ricachón en el suelo moviéndose caóticamente + no sabe controlar el ascenso
+
+Work Log:
+- CAUSA RAÍZ de todo: el build desplegado (qPQZ, 15:34) era ANTERIOR a los fixes del árbol (wallGenerator 16:35 con presas de arranque subidas a yBase+3.4; data.ts 16:25 con las 20 cargas JSON en PARALELO — el fix "tarda muchísimo en cargar" ya existía en código pero NUNCA se había construido/desplegado). La continuación perdida quedó a mitad de camino.
+- hallazgo de entorno: el reciclado de 17:51 dejó el :3000 servido por `next dev` del driver (LENTO, compilación JIT) y el ghost BORRÓ .next/standalone; reconstruido con `bun run build` (el standalone del repo principal sale COMPLETO — lo incompleto era cosa del worktree).
+- BUG E2E nuevo documentado: con clics NO confiables (eval element.click()) begin() se colgaba en await audio.start() (AudioContext.resume() sin gesto de usuario queda pendiente para siempre → HUD esqueleto con "—", sin error, sin partida). Con clics nativos del agente (trusted) funciona. BLINDADO: audio.start() con Promise.race 1.5s — el juego arranca igual aunque el navegador bloquee audio.
+- overlay debug ampliado (match.ts updateHud): línea 4 con A(x,y) B(x,y) R(x,y) y anclas n+n → verificación numérica E2E sin hooks de página (el eval del agente corre en mundo aislado y no ve __SHERPAS_DEBUG).
+- begin() instrumentado con try/catch + detalle (stack/JSON/"UNDEFINED") para futuros fallos de arranque.
+- MEDICIONES (build final QJPqt90dW0MiU4zWk-ghg): menú visible en ~430 ms; partida: A(0.09,2.83) B(1.62,2.86) R(0.88,1.44) anclas 4+4 → el ricachón CUELGA a 1.44 m (pies a 0.76 m del suelo, nunca en el suelo); tensión porteo 34N/34N. Ascenso probado por teclado: W×8 (anillo naranja sube), Digit2 ×2 (suelta→vuela→agarra) → A sube a 2.88 con 4+4 anclas. iframe cross-origin (8899→3000): partida íntegra + tutorial "Cómo se sube" visible + cero errores (scripts/e2e-final-iframe.png, e2e-v2-trusted.png, e2e-climb-after.png).
+- quality gates: tsc 11 (los 4 errores míos de la 1ª versión del overlay corregidos; sin nuevos vs baseline), eslint limpio, vitest 207/212 (5 = selfcollision preexistente). Commit 895d256 en main.
+- NOTA de explotación: en cada reciclado del sandbox el driver rearranca `next dev` en :3000; tras cada reciclado hay que matar el dev y re-daemonizar el standalone (o aceptar dev lento hasta entonces). :8899 (simulador iframe) también muere en cada reciclado; relanzar con daemonize http.server --directory public.
+
+Stage Summary:
+- Los 3 problemas del jugador resueltos con el MISMO gesto: (1) carga lenta → build de producción con fetches paralelos (era dev + código viejo); (2) ricachón caótico en el suelo → build con presas de arranque subidas (cuelga a 1.44 m, medido) + la cola del cerebro ya no agita en el suelo; (3) control → tutorial integrado "Cómo se sube" + explicación detallada en el chat (apuntar con anillo, soltar/agarrar por extremidad, H = ayuda).
