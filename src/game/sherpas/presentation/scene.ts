@@ -9,14 +9,13 @@ import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
 import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
 import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
-import type { LinesMesh } from "@babylonjs/core/Meshes/linesMesh";
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import "@babylonjs/core/Meshes/Builders/boxBuilder";
 import "@babylonjs/core/Meshes/Builders/groundBuilder";
 import "@babylonjs/core/Meshes/Builders/sphereBuilder";
 import "@babylonjs/core/Meshes/Builders/capsuleBuilder";
 import "@babylonjs/core/Meshes/Builders/torusBuilder";
-import "@babylonjs/core/Meshes/Builders/linesBuilder";
+import "@babylonjs/core/Meshes/Builders/cylinderBuilder";
 import "@babylonjs/core/Meshes/instancedMesh"; // side-effect requerido por createInstance (fix Task 21)
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
@@ -69,7 +68,11 @@ export class SherpaScene {
   private holdMasters = new Map<string, Mesh>();
   private rigVisuals: (RigVisual | null)[] = [null, null];
   private richVisual: { bones: Bone[]; head: Mesh } | null = null;
-  private ropeLines: (LinesMesh | null)[] = [null, null];
+  // Cuerdas de porteo: cadenas de CILINDROS gruesos (las líneas de 1px no se
+  // veían — petición del jugador: "no se ven las cuerdas desde las mochilas").
+  private ropeSegs: Mesh[][] = [[], []];
+  private ropeMat: StandardMaterial | null = null;
+  private static readonly ROPE_POOL = 12;
   private trashMesh: Mesh | null = null;
   private urineMeshes: Mesh[] = [];
   private birdMeshes = new Map<number, { body: Mesh; shadow: Mesh }>();
@@ -325,27 +328,46 @@ export class SherpaScene {
   }
 
   ensureRopeLines(): void {
-    for (let i = 0; i < 2; i++) {
-      if (!this.ropeLines[i]) {
-        const line = MeshBuilder.CreateLines(`rope${i}`, { points: [Vector3.Zero(), Vector3.Zero()], updatable: true }, this.scene) as LinesMesh;
-        line.color = new Color3(0.9, 0.85, 0.6);
-        line.alpha = 0.95;
-        this.ropeLines[i] = line;
+    if (this.ropeSegs[0].length > 0) return;
+    if (!this.ropeMat) {
+      // cáñamo oscuro: visible sobre nieve y sobre roca clara.
+      this.ropeMat = new StandardMaterial("ropeM", this.scene);
+      this.ropeMat.diffuseColor = Color3.FromHexString("#8a5a2b");
+      this.ropeMat.emissiveColor = Color3.FromHexString("#3a2410");
+      this.ropeMat.specularColor = new Color3(0.04, 0.04, 0.04);
+    }
+    for (let r = 0; r < 2; r++) {
+      for (let i = 0; i < SherpaScene.ROPE_POOL; i++) {
+        const seg = MeshBuilder.CreateCylinder(`ropeSeg${r}_${i}`, { height: 1, diameter: 0.045, tessellation: 6 }, this.scene);
+        seg.material = this.ropeMat;
+        seg.isVisible = false;
+        this.ropeSegs[r].push(seg);
       }
     }
   }
 
   syncRope(nodesA: V3[], nodesB: V3[]): void {
     this.ensureRopeLines();
-    const setLine = (idx: number, nodes: V3[]): void => {
-      let line = this.ropeLines[idx];
-      if (!line || nodes.length < 2) return;
-      const pts = nodes.map((n) => new Vector3(n.x, n.y, n.z));
-      line = MeshBuilder.CreateLines(`rope${idx}`, { points: pts, instance: line }, this.scene) as LinesMesh;
-      this.ropeLines[idx] = line;
+    const setChain = (segs: Mesh[], nodes: V3[]): void => {
+      if (nodes.length < 2) { for (const s of segs) s.isVisible = false; return; }
+      const nSeg = Math.min(segs.length, nodes.length - 1);
+      for (let i = 0; i < segs.length; i++) segs[i].isVisible = i < nSeg;
+      for (let i = 0; i < nSeg; i++) this.orientRopeSeg(segs[i], nodes[i], nodes[i + 1]);
     };
-    setLine(0, nodesA);
-    setLine(1, nodesB);
+    setChain(this.ropeSegs[0], nodesA);
+    setChain(this.ropeSegs[1], nodesB);
+  }
+
+  /** Coloca un segmento de cuerda ENTRE dos puntos (sin el mínimo de escala de
+   *  orientCapsule: los tramos son cortos y deben medir exactamente su largo). */
+  private orientRopeSeg(mesh: Mesh, a: V3, b: V3): void {
+    mesh.position.set((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
+    const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+    const len = Math.hypot(dx, dy, dz) || 1e-6;
+    mesh.scaling.y = len;
+    this.tmpDir.set(dx / len, dy / len, dz / len);
+    if (!mesh.rotationQuaternion) mesh.rotationQuaternion = Quaternion.Identity();
+    Quaternion.FromUnitVectorsToRef(Vector3.Up(), this.tmpDir, mesh.rotationQuaternion);
   }
 
   spawnRichMan(): void {

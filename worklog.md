@@ -1,6 +1,27 @@
 # Worklog
 
 ---
+Task ID: 26
+Agent: Z.ai (principal)
+Task: "No se ven las cuerdas desde las mochilas hasta el tablón" + "los brazos y piernas siguen siendo de goma, un pequeño margen sí pero no de goma" (2ª iteración sobre Task 25)
+
+Work Log:
+- Diagnóstico CUERDAS: se dibujaban con MeshBuilder.CreateLines (hairlines de 1px) color beige claro sobre pared oscura → invisibles en pantalla real (en el E2E del Task 25 pasaron por resolver a baja resolución).
+- Fix cuerdas (scene.ts): cadenas de CILINDROS gruesos (Ø 0,045 m, pool 12×2, cero allocaciones por frame vía orientRopeSeg con quaternion+scaling.y exacto), cáñamo oscuro #8a5a2b con emissive #3a2410 (visible sobre nieve Y sobre roca). La física de la tabla NO cambia: nuevos params opcionales visualA/visualB en PlankStepParams/reset (plank.ts) → nodesA/nodesB nacen en la MOCHILA (nuevo SherpaRig.harness(): parte alta del pack, chest.z−0,18) mientras el cabo sigue atado a la cintura; match.ts pasa harness() en reset inicial, step y respawn.
+- Diagnóstico GOMA (el hallazgo grande): el muelle de colgado asienta g/K = 0,178 m por debajo de su objetivo (SAG) → con HANG_OFFSET_Y −1,15 el hombro quedaba a ~1,05 m de la presa con huesos de 0,88 → ~19% de estiramiento PERMANENTE en cada colgado (y el clamp de arrastre ×1,25 permitía 14-22%). El jugador veía goma estructural, no un bug de arrastre.
+- Fix goma v2 (sherpaRig.ts): (1) alcance de juego = huesos × 1,08 (STRETCH_SOFT) para raíz Y punta — canReach/dragMaxReach coherentes con el cuerpo dibujado (piernas 1,05, brazos 0,95); (2) HANG_OFFSET_Y −1,15→−0,97 compensando el sag: asentado, hombro→presa = 0,868 ≈ hueso 0,88, brazo estirado natural sin goma; (3) iteración anti-goma en computeHangTarget: el objetivo se acerca a cualquier presa anclada que quede fuera del alcance óseo (con SAG descontado) — colgar de dos presas en columna = colgar de la alta, la baja queda lacia; (4) servo anti-goma transitorio (rate 14, techo 0,09 m/tick): al agarrar presa alta el CUERPO sube rápido, pos y prev juntos (sin velocidad fantasma); (5) techo duro del dibujo STRETCH_HARD 1,10: fillSkeleton acota la punta dibujada (y el IK de codos/rodillas usa ESA punta — si apuntara a la física exacta, el antebrazo se estiraría).
+- Harness E2E nuevo (mount.ts __SHERPAS_DEBUG): project(x,y,z) mundo→pantalla CSS vía Vector3.Project (a prueba de cámara móvil — la calibración estática vencía en 2 frames), wall(cx,cy) y drag(p) {dragging, hold-imantado}. El fallo E2E anterior era el harness (coordenadas vencidas), no el juego.
+- E2E verificado (:3000, arrastre sintético por el pipeline PointerDrag real): imán captura presa alta → soltar → viaje → anclaje en h40; cintura 3,07→3,37 (SE SUBE); brazo derecho asentado 0,955 = huesos×1,085 (margen 8,5%, antes 13-19%); brazo izquierdo lacio 0,627; en spawn brazos 0,632/piernas 0,435 (flexionados, cero goma); tabla −10° con desnivel 0,30 m, desliz 0% (cono de rozamiento respeta el paso), ricachón sentado; cuerdas mochila→cabo visibles en captura con tabla inclinada. NOTA: agent-browser mouse real no llega al canvas en :3000 directo (sí en iframe) — verificado con PointerEvent sintético (mismo pipeline, listeners sin isTrusted).
+- Quality gates: tsc src limpio, eslint limpio, vitest 208/213 (baseline: 5 fallos preexistentes selfcollision), sherpas 58/58.
+- Deploy: build nuevo ensamblado (server+BUILD_ID+static+public), daemonize :3000 verificado 200. Builds intermedios: qPQZ…→fauB…→Ny1m…→final.
+
+Stage Summary:
+- Cuerdas de porteo GRUESAS y visibles desde la mochila de cada sherpa hasta su cabo de la tabla (física intacta, solo visual).
+- Adiós a la goma estructural: el sag del muelle estaba estirando SIEMPRE los brazos un 19%; ahora el colgado asienta con el brazo a 0,868 (hueso 0,88), el alcance de juego = huesos×1,08, el cuerpo sube a las presas altas (servo) y el dibujo tiene techo duro ×1,10.
+- Subida verificada E2E con el pipeline de ratón real (+0,30 m por paso, imán, anclaje, tabla inclinándose con el desnivel).
+- Lección E2E: la cámara móvil invalida calibraciones estáticas — project() en el hook de debug es el camino canónico.
+
+---
 Task ID: 25
 Agent: Z.ai (principal)
 Task: "Escaladores de goma" + cuerda mal → TABLA DE PORTEO con coordinación (petición del jugador: ricachón sentado en una tabla, una cuerda por lado hacia cada sherpa; si no coordinan, la tabla se desplaza y el ricachón cae)

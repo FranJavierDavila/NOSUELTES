@@ -78,6 +78,10 @@ export interface PlankStepParams {
   /** punto de cuerda del sherpa A (izquierda) y B (derecha), mundo. */
   a: V3;
   b: V3;
+  /** punto VISUAL del cabo (la mochila); por defecto a/b. Solo cambia el
+   *  dibujo de la cuerda, nunca la física (petición: "cuerdas desde las mochilas"). */
+  visualA?: V3;
+  visualB?: V3;
   wallFrontZ: number;
   time: number;
   /** bamboleo externo (cerebro del ricachón, pájaros): escalar con signo. */
@@ -109,7 +113,7 @@ export class PlankSystem {
   get tuning(): PlankTuning { return this.t; }
 
   /** Cuelga la tabla NIVELADA bajo el sherpa más bajo (spawn/respawn). */
-  reset(a: V3, b: V3, wallFrontZ: number): PlankState {
+  reset(a: V3, b: V3, wallFrontZ: number, visualA?: V3, visualB?: V3): PlankState {
     const z = wallFrontZ - END_Z_OFF;
     const y = Math.min(a.y, b.y) - this.t.ropeLen;
     const cx = (a.x + b.x) / 2;
@@ -122,7 +126,7 @@ export class PlankSystem {
     this.slideVel = 0;
     this.fell = false;
     this.fellDir = 0;
-    return this.buildState(a, b, true);
+    return this.buildState(a, b, true, 0, 0, visualA, visualB);
   }
 
   step(dt: number, p: PlankStepParams): PlankState {
@@ -175,10 +179,10 @@ export class PlankSystem {
       p.moveSherpa(1, vScale(n, -pull * 0.5));
     }
 
-    return this.buildState(p.a, p.b, false, dt, p.time);
+    return this.buildState(p.a, p.b, false, dt, p.time, p.visualA, p.visualB);
   }
 
-  private buildState(a: V3, b: V3, _reset: boolean, dt = 0, time = 0): PlankState {
+  private buildState(a: V3, b: V3, _reset: boolean, dt = 0, time = 0, visualA?: V3, visualB?: V3): PlankState {
     void _reset;
     const t = this.t;
     const [el, er] = this.ends;
@@ -211,8 +215,9 @@ export class PlankSystem {
 
     // cuerdas visuales analíticas: comba solo si sobra cuerda (siempre acaban
     // EN el cabo de la tabla: imposible que se pierdan por la pantalla).
-    const nodesA = ropeNodes(a, el.pos, t, time);
-    const nodesB = ropeNodes(b, er.pos, t, time);
+    // Nacen en la MOCHILA del sherpa si hay punto visual (van = harness).
+    const nodesA = ropeNodes(visualA ?? a, el.pos, t, time);
+    const nodesB = ropeNodes(visualB ?? b, er.pos, t, time);
 
     // tensión falseada legible (para HUD/reparto): tausada ≈ medio ricachón.
     const distA = vLen(vSub(el.pos, a));

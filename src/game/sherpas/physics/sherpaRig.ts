@@ -29,18 +29,14 @@ const isHand = (l: Limb) => l === "hand_l" || l === "hand_r";
 const sideOf = (l: Limb) => (l === "hand_l" || l === "foot_l" ? -1 : 1);
 const CHAIN_ROOT: Record<Limb, number> = { hand_l: P.shL, hand_r: P.shR, foot_l: P.hipL, foot_r: P.hipR };
 const LIMB_PARTICLE: Record<Limb, number> = { hand_l: P.handL, hand_r: P.handR, foot_l: P.footL, foot_r: P.footR };
-/** Offset de la raíz de cada extremidad respecto a la CINTURA (para acotar el
- *  objetivo de colgado sin estirar huesos; replica fillSkeleton sin la inclinación). */
-const ROOT_OFFSET: Record<Limb, V3> = {
-  hand_l: v3(-SH_X, CHEST_H - 0.04, 0.02),
-  hand_r: v3(SH_X, CHEST_H - 0.04, 0.02),
-  foot_l: v3(-HIP_X, -0.02, 0),
-  foot_r: v3(HIP_X, -0.02, 0),
-};
 
 // ---------- constantes de la física de juego (valores falseados a propósito) ----------
 const G = 9.81;                 // gravedad (m/s²) — la única "realidad" que queda
-const HANG_OFFSET_Y = -1.15;    // cintura bajo la mano colgada (brazos casi rectos)
+const SAG = G / 55;             // cedida del muelle de colgado en equilibrio (g/K ≈ 0,178 m):
+                                // el cuerpo asienta SAG por DEBAJO de su objetivo — los
+                                // offsets deben compensarla o el brazo cuelga estirado (goma).
+const HANG_OFFSET_Y = -0.97;    // cintura bajo la mano colgada EN EL OBJETIVO; asentado:
+                                // -0,97-0,178 = -1,148 → hombro a 0,868 de la presa ≈ hueso (0,88)
 const HANG_OFFSET_Z = -0.22;    // y ligeramente separada de la pared
 const HANG_WEIGHT = 1.2;        // peso del objetivo de una mano en la mezcla
 const STAND_OFFSET_Y = 0.95;    // cintura sobre el pie apoyado (piernas flexionadas)
@@ -63,6 +59,14 @@ const LIMB_FOLLOW = 12;         // ganancia del pendejo cosmético (1/s)
 const ARM = { upper: 0.46, fore: 0.42 };   // suma 0,88 ≈ colgado real (0,87)
 const LEG = { thigh: 0.50, shin: 0.47 };   // suma 0,97 ≈ apoyo real (0,97)
 const SHOULDER_H = 0.45, CHEST_H = 0.32, HEAD_H = 0.62, HIP_X = 0.13, SH_X = 0.19;
+/** Offset de la raíz de cada extremidad respecto a la CINTURA (para acotar el
+ *  objetivo de colgado sin estirar huesos; replica fillSkeleton sin la inclinación). */
+const ROOT_OFFSET: Record<Limb, V3> = {
+  hand_l: v3(-SH_X, CHEST_H - 0.04, 0.02),
+  hand_r: v3(SH_X, CHEST_H - 0.04, 0.02),
+  foot_l: v3(-HIP_X, -0.02, 0),
+  foot_r: v3(HIP_X, -0.02, 0),
+};
 const BODY_R = 0.32;            // margen de pared/suelo del cuerpo
 const FLOOR_MARGIN = 0.45;
 const LOAD_SMOOTH_TAU = 0.25;   // paso bajo de la carga dinámica (s)
@@ -77,8 +81,8 @@ const MAGNET_R = 0.55;          // radio de imán de presas (m, plano de pared)
 // el alcance de juego ES la longitud ósea con un margen mínimo. Todo coherente:
 // lo que se puede agarrar es lo que el brazo/pierna dibujado alcanza.
 const STRETCH_SOFT = 1.08;      // margen máximo de estiramiento visible (8%)
-const STRETCH_HARD = 1.16;      // techo absoluto del esqueleto dibujado
-const ANTI_GOMA_RATE = 9;       // servo del cuerpo hacia presa alta recién agarrada (1/s)
+const STRETCH_HARD = 1.10;      // techo absoluto del esqueleto dibujado ("pequeño margen")
+const ANTI_GOMA_RATE = 14;      // servo del cuerpo hacia presa alta recién agarrada (1/s)
 const GOMA_SERVO_MAX = 0.09;    // corrección posicional máxima por tick (m)
 const DRAG_FOLLOW = 26;         // ganancia de seguimiento del puntero (1/s)
 const DRAG_MAGNET_PULL = 20;    // ganancia de succión hacia la presa imantada (1/s)
@@ -627,7 +631,7 @@ export class SherpaRig {
         if (!st.anchored || !st.holdId) continue;
         const hold = this.deps.anchorSystem.holds.get(st.holdId);
         if (!hold) continue;
-        const root = vAdd(tgt, ROOT_OFFSET[limb]);
+        const root = vAdd(tgt, vAdd(ROOT_OFFSET[limb], v3(0, -SAG, 0))); // el cuerpo asienta SAG bajo el objetivo
         const d = vLen(vSub(hold.pos, root));
         const maxLen = this.boneReach(limb);
         if (d > maxLen && d > worst) {
@@ -715,6 +719,9 @@ export class SherpaRig {
     set(P.shR, shR);
     set(P.hipL, hipL);
     set(P.hipR, hipR);
+    // puntas dibujadas acotadas + codos/rodillas desde ESAS puntas (IK coherente:
+    // si el codo apuntara a la punta física sin acotar, el antebrazo se estiraría).
+    const drawnTip = {} as Record<Limb, V3>;
     for (const limb of LIMBS) {
       const i = LIMB_PARTICLE[limb];
       // Techo duro del dibujo: la punta dibujada nunca supera huesos × STRETCH_HARD
@@ -725,13 +732,14 @@ export class SherpaRig {
       const dTip = vLen(vSub(tip, rootS));
       const hardMax = this.boneLen(limb) * STRETCH_HARD;
       if (dTip > hardMax) tip = vAdd(rootS, vScale(vSub(tip, rootS), hardMax / dTip));
+      drawnTip[limb] = tip;
       set(i, tip);
     }
     // codos (afuera y separados de la pared) y rodillas (hacia la pared).
-    set(P.elbowL, ik(shL, this.limbPt.hand_l, ARM.upper, ARM.fore, v3(-0.85, -0.3, -0.35)));
-    set(P.elbowR, ik(shR, this.limbPt.hand_r, ARM.upper, ARM.fore, v3(0.85, -0.3, -0.35)));
-    set(P.kneeL, ik(hipL, this.limbPt.foot_l, LEG.thigh, LEG.shin, v3(-0.08, 0.22, 0.97)));
-    set(P.kneeR, ik(hipR, this.limbPt.foot_r, LEG.thigh, LEG.shin, v3(0.08, 0.22, 0.97)));
+    set(P.elbowL, ik(shL, drawnTip.hand_l, ARM.upper, ARM.fore, v3(-0.85, -0.3, -0.35)));
+    set(P.elbowR, ik(shR, drawnTip.hand_r, ARM.upper, ARM.fore, v3(0.85, -0.3, -0.35)));
+    set(P.kneeL, ik(hipL, drawnTip.foot_l, LEG.thigh, LEG.shin, v3(-0.08, 0.22, 0.97)));
+    set(P.kneeR, ik(hipR, drawnTip.foot_r, LEG.thigh, LEG.shin, v3(0.08, 0.22, 0.97)));
   }
 
   /** Colocación (spawn/respawn): nace CLAVADO en el atractor, sin bailoteo. */

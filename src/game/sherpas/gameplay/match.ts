@@ -154,7 +154,8 @@ export class SherpasMatch {
     const wa0 = this.sherpas[0].waist();
     const wb0 = this.sherpas[1].waist();
     // el ricachón nace SENTADO en la tabla, nivelada bajo el sherpa más bajo.
-    this.plankState = this.plank.reset(wa0, wb0, this.wallFrontZ);
+    // Cuerdas dibujadas desde las MOCHILAS (petición del jugador).
+    this.plankState = this.plank.reset(wa0, wb0, this.wallFrontZ, this.sherpas[0].harness(), this.sherpas[1].harness());
     this.rich = new RichManSim(this.data.tuning.richMan.mass, this.wallFrontZ, 0, this.plankState.center, this.data.tuning.richMan.massTransitionSeconds);
     this.rich.sitPose(this.plankState.center, this.plankState.angle, 0, 0);
     this.richMassTarget = this.data.tuning.richMan.mass;
@@ -359,6 +360,9 @@ export class SherpasMatch {
     this.plankState = this.plank.step(dt, {
       a: this.sherpas[0].waist(),
       b: this.sherpas[1].waist(),
+      // la cuerda se DIBUJA desde la mochila (visual); la física sigue en la cintura.
+      visualA: this.sherpas[0].harness(),
+      visualB: this.sherpas[1].harness(),
       wallFrontZ: this.wallFrontZ,
       time: this.simTime,
       wobble,
@@ -551,7 +555,7 @@ export class SherpasMatch {
     const na = this.sherpas[0].waist();
     const nb = this.sherpas[1].waist();
     // tabla re-colgada nivelada + ricachón sentado de nuevo (coordinación a cero).
-    this.plankState = this.plank.reset(na, nb, this.wallFrontZ);
+    this.plankState = this.plank.reset(na, nb, this.wallFrontZ, this.sherpas[0].harness(), this.sherpas[1].harness());
     this.richFellHandled = false;
     this.lastSlipWarnAt = -10;
     this.rich.seated = true;

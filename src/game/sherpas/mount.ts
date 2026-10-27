@@ -11,7 +11,8 @@ import { InputManager } from "./input/input";
 import { SherpasMatch } from "./gameplay/match";
 import { WallGenerator } from "./world/wallGenerator";
 import { loadAscent, clearAscent, type SavedAscent } from "./world/camps";
-import { v3 } from "../physics/pbd/math";
+import { v3, type V3 } from "../physics/pbd/math";
+import { Vector3, Matrix } from "@babylonjs/core/Maths/math.vector";
 
 export interface SherpasMountOptions {
   canvas: HTMLCanvasElement;
@@ -136,6 +137,32 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
       holds: () => state.match ? [...state.match["anchors"].holds.values()].map((h) => ({ id: h.id, x: h.pos.x, y: h.pos.y })) : [],
       rich: () => state.match?.["rich"] ? state.match["rich"].pelvis() : null,
       particles: (p: number) => state.match?.["sherpas"][p]?.rig.particles.map((q) => [q.pos.x, q.pos.y, q.pos.z]) ?? null,
+      /** proyección mundo→pantalla CSS (E2E a prueba de cámara móvil). */
+      project: (x: number, y: number, z: number): { x: number; y: number } | null => {
+        try {
+          const sc = state.scene;
+          if (!sc) return null;
+          const cam = sc.camera;
+          const engine = sc.engine;
+          const vp = cam.viewport.toGlobal(engine.getRenderWidth(), engine.getRenderHeight());
+          const projected = Vector3.Project(new Vector3(x, y, z), Matrix.Identity(), sc.scene.getTransformMatrix(), vp);
+          const canvas = engine.getRenderingCanvas();
+          if (!canvas) return null;
+          const kx = canvas.clientWidth / engine.getRenderWidth();
+          const ky = canvas.clientHeight / engine.getRenderHeight();
+          return { x: projected.x * kx, y: projected.y * ky };
+        } catch { return null; }
+      },
+      /** punto de pared bajo el puntero (la misma función que usa el juego). */
+      wall: (cx: number, cy: number): { x: number; y: number; z: number } | null => {
+        const p = state.match ? (state.match as unknown as { wallPointFromPointer(x: number, y: number): V3 | null }).wallPointFromPointer(cx, cy) : null;
+        return p ? { x: p.x, y: p.y, z: p.z } : null;
+      },
+      /** estado del arrastre (imán incluido) para diagnosticar el ratón en E2E. */
+      drag: (p: number): { dragging: string | null; hold: string | null } | null => {
+        const rig = state.match?.["sherpas"][p] as unknown as { dragging?: string | null; dragHold?: { id: string } | null } | undefined;
+        return rig ? { dragging: rig.dragging ?? null, hold: rig.dragHold?.id ?? null } : null;
+      },
       depthProbe: () => {
         const sc = state.match?.["d"]?.scene as unknown as {
           scene: { render(): void };
