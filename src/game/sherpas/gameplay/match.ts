@@ -140,7 +140,9 @@ export class SherpasMatch {
     this.rope = new RopeSystem(this.data.tuning.rope, this.data.tuning.richMan);
     const wa = this.sherpas[0].waist();
     const wb = this.sherpas[1].waist();
-    const hang0 = v3((wa.x + wb.x) / 2, Math.min(wa.y, wb.y) - 1.15, this.wallFrontZ - 0.45);
+    // el ricachón nace YA TENSO (cuerda de porteo): cintura - segmentMax. Nunca
+    // bajo el suelo (clamp 0.55) y sin caída inicial (antes caía 2 m con holgura).
+    const hang0 = v3((wa.x + wb.x) / 2, Math.max(Math.min(wa.y, wb.y) - this.data.tuning.rope.segmentMax, 0.55), this.wallFrontZ - 0.45);
     this.rich = new RichManSim(this.data.tuning.richMan.mass, this.wallFrontZ, 0, hang0, this.data.tuning.richMan.massTransitionSeconds);
     this.richMassTarget = this.data.tuning.richMan.mass;
 
@@ -177,6 +179,8 @@ export class SherpasMatch {
       ["hand_l", "hand_r", "foot_l", "foot_r"],
     );
     this.wireEvents();
+    // mini-tutorial al empezar (doc 9: legibilidad): cómo se sube, en 1 línea.
+    this.d.hud.banner(this.d.hud.t("hud.howToTitle"), this.d.hud.t("hud.howToSub"), 10);
 
     // continuar guardado: reaparece en el campamento y restaura estadísticas.
     if (deps.choice.resume && deps.resumeSave) {
@@ -433,7 +437,7 @@ export class SherpasMatch {
     this.sherpas[1].respawnAt(holdsB);
     const na = this.sherpas[0].waist();
     const nb = this.sherpas[1].waist();
-    const hang = v3((na.x + nb.x) / 2, Math.min(na.y, nb.y) - 1.15, this.wallFrontZ - 0.45);
+    const hang = v3((na.x + nb.x) / 2, Math.max(Math.min(na.y, nb.y) - this.data.tuning.rope.segmentMax, 0.55), this.wallFrontZ - 0.45);
     this.rich.reset(hang);
     this.richMassTarget = this.data.tuning.richMan.mass;
     this.rich.setMassTarget(this.richMassTarget);
@@ -678,6 +682,9 @@ export class SherpasMatch {
     const s = this.d.scene;
     s.syncSherpa(0, this.sherpas[0].solver, this.alpha);
     s.syncSherpa(1, this.sherpas[1].solver, this.alpha);
+    // cursores de apuntado (J1 naranja, J2 azul): sin ellos el ascenso es ilegible.
+    s.syncAim(0, this.sherpas[0].aim, this.wallFrontZ);
+    s.syncAim(1, this.sherpas[1].aim, this.wallFrontZ);
     if (this.ropeState) s.syncRope(this.ropeState.nodesA, this.ropeState.nodesB);
     s.syncRichMan(this.rich, this.alpha);
     const t0 = this.trash[0];

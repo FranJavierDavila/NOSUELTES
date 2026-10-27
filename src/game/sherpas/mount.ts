@@ -110,11 +110,18 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
       data, scene, audio, hud, bus, input, character, profile, choice, resumeSave,
       onRestart: () => { void backToMenu(); },
     });
-    // hook de depuración E2E (solo lectura).
+    // hook de depuración E2E (solo lectura, salvo setAim: herramienta de pruebas).
     (window as unknown as Record<string, unknown>).__SHERPAS_DEBUG = {
       waist: (p: number) => state.match?.["sherpas"][p]?.waist() ?? null,
       anchors: (p: number) => state.match?.["sherpas"][p]?.anchorsCount() ?? null,
       tension: (p: number) => state.match?.["sherpas"][p]?.maxTension() ?? null,
+      aim: (p: number) => state.match?.["sherpas"][p]?.aim ? { x: state.match!["sherpas"][p].aim.x, y: state.match!["sherpas"][p].aim.y } : null,
+      setAim: (p: number, x: number, y: number) => {
+        const rig = state.match?.["sherpas"][p];
+        if (rig) rig.aim = { x, y, z: rig.aim.z } as typeof rig.aim;
+      },
+      holds: () => state.match ? [...state.match["anchors"].holds.values()].map((h) => ({ id: h.id, x: h.pos.x, y: h.pos.y })) : [],
+      rich: () => state.match?.["rich"] ? state.match["rich"].pelvis() : null,
       particles: (p: number) => state.match?.["sherpas"][p]?.rig.particles.map((q) => [q.pos.x, q.pos.y, q.pos.z]) ?? null,
       depthProbe: () => {
         const sc = state.match?.["d"]?.scene as unknown as {

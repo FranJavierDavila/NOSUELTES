@@ -36,7 +36,7 @@ describe("pack de datos sherpas (doc 11)", () => {
     expect(d.tuning.anchors.attachSeconds).toBeCloseTo(0.16);
     expect(d.tuning.limb.baseGripHand).toBe(650);
     expect(d.tuning.limb.baseGripFoot).toBe(900);
-    expect(d.tuning.rope.segmentMax).toBe(3.5);
+    expect(d.tuning.rope.segmentMax).toBe(1.5); // cuerda de porteo: el ricachón cuelga tenso entre los dos
     expect(d.tuning.rope.totalMax).toBe(6.0);
     expect(d.tuning.fall.teamFallSeconds).toBeCloseTo(1.5);
     expect(d.tuning.fall.teamFallMeters).toBe(12);

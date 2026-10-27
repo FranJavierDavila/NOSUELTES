@@ -384,9 +384,16 @@ export class SherpaHud {
     const show = el.classList.contains("hidden");
     if (show) {
       el.querySelector<HTMLElement>(".panel")!.innerHTML = `
-        <h1 style="font-size:20px">${esc(this.t("menu.title"))}</h1>
-        <div class="keys">${esc(this.t("keys.p1"))}<br>${esc(this.t("keys.p2"))}<br>${esc(this.t("keys.shared"))}</div>
-        <p class="sub" style="margin-top:12px">${esc(this.t("menu.subtitle"))}</p>`;
+        <h1 style="font-size:20px">${esc(this.t("help.title"))}</h1>
+        <p class="sub" style="margin:8px 0">${esc(this.t("help.goal"))}</p>
+        <div style="font-size:13.5px;line-height:1.65;text-align:left">
+          <p>${esc(this.t("help.step1"))}</p>
+          <p>${esc(this.t("help.step2"))}</p>
+          <p>${esc(this.t("help.step3"))}</p>
+          <p>${esc(this.t("help.step4"))}</p>
+          <p class="sub" style="margin-top:6px">${esc(this.t("help.extra"))}</p>
+        </div>
+        <div class="keys" style="margin-top:10px">${esc(this.t("keys.p1"))}<br>${esc(this.t("keys.p2"))}<br>${esc(this.t("keys.shared"))}</div>`;
     }
     el.classList.toggle("hidden", !show);
     return show;

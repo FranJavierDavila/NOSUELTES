@@ -82,6 +82,12 @@ export class RichManBrain {
       this.enter(st.next as RichManState);
     }
 
+    // FIX "se retuerce caóticamente": si está en el suelo (caída del equipo o
+    // arranque) NO se agita: se queda pasmado y quieto. Los impulsos
+    // procedurales solo tienen sentido colgado de la cuerda.
+    const grounded = this.sim.pelvis().y < 0.55;
+    if (grounded) return;
+
     // animación procedural por estado (doc 4.3 + richman.json).
     const acts = this.deps.actions.actions;
     switch (this.state) {

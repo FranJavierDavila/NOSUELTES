@@ -255,26 +255,33 @@ export async function loadSherpasData(loader: JsonLoader, basePath: string): Pro
     return json as T;
   };
 
-  const manifest = await read<SherpasData["manifest"]>("manifest.json");
-  const tuning = await read<TuningData>("tuning.json", "tuning");
-  const anchorTypes = await read<Record<string, AnchorTypeData>>("anchor_types.json", "anchor_types");
-  const phasesDoc = await read<{ phases: PhaseData[] }>("phases.json", "phases");
-  const wallGen = await read<WallGenData>("wall_gen.json", "wall_gen");
-  const events = await read<EventsData>("events.json", "events");
-  const machines = await read<MachinesData>("machines.json", "machines");
-  const richMan = await read<RichManActionsData>("richman.json");
-  const difficulty = await read<DifficultyData>("difficulty.json", "difficulty");
-  const inputMaps = await read<InputMapData>("input_maps.json", "input_maps");
-  const hud = await read<HudData>("hud.json");
-  const camera = await read<CameraData>("camera.json");
-  const audio = await read<AudioData>("audio.json");
-  const vfx = await read<VfxData>("vfx.json");
-  const net = await read<NetData>("net.json");
-  const voice = await read<VoiceData>("voice.json");
-  const insultsEs = await read<InsultBank>("insults_es.json", "insults");
-  const insultsEn = await read<InsultBank>("insults_en.json", "insults");
-  const stringsEs = await read<StringsData>("strings_es.json", "strings");
-  const stringsEn = await read<StringsData>("strings_en.json", "strings");
+  // FIX "tarda muchísimo en cargar": estos 19 fetches estaban EN SERIE (cada uno
+  // esperaba al anterior) — con la latencia del preview eran varios segundos.
+  // Todos son independientes: UNA ronda en paralelo (la validación es igual).
+  const [manifest, tuning, anchorTypes, phasesDoc, wallGen, events, machines, richMan, difficulty,
+    inputMaps, hud, camera, audio, vfx, net, voice, insultsEs, insultsEn, stringsEs, stringsEn] =
+    await Promise.all([
+      read<SherpasData["manifest"]>("manifest.json"),
+      read<TuningData>("tuning.json", "tuning"),
+      read<Record<string, AnchorTypeData>>("anchor_types.json", "anchor_types"),
+      read<{ phases: PhaseData[] }>("phases.json", "phases"),
+      read<WallGenData>("wall_gen.json", "wall_gen"),
+      read<EventsData>("events.json", "events"),
+      read<MachinesData>("machines.json", "machines"),
+      read<RichManActionsData>("richman.json"),
+      read<DifficultyData>("difficulty.json", "difficulty"),
+      read<InputMapData>("input_maps.json", "input_maps"),
+      read<HudData>("hud.json"),
+      read<CameraData>("camera.json"),
+      read<AudioData>("audio.json"),
+      read<VfxData>("vfx.json"),
+      read<NetData>("net.json"),
+      read<VoiceData>("voice.json"),
+      read<InsultBank>("insults_es.json", "insults"),
+      read<InsultBank>("insults_en.json", "insults"),
+      read<StringsData>("strings_es.json", "strings"),
+      read<StringsData>("strings_en.json", "strings"),
+    ]);
 
   if (issues.length) throw new DataValidationError(issues);
 

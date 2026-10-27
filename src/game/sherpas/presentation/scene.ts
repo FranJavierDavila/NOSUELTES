@@ -73,6 +73,7 @@ export class SherpaScene {
   private trashMesh: Mesh | null = null;
   private urineMeshes: Mesh[] = [];
   private birdMeshes = new Map<number, { body: Mesh; shadow: Mesh }>();
+  private aimMarkers: (Mesh | null)[] = [null, null];
   private fxTexture: Texture;
   private snowSystem: ParticleSystem;
   private disposed = false;
@@ -480,6 +481,31 @@ export class SherpaScene {
         this.birdMeshes.delete(id);
       }
     }
+  }
+
+  /** Cursor de apuntado del jugador (anillo de su color sobre la pared).
+   *  Sin esto el jugador no sabe A DÓNDE va la extremidad al soltar. */
+  syncAim(player: 0 | 1, aim: V3 | null, wallFrontZ: number): void {
+    let m = this.aimMarkers[player];
+    if (!aim) {
+      if (m) m.isVisible = false;
+      return;
+    }
+    if (!m) {
+      const hex = player === 0 ? "#ff8c3a" : "#3aa0ff";
+      m = MeshBuilder.CreateTorus(`aim${player}`, { diameter: 0.36, thickness: 0.05, tessellation: 24 }, this.scene);
+      const mm = mat(this.scene, `aimM${player}`, hex);
+      mm.emissiveColor = Color3.FromHexString(hex);
+      mm.disableLighting = true; // autoiluminado: se ve sobre roca, nieve y sombra
+      m.material = mm;
+      m.rotation.x = Math.PI / 2; // el toro se crea tumbado: de pie para encarar la cámara
+      m.isPickable = false;
+      this.aimMarkers[player] = m;
+    }
+    m.isVisible = true;
+    m.position.set(aim.x, aim.y, wallFrontZ - 0.1);
+    const pulse = 1 + Math.sin(performance.now() / 280) * 0.1;
+    m.scaling.setAll(pulse);
   }
 
   // ---------- utilidades ----------

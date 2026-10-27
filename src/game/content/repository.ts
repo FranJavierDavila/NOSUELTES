@@ -81,16 +81,20 @@ export class ContentRepository {
     const walls = new Map<string, WallDefinition>();
     const challenges = new Map<string, ChallengeDefinition>();
 
-    for (const id of manifest.bodyProfiles) {
+    // FIX "tarda mucho en cargar": cada categoria antes hacia un fetch POR ARCHIVO
+    // en serie. Ahora los archivos de cada categoria se leen EN PARALELO (la
+    // validación por archivo es idéntica; JS single-thread mantiene la integridad
+    // de los maps compartidos porque los cuerpos de las tareas son síncronos).
+    await Promise.all(manifest.bodyProfiles.map(async (id) => {
       const file = `${basePath}/characters/${id}.json`;
       const raw = await this.loadJson(loader, file, issues);
       this.assertSchema(this.ajv, bodyProfileSchema, raw, file, issues);
       const def = raw as BodyProfileDefinition;
       this.checkUniqueId(def.id, id, bodyProfiles, file, issues);
       bodyProfiles.set(def.id, def);
-    }
+    }));
 
-    for (const id of manifest.characters) {
+    await Promise.all(manifest.characters.map(async (id) => {
       const file = `${basePath}/characters/${id}.json`;
       const raw = await this.loadJson(loader, file, issues);
       this.assertSchema(this.ajv, characterSchema, raw, file, issues);
@@ -104,9 +108,9 @@ export class ContentRepository {
         });
       }
       characters.set(def.id, def);
-    }
+    }));
 
-    for (const id of manifest.walls) {
+    await Promise.all(manifest.walls.map(async (id) => {
       const file = `${basePath}/walls/${id}.json`;
       const raw = await this.loadJson(loader, file, issues);
       this.assertSchema(this.ajv, wallSchema, raw, file, issues);
@@ -136,9 +140,9 @@ export class ContentRepository {
         }
       }
       walls.set(def.id, def);
-    }
+    }));
 
-    for (const id of manifest.challenges) {
+    await Promise.all(manifest.challenges.map(async (id) => {
       const file = `${basePath}/challenges/${id}.json`;
       const raw = await this.loadJson(loader, file, issues);
       this.assertSchema(this.ajv, challengeSchema, raw, file, issues);
@@ -184,7 +188,7 @@ export class ContentRepository {
         }
       }
       challenges.set(def.id, def);
-    }
+    }));
 
     if (issues.length > 0) {
       throw new ContentValidationError(issues);

@@ -73,11 +73,13 @@ export class RopeSystem {
       const len = vLen(delta);
       if (len < 1e-9) return 0;
       const clamped = len > maxCorr ? vScale(delta, maxCorr / len) : delta;
-      // la cuerda transmite momento real (delta/dt), acotado: aterrizaje suave (doc 15).
+      // la cuerda transmite momento real: la velocidad se inyecta en el MISMO
+      // campo que lee el verlet (desplazamiento por tick = v·dt). Antes se pasaba
+      // m/s crudo → 60x de energía fantasma y comba esponjosa en cuerda tensa.
       const vel = vScale(clamped, 1 / dt);
       const vLenV = vLen(vel);
       const velSafe = vLenV > maxCatch ? vScale(vel, maxCatch / vLenV) : vel;
-      ep.move(clamped, velSafe);
+      ep.move(clamped, vScale(velSafe, dt));
       return len;
     };
 
@@ -129,13 +131,16 @@ export class RopeSystem {
     }
 
     // sobrestiramiento → aviso legible antes del corte duro (doc 4.2.4).
+    // Con cuerda de porteo SIEMPRE tensa, un estiramiento mínimo es rutina:
+    // el aviso solo dispara por encima del 35% del margen de goma (nivel 0 abajo).
     const worstOver = Math.max(segAR.over, segBR.over);
     const overRatio = worstOver > 0 ? worstOver / (t.segmentMax * (1 - t.overstretchAt)) : 0;
+    const warnRatio = Math.max(0, (overRatio - 0.35) / 0.65);
     if (this.overstretchCooldown > 0) this.overstretchCooldown -= dt;
-    if (overRatio > 0 && this.overstretchCooldown <= 0) {
-      this.overstretchLevel = Math.min(1, overRatio);
+    if (warnRatio > 0 && this.overstretchCooldown <= 0) {
+      this.overstretchLevel = Math.min(1, warnRatio);
       this.overstretchCooldown = 1.0;
-    } else if (overRatio <= 0) {
+    } else if (warnRatio <= 0) {
       this.overstretchLevel = Math.max(0, this.overstretchLevel - dt * 2);
     }
 
@@ -213,10 +218,11 @@ export function sherpaEndpoint(
 ): RopeEndpoint {
   return {
     pos: () => vClone(waistParticle.pos),
-    move: (delta, velPerSec) => {
+    // velPerTick: desplazamiento por tick (verlet), ya convertido por applyCorr.
+    move: (delta, velPerTick) => {
       const oldVel = vSub(waistParticle.pos, waistParticle.prev);
       waistParticle.pos = vAdd(waistParticle.pos, delta);
-      waistParticle.prev = vSub(waistParticle.pos, vAdd(oldVel, velPerSec));
+      waistParticle.prev = vSub(waistParticle.pos, vAdd(oldVel, velPerTick));
     },
     mass: () => ropeTuning.waistEffectiveMass + richMass * 0.25,
   };
@@ -230,10 +236,10 @@ export function richEndpoint(
   void _ropeTuning;
   return {
     pos: () => vAdd(pelvis.pos, v3(0, offsetUp, 0)),
-    move: (delta, velPerSec) => {
+    move: (delta, velPerTick) => {
       const oldVel = vSub(pelvis.pos, pelvis.prev);
       pelvis.pos = vAdd(pelvis.pos, delta);
-      pelvis.prev = vSub(pelvis.pos, vAdd(oldVel, velPerSec));
+      pelvis.prev = vSub(pelvis.pos, vAdd(oldVel, velPerTick));
     },
     mass: () => pelvis.mass,
     harness: () => vAdd(pelvis.pos, v3(0, offsetUp, 0)),

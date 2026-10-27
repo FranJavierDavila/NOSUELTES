@@ -12,7 +12,7 @@ import { ContentRepository } from "../../src/game/content/repository";
 import { SherpaRig } from "../../src/game/sherpas/physics/sherpaRig";
 import { AnchorSystem } from "../../src/game/sherpas/physics/anchors";
 import { RopeSystem, sherpaEndpoint, richEndpoint } from "../../src/game/sherpas/physics/rope";
-import { RichManSim } from "../../src/game/sherpas/physics/richMan";
+import { RichManSim, RM } from "../../src/game/sherpas/physics/richMan";
 import { WallGenerator } from "../../src/game/sherpas/world/wallGenerator";
 import { P } from "../../src/game/physics/pbd/ragdoll";
 import { v3, vLen, vSub } from "../../src/game/physics/pbd/math";
@@ -54,7 +54,8 @@ const buildCoop = () => {
   const rope = new RopeSystem(data.tuning.rope, data.tuning.richMan);
   const wa = sherpaA.waist();
   const wb = sherpaB.waist();
-  const hang = v3((wa.x + wb.x) / 2, Math.min(wa.y, wb.y) - 1.15, wallFrontZ - 0.45);
+  // igual que match.ts: nace YA TENSO (cintura - segmentMax, clamp suelo).
+  const hang = v3((wa.x + wb.x) / 2, Math.max(Math.min(wa.y, wb.y) - data.tuning.rope.segmentMax, 0.55), wallFrontZ - 0.45);
   const rich = new RichManSim(data.tuning.richMan.mass, wallFrontZ, 0, hang, data.tuning.richMan.massTransitionSeconds);
   rope.reset(wa, wb, hang);
   return { gen, anchors, sherpaA, sherpaB, rope, rich, wallFrontZ, hang };
@@ -69,7 +70,7 @@ const stepAll = (c: ReturnType<typeof buildCoop>, dt: number): void => {
     dt,
     sherpaEndpoint(c.sherpaA.rig.particles[P.pelvisC], ropeT, c.rich.currentMass()),
     sherpaEndpoint(c.sherpaB.rig.particles[P.pelvisC], ropeT, c.rich.currentMass()),
-    richEndpoint(c.rich.bodies[0], 0.12, ropeT),
+    richEndpoint(c.rich.bodies[RM.pelvis], 0.12, ropeT),
     c.wallFrontZ,
   );
   c.anchors.update(dt);

@@ -173,16 +173,19 @@ export class WallGenerator {
     if (index === 0) {
       const s = g.start;
       const startDefs: { id: string; x: number; y: number }[] = [
-        { id: "start_hl", x: -0.55, y: s.yBaseM + 1.5 },
-        { id: "start_hr", x: 0.55, y: s.yBaseM + 1.5 },
-        { id: "start_fl", x: -0.35, y: s.yBaseM },
-        { id: "start_fr", x: 0.35, y: s.yBaseM },
+        // Alturas subidas (fix "ricachón en el suelo"): la cintura de arranque queda
+        // a ~3.15 m; con la cuerda de porteo (segmentMax 1.5) el ricachón cuelga
+        // tenso a ~1.5 m entre los dos sherpas, nunca en el suelo.
+        { id: "start_hl", x: -0.55, y: s.yBaseM + 3.4 },
+        { id: "start_hr", x: 0.55, y: s.yBaseM + 3.4 },
+        { id: "start_fl", x: -0.35, y: s.yBaseM + 2.4 },
+        { id: "start_fr", x: 0.35, y: s.yBaseM + 2.4 },
         // segundo sherpa (cooperativo, doc 3.1): mismo nivel, desplazado a la derecha
         // (dentro de maxStartSeparationM + 0.4 entre el hand_l de A y el hand_r de B).
-        { id: "start2_hl", x: 1.35, y: s.yBaseM + 1.5 },
-        { id: "start2_hr", x: 2.0, y: s.yBaseM + 1.5 },
-        { id: "start2_fl", x: 1.55, y: s.yBaseM },
-        { id: "start2_fr", x: 1.85, y: s.yBaseM },
+        { id: "start2_hl", x: 1.35, y: s.yBaseM + 3.4 },
+        { id: "start2_hr", x: 2.0, y: s.yBaseM + 3.4 },
+        { id: "start2_fl", x: 1.55, y: s.yBaseM + 2.4 },
+        { id: "start2_fr", x: 1.85, y: s.yBaseM + 2.4 },
       ];
       for (const d of startDefs) {
         holds.push(this.makeHold(d.id, d.x, d.y, "rock_firm", index, false));

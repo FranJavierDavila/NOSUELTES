@@ -43,10 +43,24 @@
     "anchorCracked": "Anchor cracked ({type})",
     "anchorBroken": "Anchor broke!",
     "wetAnchors": "Anchors below got wet!",
-    "gripLocked": "Limb locked {s}s"
+    "gripLocked": "Limb locked {s}s",
+    "howToTitle": "How to climb",
+    "howToSub": "P1: move your ORANGE ring with WASD onto a hold, press 1-4 to release/grab that limb · P2: BLUE ring with arrows and I/O/K/L · H = full help"
   },
-  "limb": { "hand_l": "L.Hand", "hand_r": "R.Hand", "foot_l": "L.Foot", "foot_r": "R.Foot" },
-  "anchor": { "roca_firme": "firm rock", "roca_suelta": "loose rock", "hielo": "ice", "hielo_fino": "thin ice", "nieve": "snow", "hielo_de_pis": "pee ice" },
+  "limb": {
+    "hand_l": "L.Hand",
+    "hand_r": "R.Hand",
+    "foot_l": "L.Foot",
+    "foot_r": "R.Foot"
+  },
+  "anchor": {
+    "roca_firme": "firm rock",
+    "roca_suelta": "loose rock",
+    "hielo": "ice",
+    "hielo_fino": "thin ice",
+    "nieve": "snow",
+    "hielo_de_pis": "pee ice"
+  },
   "richman_state": {
     "colgando": "Hanging",
     "dormitando": "Dozing",
@@ -70,7 +84,10 @@
     "reduceShake": "Reduce camera shake",
     "subtitles": "Subtitles always on"
   },
-  "save": { "saved": "Progress saved at {camp}", "found": "Saved ascent found" },
+  "save": {
+    "saved": "Progress saved at {camp}",
+    "found": "Saved ascent found"
+  },
   "finale": {
     "statsTitle": "Ascent summary",
     "time": "Total time",
@@ -78,5 +95,14 @@
     "broken": "Broken anchors",
     "propina": "Final tip",
     "again": "Climb again"
+  },
+  "help": {
+    "title": "How to play",
+    "goal": "Goal: BOTH sherpas climb Everest carrying the rich man, who hangs from the rope between them. Reach the summit together (5301 m).",
+    "step1": "1) AIM: move your color ring across the wall onto the hold you want. P1 = orange (WASD) · P2 = blue (arrows).",
+    "step2": "2) RELEASE AND GRAB: press that limb's key and it will fly to the aimed hold by itself. P1: 1 left hand · 2 right hand · 3 left foot · 4 right foot. P2: I/O hands · K/L feet. The same key toggles release/grab.",
+    "step3": "3) CLIMB: your body follows your anchors. Move one hand up, then a foot, then the other hand… like real climbing. Never release all 4 at once or you fall.",
+    "step4": "4) TEAMWORK: the rich man is heavy and pulls the rope. If one sherpa falls, the other holds on: move in pairs of holds and rest with all 4 limbs anchored.",
+    "extra": "R shoo birds · Space pause · C recenter camera · H opens/closes this help."
   }
 }

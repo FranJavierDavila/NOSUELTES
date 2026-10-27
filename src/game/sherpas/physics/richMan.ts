@@ -118,6 +118,8 @@ export class RichManSim {
     for (const b of this.bodies) {
       // física de juego: amortiguación fuerte + techo de velocidad (imposible que vuele).
       let vel = vScale(vSub(b.pos, b.prev), 0.975);
+      // en contacto con el suelo: frena rápido (nada de retorcerse por el suelo).
+      if (b.pos.y < this.floorY + b.radius + 0.06) vel = vScale(vel, 0.82);
       const vAbs = vLen(vel);
       if (vAbs > 0.14) vel = vScale(vel, 0.14 / vAbs); // ≤ ~8.4 m/s
       b.prev = vClone(b.pos);
