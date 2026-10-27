@@ -21,6 +21,8 @@ import { spawnTrash, stepTrash, spawnUrine, stepUrine, type TrashProjectile, typ
 import { BalanceMonitor, TeamFallWatcher, PropinaMeter, newStats } from "./coop";
 import { WallGenerator, type CampZone } from "../world/wallGenerator";
 import { CampSystem, saveAscent, type AscentStats, type SavedAscent } from "../world/camps";
+import { PointerDrag } from "../input/drag";
+import { Matrix } from "@babylonjs/core/Maths/math.vector";
 import type { SherpaScene } from "../presentation/scene";
 import type { SherpaHud, HudStartChoice, HudTickState } from "../presentation/hud";
 import type { SherpaAudio } from "../presentation/audio";
@@ -87,6 +89,13 @@ export class SherpasMatch {
   private pendingBubbles: { text: string; until: number }[] = [];
   private wallFrontZ: number;
   readonly wallWidthM: number;
+  // arrastre de extremidades con puntero (esquema del desarrollo anterior)
+  private pointerDrag: PointerDrag;
+  private dragPlayer: 0 | 1 | null = null;
+  private dragLimb: Limb | null = null;
+  private dragCursor: V3 | null = null;
+  /** el anillo de apuntado de teclado solo se muestra si se usó hace poco. */
+  private kbAimUntil: [number, number] = [0, 0];
 
   constructor(deps: SherpasMatchDeps) {
     this.d = deps;
@@ -175,10 +184,20 @@ export class SherpasMatch {
     this.rope.reset(wa, wb, hang0);
 
     this.d.hud.bindPlayers(
-      { p1: "WASD+1-4", p2: "←↑↓→+I/O/K/L" },
+      { p1: "ratón: pulsa y arrastra", p2: "teclado opcional" },
       ["hand_l", "hand_r", "foot_l", "foot_r"],
     );
     this.wireEvents();
+    // arrastre de extremidades (esquema del prototipo: pulsar extremidad →
+    // arrastrar hasta presa con imán → soltar para fijar si se llega).
+    const canvas = this.d.scene.engine.getRenderingCanvas();
+    this.pointerDrag = new PointerDrag({
+      down: (x, y) => this.onDragDown(x, y),
+      move: (x, y) => this.onDragMove(x, y),
+      up: () => this.onDragUp(),
+      cancel: () => this.onDragUp(),
+    });
+    if (canvas) this.pointerDrag.attach(canvas);
     // mini-tutorial al empezar (doc 9: legibilidad): cómo se sube, en 1 línea.
     this.d.hud.banner(this.d.hud.t("hud.howToTitle"), this.d.hud.t("hud.howToSub"), 10);
 
@@ -222,12 +241,18 @@ export class SherpasMatch {
     void dt;
     for (const intent of intents) {
       const rig = this.sherpas[intent.playerId];
-      if (intent.aimDelta.x || intent.aimDelta.y) rig.nudgeAim(intent.aimDelta.x, intent.aimDelta.y);
+      if (intent.aimDelta.x || intent.aimDelta.y) {
+        rig.nudgeAim(intent.aimDelta.x, intent.aimDelta.y);
+        this.kbAimUntil[intent.playerId] = this.simTime + 4;
+      }
       // apuntado acotado alrededor del escalador (legibilidad, doc 9).
       const waist = rig.waist();
       rig.aim.x = Math.min(this.wallWidthM / 2 - 0.2, Math.max(-this.wallWidthM / 2 + 0.2, rig.aim.x));
       rig.aim.y = Math.min(waist.y + 2.6, Math.max(Math.max(0.3, waist.y - 1.1), rig.aim.y));
-      for (const limb of intent.gripToggles) rig.toggleGrip(limb);
+      for (const limb of intent.gripToggles) {
+        rig.toggleGrip(limb);
+        this.kbAimUntil[intent.playerId] = this.simTime + 4;
+      }
       if (intent.shoo) this.doShoo(intent.playerId);
     }
   }
@@ -241,6 +266,63 @@ export class SherpasMatch {
       const st = this.sherpas[player].states.get("hand_r" as Limb)!;
       st.fatigue = Math.min(1, st.fatigue + 0.05);
     }
+  }
+
+  // ---------- arrastre de extremidades (ratón/táctil) ----------
+
+  /** Punto del plano de pared bajo el puntero (raycast analítico cámara→pared). */
+  private wallPointFromPointer(xCss: number, yCss: number): V3 | null {
+    const s = this.d.scene;
+    const ray = s.scene.createPickingRay(xCss, yCss, Matrix.Identity(), s.camera);
+    const o = ray.origin;
+    const dir = ray.direction;
+    if (Math.abs(dir.z) < 1e-4) return null;
+    const t = (this.wallFrontZ - o.z) / dir.z;
+    if (t <= 0) return null;
+    return v3(o.x + dir.x * t, o.y + dir.y * t, this.wallFrontZ);
+  }
+
+  private onDragDown(xCss: number, yCss: number): void {
+    if (this.frozen || this.paused) return;
+    const p = this.wallPointFromPointer(xCss, yCss);
+    if (!p) return;
+    // candidatas: extremidad más cercana al clic en el plano de pared
+    // (radios generosos en metros de escalada, no píxeles: 0,55 manos / 0,7 pies).
+    const cands: { player: 0 | 1; limb: Limb; d: number }[] = [];
+    for (const pi of [0, 1] as const) {
+      for (const limb of LIMBS) {
+        const lp = this.sherpas[pi].limbPos(limb);
+        const d = Math.hypot(lp.x - p.x, lp.y - p.y);
+        if (d <= (limb.startsWith("hand") ? 0.55 : 0.7)) cands.push({ player: pi, limb, d });
+      }
+    }
+    cands.sort((a, b) => a.d - b.d);
+    for (const c of cands) {
+      if (this.sherpas[c.player].beginDrag(c.limb)) {
+        this.dragPlayer = c.player;
+        this.dragLimb = c.limb;
+        this.dragCursor = p;
+        this.sherpas[c.player].moveDrag(p);
+        return;
+      }
+    }
+  }
+
+  private onDragMove(xCss: number, yCss: number): void {
+    if (this.dragLimb === null || this.dragPlayer === null) return;
+    const p = this.wallPointFromPointer(xCss, yCss);
+    if (!p) return;
+    this.dragCursor = p;
+    this.sherpas[this.dragPlayer].moveDrag(p);
+  }
+
+  private onDragUp(): void {
+    if (this.dragLimb !== null && this.dragPlayer !== null) {
+      this.sherpas[this.dragPlayer].endDrag();
+    }
+    this.dragPlayer = null;
+    this.dragLimb = null;
+    this.dragCursor = null;
   }
 
   // ---------- tick de simulación (doc 3.2) ----------
@@ -682,9 +764,13 @@ export class SherpasMatch {
     const s = this.d.scene;
     s.syncSherpa(0, this.sherpas[0].solver, this.alpha);
     s.syncSherpa(1, this.sherpas[1].solver, this.alpha);
-    // cursores de apuntado (J1 naranja, J2 azul): sin ellos el ascenso es ilegible.
-    s.syncAim(0, this.sherpas[0].aim, this.wallFrontZ);
-    s.syncAim(1, this.sherpas[1].aim, this.wallFrontZ);
+    // cursor de arrastre + aro verde del imán (esquema ratón)…
+    const dragging = this.dragLimb !== null && this.dragPlayer !== null;
+    const magnetPos = dragging && this.dragPlayer !== null ? this.sherpas[this.dragPlayer].dragMagnetPos() : null;
+    s.syncDrag(dragging ? this.dragPlayer : null, this.dragCursor, magnetPos);
+    // …y anillos de apuntado de teclado solo si alguien usó las teclas hace poco.
+    s.syncAim(0, !dragging && this.simTime < this.kbAimUntil[0] ? this.sherpas[0].aim : null, this.wallFrontZ);
+    s.syncAim(1, !dragging && this.simTime < this.kbAimUntil[1] ? this.sherpas[1].aim : null, this.wallFrontZ);
     if (this.ropeState) s.syncRope(this.ropeState.nodesA, this.ropeState.nodesB);
     s.syncRichMan(this.rich, this.alpha);
     const t0 = this.trash[0];
@@ -746,8 +832,29 @@ export class SherpasMatch {
       `${this.d.scene.backend} · ${fps} fps · tick ${this.tickMs.toFixed(1)} ms\n` +
       `T A:${this.sherpas[0].maxTension().toFixed(2)} B:${this.sherpas[1].maxTension().toFixed(2)} · cuerda ${Math.round(this.balance.snapshot.tensionA)}N/${Math.round(this.balance.snapshot.tensionB)}N\n` +
       `ricachón: ${st.richState} · ${Math.round(this.rich.currentMass())} kg\n` +
-      `A(${waD.x.toFixed(2)},${waD.y.toFixed(2)}) B(${wbD.x.toFixed(2)},${wbD.y.toFixed(2)}) R(${rD.x.toFixed(2)},${rD.y.toFixed(2)}) anclas ${this.sherpas[0].anchorsCount()}+${this.sherpas[1].anchorsCount()}`,
+      `A(${waD.x.toFixed(2)},${waD.y.toFixed(2)}) B(${wbD.x.toFixed(2)},${wbD.y.toFixed(2)}) R(${rD.x.toFixed(2)},${rD.y.toFixed(2)}) anclas ${this.sherpas[0].anchorsCount()}+${this.sherpas[1].anchorsCount()}` +
+      (this.dragLimb ? ` · arrastre ${this.dragLimb}` : ""),
     );
+    // sonda E2E (DOM compartido: los eval del agente no ven globals de la página).
+    const limbsProbe = ([0, 1] as const).flatMap((p) => LIMBS.map((l) => {
+      const w = this.sherpas[p].limbPos(l);
+      const sp = this.d.scene.projectToScreenCss(w);
+      return { p, l, sx: Math.round(sp.x * 10) / 10, sy: Math.round(sp.y * 10) / 10, wx: Math.round(w.x * 100) / 100, wy: Math.round(w.y * 100) / 100 };
+    }));
+    const holdsProbe: { id: string; sx: number; sy: number; wx: number; wy: number }[] = [];
+    for (const h of this.anchors.holds.values()) {
+      if (Math.abs(h.pos.y - (waD.y + wbD.y) / 2) > 3 || Math.abs(h.pos.x) > 3.2) continue;
+      const sp = this.d.scene.projectToScreenCss(h.pos);
+      holdsProbe.push({ id: h.id, sx: Math.round(sp.x * 10) / 10, sy: Math.round(sp.y * 10) / 10, wx: Math.round(h.pos.x * 100) / 100, wy: Math.round(h.pos.y * 100) / 100 });
+    }
+    const magnetId = this.dragPlayer !== null ? this.sherpas[this.dragPlayer].dragMagnetId() : null;
+    this.d.hud.probe({
+      a: { x: Math.round(waD.x * 100) / 100, y: Math.round(waD.y * 100) / 100 },
+      b: { x: Math.round(wbD.x * 100) / 100, y: Math.round(wbD.y * 100) / 100 },
+      limbs: limbsProbe,
+      holds: holdsProbe,
+      drag: this.dragLimb ? { p: this.dragPlayer, l: this.dragLimb, magnet: magnetId } : null,
+    });
   }
 
   private phaseProgress(): number {
@@ -773,6 +880,7 @@ export class SherpasMatch {
 
   dispose(): void {
     cancelAnimationFrame(this.raf);
+    this.pointerDrag.dispose();
     for (const u of this.unsubscribes) u();
     this.unsubscribes = [];
     this.d.bus.clear();

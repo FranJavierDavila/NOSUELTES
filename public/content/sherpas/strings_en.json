@@ -45,7 +45,7 @@
     "wetAnchors": "Anchors below got wet!",
     "gripLocked": "Limb locked {s}s",
     "howToTitle": "How to climb",
-    "howToSub": "P1: move your ORANGE ring with WASD onto a hold, press 1-4 to release/grab that limb · P2: BLUE ring with arrows and I/O/K/L · H = full help"
+    "howToSub": "PRESS a hand or foot and DRAG it: nearby holds magnetize it (green ring) and it fixes on release if you reach. Feet first, then hands · optional keyboard · H = help"
   },
   "limb": {
     "hand_l": "L.Hand",
@@ -71,7 +71,7 @@
     "pataleando": "Kicking"
   },
   "keys": {
-    "p1": "P1: WASD aim · 1-4 grip hands/feet · R shoo",
+    "p1": "MOUSE: press a limb and drag it onto a hold (green ring) · release to fix it",
     "p2": "P2: Arrows aim · I/O hands · K/L feet · U shoo · or gamepad: stick + A/B/X/Y + RB",
     "shared": "Space pause · H help · C recenter · F3 debug"
   },
@@ -99,9 +99,9 @@
   "help": {
     "title": "How to play",
     "goal": "Goal: BOTH sherpas climb Everest carrying the rich man, who hangs from the rope between them. Reach the summit together (5301 m).",
-    "step1": "1) AIM: move your color ring across the wall onto the hold you want. P1 = orange (WASD) · P2 = blue (arrows).",
-    "step2": "2) RELEASE AND GRAB: press that limb's key and it will fly to the aimed hold by itself. P1: 1 left hand · 2 right hand · 3 left foot · 4 right foot. P2: I/O hands · K/L feet. The same key toggles release/grab.",
-    "step3": "3) CLIMB: your body follows your anchors. Move one hand up, then a foot, then the other hand… like real climbing. Never release all 4 at once or you fall.",
+    "step1": "1) GRAB: click a hand or foot of either sherpa (orange or blue) and hold. The limb is now yours and lets go of its hold.",
+    "step2": "2) DRAG: move the pointer across the wall. Nearby holds act like MAGNETS: a green ring appears when a hold can capture the limb. Only holds you can reach will catch it.",
+    "step3": "3) CLIMB: release the click over the hold and the limb flies to it. Alternate feet and hands (feet first, then hands) and never let go of all 4 at once or you will fall.",
     "step4": "4) TEAMWORK: the rich man is heavy and pulls the rope. If one sherpa falls, the other holds on: move in pairs of holds and rest with all 4 limbs anchored.",
     "extra": "R shoo birds · Space pause · C recenter camera · H opens/closes this help."
   }

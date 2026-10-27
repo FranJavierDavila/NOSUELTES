@@ -435,6 +435,12 @@ export class SherpaHud {
   get wantsDisablePee(): boolean { return this.disablePee; }
 
   debug(text: string): void { this.el.debug!.textContent = text; }
+
+  /** Sonda E2E: estado compacto en el DOM (los eval del agente corren en mundo
+   *  aislado y no ven globals de la página; el DOM sí es compartido). */
+  probe(data: unknown): void {
+    try { this.el.debug!.setAttribute("data-probe", JSON.stringify(data)); } catch { /* nunca crítico */ }
+  }
 }
 
 const SHERPA_HEX = ["#d97b2f", "#2f9bd9"];

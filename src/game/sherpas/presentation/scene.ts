@@ -74,6 +74,8 @@ export class SherpaScene {
   private urineMeshes: Mesh[] = [];
   private birdMeshes = new Map<number, { body: Mesh; shadow: Mesh }>();
   private aimMarkers: (Mesh | null)[] = [null, null];
+  private dragRing: Mesh | null = null;
+  private magnetRing: Mesh | null = null;
   private fxTexture: Texture;
   private snowSystem: ParticleSystem;
   private disposed = false;
@@ -506,6 +508,38 @@ export class SherpaScene {
     m.position.set(aim.x, aim.y, wallFrontZ - 0.1);
     const pulse = 1 + Math.sin(performance.now() / 280) * 0.1;
     m.scaling.setAll(pulse);
+  }
+
+  /** Cursor de arrastre (anillo del color del sherpa cuya extremidad llevas)
+   *  + aro VERDE sobre la presa imantada ("los anclajes actúan como imanes").
+   *  player/cursor null → todo oculto (esquema teclado o sin arrastre). */
+  syncDrag(player: 0 | 1 | null, cursor: V3 | null, magnet: V3 | null): void {
+    const makeRing = (name: string, hex: string, diameter: number): Mesh => {
+      const m = MeshBuilder.CreateTorus(name, { diameter, thickness: 0.045, tessellation: 24 }, this.scene);
+      const mm = mat(this.scene, `${name}M`, hex);
+      mm.emissiveColor = Color3.FromHexString(hex);
+      mm.disableLighting = true; // autoiluminado: visible sobre roca, nieve y sombra
+      m.material = mm;
+      m.rotation.x = Math.PI / 2;
+      m.isPickable = false;
+      return m;
+    };
+    if (player === null || !cursor) {
+      if (this.dragRing) this.dragRing.isVisible = false;
+    } else {
+      if (!this.dragRing) this.dragRing = makeRing("dragRing", player === 0 ? "#ff8c3a" : "#3aa0ff", 0.44);
+      this.dragRing.isVisible = true;
+      this.dragRing.position.set(cursor.x, cursor.y, cursor.z);
+      this.dragRing.scaling.setAll(1 + Math.sin(performance.now() / 240) * 0.08);
+    }
+    if (!magnet) {
+      if (this.magnetRing) this.magnetRing.isVisible = false;
+    } else {
+      if (!this.magnetRing) this.magnetRing = makeRing("magnetRing", "#5ad46a", 0.52);
+      this.magnetRing.isVisible = true;
+      this.magnetRing.position.set(magnet.x, magnet.y, magnet.z - 0.1);
+      this.magnetRing.scaling.setAll(1 + Math.sin(performance.now() / 190) * 0.12);
+    }
   }
 
   // ---------- utilidades ----------

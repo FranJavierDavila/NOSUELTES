@@ -536,3 +536,26 @@ Work Log:
 
 Stage Summary:
 - Los 3 problemas del jugador resueltos con el MISMO gesto: (1) carga lenta → build de producción con fetches paralelos (era dev + código viejo); (2) ricachón caótico en el suelo → build con presas de arranque subidas (cuelga a 1.44 m, medido) + la cola del cerebro ya no agita en el suelo; (3) control → tutorial integrado "Cómo se sube" + explicación detallada en el chat (apuntar con anillo, soltar/agarrar por extremidad, H = ayuda).
+
+---
+Task ID: 26
+Agent: Z.ai (principal)
+Task: Petición del jugador — control por arrastre como en el desarrollo anterior ("Seleccionas la extremidad manos o pies, y la arrastras hasta un anclaje... los anclajes actúan como imanes... Tal como está ahora no es posible subir, solo podemos bajar")
+
+Work Log:
+- DIAGNÓSTICO del "solo podemos bajar" (demostración matemática): colgado de las manos, el hombro queda a hand.y − 1.15 + 0.28 = hand.y − 0.87 y el alcance se medía SOLO desde la raíz (hombro/cadera): 0.75·reachScale + 0.05 = 0.80 m → presa más alta alcanzable = hand.y − 0.07. Era matemáticamente IMPOSIBLE agarrar una presa por encima de la actual. El esquema teclado (anillo WASD + teclas 1-4) además ocultaba esta regla al jugador.
+- NUEVO ESQUEMA DE CONTROL (ratón/táctil, como el prototipo NO SUELTES): pulsas una mano o pie de CUALQUIER sherpa → la extremidad se suelta (si estaba anclada) y te sigue; las presas cercanas actúan como IMANES (radio 0.55 m en plano de pared, solo presas libres y alcanzables; aro verde pulsante sobre la presa imantada); al soltar el clic la extremidad vuela a la presa imantada (viaje determinista, SIEMPRE llega); si no hay imán, queda colgando libre.
+- sherpaRig.ts: API beginDrag/moveDrag/endDrag + dragMagnetId/dragMagnetPos; canReach() con regla O (desde la raíz O desde la punta ×1.25 — "brazos de juego" falseados: ESTO es lo que permite subir, presa alcanzable hasta hand.y + 0.95 colgado); findHoldFor (teclado) también usa canReach; la extremidad arrastrada sigue al puntero (ganancia 26/s) o es SUCCIONADA hacia la presa imantada (20/s); fuerzaRelease cancela arrastres; moveDrag acota a bounds.
+- input/drag.ts (NUEVO): PointerDrag — Pointer Events → coords canvas (mouse botón 0 + táctil/lápiz, setPointerCapture, move/up en window para arrastrar fuera del canvas, touch-action none).
+- match.ts: wallPointFromPointer (raycast analítico cámara→plano de pared con createPickingRay); onDragDown elige la extremidad más cercana al clic en metros de escalada (0.55 manos / 0.7 pies, sin píxeles: independiente de resolución) y prueba candidatas por distancia; syncDrag en renderTick; anillos de apuntado de teclado SOLO si se usaron teclas en los últimos 4 s (kbAimUntil); dispose libera PointerDrag.
+- scene.ts: syncDrag(player|null, cursor, magnet) — anillo cursor color del sherpa + aro verde (#5ad46a) sobre la presa imantada, autoiluminados y con pulso.
+- hud.ts: probe() E2E — data-probe JSON en el div debug (limbs con pos mundo+pantalla %, holds cercanos, estado drag). Motivo: los eval del agente corren en mundo aislado y no ven __SHERPAS_DEBUG; el DOM sí es compartido.
+- CONTENIDO: strings ES/EN reescritas (howToSub: "PULSA una mano o pie y ARRASTRALO: las presas cercanas lo imantan (aro verde)...", help.step1-4 con el flujo ratón, keys.p1); bindPlayers ahora "ratón: pulsa y arrastra" / "teclado opcional". El teclado (WASD+1-4, flechas+I/O/K/L, mando) sigue funcionando como esquema secundario intacto.
+- VERIFICACIÓN E2E (build standalone -Wt7r7j7WmRo5b_WAaEst, deploy :3000 daemonize): (1) arrastre sintético hand_r→h10 0.46 m ARRIBA: probe mostró magnet:"h10" durante el arrastre y tras soltar hand_r anclado en (0.28, 4.26) ✓; (2) ciclo completo pies→manos ×8 (scripts/e2e-climb-drag.js): cintura A 2.94 → 3.89 (pico) → 3.69 neto +0.75 m con B quieto ✓; (3) captura: sherpa naranja visiblemente más alto, HUD "SHERPA 1 ARRASTRA" ✓; (4) iframe cross-origin (8899→3000): partida + banner nuevo ✓; (5) ARRASTRE CON RATÓN REAL (trusted, agent-browser mouse) dentro del iframe — el entorno exacto del preview: brazo del sherpa estirado a presa superior, cintura A 3.20 (+0.2), cuerda pasa a holgura ✓ (scripts/e2e-iframe-pre/post.png).
+- CALIDAD: tsc 15 = baseline exacto (cero nuevos, 0 en sherpas), eslint limpio, vitest 207/212 (5 = selfcollision preexistente), 57/57 sherpas. Commit en main.
+- NOTA: el generador espacia presas ~0.74 m (verticalBodySpan·0.55): con la regla punta (×1.25 → 1.0 m manos) cada fila es alcanzable directo. La sonda data-probe queda como instrumento E2E permanente (10 Hz, ligera).
+
+Stage Summary:
+- SUBIR ya es posible y DESCUBRIBLE: el jugador pulsa una extremidad, la arrastra y los imanes hacen el resto; la regla de alcance desde la punta elimina el techo matemático que hacía imposible agarrar más alto.
+- Verificado con arrastre real (trusted) dentro del iframe cross-origin del preview: el entorno exacto del usuario funciona.
+- El teclado queda como esquema opcional sin regresiones (57/57 tests).

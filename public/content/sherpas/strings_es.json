@@ -45,7 +45,7 @@
     "wetAnchors": "¡Anclajes mojados abajo!",
     "gripLocked": "Extremidad bloqueada {s}s",
     "howToTitle": "Cómo se sube",
-    "howToSub": "J1: mueve tu anillo NARANJA con WASD hasta una presa y pulsa 1-4 para soltar/agarrar esa extremidad · J2: anillo AZUL con flechas e I/O/K/L · H = ayuda completa"
+    "howToSub": "PULSA una mano o pie y ARRASTRALO: las presas cercanas lo imantan (aro verde) y al soltar se fija, si alcanzas. Sube primero los pies y luego las manos · teclado opcional · H = ayuda"
   },
   "limb": {
     "hand_l": "M.Izq",
@@ -71,7 +71,7 @@
     "pataleando": "Pataleando"
   },
   "keys": {
-    "p1": "J1: WASD apuntar · 1-4 agarrar manos/pies · R espantar",
+    "p1": "RATÓN: pulsa una extremidad y arrástrala hasta una presa (imán verde) · suéltala para fijarla",
     "p2": "J2: Flechas apuntar · I/O manos · K/L pies · U espantar · o mando: stick + A/B/X/Y + RB",
     "shared": "Espacio pausa · H ayuda · C reencuadrar · F3 depuración"
   },
@@ -99,9 +99,9 @@
   "help": {
     "title": "Cómo se juega",
     "goal": "Objetivo: los DOS sherpas suben el Everest llevando el ricachón, colgado de la cuerda entre ellos. Llegad juntos a la cima (5301 m).",
-    "step1": "1) APUNTA: mueve el anillo de tu color por la pared hasta la presa que quieras. J1 = naranja (WASD) · J2 = azul (flechas).",
-    "step2": "2) SUELTA Y AGARRA: pulsa la tecla de esa extremidad y volará a la presa apuntada sola. J1: 1 mano izq · 2 mano der · 3 pie izq · 4 pie der. J2: I/O manos · K/L pies. La misma tecla suelta y agarra (alternar).",
-    "step3": "3) SUBE: tu cuerpo sigue a tus anclajes. Sube primero una mano, luego el pie, luego la otra mano… como escalando de verdad. Nunca sueltes las 4 a la vez o caeréis.",
+    "step1": "1) AGARRA: pulsa sobre una mano o pie de cualquier sherpa (naranja o azul) y manten el clic. La extremidad queda en tu poder y se suelta de su presa.",
+    "step2": "2) ARRASTRA: mueve el puntero por la pared. Las presas cercanas actúan como IMANES: verás un aro verde cuando una presa quiera capturar la extremidad. Solo se fijan presas que puedes alcanzar.",
+    "step3": "3) SUBE: suelta el clic sobre la presa y la extremidad vuela hasta ella. Alterna pies y manos (primero los pies, luego las manos) y nunca sueltes las 4 a la vez o caeréis.",
     "step4": "4) EN EQUIPO: el ricachón pesa y tira de la cuerda. Si un sherpa cae, el otro aguanta: id por parejas de presas y descansad con las 4 extremidades ancladas.",
     "extra": "R espanta pájaros · Espacio pausa · C reencuadra cámara · H abre/cierra esta ayuda."
   }

@@ -59,6 +59,14 @@ const DYN_CATCH_GAIN = 1.4;     // N por (m/s) de frenado
 const DYN_CATCH_CAP = 1.5;      // techo del término dinámico × peso
 const LOAD_HARD_CAP = 2.5;      // techo duro de la carga por extremidad × peso
 
+// --- arrastre con puntero (petición del jugador: "seleccionas la extremidad y
+// la arrastras hasta un anclaje; los anclajes actúan como imanes") ---
+const MAGNET_R = 0.55;          // radio de imán de presas (m, plano de pared)
+const TIP_REACH_MULT = 1.25;    // alcance también desde la punta (brazos de juego)
+const DRAG_FOLLOW = 26;         // ganancia de seguimiento del puntero (1/s)
+const DRAG_MAGNET_PULL = 20;    // ganancia de succión hacia la presa imantada (1/s)
+const DRAG_Z_OFF = 0.16;        // separación de la pared mientras arrastra (m)
+
 export interface LimbGripState {
   limb: Limb;
   anchored: boolean;
@@ -131,6 +139,10 @@ export class SherpaRig {
   private lastResult: StepResult;
   private fallStartY: number | null = null;
   private lastDropM = 0;
+  /** extremidad arrastrada por el puntero (esquema ratón, sustituye al anillo). */
+  dragging: Limb | null = null;
+  private dragPos: V3 | null = null;
+  private dragHold: HoldInstance | null = null;
 
   constructor(deps: SherpaDeps, startHolds: { hand_l: HoldInstance; hand_r: HoldInstance; foot_l?: HoldInstance; foot_r?: HoldInstance }) {
     this.deps = deps;
@@ -200,6 +212,17 @@ export class SherpaRig {
     return base * this.deps.character.physical.reachScale + this.deps.tuning.reachMarginM;
   }
 
+  /** ¿Puede la extremidad alcanzar ese punto? Desde su raíz (hombro/cadera) O
+   *  desde su punta actual. La segunda es la que hace SUBIR: colgado de las
+   *  manos el hombro queda 0,87 m por debajo de la presa y con el alcance solo
+   *  desde la raíz era matemáticamente imposible agarrar nada más alto
+   *  ("solo podemos bajar"). Brazos de juego: falseado a propósito. */
+  canReach(limb: Limb, pos: V3): boolean {
+    const reach = this.reachOf(limb);
+    if (vLen(vSub(pos, this.rig.particles[CHAIN_ROOT[limb]].pos)) <= reach) return true;
+    return vLen(vSub(pos, this.limbPt[limb])) <= reach * TIP_REACH_MULT;
+  }
+
   /** Busca el mejor hold libre para la extremidad cerca del apuntado y dentro del alcance. */
   private findHoldFor(limb: Limb): HoldInstance | null {
     const root = this.rig.particles[CHAIN_ROOT[limb]].pos;
@@ -208,14 +231,85 @@ export class SherpaRig {
     let bestScore = Infinity;
     for (const hold of this.deps.anchorSystem.holds.values()) {
       if (this.deps.anchorSystem.anchorAtHold(hold.id)) continue;
+      if (!this.canReach(limb, hold.pos)) continue;
       const dRoot = vLen(vSub(hold.pos, root));
-      if (dRoot > reach) continue;
       const dAim = Math.hypot(hold.pos.x - this.aim.x, hold.pos.y - this.aim.y);
       const score = dAim + dRoot * 0.35;
       if (score < bestScore) { bestScore = score; best = hold; }
     }
     return best;
   }
+
+  // ---------- arrastre con puntero (ratón/táctil) ----------
+
+  /** Empieza a arrastrar una extremidad: la suelta de su presa (si estaba) y
+   *  pasa a seguir al puntero. Devuelve false si está bloqueada (re-agarre). */
+  beginDrag(limb: Limb): boolean {
+    const st = this.states.get(limb)!;
+    if (st.lockedFor > 0) return false;
+    if (st.traveling) this.cancelTravel(limb);
+    if (st.anchored) {
+      const anchor = this.deps.anchorSystem.anchorOf(this.player, limb);
+      if (anchor) this.deps.anchorSystem.release(anchor);
+      st.anchored = false;
+      st.holdId = null;
+      st.tension = 0;
+      st.overloadTimer = 0;
+    }
+    this.gripWanted[limb] = false;
+    this.dragging = limb;
+    this.dragPos = vClone(this.limbPt[limb]);
+    this.dragHold = null;
+    this.fallStartY = null;
+    return true;
+  }
+
+  /** Puntero movido (punto del plano de pared): fija el imán si hay presa
+   *  libre y alcanzable cerca. Es la "ayuda de posicionamiento" pedida. */
+  moveDrag(p: V3): void {
+    const limb = this.dragging;
+    if (!limb) return;
+    const b = this.deps.bounds;
+    this.dragPos = v3(
+      Math.min(b.maxX, Math.max(b.minX, p.x)),
+      Math.min(b.maxY, Math.max(Math.max(0.25, b.minY), p.y)),
+      this.deps.wallFrontZ - DRAG_Z_OFF,
+    );
+    let best: HoldInstance | null = null;
+    let bestD = MAGNET_R;
+    for (const hold of this.deps.anchorSystem.holds.values()) {
+      if (this.deps.anchorSystem.anchorAtHold(hold.id)) continue;
+      const d = Math.hypot(hold.pos.x - p.x, hold.pos.y - p.y);
+      if (d < bestD && this.canReach(limb, hold.pos)) { best = hold; bestD = d; }
+    }
+    this.dragHold = best;
+  }
+
+  /** Suelta el botón: si hay imán, la extremidad vuela a esa presa (viaje
+   *  determinista: SIEMPRE llega). Si no, queda colgando libre. */
+  endDrag(): { limb: Limb; hold: HoldInstance | null } {
+    const limb = this.dragging;
+    this.dragging = null;
+    const hold = this.dragHold;
+    const pos = this.dragPos;
+    this.dragHold = null;
+    this.dragPos = null;
+    if (!limb) return { limb: "hand_r", hold: null };
+    if (hold && !this.deps.anchorSystem.anchorAtHold(hold.id) && this.canReach(limb, hold.pos)) {
+      // apunta también el apuntado de teclado: si el viaje falla (presa muerta),
+      // el re-intento del esquema teclado busca cerca de un sitio sensato.
+      this.aim = v3(hold.pos.x, hold.pos.y, this.aim.z);
+      this.gripWanted[limb] = true;
+      this.startTravel(limb, hold);
+      return { limb, hold };
+    }
+    void pos;
+    return { limb, hold: null };
+  }
+
+  /** Presa imantada ahora mismo (para el aro verde de la escena). */
+  dragMagnetId(): string | null { return this.dragHold?.id ?? null; }
+  dragMagnetPos(): V3 | null { return this.dragHold ? vClone(this.dragHold.pos) : null; }
 
   /** Viaje determinista: la extremidad SIEMPRE llega (control total del jugador). */
   private startTravel(limb: Limb, hold: HoldInstance): void {
@@ -242,6 +336,8 @@ export class SherpaRig {
 
   forceRelease(limb: Limb, lockSeconds: number, cause: ReleaseCause): void {
     void cause;
+    // si el jugador estaba arrastrando esta extremidad, el arrastre termina.
+    if (this.dragging === limb) { this.dragging = null; this.dragPos = null; this.dragHold = null; }
     const st = this.states.get(limb)!;
     if (st.anchored) {
       const anchor = this.deps.anchorSystem.anchorOf(this.player, limb);
@@ -274,10 +370,12 @@ export class SherpaRig {
     const t = this.deps.tuning;
     this.simTime += dt;
 
-    // 1. Intenciones → viajes (deterministas).
+    // 1. Intenciones → viajes (deterministas). La extremidad arrastrada no
+    //    participa: la lleva el puntero.
     for (const limb of LIMBS) {
       const st = this.states.get(limb)!;
       if (st.lockedFor > 0) st.lockedFor = Math.max(0, st.lockedFor - dt);
+      if (this.dragging === limb) continue;
       if (st.anchored || st.traveling || st.lockedFor > 0 || !this.gripWanted[limb]) continue;
       const hold = this.findHoldFor(limb);
       if (hold) this.startTravel(limb, hold);
@@ -304,11 +402,16 @@ export class SherpaRig {
     body.pos = vAdd(body.pos, vAdd(vel, vScale(acc, dt * dt)));
     this.clampBody(body);
 
-    // 3. Extremidades: anclada / viajando / pendejo.
+    // 3. Extremidades: arrastrada / anclada / viajando / pendejo.
     for (const limb of LIMBS) {
       const st = this.states.get(limb)!;
       const tr = this.travel[limb];
-      if (st.anchored) {
+      if (this.dragging === limb && this.dragPos) {
+        // sigue al puntero; si hay imán, la punta es SUCCIONADA hacia la presa.
+        const tgt = this.dragHold ? this.dragHold.pos : this.dragPos;
+        const k = 1 - Math.exp(-dt * (this.dragHold ? DRAG_MAGNET_PULL : DRAG_FOLLOW));
+        this.limbPt[limb] = vAdd(this.limbPt[limb], vScale(vSub(tgt, this.limbPt[limb]), k));
+      } else if (st.anchored) {
         const hold = st.holdId ? this.deps.anchorSystem.holds.get(st.holdId) : undefined;
         this.limbPt[limb] = hold ? vClone(hold.pos) : this.limbPt[limb];
       } else if (tr) {
