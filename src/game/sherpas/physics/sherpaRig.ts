@@ -29,6 +29,14 @@ const isHand = (l: Limb) => l === "hand_l" || l === "hand_r";
 const sideOf = (l: Limb) => (l === "hand_l" || l === "foot_l" ? -1 : 1);
 const CHAIN_ROOT: Record<Limb, number> = { hand_l: P.shL, hand_r: P.shR, foot_l: P.hipL, foot_r: P.hipR };
 const LIMB_PARTICLE: Record<Limb, number> = { hand_l: P.handL, hand_r: P.handR, foot_l: P.footL, foot_r: P.footR };
+/** Offset de la raíz de cada extremidad respecto a la CINTURA (para acotar el
+ *  objetivo de colgado sin estirar huesos; replica fillSkeleton sin la inclinación). */
+const ROOT_OFFSET: Record<Limb, V3> = {
+  hand_l: v3(-SH_X, CHEST_H - 0.04, 0.02),
+  hand_r: v3(SH_X, CHEST_H - 0.04, 0.02),
+  foot_l: v3(-HIP_X, -0.02, 0),
+  foot_r: v3(HIP_X, -0.02, 0),
+};
 
 // ---------- constantes de la física de juego (valores falseados a propósito) ----------
 const G = 9.81;                 // gravedad (m/s²) — la única "realidad" que queda
@@ -65,7 +73,13 @@ const LOAD_HARD_CAP = 2.5;      // techo duro de la carga por extremidad × peso
 // --- arrastre con puntero (petición del jugador: "seleccionas la extremidad y
 // la arrastras hasta un anclaje; los anclajes actúan como imanes") ---
 const MAGNET_R = 0.55;          // radio de imán de presas (m, plano de pared)
-const TIP_REACH_MULT = 1.25;    // alcance también desde la punta (brazos de juego)
+// Anti-goma v2 (2ª petición del jugador: "un pequeño margen sí, pero no de goma"):
+// el alcance de juego ES la longitud ósea con un margen mínimo. Todo coherente:
+// lo que se puede agarrar es lo que el brazo/pierna dibujado alcanza.
+const STRETCH_SOFT = 1.08;      // margen máximo de estiramiento visible (8%)
+const STRETCH_HARD = 1.16;      // techo absoluto del esqueleto dibujado
+const ANTI_GOMA_RATE = 9;       // servo del cuerpo hacia presa alta recién agarrada (1/s)
+const GOMA_SERVO_MAX = 0.09;    // corrección posicional máxima por tick (m)
 const DRAG_FOLLOW = 26;         // ganancia de seguimiento del puntero (1/s)
 const DRAG_MAGNET_PULL = 20;    // ganancia de succión hacia la presa imantada (1/s)
 const DRAG_Z_OFF = 0.16;        // separación de la pared mientras arrastra (m)
@@ -189,6 +203,24 @@ export class SherpaRig {
   // ---------- lecturas (match/HUD/eventos) ----------
 
   waist(): V3 { return vClone(this.rig.particles[P.pelvisC].pos); }
+
+  /** Punto donde se ata el cabo de la tabla de porteo: la parte alta de la
+   *  MOCHILA (petición del jugador: "cuerdas desde las mochilas"). Es solo
+   *  visual: la física de la tabla sigue anclada a la cintura. */
+  harness(): V3 {
+    const chest = this.rig.particles[P.chest].pos;
+    const pelvis = this.rig.particles[P.pelvisC].pos;
+    return v3(chest.x, (chest.y + pelvis.y) / 2 + 0.17, chest.z - 0.18);
+  }
+
+  /** Longitud ósea total de la extremidad (la que dibujan las cápsulas). */
+  private boneLen(limb: Limb): number {
+    return isHand(limb) ? ARM.upper + ARM.fore : LEG.thigh + LEG.shin;
+  }
+
+  /** Alcance máximo de juego = huesos × margen pequeño. Lo que se alcanza es
+   *  lo que el cuerpo dibujado llega a (credibilidad antes que simulación). */
+  boneReach(limb: Limb): number { return this.boneLen(limb) * STRETCH_SOFT; }
   com(): V3 { return this.solver.centerOfMass(); }
   limbPos(limb: Limb): V3 { return vClone(this.limbPt[limb]); }
   holdIdOf(limb: Limb): string | null { return this.states.get(limb)?.holdId ?? null; }
@@ -219,21 +251,22 @@ export class SherpaRig {
    *  desde su punta actual. La segunda es la que hace SUBIR: colgado de las
    *  manos el hombro queda 0,87 m por debajo de la presa y con el alcance solo
    *  desde la raíz era matemáticamente imposible agarrar nada más alto
-   *  ("solo podemos bajar"). Brazos de juego: falseado a propósito. */
+   *  ("solo podemos bajar"). Anti-goma: el límite es el hueso × margen (8%),
+   *  y al agarrar en alto el CUERPO sube a la presa (servo anti-goma), la
+   *  extremidad no se estira hasta el infinito. */
   canReach(limb: Limb, pos: V3): boolean {
-    const reach = this.reachOf(limb);
-    if (vLen(vSub(pos, this.rig.particles[CHAIN_ROOT[limb]].pos)) <= reach) return true;
-    return vLen(vSub(pos, this.limbPt[limb])) <= reach * TIP_REACH_MULT;
+    const maxLen = this.boneReach(limb);
+    if (vLen(vSub(pos, this.rig.particles[CHAIN_ROOT[limb]].pos)) <= maxLen) return true;
+    return vLen(vSub(pos, this.limbPt[limb])) <= maxLen;
   }
 
   /** Alcance visual máximo de la extremidad desde su raíz: lo que se estira el
    *  brazo/pierna mientras arrastra (fix "escaladores de goma"). */
-  dragMaxReach(limb: Limb): number { return this.reachOf(limb) * TIP_REACH_MULT; }
+  dragMaxReach(limb: Limb): number { return this.boneReach(limb); }
 
   /** Busca el mejor hold libre para la extremidad cerca del apuntado y dentro del alcance. */
   private findHoldFor(limb: Limb): HoldInstance | null {
     const root = this.rig.particles[CHAIN_ROOT[limb]].pos;
-    const reach = this.reachOf(limb);
     let best: HoldInstance | null = null;
     let bestScore = Infinity;
     for (const hold of this.deps.anchorSystem.holds.values()) {
@@ -408,6 +441,7 @@ export class SherpaRig {
     body.prev = vClone(body.pos);
     body.pos = vAdd(body.pos, vAdd(vel, vScale(acc, dt * dt)));
     this.clampBody(body);
+    this.antiGomaServo(body, dt);
 
     // 3. Extremidades: arrastrada / anclada / viajando / pendejo.
     for (const limb of LIMBS) {
@@ -415,12 +449,12 @@ export class SherpaRig {
       const tr = this.travel[limb];
       if (this.dragging === limb && this.dragPos) {
         // sigue al puntero; si hay imán, la punta es SUCCIONADA hacia la presa.
-        // FIX "escaladores de goma": el objetivo se ACOTA al alcance máximo desde
-        // la raíz (hombro/cadera) — el brazo se estira hacia el puntero pero NUNCA
-        // más allá de su longitud de juego. Al soltar, el viaje determinista
+        // FIX "escaladores de goma": el objetivo se ACOTA al alcance óseo × margen
+        // pequeño desde la raíz (hombro/cadera) — el brazo se estira hacia el
+        // puntero pero NUNCA más allá (8%). Al soltar, el viaje determinista
         // completa la presa si el imán la capturó.
         const root = this.rig.particles[CHAIN_ROOT[limb]].pos;
-        const maxLen = this.reachOf(limb) * TIP_REACH_MULT;
+        const maxLen = this.dragMaxReach(limb);
         let tgt = this.dragHold ? this.dragHold.pos : this.dragPos;
         const toT = vSub(tgt, root);
         const dT = vLen(toT);
@@ -558,7 +592,11 @@ export class SherpaRig {
 
   // ---------- geometría del cuerpo ----------
 
-  /** Atractor de colgado: media ponderada de los objetivos por anclaje vivo. */
+  /** Objetivo de colgado: media ponderada de los objetivos por anclaje vivo.
+   *  ANTI-GOMA: después de mezclar, se ACOTA el objetivo para que ninguna
+   *  extremidad anclada quede más allá del alcance óseo — el cuerpo sube a la
+   *  presa alta (colgar de dos presas en columna = colgar de la alta, la baja
+   *  queda lacia), nunca el brazo estirándose para llegar. */
   private computeHangTarget(): V3 {
     let x = 0, y = 0, z = 0, wSum = 0;
     for (const limb of LIMBS) {
@@ -579,7 +617,28 @@ export class SherpaRig {
     if (wSum <= 0) return this.waist();
     const tr = Math.max(...LIMBS.map((l) => this.tremorRecord[l as LimbId]));
     const wob = tr > 0.02 ? Math.sin(this.simTime * 6.3) * 0.012 * tr : 0;
-    return v3(x / wSum + wob, y / wSum, z / wSum);
+    let tgt = v3(x / wSum + wob, y / wSum, z / wSum);
+    // iteración anti-goma: acerca el objetivo a cualquier presa exigente.
+    for (let it = 0; it < 4; it++) {
+      let worst = 0;
+      let fix: V3 | null = null;
+      for (const limb of LIMBS) {
+        const st = this.states.get(limb)!;
+        if (!st.anchored || !st.holdId) continue;
+        const hold = this.deps.anchorSystem.holds.get(st.holdId);
+        if (!hold) continue;
+        const root = vAdd(tgt, ROOT_OFFSET[limb]);
+        const d = vLen(vSub(hold.pos, root));
+        const maxLen = this.boneReach(limb);
+        if (d > maxLen && d > worst) {
+          worst = d;
+          fix = vScale(vSub(hold.pos, root), (d - maxLen) / d);
+        }
+      }
+      if (!fix) break;
+      tgt = vAdd(tgt, fix); // la cintura sube hacia la presa: la extremidad NO se estira
+    }
+    return tgt;
   }
 
   /** Objetivo de colgajo de una extremidad libre. */
@@ -612,6 +671,28 @@ export class SherpaRig {
     if (body.pos.x > b.maxX) { body.pos.x = b.maxX; body.prev.x = Math.max(body.prev.x, b.maxX); }
   }
 
+  /** SERVO ANTI-GOMA (transitorio): una presa recién agarrada en alto deja el
+   *  hombro momentáneamente lejos de ella; el CUERPO sube rápido hacia la presa
+   *  (sin inyectar velocidad: pos y prev se desplazan juntos). Es el tirón de
+   *  "me incorporo al agarrarme" — el brazo no hace de goma delante de todos. */
+  private antiGomaServo(body: GameParticle, dt: number): void {
+    const k = Math.min(1, dt * ANTI_GOMA_RATE);
+    for (const limb of LIMBS) {
+      const st = this.states.get(limb)!;
+      if (!st.anchored || !st.holdId) continue;
+      const hold = this.deps.anchorSystem.holds.get(st.holdId);
+      if (!hold) continue;
+      const root = vAdd(body.pos, ROOT_OFFSET[limb]);
+      const toHold = vSub(hold.pos, root);
+      const d = vLen(toHold);
+      const maxLen = this.boneReach(limb);
+      if (d <= maxLen) continue;
+      const step = vScale(toHold, Math.min(GOMA_SERVO_MAX, (d - maxLen) * k));
+      body.pos = vAdd(body.pos, step);
+      body.prev = vAdd(body.prev, step);
+    }
+  }
+
   /** Esqueleto procedural: derivado del cuerpo + extremidades (IK de 2 huesos). */
   private fillSkeleton(dt: number): void {
     const ps = this.rig.particles;
@@ -636,7 +717,15 @@ export class SherpaRig {
     set(P.hipR, hipR);
     for (const limb of LIMBS) {
       const i = LIMB_PARTICLE[limb];
-      set(i, this.limbPt[limb]);
+      // Techo duro del dibujo: la punta dibujada nunca supera huesos × STRETCH_HARD
+      // desde su raíz (garantía anti-goma incluso en configuraciones patológicas;
+      // la física de agarre sigue en limbPt exacto).
+      const rootS = vAdd(body.pos, ROOT_OFFSET[limb]);
+      let tip = this.limbPt[limb];
+      const dTip = vLen(vSub(tip, rootS));
+      const hardMax = this.boneLen(limb) * STRETCH_HARD;
+      if (dTip > hardMax) tip = vAdd(rootS, vScale(vSub(tip, rootS), hardMax / dTip));
+      set(i, tip);
     }
     // codos (afuera y separados de la pared) y rodillas (hacia la pared).
     set(P.elbowL, ik(shL, this.limbPt.hand_l, ARM.upper, ARM.fore, v3(-0.85, -0.3, -0.35)));
