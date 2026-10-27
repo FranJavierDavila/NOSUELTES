@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { loadSherpasData, type SherpasData } from "../../src/game/sherpas/core/data";
 import { EventBus, type Limb } from "../../src/game/sherpas/core/bus";
 import { EventDirector, type DirectorContext } from "../../src/game/sherpas/events/director";
+import type { TrashProjectile, UrineEffect } from "../../src/game/sherpas/events/effects";
 import { BirdSystem } from "../../src/game/sherpas/events/birds";
 import { InsultSystem } from "../../src/game/sherpas/events/insults";
 import type { RichManBrain } from "../../src/game/sherpas/events/richManBrain";
@@ -22,7 +23,7 @@ beforeAll(async () => {
   data = await loadSherpasData(fsLoader, "public/content/sherpas");
 });
 
-const mkCtx = (over: Partial<DirectorContext> = {}): { ctx: DirectorContext; trash: V3[]; urine: number[]; released: string[]; mass: number[] } => {
+const mkCtx = (over: Partial<DirectorContext> = {}): { ctx: DirectorContext; trash: V3[]; urine: number[]; released: string[]; mass: number } => {
   const state = { trash: [] as V3[], urine: [] as number[], released: [] as string[], mass: 85 };
   const ctx: DirectorContext = {
     maxLimbTension: () => 0.2,
@@ -48,7 +49,7 @@ const mkDirector = (seed = 3) => {
   const brain = { requestAction: () => true, panic: () => {} } as unknown as RichManBrain;
   const birds = { spawn: () => true } as unknown as BirdSystem;
   const insults = new InsultSystem(data.insults.es, seed);
-  const dir = new EventDirector(data.events, data.difficulty.presets.normal, data.tuning.richMan, ctx, birds, brain, insults, bus, { trash, urine }, seed);
+  const dir = new EventDirector(data.events, data.difficulty.presets.normal, data.tuning.richMan, ctx, birds, brain, insults, bus, { trash, urine } as unknown as { trash: TrashProjectile[]; urine: UrineEffect | null }, seed);
   return { dir, bus, ctx, trash, urine, released, brain };
 };
 

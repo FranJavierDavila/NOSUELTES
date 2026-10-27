@@ -182,7 +182,7 @@ export class AnchorSystem {
     }
     // Los holds libres mojados quedan marcados como tipo pis para el siguiente agarre.
     for (const hold of this.holds.values()) {
-      if (!this.occupied.has(hold.id) && vLen(vSub(hold.pos, center)) <= radiusM && hold.type !== "rock_firm") {
+      if (!this.occupied.has(hold.id) && vLen(vSub(hold.pos, center)) <= radiusM) {
         hold.type = "ice_urine";
       }
     }

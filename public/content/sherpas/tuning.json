@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "tick": { "fixedDeltaSeconds": 0.0166667, "maxStepsPerFrame": 6 },
   "limb": {
-    "graceTime": 0.15,
-    "reGripLock": 0.25,
+    "graceTime": 0.35,
+    "reGripLock": 0.2,
     "fatigueRate": 0.18,
     "recoverRate": 0.12,
     "baseGripHand": 650,
@@ -11,7 +11,7 @@
     "armReach": 0.75,
     "legReach": 0.9,
     "mass": 70,
-    "overloadTension": 1.0,
+    "overloadTension": 1.3,
     "fatigueReleaseAt": 1.0,
     "highTension": 0.85
   },
@@ -24,7 +24,7 @@
     "slackGravity": 9.81,
     "iterations": 24,
     "nodeMass": 0.5,
-    "nodeDamping": 0.985,
+    "nodeDamping": 0.975,
     "slackFactor": 0.9,
     "maxCatchSpeed": 6.0,
     "maxCorrectionPerTick": 0.05,
@@ -41,7 +41,7 @@
   "balance": { "warnDeltaH": 0.6, "badDeltaH": 1.2 },
   "fall": { "teamFallSeconds": 1.5, "teamFallMeters": 12 },
   "anchors": {
-    "attachSeconds": 0.22,
+    "attachSeconds": 0.16,
     "defaultMaxForceHand": 420,
     "defaultMaxForceFoot": 560,
     "loadSpikeWindow": 0.12

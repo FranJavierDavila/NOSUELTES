@@ -61,12 +61,6 @@ const stepOne = (): void => {
 console.log("TRAS CONSTRUCTOR: A anchored:", LIMBS.map((l) => `${l}:${A.solver.hasAnchor(l) ? "SI" : "no"}`).join(" "));
 console.log("                  B anchored:", LIMBS.map((l) => `${l}:${B.solver.hasAnchor(l) ? "SI" : "no"}`).join(" "));
 for (let i = 0; i < 360; i++) {
-  if (i < 3) {
-    const rA0 = A.solver.step(dt);
-    console.log(`pre-step ${i}: A nan=${rA0.nanError} spike=${rA0.energySpike} maxSpeed=${rA0.maxSpeed.toFixed(2)} anchors=${LIMBS.filter((l) => A.solver.hasAnchor(l)).length}`);
-    // deshacemos: re-creamos el estado que sherpaRig.step haría (solo diagnóstico)
-    for (const l of LIMBS) if (!A.solver.hasAnchor(l)) break;
-  }
   const rA = A.step(dt, 1);
   const rB = B.step(dt, 1);
   rich.step(dt);

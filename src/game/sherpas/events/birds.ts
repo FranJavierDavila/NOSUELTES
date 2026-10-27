@@ -41,6 +41,9 @@ export class BirdSystem {
   private rng: Rng;
   activeCount(): number { return this.birds.length; }
 
+  /** Retira todos los pájaros (respawn de equipo, doc 6.2). */
+  clear(): void { this.birds.length = 0; }
+
   constructor(private machines: MachinesData, private world: BirdTargetReader, private events: EventBus, seed: number) {
     this.rng = makeRng(seed ^ 0xbe4d);
   }

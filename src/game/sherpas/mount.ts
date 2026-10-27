@@ -83,15 +83,20 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
 
   const backToMenu = async (): Promise<void> => {
     if (state.match) { state.match.dispose(); state.match = null; }
-    if (state.scene) { state.scene.dispose(); state.scene = null; }
-    state.scene = await makePreviewScene();
+    // la escena (y su motor) SOBREVIVEN: son la misma que usará la próxima partida.
+    if (!state.scene) state.scene = await makePreviewScene();
     await showMenu();
   };
 
   const begin = async (choice: HudStartChoice): Promise<void> => {
     if (state.disposed) return;
     if (state.match) { state.match.dispose(); state.match = null; }
-    if (state.scene) { state.scene.dispose(); state.scene = null; }
+    // REUTILIZA la escena del menú como escena de partida: crear un segundo
+    // motor WebGL sobre el mismo canvas deja el nuevo contexto sin pantalla
+    // (el visible conserva el último frame del motor anterior).
+    if (!state.scene) {
+      state.scene = await SherpaScene.create(opts.canvas, data.camera, data.hud);
+    }
     await audio.start();
     audio.setMuted(choice.mute);
     hud.setDaltonism(choice.daltonism);
@@ -100,13 +105,33 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     let resumeSave: SavedAscent | null = null;
     if (choice.resume) resumeSave = await loadAscent();
     else await clearAscent();
-    const scene = await SherpaScene.create(opts.canvas, data.camera, data.hud);
-    state.scene = scene;
+    const scene = state.scene;
     state.match = new SherpasMatch({
       data, scene, audio, hud, bus, input, character, profile, choice, resumeSave,
       onRestart: () => { void backToMenu(); },
     });
-  };
+    // hook de depuración E2E (solo lectura).
+    (window as unknown as Record<string, unknown>).__SHERPAS_DEBUG = {
+      waist: (p: number) => state.match?.["sherpas"][p]?.waist() ?? null,
+      anchors: (p: number) => state.match?.["sherpas"][p]?.anchorsCount() ?? null,
+      tension: (p: number) => state.match?.["sherpas"][p]?.maxTension() ?? null,
+      particles: (p: number) => state.match?.["sherpas"][p]?.rig.particles.map((q) => [q.pos.x, q.pos.y, q.pos.z]) ?? null,
+      depthProbe: () => {
+        const sc = state.match?.["d"]?.scene as unknown as {
+          scene: { render(): void };
+          engine: { _gl: { isEnabled(c: number): boolean; getParameter(p: number): unknown; DEPTH_TEST: number; DEPTH_WRITEMASK: number; drawingBufferWidth: number; drawingBufferHeight: number } };
+        };
+        const gl = sc?.engine?._gl;
+        if (!gl) return "sin gl";
+        sc?.scene?.render();
+        return JSON.stringify({
+          depthTest: gl.isEnabled(gl.DEPTH_TEST),
+          depthWrite: String(gl.getParameter(gl.DEPTH_WRITEMASK)),
+          w: gl.drawingBufferWidth, h: gl.drawingBufferHeight,
+        });
+      },
+    };
+  }
 
   const showMenu = async (): Promise<void> => {
     const save = await loadAscent();
@@ -124,7 +149,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
       seed: Math.floor(Math.random() * 1000000),
       saveCampLabel,
       onGo: (choice) => { void begin(choice).catch((err) => {
-        console.error("fallo al iniciar la ascensión:", err);
+        console.error("fallo al iniciar la ascensión:", err instanceof Error ? err.stack : err);
         hud.subtitle(`Error: ${String(err instanceof Error ? err.message : err)}`, 8);
       }); },
     });

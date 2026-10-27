@@ -6,7 +6,7 @@ import { v3, vAdd, vSub, vScale, vLen, vClone, type V3 } from "../../physics/pbd
 export const RM = { head: 0, chest: 1, pelvis: 2, elbowL: 3, elbowR: 4, handL: 5, handR: 6, kneeL: 7, kneeR: 8, footL: 9, footR: 10 } as const;
 export const RM_PARTICLES = 11;
 
-interface Body { pos: V3; prev: V3; mass: number; invMass: number; radius: number }
+interface Body { pos: V3; prev: V3; mass: number; invMass: number; radius: number; share: number }
 interface RMStick { a: number; b: number; rest: number; min: number }
 
 export interface RichManStepInfo {
@@ -56,7 +56,8 @@ export class RichManSim {
     this.bodies.length = 0;
     for (const s of spec) {
       const pos = vAdd(hangFrom, v3(s.offset[0], s.offset[1], s.offset[2]));
-      this.bodies.push({ pos, prev: vClone(pos), mass: s.mass, invMass: 1 / s.mass, radius: s.radius });
+      // share = fracción de la masa TOTAL que representa este cuerpo (para masa suave).
+      this.bodies.push({ pos, prev: vClone(pos), mass: s.mass, invMass: 1 / s.mass, radius: s.radius, share: s.mass / m });
     }
     const st = (a: number, b: number, rest: number, min: number) => this.sticks.push({ a, b, rest, min });
     this.sticks = [];
@@ -80,6 +81,10 @@ export class RichManSim {
   }
 
   private harnessOffsetY = 0.12;
+  /** Re-cuelga el ricachón completo en la posición dada (respawn/campamento). */
+  reset(hangFrom: V3): void {
+    this.build(hangFrom);
+  }
   pelvis(): V3 { return vClone(this.bodies[RM.pelvis].pos); }
   pelvisVel(): V3 { return vScale(vSub(this.bodies[RM.pelvis].pos, this.bodies[RM.pelvis].prev), 1 / Math.max(1e-4, this.lastDt)); }
   setHarnessOffset(m: number): void { this.harnessOffsetY = m; }
@@ -100,14 +105,21 @@ export class RichManSim {
   /** Paso propio: gravedad + sticks + mínimos + colisiones. La cuerda corrige después. */
   step(dt: number, iterations = 10): RichManStepInfo {
     this.lastDt = dt;
-    // transición suave de masa (doc 7.1: nunca saltos)
+    // transición suave de masa (doc 7.1: nunca saltos) — y los cuerpos la siguen.
     if (Math.abs(this.massTarget - this.massCurrent) > 0.01) {
       this.massCurrent += (this.massTarget - this.massCurrent) * Math.min(1, dt / Math.max(0.05, this.massTransitionSeconds));
+      for (const b of this.bodies) {
+        b.mass = b.share * this.massCurrent;
+        b.invMass = 1 / Math.max(1e-3, b.mass);
+      }
     }
     let bumpWall = 0;
     let floorHit = false;
     for (const b of this.bodies) {
-      const vel = vScale(vSub(b.pos, b.prev), 0.995);
+      // física de juego: amortiguación fuerte + techo de velocidad (imposible que vuele).
+      let vel = vScale(vSub(b.pos, b.prev), 0.975);
+      const vAbs = vLen(vel);
+      if (vAbs > 0.14) vel = vScale(vel, 0.14 / vAbs); // ≤ ~8.4 m/s
       b.prev = vClone(b.pos);
       b.pos = vAdd(b.pos, vAdd(vel, vScale(v3(0, -9.81, 0), dt * dt)));
     }

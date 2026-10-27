@@ -11,7 +11,6 @@ import { AnchorSystem, type AnchorInstance, type HoldInstance } from "../physics
 import { RopeSystem, sherpaEndpoint, richEndpoint, type RopeState } from "../physics/rope";
 import { RichManSim, RM } from "../physics/richMan";
 import { P } from "../../physics/pbd/ragdoll";
-import type { BalanceTuning } from "../../physics/pbd/solver";
 import type { CharacterDefinition, BodyProfileDefinition } from "../../types";
 import { v3, vLen, vSub, type V3 } from "../../physics/pbd/math";
 import { RichManBrain } from "../events/richManBrain";
@@ -27,11 +26,7 @@ import type { SherpaHud, HudStartChoice, HudTickState } from "../presentation/hu
 import type { SherpaAudio } from "../presentation/audio";
 import type { InputManager } from "../input/input";
 
-// preset físico del solver (tarea E: predecible, sin articulaciones rotas).
-const BALANCE: BalanceTuning = {
-  postureTone: 0.95, jointLimitStiffness: 1.0, foldStrength: 1.0, toneFloor: 0.08,
-  stretchTolerance: 1.05, twistLimitRad: 0.3, pinVelKill: 0.7, hingeTolScale: 0.45, settleSeconds: 1.1,
-};
+// física de juego (reescritura): sin preset PBD — el rig es estable por construcción.
 const SHOO_COOLDOWN_S = 3;
 const REST_RECOVER_MULT = 3;
 const REGISTRATION_INTERVAL_TICKS = 30;
@@ -126,8 +121,6 @@ export class SherpasMatch {
       character: deps.character,
       tuning: rigTuning,
       anchorSystem: this.anchors,
-      balance: BALANCE,
-      planes: this.planes(),
       bounds: {
         minX: -this.wallWidthM / 2 - 0.6, maxX: this.wallWidthM / 2 + 0.6,
         minY: -2, maxY: this.gen.layout.totalHeightM + 4,
@@ -406,7 +399,10 @@ export class SherpasMatch {
   }
 
   private registerNewHolds(): void {
-    const top = Math.max(this.sherpas[0].waist().y, this.sherpas[1].waist().y) + 18;
+    // el constructor llama esto ANTES de crear los sherpas: sin rigs, techo por defecto.
+    const ya = this.sherpas?.[0]?.waist().y ?? 16;
+    const yb = this.sherpas?.[1]?.waist().y ?? 16;
+    const top = Math.max(ya, yb) + 18;
     this.gen.ensureUpToY(top);
     const fresh: HoldInstance[] = [];
     for (const h of this.gen.allGeneratedHolds()) {

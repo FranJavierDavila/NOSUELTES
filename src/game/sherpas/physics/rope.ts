@@ -95,11 +95,12 @@ export class RopeSystem {
         const mO = epOther.mass();
         const wS = mO / (mS + mO);
         const wO = mS / (mS + mO);
-        // masa reducida del par: estimador de tensión del doc (F = μ·Δ/dt²).
+        // masa reducida del par: tensión falseada legible (sin picos de dt²).
         const mu = (mS * mO) / (mS + mO);
-        tension = Math.min(12000, (over / (dt * dt)) * mu * 0.6);
-        applyCorr(epSherpa, vScale(n, -over * wS), dt);
-        applyCorr(epOther, vScale(n, over * wO), dt);
+        tension = Math.min(4000, over * mu * 250);
+        // SIGNOS CORRECTOS: cada extremo se mueve HACIA el otro (la cuerda tira, no empuje).
+        applyCorr(epSherpa, vScale(n, over * wS), dt);
+        applyCorr(epOther, vScale(n, -over * wO), dt);
       }
       this.relaxChain(nodes, p0, p1, dt, gravity, wallFrontZ);
       return { tension, over };
@@ -120,9 +121,10 @@ export class RopeSystem {
         const mA = A.mass();
         const mB = B.mass();
         const mu = (mA * mB) / (mA + mB);
-        tensionAB = Math.min(12000, (over / (dt * dt)) * mu * 0.6);
-        applyCorr(A, vScale(n, -over * 0.5), dt);
-        applyCorr(B, vScale(n, over * 0.5), dt);
+        tensionAB = Math.min(4000, over * mu * 250);
+        // A hacia B, B hacia A (la cuerda tira: signos correctos).
+        applyCorr(A, vScale(n, over * 0.5), dt);
+        applyCorr(B, vScale(n, -over * 0.5), dt);
       }
     }
 
@@ -223,7 +225,9 @@ export function sherpaEndpoint(
 export function richEndpoint(
   pelvis: { pos: V3; prev: V3; mass: number },
   offsetUp: number,
+  _ropeTuning?: RopeTuning,
 ): RopeEndpoint & { harness(): V3 } {
+  void _ropeTuning;
   return {
     pos: () => vAdd(pelvis.pos, v3(0, offsetUp, 0)),
     move: (delta, velPerSec) => {
@@ -237,4 +241,4 @@ export function richEndpoint(
 }
 
 export { vLen, vSub };
-export type { RichManTuning };
+export type { RichManTuning, RopeTuning };

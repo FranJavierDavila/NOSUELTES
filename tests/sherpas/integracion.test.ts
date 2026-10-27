@@ -15,7 +15,6 @@ import { RopeSystem, sherpaEndpoint, richEndpoint } from "../../src/game/sherpas
 import { RichManSim } from "../../src/game/sherpas/physics/richMan";
 import { WallGenerator } from "../../src/game/sherpas/world/wallGenerator";
 import { P } from "../../src/game/physics/pbd/ragdoll";
-import type { BalanceTuning } from "../../src/game/physics/pbd/solver";
 import { v3, vLen, vSub } from "../../src/game/physics/pbd/math";
 
 const fsLoader = async (path: string): Promise<unknown> =>
@@ -24,11 +23,6 @@ const fsLoader = async (path: string): Promise<unknown> =>
 let data: SherpasData;
 let character: import("../../src/game/types").CharacterDefinition;
 let profile: import("../../src/game/types").BodyProfileDefinition;
-
-const BALANCE: BalanceTuning = {
-  postureTone: 0.95, jointLimitStiffness: 1.0, foldStrength: 1.0, toneFloor: 0.08,
-  stretchTolerance: 1.05, twistLimitRad: 0.3, pinVelKill: 0.7, hingeTolScale: 0.45, settleSeconds: 1.1,
-};
 
 beforeAll(async () => {
   data = await loadSherpasData(fsLoader, "public/content/sherpas");
@@ -51,8 +45,7 @@ const buildCoop = () => {
     fatigueRateMultiplier: 1, reachMarginM: 0.05,
   };
   const mkDeps = (player: 0 | 1) => ({
-    player, profile, character, tuning: rigTuning, anchorSystem: anchors, balance: BALANCE,
-    planes: [{ n: v3(0, 0, -1), p: v3(0, 0, wallFrontZ), minX: -5, maxX: 5, minY: -3, maxY: 700, minZ: wallFrontZ - 3, maxZ: wallFrontZ + 2.5 }],
+    player, profile, character, tuning: rigTuning, anchorSystem: anchors,
     bounds: { minX: -3, maxX: 3, minY: -2, maxY: 700, minZ: wallFrontZ - 2.5, maxZ: wallFrontZ + 2.5 },
     floorY: 0, wallFrontZ, rope: data.tuning.rope,
   });
@@ -118,7 +111,8 @@ describe("cooperativo headless (doc 3.2 en nodo)", () => {
     const c = buildCoop();
     const dt = 1 / 60;
     for (let i = 0; i < 240; i++) stepAll(c, dt); // asentamiento completo (4 s)
-    const wa0 = v3(c.sherpaA.rig.particles[P.pelvisC].pos.x, c.sherpaA.rig.particles[P.pelvisC].pos.y, 0);
+    const w0p = c.sherpaA.rig.particles[P.pelvisC].pos;
+    const wa0 = v3(w0p.x, w0p.y, w0p.z); // copia 3D completa (el offset z del colgado NO es drift)
     const com0 = c.sherpaA.solver.centerOfMass();
     let maxDrift = 0;
     for (let i = 0; i < 120; i++) {

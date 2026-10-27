@@ -28,10 +28,12 @@ describe("pack de datos sherpas (doc 11)", () => {
     expect((data.strings.es.menu as { title?: string }).title).toBeTruthy();
   });
 
-  it("valores de tuning del doc §11 presentes", async () => {
+  it("valores de tuning del doc §11 presentes (física de juego, reescritura)", async () => {
     const d = await load();
-    expect(d.tuning.limb.graceTime).toBeCloseTo(0.15);
-    expect(d.tuning.limb.reGripLock).toBeCloseTo(0.25);
+    expect(d.tuning.limb.graceTime).toBeCloseTo(0.35);
+    expect(d.tuning.limb.reGripLock).toBeCloseTo(0.2);
+    expect(d.tuning.limb.overloadTension).toBeCloseTo(1.3);
+    expect(d.tuning.anchors.attachSeconds).toBeCloseTo(0.16);
     expect(d.tuning.limb.baseGripHand).toBe(650);
     expect(d.tuning.limb.baseGripFoot).toBe(900);
     expect(d.tuning.rope.segmentMax).toBe(3.5);

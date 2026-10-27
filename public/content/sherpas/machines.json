@@ -3,33 +3,120 @@
     "bird_pecker_fsm": {
       "initial": "circle",
       "states": {
-        "circle":    { "durationRange": [2, 4], "next": "telegraph" },
-        "telegraph": { "duration": 1.2, "next": "dive", "abortOn": ["shoo"], "abortTo": "flee" },
-        "dive":      { "duration": 0.6, "speed": 9, "next": "impact" },
-        "impact":    { "onEnter": ["onHit"], "next": "flee" },
-        "flee":      { "duration": 3, "next": "despawn" }
+        "circle": {
+          "durationRange": [
+            2,
+            4
+          ],
+          "next": "telegraph"
+        },
+        "telegraph": {
+          "duration": 1.2,
+          "next": "dive",
+          "abortOn": [
+            "shoo"
+          ],
+          "abortTo": "flee"
+        },
+        "dive": {
+          "duration": 0.6,
+          "speed": 9,
+          "next": "impact"
+        },
+        "impact": {
+          "onEnter": [
+            "onHit"
+          ],
+          "next": "flee"
+        },
+        "flee": {
+          "duration": 3,
+          "next": "despawn"
+        },
+        "despawn": {
+          "duration": 0.1
+        }
       }
     },
     "bird_thief_fsm": {
       "initial": "circle",
       "states": {
-        "circle":    { "durationRange": [2, 4], "next": "telegraph" },
-        "telegraph": { "duration": 1.2, "next": "dive", "abortOn": ["shoo"], "abortTo": "flee" },
-        "dive":      { "duration": 0.6, "speed": 8, "next": "impact" },
-        "impact":    { "onEnter": ["onHit"], "next": "flee" },
-        "flee":      { "duration": 3, "next": "despawn" }
+        "circle": {
+          "durationRange": [
+            2,
+            4
+          ],
+          "next": "telegraph"
+        },
+        "telegraph": {
+          "duration": 1.2,
+          "next": "dive",
+          "abortOn": [
+            "shoo"
+          ],
+          "abortTo": "flee"
+        },
+        "dive": {
+          "duration": 0.6,
+          "speed": 8,
+          "next": "impact"
+        },
+        "impact": {
+          "onEnter": [
+            "onHit"
+          ],
+          "next": "flee"
+        },
+        "flee": {
+          "duration": 3,
+          "next": "despawn"
+        },
+        "despawn": {
+          "duration": 0.1
+        }
       }
     },
     "richman_fsm": {
       "initial": "colgando",
       "states": {
-        "colgando":    { "next": "dormitando", "durationRange": [8, 16] },
-        "dormitando":  { "next": "colgando", "durationRange": [6, 12], "abortOn": ["anyHardEvent"], "abortTo": "colgando" },
-        "insultando":  { "duration": 2.5, "next": "colgando" },
-        "comiendo":    { "duration": 3.0, "next": "colgando" },
-        "tirando_basura": { "duration": 1.6, "next": "colgando" },
-        "meandome":    { "duration": 2.2, "next": "colgando" },
-        "pataleando":  { "duration": 4.0, "next": "colgando" }
+        "colgando": {
+          "next": "dormitando",
+          "durationRange": [
+            8,
+            16
+          ]
+        },
+        "dormitando": {
+          "next": "colgando",
+          "durationRange": [
+            6,
+            12
+          ],
+          "abortOn": [
+            "anyHardEvent"
+          ],
+          "abortTo": "colgando"
+        },
+        "insultando": {
+          "duration": 2.5,
+          "next": "colgando"
+        },
+        "comiendo": {
+          "duration": 3.0,
+          "next": "colgando"
+        },
+        "tirando_basura": {
+          "duration": 1.6,
+          "next": "colgando"
+        },
+        "meandome": {
+          "duration": 2.2,
+          "next": "colgando"
+        },
+        "pataleando": {
+          "duration": 4.0,
+          "next": "colgando"
+        }
       }
     }
   }

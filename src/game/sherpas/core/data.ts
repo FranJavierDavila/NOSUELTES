@@ -57,6 +57,8 @@ export interface RichManActionsData {
 export interface DifficultyPresetData {
   gripQualityMultiplier: number; chaosBudgetMultiplier: number; birdFrequencyMultiplier: number;
   richManActionCooldownMultiplier: number; anchorWearMultiplier: number; fatigueRateMultiplier: number;
+  /** ratio mínimo de roca firme en la ruta segura (opcional; 0.4 por defecto). */
+  safePathRockRatio?: number;
 }
 export interface DifficultyData { presets: Record<string, DifficultyPresetData>; defaultPreset: string }
 export interface InputMapData {

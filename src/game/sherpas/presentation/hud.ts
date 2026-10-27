@@ -162,11 +162,20 @@ export class SherpaHud {
   }
 
   t(path: string): string {
+    // El dato usa claves planas con punto ("menu.difficulty.tranquilo") DENTRO de
+    // objetos anidados: probar la clave plana del resto en cada nivel (fix Task 21).
     let cur: unknown = this.strings[this.lang];
-    for (const part of path.split(".")) {
-      if (cur && typeof cur === "object" && part in (cur as Record<string, unknown>)) {
-        cur = (cur as Record<string, unknown>)[part];
-      } else return path;
+    const parts = path.split(".");
+    for (let i = 0; i < parts.length; i++) {
+      if (cur && typeof cur === "object") {
+        const rec = cur as Record<string, unknown>;
+        const rest = parts.slice(i).join(".");
+        const flat = rec[rest];
+        if (typeof flat === "string") return flat;
+        const part = parts[i];
+        if (part in rec) { cur = rec[part]; continue; }
+      }
+      return path;
     }
     return typeof cur === "string" ? cur : path;
   }

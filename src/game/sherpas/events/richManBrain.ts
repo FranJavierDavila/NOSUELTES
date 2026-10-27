@@ -36,6 +36,15 @@ export class RichManBrain {
     this.enter(this.state);
   }
 
+  /** Vuelve al estado inicial (respawn de equipo, doc 6.2). */
+  reset(): void {
+    this.actionQueue.length = 0;
+    this.kickTimer = 0;
+    this.noiseTimer = 0;
+    const machine = this.deps.machines.machines.richman_fsm;
+    this.enter(machine.initial as RichManState);
+  }
+
   /** El EventDirector propone una acción (doc 7.4.9). */
   requestAction(kind: string): boolean {
     const machine = this.deps.machines.machines.richman_fsm;

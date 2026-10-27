@@ -128,6 +128,17 @@ export class WallGenerator {
     return { hand_l: byId("start_hl"), hand_r: byId("start_hr"), foot_l: byId("start_fl"), foot_r: byId("start_fr") };
   }
 
+  /** Holds de arranque del SEGUNDO sherpa (banda 0, desplazado a la derecha). */
+  secondStartHolds(): { hand_l: HoldInstance; hand_r: HoldInstance; foot_l: HoldInstance; foot_r: HoldInstance } {
+    this.ensureBand(0);
+    const byId = (id: string): HoldInstance => {
+      const h = this.bands.get(0)!.find((h) => h.id === id);
+      if (!h) throw new Error(`falta hold de arranque ${id}`);
+      return h;
+    };
+    return { hand_l: byId("start2_hl"), hand_r: byId("start2_hr"), foot_l: byId("start2_fl"), foot_r: byId("start2_fr") };
+  }
+
   /** Campamento: holds firmes donde re-agarrarse al reaparecer. */
   campHolds(zone: CampZone): { hand_l: HoldInstance; hand_r: HoldInstance } {
     this.ensureBand(this.bandIndexOf(zone.yBase));
@@ -151,7 +162,8 @@ export class WallGenerator {
     const yMax = yMin + bandH;
     const phase = this.phaseOfHeight(yMin + 0.01);
     const zone = this.layout.campZones.find((c) => yMin < c.yTop && yMax > c.yBase);
-    const isCampBand = zone !== undefined && yMin >= zone.yBase - 0.01;
+    // la zona (2.2 m) vive en la PARTE ALTA de la banda: basta el solape para generarla.
+    const isCampBand = zone !== undefined;
     const rng = makeRng(bandRngSeed(this.seed, index));
 
     const holds: HoldInstance[] = [];
@@ -165,6 +177,12 @@ export class WallGenerator {
         { id: "start_hr", x: 0.55, y: s.yBaseM + 1.5 },
         { id: "start_fl", x: -0.35, y: s.yBaseM },
         { id: "start_fr", x: 0.35, y: s.yBaseM },
+        // segundo sherpa (cooperativo, doc 3.1): mismo nivel, desplazado a la derecha
+        // (dentro de maxStartSeparationM + 0.4 entre el hand_l de A y el hand_r de B).
+        { id: "start2_hl", x: 1.35, y: s.yBaseM + 1.5 },
+        { id: "start2_hr", x: 2.0, y: s.yBaseM + 1.5 },
+        { id: "start2_fl", x: 1.55, y: s.yBaseM },
+        { id: "start2_fr", x: 1.85, y: s.yBaseM },
       ];
       for (const d of startDefs) {
         holds.push(this.makeHold(d.id, d.x, d.y, "rock_firm", index, false));

@@ -17,16 +17,20 @@ import "@babylonjs/core/Meshes/Builders/sphereBuilder";
 import "@babylonjs/core/Meshes/Builders/capsuleBuilder";
 import "@babylonjs/core/Meshes/Builders/torusBuilder";
 import "@babylonjs/core/Meshes/Builders/linesBuilder";
+import "@babylonjs/core/Meshes/instancedMesh"; // side-effect requerido por createInstance (fix Task 21)
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
 import { ParticleSystem } from "@babylonjs/core/Particles/particleSystem";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
-import { Vector3, Quaternion } from "@babylonjs/core/Maths/math.vector";
+import { Vector3, Quaternion, Matrix } from "@babylonjs/core/Maths/math.vector";
 import "@babylonjs/core/Culling/ray";
 import "@babylonjs/core/Culling/ray.core";
-import type { PbdSolver } from "../../physics/pbd/solver";
-import { P, type RagdollRig } from "../../physics/pbd/ragdoll";
+import { P } from "../../physics/pbd/ragdoll";
+/** Vista mínima del rig para el montaje de huesos (física de juego: solo lectura). */
+export interface SherpaSpawnRig { particles: readonly { pos: { x: number; y: number; z: number } }[] }
+/** Vista mínima del solver para el sync por frame (lerp prev→pos). */
+export interface SherpaSyncSolver { getParticle(i: number): { pos: { x: number; y: number; z: number }; prev: { x: number; y: number; z: number } } }
 import { v3, vAdd, vScale, vSub, vLen, type V3 } from "../../physics/pbd/math";
 import type { HoldInstance } from "../physics/anchors";
 import { RichManSim, RM } from "../physics/richMan";
@@ -72,14 +76,16 @@ export class SherpaScene {
   private fxTexture: Texture;
   private snowSystem: ParticleSystem;
   private disposed = false;
+  private worldBuilt = false;
 
-  private constructor(engine: AbstractEngine, camData: CameraData, hudData: HudData) {
+  private constructor(engine: AbstractEngine, backend: string, camData: CameraData, hudData: HudData) {
     this.engine = engine;
+    this.backend = backend;
     this.camData = camData;
     this.hudData = hudData;
     this.scene = new Scene(engine);
     this.scene.clearColor = new Color4(0.055, 0.07, 0.09, 1);
-    this.camera = new UniversalCamera("cam", new Vector3(0, 2, 8), this.scene);
+    this.camera = new UniversalCamera("cam", new Vector3(0, 2, -8), this.scene);
     this.camera.inputs.clear();
     this.camera.minZ = 0.1;
     const hemi = new HemisphericLight("hemi", new Vector3(0.2, 1, 0.4), this.scene);
@@ -105,16 +111,19 @@ export class SherpaScene {
   }
 
   static async create(canvas: HTMLCanvasElement, camData: CameraData, hudData: HudData): Promise<SherpaScene> {
+    // WebGL2 PRIMERO (fix Task 22, regresión del árbol roto): en iframes
+    // cross-origin WebGPU cae a adaptador bloqueado → canvas negro a 6 fps.
     let engine: AbstractEngine;
+    let backend = "WebGL 2";
     try {
-      const gpu = new WebGPUEngine(canvas);
+      engine = new Engine(canvas, true, { stencil: true });
+    } catch {
+      const gpu = new WebGPUEngine(canvas, { antialias: true, stencil: true });
       await gpu.initAsync();
       engine = gpu;
-    } catch {
-      engine = new Engine(canvas, true, { stencil: true });
+      backend = "WebGPU";
     }
-    const scene = new SherpaScene(engine, camData, hudData);
-    return scene;
+    return new SherpaScene(engine, backend, camData, hudData);
   }
 
   private makeDotTexture(): Texture {
@@ -132,6 +141,8 @@ export class SherpaScene {
   // ---------- mundo ----------
 
   buildWorld(layout: WallLayout): void {
+    if (this.worldBuilt) return; // la escena del menú se reutiliza como escena de partida
+    this.worldBuilt = true;
     const wallW = 5.4;
     const wall = MeshBuilder.CreateBox("wall", { width: wallW, height: layout.totalHeightM + 8, depth: 0.6 }, this.scene);
     wall.position.set(0, (layout.totalHeightM + 8) / 2 - 4, -0.18 + 0.3);
@@ -169,7 +180,7 @@ export class SherpaScene {
       }
       const inst = master.createInstance(`hold_${h.id}`);
       inst.position.set(h.pos.x, h.pos.y, h.pos.z);
-      inst.setDirection?.(undefined as never); // noop para tipado estricto
+      // (fix Task 21: la línea setDirection(undefined) crasheaba — eliminada)
       this.holdMeshes.set(h.id, inst as unknown as Mesh);
     }
   }
@@ -191,7 +202,7 @@ export class SherpaScene {
 
   // ---------- sherpas ----------
 
-  spawnSherpa(player: 0 | 1, rig: RagdollRig): void {
+  spawnSherpa(player: 0 | 1, rig: SherpaSpawnRig): void {
     this.despawnSherpa(player);
     const colors = SHERPA_COLORS[player];
     const body = mat(this.scene, `body${player}`, colors.body);
@@ -234,7 +245,7 @@ export class SherpaScene {
     this.rigVisuals[player] = null;
   }
 
-  syncSherpa(player: 0 | 1, solver: PbdSolver, alpha: number): void {
+  syncSherpa(player: 0 | 1, solver: SherpaSyncSolver, alpha: number): void {
     const vis = this.rigVisuals[player];
     if (!vis) return;
     const lerp = (i: number): V3 => {
@@ -252,7 +263,7 @@ export class SherpaScene {
     const pelvisP = lerp(P.pelvisC);
     const pack = (vis as RigVisual & { pack?: Mesh }).pack;
     if (pack) {
-      pack.position.set(chestP.x, (chestP.y + pelvisP.y) / 2, chestP.z + 0.13);
+      pack.position.set(chestP.x, (chestP.y + pelvisP.y) / 2, chestP.z - 0.13);
       pack.rotation.x = Math.atan2(pelvisP.x - chestP.x, pelvisP.y - chestP.y);
     }
     vis.label.position.set(pelvisP.x, pelvisP.y - 0.45, pelvisP.z);
@@ -356,7 +367,9 @@ export class SherpaScene {
     const delta = target.subtract(this.camTarget);
     if (delta.length() > maxPan) delta.normalize().scaleInPlace(maxPan);
     this.camTarget.addInPlace(delta);
-    this.camera.position.set(this.camTarget.x, this.camTarget.y + 0.6, this.camTarget.z + this.camDist);
+    // la cara de escalada mira a -z (los escaladores viven en z negativo):
+    // la cámara se coloca DELANTE de ellos, más negativa aún.
+    this.camera.position.set(this.camTarget.x, this.camTarget.y + 0.6, this.camTarget.z - this.camDist);
     if (this.shakeAmp > 0.001) {
       this.camera.position.x += (Math.random() - 0.5) * this.shakeAmp;
       this.camera.position.y += (Math.random() - 0.5) * this.shakeAmp;
@@ -474,12 +487,20 @@ export class SherpaScene {
   projectToScreenCss(p: V3): { x: number; y: number } {
     const vp = this.engine.getRenderWidth();
     const vh = this.engine.getRenderHeight();
-    const v = Vector3.Project(new Vector3(p.x, p.y, p.z), Vector3.ZeroReadOnly, this.scene.getTransformMatrix().clone(), this.camera.viewport.toGlobal(vp, vh));
+    const v = Vector3.Project(new Vector3(p.x, p.y, p.z), Matrix.Identity(), this.scene.getTransformMatrix(), this.camera.viewport.toGlobal(vp, vh));
     return { x: (v.x / vp) * 100, y: (v.y / vh) * 100 };
   }
 
   render(): void {
-    if (!this.disposed) this.scene.render();
+    if (this.disposed) return;
+    // BLINDAJE (física de juego): el motor puede quedar con depth-write a false
+    // (observado en el entorno del preview: con la escritura de profundidad off,
+    // el muro/suelo —dibujados al final— tapaban sherpas y presas). Se re-fuerza
+    // el estado antes de cada frame.
+    const eng = this.engine as unknown as { _depthCullingState?: { depthMask: boolean }; _gl?: { depthMask(v: boolean): void } };
+    if (eng._depthCullingState) eng._depthCullingState.depthMask = true;
+    else if (eng._gl) eng._gl.depthMask(true);
+    this.scene.render();
   }
 
   dispose(): void {
