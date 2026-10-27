@@ -3,7 +3,7 @@
 // (más tensión en las manos del sherpa que carga): nada artificial añadido.
 import type { EventBus } from "../core/bus";
 import type { TuningData, HudData } from "../core/data";
-import { RopeSystem } from "../physics/rope";
+import { loadShare } from "../physics/plank";
 import type { AscentStats } from "../world/camps";
 
 export type BalanceState = "equilibrado" | "aviso" | "desequilibrado";
@@ -27,7 +27,7 @@ export class BalanceMonitor {
 
   tick(waistAY: number, waistBY: number, rope: { tensionA: number; tensionB: number; slack: number; overstretch: number }): BalanceSnapshot {
     const deltaH = Math.abs(waistAY - waistBY);
-    const { shareA, shareB } = RopeSystem.loadShare(rope.tensionA, rope.tensionB);
+    const { shareA, shareB } = loadShare(rope.tensionA, rope.tensionB);
     const b = this.tuning.balance;
     const state: BalanceState = deltaH < b.warnDeltaH ? "equilibrado" : deltaH < b.badDeltaH ? "aviso" : "desequilibrado";
     if (state !== this.lastState && state === "desequilibrado") {

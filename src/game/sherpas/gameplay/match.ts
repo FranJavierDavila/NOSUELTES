@@ -8,11 +8,11 @@ import type { EventBus, Limb, SherpasEvents } from "../core/bus";
 import { makeRng } from "../core/rng";
 import { SherpaRig } from "../physics/sherpaRig";
 import { AnchorSystem, type AnchorInstance, type HoldInstance } from "../physics/anchors";
-import { RopeSystem, sherpaEndpoint, richEndpoint, type RopeState } from "../physics/rope";
+import { PlankSystem, PLANK_DEFAULTS, type PlankState } from "../physics/plank";
 import { RichManSim, RM } from "../physics/richMan";
 import { P } from "../../physics/pbd/ragdoll";
 import type { CharacterDefinition, BodyProfileDefinition } from "../../types";
-import { v3, vLen, vSub, type V3 } from "../../physics/pbd/math";
+import { v3, vAdd, vLen, vSub, type V3 } from "../../physics/pbd/math";
 import { RichManBrain } from "../events/richManBrain";
 import { BirdSystem } from "../events/birds";
 import { InsultSystem } from "../events/insults";
@@ -53,8 +53,11 @@ export class SherpasMatch {
   private gen: WallGenerator;
   private anchors: AnchorSystem;
   private sherpas: [SherpaRig, SherpaRig];
-  private rope: RopeSystem;
-  private ropeState: RopeState | null = null;
+  private plank: PlankSystem;
+  private plankState: PlankState | null = null;
+  private richFellHandled = false;
+  private lastSlipWarnAt = -10;
+  private plankLenM: number;
   private rich: RichManSim;
   private brain: RichManBrain;
   private birds: BirdSystem;
@@ -146,13 +149,14 @@ export class SherpasMatch {
       new SherpaRig(mkDeps(1), this.gen.secondStartHolds()),
     ];
 
-    this.rope = new RopeSystem(this.data.tuning.rope, this.data.tuning.richMan);
-    const wa = this.sherpas[0].waist();
-    const wb = this.sherpas[1].waist();
-    // el ricachón nace YA TENSO (cuerda de porteo): cintura - segmentMax. Nunca
-    // bajo el suelo (clamp 0.55) y sin caída inicial (antes caía 2 m con holgura).
-    const hang0 = v3((wa.x + wb.x) / 2, Math.max(Math.min(wa.y, wb.y) - this.data.tuning.rope.segmentMax, 0.55), this.wallFrontZ - 0.45);
-    this.rich = new RichManSim(this.data.tuning.richMan.mass, this.wallFrontZ, 0, hang0, this.data.tuning.richMan.massTransitionSeconds);
+    this.plank = new PlankSystem(this.data.tuning.plank);
+    this.plankLenM = this.data.tuning.plank?.plankLen ?? PLANK_DEFAULTS.plankLen;
+    const wa0 = this.sherpas[0].waist();
+    const wb0 = this.sherpas[1].waist();
+    // el ricachón nace SENTADO en la tabla, nivelada bajo el sherpa más bajo.
+    this.plankState = this.plank.reset(wa0, wb0, this.wallFrontZ);
+    this.rich = new RichManSim(this.data.tuning.richMan.mass, this.wallFrontZ, 0, this.plankState.center, this.data.tuning.richMan.massTransitionSeconds);
+    this.rich.sitPose(this.plankState.center, this.plankState.angle, 0, 0);
     this.richMassTarget = this.data.tuning.richMan.mass;
 
     this.brain = new RichManBrain(
@@ -181,7 +185,7 @@ export class SherpasMatch {
     deps.scene.spawnSherpa(0, this.sherpas[0].rig);
     deps.scene.spawnSherpa(1, this.sherpas[1].rig);
     deps.scene.spawnRichMan();
-    this.rope.reset(wa, wb, hang0);
+    deps.scene.spawnPlank(this.plankLenM);
 
     this.d.hud.bindPlayers(
       { p1: "ratón: pulsa y arrastra", p2: "teclado opcional" },
@@ -347,17 +351,44 @@ export class SherpasMatch {
       }
     }
 
-    // 6. ricachón: cerebro (impulsos) + física propia.
+    // 6-7. tabla de porteo: cerebro del ricachón (bamboleo) + cabos colgados de
+    // cada sherpa + pose sentada. Si la tabla se desequilibra, el ricachón
+    // DESLIZA y puede caer al vacío (caída de equipo, petición del jugador).
     this.brain.tick(dt, this.simTime);
+    const wobble = this.rich.drainWobble();
+    this.plankState = this.plank.step(dt, {
+      a: this.sherpas[0].waist(),
+      b: this.sherpas[1].waist(),
+      wallFrontZ: this.wallFrontZ,
+      time: this.simTime,
+      wobble,
+      moveSherpa: (p, delta) => {
+        const w = this.sherpas[p].rig.particles[P.pelvisC];
+        w.pos = vAdd(w.pos, delta);
+        w.prev = vAdd(w.prev, delta); // tirón de posición sin velocidad fantasma
+      },
+    });
+    const ps = this.plankState;
+    if (ps.fellOff && !this.richFellHandled) {
+      this.richFellHandled = true;
+      this.rich.launchFall(ps.fellDir);
+      this.d.audio.play("fall");
+      this.onTeamFell(true);
+    }
+    if (this.rich.seated) {
+      // pose sentada (la tabla la sostiene; también durante el congelado de cima).
+      this.rich.sitPose(ps.center, ps.angle, ps.slide, this.simTime);
+    }
     const rmInfo = this.rich.step(dt);
     if (rmInfo.bumpWall > 1) this.d.bus.emit("RichBumpWall", { speed: rmInfo.bumpWall });
 
-    // 7. cuerda: restricciones unilaterales A–R–B + corrección de extremos.
-    const ropeT = this.data.tuning.rope;
-    const epA = sherpaEndpoint(this.sherpas[0].rig.particles[P.pelvisC], ropeT, this.rich.currentMass());
-    const epB = sherpaEndpoint(this.sherpas[1].rig.particles[P.pelvisC], ropeT, this.rich.currentMass());
-    const epR = richEndpoint(this.rich.bodies[RM.pelvis], 0.12, this.data.tuning.rope);
-    this.ropeState = this.rope.solve(dt, epA, epB, epR, this.wallFrontZ);
+    // aviso legible: "¡el ricachón resbala!" (una vez cada 2,5 s mientras resbala).
+    if (!ps.fellOff && !ps.grounded && ps.slideFrac > (this.data.tuning.plank?.warnSlideFrac ?? 0.42)
+      && this.simTime - this.lastSlipWarnAt > 2.5) {
+      this.lastSlipWarnAt = this.simTime;
+      this.d.hud.subtitle(this.d.hud.t("hud.plank.slip"), 2.2);
+      this.d.audio.play("creak");
+    }
 
     // 8. desgaste/rotura de anclajes.
     this.anchors.update(dt);
@@ -365,10 +396,10 @@ export class SherpasMatch {
     // 9. métricas cooperativas + caída de equipo + campamentos.
     const wa = this.sherpas[0].waist();
     const wb = this.sherpas[1].waist();
-    if (this.ropeState) {
+    if (this.plankState) {
       this.balance.tick(wa.y, wb.y, {
-        tensionA: this.ropeState.tensionA, tensionB: this.ropeState.tensionB,
-        slack: this.ropeState.slack, overstretch: this.ropeState.overstretch,
+        tensionA: this.plankState.tensionA, tensionB: this.plankState.tensionB,
+        slack: this.plankState.slack, overstretch: this.plankState.tiltDanger,
       });
     }
     const totalAnchors = this.sherpas[0].anchorsCount() + this.sherpas[1].anchorsCount();
@@ -519,11 +550,15 @@ export class SherpasMatch {
     this.sherpas[1].respawnAt(holdsB);
     const na = this.sherpas[0].waist();
     const nb = this.sherpas[1].waist();
-    const hang = v3((na.x + nb.x) / 2, Math.max(Math.min(na.y, nb.y) - this.data.tuning.rope.segmentMax, 0.55), this.wallFrontZ - 0.45);
-    this.rich.reset(hang);
+    // tabla re-colgada nivelada + ricachón sentado de nuevo (coordinación a cero).
+    this.plankState = this.plank.reset(na, nb, this.wallFrontZ);
+    this.richFellHandled = false;
+    this.lastSlipWarnAt = -10;
+    this.rich.seated = true;
+    this.rich.reset(this.plankState.center);
+    this.rich.sitPose(this.plankState.center, this.plankState.angle, 0, 0);
     this.richMassTarget = this.data.tuning.richMan.mass;
     this.rich.setMassTarget(this.richMassTarget);
-    this.rope.reset(na, nb, hang);
     this.brain.reset();
     this.teamFall.reset();
     this.birds.clear();
@@ -535,7 +570,8 @@ export class SherpasMatch {
     this.d.scene.spawnSherpa(0, this.sherpas[0].rig);
     this.d.scene.spawnSherpa(1, this.sherpas[1].rig);
     this.d.scene.spawnRichMan();
-    this.d.scene.recenter([na, nb, hang]);
+    this.d.scene.spawnPlank(this.plankLenM);
+    this.d.scene.recenter([na, nb, this.plankState.center]);
   }
 
   /** 4 presas firmes del campamento: 2 a la izquierda (A) y 2 a la derecha (B). */
@@ -590,12 +626,16 @@ export class SherpasMatch {
     return this.d.choice.resume && this.d.resumeSave ? this.d.resumeSave.seed : this.d.choice.seed;
   }
 
-  private onTeamFell(): void {
+  private onTeamFell(richFell = false): void {
     this.stats.teamFalls++;
-    this.propina.add(-15, "team_fall", this.d.bus);
-    this.d.audio.play("fall");
+    this.propina.add(richFell ? -12 : -15, richFell ? "rich_fell" : "team_fall", this.d.bus);
+    this.d.audio.play(richFell ? "wail" : "fall");
     this.d.audio.play("wail");
-    this.d.hud.banner(this.d.hud.t("hud.teamFall"), this.d.hud.t("hud.teamFallSub"), 2.4);
+    this.d.hud.banner(
+      richFell ? this.d.hud.t("hud.richFell") : this.d.hud.t("hud.teamFall"),
+      richFell ? this.d.hud.t("hud.richFellSub") : this.d.hud.t("hud.teamFallSub"),
+      2.4,
+    );
     this.sayInsult("fall");
     this.frozen = true;
     this.respawnTimer = 2.6;
@@ -611,7 +651,7 @@ export class SherpasMatch {
         return t === undefined ? Infinity : this.simTime - t;
       },
       richManState: () => this.brain.state,
-      ropeOverstretched: () => (this.ropeState?.overstretch ?? 0) > 0.05,
+      ropeOverstretched: () => (this.plankState?.tiltDanger ?? 0) > 0.35,
       richHarness: () => this.rich.harness(),
       sherpaBelow: (pos) => {
         for (const p of [0, 1] as const) {
@@ -771,7 +811,10 @@ export class SherpasMatch {
     // …y anillos de apuntado de teclado solo si alguien usó las teclas hace poco.
     s.syncAim(0, !dragging && this.simTime < this.kbAimUntil[0] ? this.sherpas[0].aim : null, this.wallFrontZ);
     s.syncAim(1, !dragging && this.simTime < this.kbAimUntil[1] ? this.sherpas[1].aim : null, this.wallFrontZ);
-    if (this.ropeState) s.syncRope(this.ropeState.nodesA, this.ropeState.nodesB);
+    if (this.plankState) {
+      s.syncRope(this.plankState.nodesA, this.plankState.nodesB);
+      s.syncPlank(this.plankState.center, this.plankState.angle, this.plankLenM);
+    }
     s.syncRichMan(this.rich, this.alpha);
     const t0 = this.trash[0];
     s.syncTrash(t0 && t0.alive ? t0.pos : null, this.simTime * 6);
@@ -779,7 +822,8 @@ export class SherpasMatch {
     s.syncBirds(this.birds.birdsForRender());
     const wa = this.sherpas[0].waist();
     const wb = this.sherpas[1].waist();
-    s.updateCamera(frameDt, [wa, wb, this.rich.pelvis()], vLen(vSub(wa, wb)));
+    const camPts = this.plankState ? [wa, wb, this.plankState.center] : [wa, wb];
+    s.updateCamera(frameDt, camPts, vLen(vSub(wa, wb)));
 
     this.d.hud.pruneBubbles(this.simTime);
     this.hudAcc += frameDt;
@@ -808,9 +852,9 @@ export class SherpasMatch {
       deltaH: this.balance.snapshot.deltaH,
       balanceState: this.balance.snapshot.state,
       share: [this.balance.snapshot.shareA, this.balance.snapshot.shareB],
-      ropeSlack: this.ropeState?.slack ?? 0,
-      ropeSegmentMax: this.data.tuning.rope.segmentMax,
-      overstretch: this.ropeState?.overstretch ?? 0,
+      plankTiltDeg: this.plankState?.tiltDeg ?? 0,
+      plankSlip: this.plankState?.slideFrac ?? 0,
+      plankDanger: this.plankState?.tiltDanger ?? 0,
       narrativeY: this.gen.narrativeHeightOf(Math.min(this.sherpas[0].waist().y, this.sherpas[1].waist().y)),
       maxNarrativeY: this.data.phases[this.data.phases.length - 1].narrativeHeight + this.data.phases[this.data.phases.length - 1].wallHeightM,
       nextCampId: this.gen.nextCampAbove(Math.min(this.sherpas[0].waist().y, this.sherpas[1].waist().y))?.campId ?? null,
@@ -828,10 +872,11 @@ export class SherpasMatch {
     const waD = this.sherpas[0].waist();
     const wbD = this.sherpas[1].waist();
     const rD = this.rich.pelvis();
+    const pkD = this.plankState;
     this.d.hud.debug(
       `${this.d.scene.backend} · ${fps} fps · tick ${this.tickMs.toFixed(1)} ms\n` +
-      `T A:${this.sherpas[0].maxTension().toFixed(2)} B:${this.sherpas[1].maxTension().toFixed(2)} · cuerda ${Math.round(this.balance.snapshot.tensionA)}N/${Math.round(this.balance.snapshot.tensionB)}N\n` +
-      `ricachón: ${st.richState} · ${Math.round(this.rich.currentMass())} kg\n` +
+      `T A:${this.sherpas[0].maxTension().toFixed(2)} B:${this.sherpas[1].maxTension().toFixed(2)} · tabla ${pkD ? `${pkD.tiltDeg.toFixed(0)}° desliz ${(pkD.slideFrac * 100).toFixed(0)}%` : "—"}\n` +
+      `ricachón: ${st.richState} · ${Math.round(this.rich.currentMass())} kg${this.rich.seated ? " (sentado)" : " (CAYENDO)"}\n` +
       `A(${waD.x.toFixed(2)},${waD.y.toFixed(2)}) B(${wbD.x.toFixed(2)},${wbD.y.toFixed(2)}) R(${rD.x.toFixed(2)},${rD.y.toFixed(2)}) anclas ${this.sherpas[0].anchorsCount()}+${this.sherpas[1].anchorsCount()}` +
       (this.dragLimb ? ` · arrastre ${this.dragLimb}` : ""),
     );
@@ -854,6 +899,7 @@ export class SherpasMatch {
       limbs: limbsProbe,
       holds: holdsProbe,
       drag: this.dragLimb ? { p: this.dragPlayer, l: this.dragLimb, magnet: magnetId } : null,
+      plank: pkD ? { tiltDeg: Math.round(pkD.tiltDeg * 10) / 10, slide: Math.round(pkD.slideFrac * 100) / 100, fell: pkD.fellOff } : null,
     });
   }
 
@@ -875,7 +921,10 @@ export class SherpasMatch {
   toggleHelp(): boolean { return this.d.hud.showHelp(); }
 
   recenterCamera(): void {
-    this.d.scene.recenter([this.sherpas[0].waist(), this.sherpas[1].waist(), this.rich.pelvis()]);
+    const pts = this.plankState
+      ? [this.sherpas[0].waist(), this.sherpas[1].waist(), this.plankState.center]
+      : [this.sherpas[0].waist(), this.sherpas[1].waist()];
+    this.d.scene.recenter(pts);
   }
 
   dispose(): void {

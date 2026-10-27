@@ -49,8 +49,11 @@ const TRAVEL_SPEED = 3.0;       // velocidad del viaje de extremidad (m/s)
 const TRAVEL_MIN_S = 0.2;
 const TRAVEL_MAX_S = 0.55;
 const LIMB_FOLLOW = 12;         // ganancia del pendejo cosmético (1/s)
-const ARM = { upper: 0.34, fore: 0.32 };
-const LEG = { thigh: 0.42, shin: 0.42 };
+// Huesos cosméticos IGUALADOS al alcance real de juego (fix "escaladores de
+// goma"): colgado, el hombro queda a 0,87 m de la presa y el pie de apoyo a
+// ~0,97 m de la cadera. Con huesos más cortos las cápsulas se estiraban SIEMPRE.
+const ARM = { upper: 0.46, fore: 0.42 };   // suma 0,88 ≈ colgado real (0,87)
+const LEG = { thigh: 0.50, shin: 0.47 };   // suma 0,97 ≈ apoyo real (0,97)
 const SHOULDER_H = 0.45, CHEST_H = 0.32, HEAD_H = 0.62, HIP_X = 0.13, SH_X = 0.19;
 const BODY_R = 0.32;            // margen de pared/suelo del cuerpo
 const FLOOR_MARGIN = 0.45;
@@ -222,6 +225,10 @@ export class SherpaRig {
     if (vLen(vSub(pos, this.rig.particles[CHAIN_ROOT[limb]].pos)) <= reach) return true;
     return vLen(vSub(pos, this.limbPt[limb])) <= reach * TIP_REACH_MULT;
   }
+
+  /** Alcance visual máximo de la extremidad desde su raíz: lo que se estira el
+   *  brazo/pierna mientras arrastra (fix "escaladores de goma"). */
+  dragMaxReach(limb: Limb): number { return this.reachOf(limb) * TIP_REACH_MULT; }
 
   /** Busca el mejor hold libre para la extremidad cerca del apuntado y dentro del alcance. */
   private findHoldFor(limb: Limb): HoldInstance | null {
@@ -408,7 +415,16 @@ export class SherpaRig {
       const tr = this.travel[limb];
       if (this.dragging === limb && this.dragPos) {
         // sigue al puntero; si hay imán, la punta es SUCCIONADA hacia la presa.
-        const tgt = this.dragHold ? this.dragHold.pos : this.dragPos;
+        // FIX "escaladores de goma": el objetivo se ACOTA al alcance máximo desde
+        // la raíz (hombro/cadera) — el brazo se estira hacia el puntero pero NUNCA
+        // más allá de su longitud de juego. Al soltar, el viaje determinista
+        // completa la presa si el imán la capturó.
+        const root = this.rig.particles[CHAIN_ROOT[limb]].pos;
+        const maxLen = this.reachOf(limb) * TIP_REACH_MULT;
+        let tgt = this.dragHold ? this.dragHold.pos : this.dragPos;
+        const toT = vSub(tgt, root);
+        const dT = vLen(toT);
+        if (dT > maxLen) tgt = vAdd(root, vScale(toT, maxLen / dT));
         const k = 1 - Math.exp(-dt * (this.dragHold ? DRAG_MAGNET_PULL : DRAG_FOLLOW));
         this.limbPt[limb] = vAdd(this.limbPt[limb], vScale(vSub(tgt, this.limbPt[limb]), k));
       } else if (st.anchored) {

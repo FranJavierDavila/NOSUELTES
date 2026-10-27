@@ -11,10 +11,19 @@ export interface LimbTuning {
 }
 export interface RopeTuning { segmentMax: number; totalMax: number; overstretchAt: number; visualNodes: number; nodeRadius: number; slackGravity: number; iterations: number; nodeMass: number; nodeDamping: number; slackFactor: number; maxCatchSpeed: number; maxCorrectionPerTick: number; waistEffectiveMass: number }
 export interface RichManTuning { mass: number; foodBonus: number; massTransitionSeconds: number; harnessOffsetY: number; bumpWallSpeed: number; bumpImpulseToRope: number }
+export interface PlankTuning {
+  ropeLen: number; plankLen: number; ropeSag: number; slideAccel: number;
+  restAngleDeg: number; recentreRate: number; fallSlideFrac: number;
+  fallAngleDeg: number; warnSlideFrac: number; swingDamping: number;
+  iterations: number; maxSpanSlackM: number;
+}
 export interface TuningData {
   schemaVersion: number;
   tick: TickData; limb: LimbTuning; rope: RopeTuning;
-  richMan: RichManTuning; balance: { warnDeltaH: number; badDeltaH: number };
+  richMan: RichManTuning;
+  /** tabla de porteo (opcional: faltan valores → PLANK_DEFAULTS). */
+  plank?: PlankTuning;
+  balance: { warnDeltaH: number; badDeltaH: number };
   fall: { teamFallSeconds: number; teamFallMeters: number };
   anchors: { attachSeconds: number; defaultMaxForceHand: number; defaultMaxForceFoot: number; loadSpikeWindow: number };
 }

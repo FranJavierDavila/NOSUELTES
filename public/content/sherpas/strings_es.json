@@ -1,7 +1,7 @@
 {
   "menu": {
     "title": "SHERPAS AL LÍMITE",
-    "subtitle": "Dos sherpas, un ricachón, una cuerda y el Everest.",
+    "subtitle": "Dos sherpas, un ricachón en su tabla y el Everest.",
     "start": "¡GO!",
     "difficulty": "Dificultad",
     "difficulty.tranquilo": "Tranquilo",
@@ -20,6 +20,12 @@
     "rope.taut": "tensada",
     "rope.slack": "holgura",
     "rope.overstretch": "¡CUERDA AL LÍMITE!",
+    "plank": "Tabla",
+    "plank.level": "nivelada",
+    "plank.tilt": "inclinada {deg}°",
+    "plank.slip": "¡EL RICACHÓN RESBALA!",
+    "richFell": "¡EL RICACHÓN HA CAÍDO!",
+    "richFellSub": "La tabla se ha desequilibrado… de vuelta al último campamento.",
     "loadShare": "Carga",
     "level.ok": "Nivelados",
     "level.warn": "Desnivel",
@@ -45,7 +51,7 @@
     "wetAnchors": "¡Anclajes mojados abajo!",
     "gripLocked": "Extremidad bloqueada {s}s",
     "howToTitle": "Cómo se sube",
-    "howToSub": "PULSA una mano o pie y ARRASTRALO: las presas cercanas lo imantan (aro verde) y al soltar se fija, si alcanzas. Sube primero los pies y luego las manos · teclado opcional · H = ayuda"
+    "howToSub": "PULSA una mano o pie y ARRASTRALO: las presas cercanas lo imantan (aro verde) y al soltar se fija, si alcanzas. Subid LOS DOS a la misma altura: si uno se adelanta, la tabla se inclina y el ricachón resbala · H = ayuda"
   },
   "limb": {
     "hand_l": "M.Izq",
@@ -98,11 +104,11 @@
   },
   "help": {
     "title": "Cómo se juega",
-    "goal": "Objetivo: los DOS sherpas suben el Everest llevando el ricachón, colgado de la cuerda entre ellos. Llegad juntos a la cima (5301 m).",
+    "goal": "Objetivo: los DOS sherpas suben el Everest llevando al ricachón SENTADO en una tabla que cuelga de una cuerda por cada lado. Llegad juntos a la cima (5301 m).",
     "step1": "1) AGARRA: pulsa sobre una mano o pie de cualquier sherpa (naranja o azul) y manten el clic. La extremidad queda en tu poder y se suelta de su presa.",
     "step2": "2) ARRASTRA: mueve el puntero por la pared. Las presas cercanas actúan como IMANES: verás un aro verde cuando una presa quiera capturar la extremidad. Solo se fijan presas que puedes alcanzar.",
     "step3": "3) SUBE: suelta el clic sobre la presa y la extremidad vuela hasta ella. Alterna pies y manos (primero los pies, luego las manos) y nunca sueltes las 4 a la vez o caeréis.",
-    "step4": "4) EN EQUIPO: el ricachón pesa y tira de la cuerda. Si un sherpa cae, el otro aguanta: id por parejas de presas y descansad con las 4 extremidades ancladas.",
+    "step4": "4) COORDINAOS: de cada lado de la tabla sale una cuerda hacia un sherpa. Si uno sube más que el otro, la tabla se INCLINA, se desplaza y el ricachón RESBALA hacia el vacío: subed a la misma altura, peldaño a peldaño.",
     "extra": "R espanta pájaros · Espacio pausa · C reencuadra cámara · H abre/cierra esta ayuda."
   }
 }

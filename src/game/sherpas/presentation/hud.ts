@@ -17,9 +17,10 @@ export interface HudTickState {
   deltaH: number;
   balanceState: BalanceUiState;
   share: [number, number];
-  ropeSlack: number;
-  ropeSegmentMax: number;
-  overstretch: number;
+  /** tabla de porteo: inclinación (grados, con signo) y deslizamiento (0..1). */
+  plankTiltDeg: number;
+  plankSlip: number;
+  plankDanger: number;
   narrativeY: number;
   maxNarrativeY: number;
   nextCampId: string | null;
@@ -232,13 +233,16 @@ export class SherpaHud {
       ? `${this.t("hud.nextCamp")}: ${state.nextCampId} · F${state.phase}`
       : this.t("hud.summit");
     this.el.prog!.style.width = `${Math.round(Math.min(1, Math.max(0, state.progress)) * 100)}%`;
-    // cuerda
-    const tautRatio = 1 - Math.min(1, state.ropeSlack / Math.max(0.01, state.ropeSegmentMax));
-    const ropeText = state.overstretch > 0.05
-      ? this.t("hud.rope.overstretch")
-      : `${this.t("hud.rope")}: ${tautRatio > 0.7 ? this.t("hud.rope.taut") : this.t("hud.rope.slack")}`;
-    this.el.rope!.textContent = ropeText;
-    this.el.rope!.style.color = state.overstretch > 0.05 ? this.hud.ropeIndicator.tensionColor : "#e8eef4";
+    // tabla de porteo: nivelada / inclinada / ¡resbala! (aviso también en rojo)
+    const slipping = state.plankSlip > 0.42 || state.plankDanger > 0.55;
+    const tiltAbs = Math.abs(state.plankTiltDeg);
+    const tiltTxt = tiltAbs < 4
+      ? this.t("hud.plank.level")
+      : this.fmt("hud.plank.tilt", { deg: String(Math.round(tiltAbs)) });
+    this.el.rope!.textContent = slipping
+      ? this.t("hud.plank.slip")
+      : `${this.t("hud.plank")}: ${tiltTxt}`;
+    this.el.rope!.style.color = slipping ? this.hud.ropeIndicator.tensionColor : "#e8eef4";
     // nivel
     const levelKey = state.balanceState === "equilibrado" ? "hud.level.ok" : state.balanceState === "aviso" ? "hud.level.warn" : "hud.level.bad";
     this.el.level!.textContent = `${this.t(levelKey)} (${state.deltaH.toFixed(1)} m)`;

@@ -1,7 +1,7 @@
 {
   "menu": {
     "title": "SHERPAS AT THE LIMIT",
-    "subtitle": "Two sherpas, one insufferable rich man, one rope, one Everest.",
+    "subtitle": "Two sherpas, a rich man on his plank, and Everest.",
     "start": "GO!",
     "difficulty": "Difficulty",
     "difficulty.tranquilo": "Chill",
@@ -45,7 +45,13 @@
     "wetAnchors": "Anchors below got wet!",
     "gripLocked": "Limb locked {s}s",
     "howToTitle": "How to climb",
-    "howToSub": "PRESS a hand or foot and DRAG it: nearby holds magnetize it (green ring) and it fixes on release if you reach. Feet first, then hands · optional keyboard · H = help"
+    "howToSub": "PRESS a hand or foot and DRAG it: nearby holds magnetize it (green ring) and it sticks on release, if you reach. Climb BOTH at the same height: if one rushes ahead the plank tilts and the rich man slips · H = help",
+    "plank": "Plank",
+    "plank.level": "level",
+    "plank.tilt": "tilted {deg}°",
+    "plank.slip": "THE RICH MAN IS SLIPPING!",
+    "richFell": "THE RICH MAN FELL!",
+    "richFellSub": "The plank tipped over… back to the last camp."
   },
   "limb": {
     "hand_l": "L.Hand",
@@ -98,11 +104,11 @@
   },
   "help": {
     "title": "How to play",
-    "goal": "Goal: BOTH sherpas climb Everest carrying the rich man, who hangs from the rope between them. Reach the summit together (5301 m).",
+    "goal": "Goal: the TWO sherpas climb Everest carrying the rich man SITTING on a plank hung by a rope on each side. Reach the summit (5301 m) together.",
     "step1": "1) GRAB: click a hand or foot of either sherpa (orange or blue) and hold. The limb is now yours and lets go of its hold.",
     "step2": "2) DRAG: move the pointer across the wall. Nearby holds act like MAGNETS: a green ring appears when a hold can capture the limb. Only holds you can reach will catch it.",
     "step3": "3) CLIMB: release the click over the hold and the limb flies to it. Alternate feet and hands (feet first, then hands) and never let go of all 4 at once or you will fall.",
-    "step4": "4) TEAMWORK: the rich man is heavy and pulls the rope. If one sherpa falls, the other holds on: move in pairs of holds and rest with all 4 limbs anchored.",
+    "step4": "4) COORDINATE: one rope goes from each side of the plank to each sherpa. If one climbs higher than the other, the plank TILTS, shifts and the rich man SLIPS towards the abyss: climb at the same height, step by step.",
     "extra": "R shoo birds · Space pause · C recenter camera · H opens/closes this help."
   }
 }

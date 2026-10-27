@@ -41,6 +41,20 @@
     "bumpWallSpeed": 1.6,
     "bumpImpulseToRope": 0.25
   },
+  "plank": {
+    "ropeLen": 1.4,
+    "plankLen": 1.7,
+    "ropeSag": 0.45,
+    "slideAccel": 2.4,
+    "restAngleDeg": 16,
+    "recentreRate": 0.3,
+    "fallSlideFrac": 0.74,
+    "fallAngleDeg": 55,
+    "warnSlideFrac": 0.42,
+    "swingDamping": 0.9,
+    "iterations": 10,
+    "maxSpanSlackM": 0.25
+  },
   "balance": {
     "warnDeltaH": 0.6,
     "badDeltaH": 1.2

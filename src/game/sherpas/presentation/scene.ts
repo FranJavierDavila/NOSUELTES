@@ -284,7 +284,45 @@ export class SherpaScene {
     Quaternion.FromUnitVectorsToRef(Vector3.Up(), this.tmpDir, mesh.rotationQuaternion);
   }
 
-  // ---------- cuerda y ricachón ----------
+  // ---------- tabla de porteo, cuerda y ricachón ----------
+
+  private plankMesh: Mesh | null = null;
+
+  /** Tabla de madera con travesaños y nudos en los cabos (el ricachón va sentado). */
+  spawnPlank(lenM: number): void {
+    this.despawnPlank();
+    const board = MeshBuilder.CreateBox("plank", { width: 1.7, height: 0.07, depth: 0.42 }, this.scene);
+    board.material = mat(this.scene, "plankM", "#9a6b3f");
+    const strapMat = mat(this.scene, "plankStrapM", "#54402c");
+    for (const sx of [-0.55, 0.55]) {
+      const strap = MeshBuilder.CreateBox(`plankStrap${sx}`, { width: 0.1, height: 0.085, depth: 0.46 }, this.scene);
+      strap.material = strapMat;
+      strap.parent = board;
+      strap.position.x = sx;
+    }
+    for (const sx of [-0.83, 0.83]) {
+      const knot = MeshBuilder.CreateSphere(`plankKnot${sx}`, { diameter: 0.12, segments: 6 }, this.scene);
+      knot.material = strapMat;
+      knot.parent = board;
+      knot.position.x = sx;
+    }
+    board.scaling.x = lenM / 1.7;
+    this.plankMesh = board;
+  }
+
+  despawnPlank(): void {
+    if (!this.plankMesh) return;
+    this.plankMesh.dispose();
+    this.plankMesh = null;
+  }
+
+  syncPlank(center: V3, angle: number, _len: number): void {
+    void _len;
+    if (!this.plankMesh) this.spawnPlank(1.7);
+    this.plankMesh!.position.set(center.x, center.y, center.z);
+    this.plankMesh!.rotationQuaternion = null; // Euler simple: giro en el plano de pantalla
+    this.plankMesh!.rotation.set(0, 0, angle);
+  }
 
   ensureRopeLines(): void {
     for (let i = 0; i < 2; i++) {

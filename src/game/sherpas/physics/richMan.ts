@@ -1,6 +1,9 @@
-// RichManRig (doc 4.3): ragdoll ligero de 11 partículas colgado del arnés.
-// No lo controla nadie: RichManBrain lo anima con impulsos procedurales.
-// Colisiona con la pared (golpe cómico) y con el suelo.
+// RichManRig (doc 4.3): ragdoll ligero de 11 partículas. DOS MODOS:
+//  - SENTADO (tabla de porteo): pose cinemática sobre la tabla (sitPose) —
+//    cero dinámica propia, imposible que se retuerza. Los impulsos del cerebro
+//    (pataleo, comer, ruido) se derivan a la tabla como bamboleo.
+//  - RAGDOLL libre (caída al vacío cuando se desliza de la tabla): gravedad +
+//    sticks + colisiones, como siempre.
 import { v3, vAdd, vSub, vScale, vLen, vClone, type V3 } from "../../physics/pbd/math";
 
 export const RM = { head: 0, chest: 1, pelvis: 2, elbowL: 3, elbowR: 4, handL: 5, handR: 6, kneeL: 7, kneeR: 8, footL: 9, footR: 10 } as const;
@@ -23,6 +26,9 @@ export class RichManSim {
   private lastDt = 1 / 60;
   wallFrontZ: number;
   floorY: number;
+  /** sentado en la tabla: pose cinemática, sin física libre (tabla de porteo). */
+  seated = true;
+  private wobbleAccum = 0;
 
   constructor(
     private baseMass: number,
@@ -95,14 +101,56 @@ export class RichManSim {
   /** Variación de masa suave (doc 7.1: transiciones de 1 s, nunca saltos). */
   setMassTarget(kg: number): void { this.massTarget = Math.max(30, kg); }
 
-  /** Impulso de velocidad sobre un punto del cuerpo (procedural, doc 4.3). */
+  /** Impulso de velocidad sobre un punto del cuerpo (procedural, doc 4.3).
+   *  SENTADO: no toca el cuerpo — se deriva a la tabla como bamboleo. */
   impulse(idx: number, dv: V3): void {
+    if (this.seated) { this.wobbleAccum += dv.x * 0.6 + dv.y * 0.4; return; }
     const b = this.bodies[idx];
     b.prev = vSub(b.pos, vAdd(vSub(b.pos, b.prev), dv));
   }
   impulseAll(dv: V3): void { for (let i = 0; i < this.bodies.length; i++) this.impulse(i, dv); }
 
-  /** Paso propio: gravedad + sticks + mínimos + colisiones. La cuerda corrige después. */
+  /** Bamboleo acumulado por impulsos del cerebro en modo sentado (drena). */
+  drainWobble(): number { const w = this.wobbleAccum; this.wobbleAccum = 0; return w; }
+
+  /** Pose cinemática SENTADO en la tabla (centro, ángulo, deslizamiento).
+   *  Los 11 cuerpos se colocan relativos a la tabla cada tick: la pose SIEMPRE
+   *  acompaña a la tabla (inclinación, bamboleo, respiración cosmética). */
+  sitPose(center: V3, angle: number, slide: number, time: number): void {
+    this.seated = true;
+    const c = Math.cos(angle), s = Math.sin(angle);
+    const bob = Math.sin(time * 1.7) * 0.008;
+    const lean = -s * 0.16; // se inclina con la tabla (lectura del peligro)
+    const set = (i: number, dx: number, dy: number, dz = 0): void => {
+      const px = center.x + (dx + (i === RM.chest || i === RM.head ? lean : 0)) * c - (dy + bob) * s;
+      const py = center.y + (dx + (i === RM.chest || i === RM.head ? lean : 0)) * s + (dy + bob) * c;
+      const p = v3(px, py, center.z + dz);
+      this.bodies[i].prev = vClone(this.bodies[i].pos);
+      this.bodies[i].pos = p;
+    };
+    // sentado EN la tabla (superficie ≈ center + 0.05), mirando a cámara (−z).
+    set(RM.pelvis, slide, 0.19, 0.0);
+    set(RM.chest, slide, 0.52, -0.04);
+    set(RM.head, slide, 0.8, -0.1);
+    set(RM.elbowL, slide - 0.26, 0.4, -0.06);
+    set(RM.elbowR, slide + 0.26, 0.4, -0.06);
+    set(RM.handL, slide - 0.34, 0.28, -0.1);
+    set(RM.handR, slide + 0.34, 0.28, -0.1);
+    set(RM.kneeL, slide - 0.1, 0.1, -0.26);
+    set(RM.kneeR, slide + 0.1, 0.1, -0.26);
+    set(RM.footL, slide - 0.13, -0.16, -0.34);
+    set(RM.footR, slide + 0.13, -0.16, -0.34);
+  }
+
+  /** Se desliza de la tabla: pasa a ragdoll libre con velocidad heredada. */
+  launchFall(dir: number): void {
+    this.seated = false;
+    const kick = v3(dir * 0.9 / 60, -0.5 / 60, -0.15 / 60);
+    for (const b of this.bodies) b.prev = vSub(b.pos, kick);
+  }
+
+  /** Paso propio: gravedad + sticks + mínimos + colisiones. SENTADO: solo la
+   *  transición de masa (la pose la pone sitPose cada tick). */
   step(dt: number, iterations = 10): RichManStepInfo {
     this.lastDt = dt;
     // transición suave de masa (doc 7.1: nunca saltos) — y los cuerpos la siguen.
@@ -113,6 +161,7 @@ export class RichManSim {
         b.invMass = 1 / Math.max(1e-3, b.mass);
       }
     }
+    if (this.seated) return { bumpWall: 0, floorHit: false };
     let bumpWall = 0;
     let floorHit = false;
     for (const b of this.bodies) {
