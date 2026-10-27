@@ -19,6 +19,7 @@ import { InsultSystem } from "../events/insults";
 import { EventDirector, type DirectorContext } from "../events/director";
 import { spawnTrash, stepTrash, spawnUrine, stepUrine, type TrashProjectile, type UrineEffect } from "../events/effects";
 import { BalanceMonitor, TeamFallWatcher, PropinaMeter, newStats } from "./coop";
+import { WeatherSystem } from "./weather";
 import { WallGenerator, type CampZone } from "../world/wallGenerator";
 import { CampSystem, saveAscent, type AscentStats, type SavedAscent } from "../world/camps";
 import { PointerDrag } from "../input/drag";
@@ -65,6 +66,9 @@ export class SherpasMatch {
   private director: EventDirector;
   private balance: BalanceMonitor;
   private teamFall: TeamFallWatcher;
+  private weather: WeatherSystem;
+  /** avisos de "¡extremidad al límite!": una vez por episodio de fatiga. */
+  private critAnnounced = new Set<string>();
   private propina: PropinaMeter;
   private camps: CampSystem;
   private stats: AscentStats = newStats();
@@ -154,7 +158,14 @@ export class SherpasMatch {
       new SherpaRig(mkDeps(1), this.gen.secondStartHolds()),
     ];
 
-    this.plank = new PlankSystem(this.data.tuning.plank);
+    // la tabla toma de tuning.rope los parámetros de la cuerda VISUAL (cadena
+    // verlet): única fuente de verdad, sin duplicar datos (doc 11.3).
+    this.plank = new PlankSystem({
+      ...this.data.tuning.plank,
+      visualNodes: this.data.tuning.rope.visualNodes,
+      nodeDamping: this.data.tuning.rope.nodeDamping ?? 0.975,
+      slackGravity: this.data.tuning.rope.slackGravity ?? 9.81,
+    });
     this.plankLenM = this.data.tuning.plank?.plankLen ?? PLANK_DEFAULTS.plankLen;
     const wa0 = this.sherpas[0].waist();
     const wb0 = this.sherpas[1].waist();
@@ -177,6 +188,7 @@ export class SherpasMatch {
     this.insults = new InsultSystem(this.data.insults[deps.hud.lang], seed);
     this.balance = new BalanceMonitor(this.data.tuning, deps.bus);
     this.teamFall = new TeamFallWatcher(this.data.tuning, deps.bus);
+    this.weather = new WeatherSystem(this.data.tuning.weather, seed);
     this.propina = new PropinaMeter(this.data.hud);
     this.camps = new CampSystem(deps.bus, this.gen);
     this.director = new EventDirector(
@@ -364,11 +376,62 @@ export class SherpasMatch {
       }
     }
 
+    // RACHAS DE VIENTO (mecánica desequilibrante): aviso legible → racha con
+    // empuje lateral real. Antes de la tabla, para que el wobble y la cuerda
+    // visual la reciban este mismo tick. La puerta es altura de PARED (m desde
+    // la base), no altitud narrativa (5300+ la haría siempre cierta).
+    const windAlt = Math.min(this.sherpas[0].waist().y, this.sherpas[1].waist().y);
+    const wev = this.weather.step(this.simTime, dt, windAlt);
+    if (wev.began === "warn") {
+      this.d.audio.play("wind_warn");
+      this.d.hud.subtitle(this.d.hud.t("hud.windWarn"), 2.4);
+      this.d.hud.setWindChips(true);
+    } else if (wev.began === "gust") {
+      this.d.hud.subtitle(this.d.hud.t("hud.windGust"), 2.6);
+    } else if (wev.began === "calm") {
+      this.d.hud.setWindChips(false);
+    }
+    const wl = this.weather.windLevel;
+    this.d.audio.gustLevel(wl);
+    let windWobble = 0;
+    let ropeWindX = 0;
+    if (wl > 0.001) {
+      const wdir = this.weather.dir;
+      // empuje lateral a los CUERPOS: traslación posicional (pos y prev a media
+      // velocidad → deriva con algo de inercia, sin energía fantasma).
+      const dx = wdir * this.data.tuning.weather.pushPerSecondM * wl * dt;
+      for (const s of this.sherpas) {
+        for (const pt of s.rig.particles) {
+          pt.pos = vAdd(pt.pos, v3(dx, 0, 0));
+          pt.prev = vAdd(pt.prev, v3(dx * 0.55, 0, 0));
+        }
+      }
+      windWobble = wdir * this.data.tuning.weather.wobble * wl;
+      ropeWindX = wdir * this.data.tuning.weather.ropeWindAccel * wl;
+    }
+
+    // AVISOS DE FATIGA (papel claro de los indicadores, petición del jugador):
+    // el chip pasa a rojo parpadeante y se anuncia UNA vez por episodio.
+    const critAt = this.data.hud.fatigue.critAt ?? 0.75;
+    for (const p of [0, 1] as const) {
+      for (const limb of LIMBS) {
+        const st = this.sherpas[p].states.get(limb)!;
+        const key = `${p}:${limb}`;
+        if (st.anchored && st.fatigue >= critAt && !this.critAnnounced.has(key)) {
+          this.critAnnounced.add(key);
+          this.d.audio.creakIfTense(1, this.simTime);
+          this.d.hud.subtitle(this.d.hud.fmt("hud.limbCrit", { limb: this.d.hud.t(`limb.${limb}`) }), 2.2);
+        } else if (st.fatigue < critAt - 0.2) {
+          this.critAnnounced.delete(key);
+        }
+      }
+    }
+
     // 6-7. tabla de porteo: cerebro del ricachón (bamboleo) + cabos colgados de
     // cada sherpa + pose sentada. Si la tabla se desequilibra, el ricachón
     // DESLIZA y puede caer al vacío (caída de equipo, petición del jugador).
     this.brain.tick(dt, this.simTime);
-    const wobble = this.rich.drainWobble();
+    const wobble = this.rich.drainWobble() + windWobble;
     // pose del ricachón mandada por el FSM: sentado ⇄ de pie ⇄ caminando
     // (petición del jugador). Caminar desplaza la masa REAL sobre la tabla: el
     // lado cargado se hunde, tira de su sherpa y descarga al otro.
@@ -397,6 +460,7 @@ export class SherpasMatch {
       wallFrontZ: this.wallFrontZ,
       time: this.simTime,
       wobble,
+      ropeWindX,
       moveSherpa: (p, delta) => {
         const w = this.sherpas[p].rig.particles[P.pelvisC];
         w.pos = vAdd(w.pos, delta);
@@ -779,7 +843,10 @@ export class SherpasMatch {
       this.directorCtx().stealFood();
     });
     on("InsultSaid", (p) => {
-      this.d.audio.play("gibberish");
+      // VOZ DEL RICACHÓN (petición del jugador: "escucharse gritando con tono
+      // burlesco"): TTS pregenerado con tono subido; si falta el fichero,
+      // speechSynthesis; si no hay voz, charla sintética cómica.
+      this.d.audio.shout(p.text, this.d.hud.lang);
       this.d.hud.subtitle(p.text, 3.8);
       this.pendingBubbles.push({ text: p.text, until: this.simTime + 3.8 });
     });
@@ -958,6 +1025,8 @@ export class SherpasMatch {
         grips: this.sherpas[p].anchorsCount(),
       })),
       route: { band: this.gen.bandIndexOf((waD.y + wbD.y) / 2), pattern: this.gen.patternIdOfBand(this.gen.bandIndexOf((waD.y + wbD.y) / 2)) },
+      // rachas de viento (sonda E2E)
+      weather: { phase: this.weather.state, dir: this.weather.dir, level: Math.round(this.weather.windLevel * 100) / 100 },
     });
   }
 

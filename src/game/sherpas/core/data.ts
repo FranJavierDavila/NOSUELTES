@@ -17,6 +17,22 @@ export interface PlankTuning {
   fallAngleDeg: number; warnSlideFrac: number; swingDamping: number;
   iterations: number; maxSpanSlackM: number;
 }
+/** Rachas de viento (mecánica desequilibrante pedida por el jugador). */
+export interface WeatherTuning {
+  /** separación mínima/máxima entre rachas (s de calma). */
+  minGapSeconds: number; maxGapSeconds: number;
+  /** duración del aviso (telegrafía) y de la racha. */
+  warningSeconds: number; gustSeconds: number;
+  /** altura mínima de PARED (m desde la base) antes de la primera racha:
+   *  arranque protegido. Es altura de pared, NO narrativa (5300+). */
+  minAltitudeM: number;
+  /** deriva lateral máxima de los cuerpos a nivel pleno (m/s). */
+  pushPerSecondM: number;
+  /** aceleración lateral de la cuerda visual a nivel pleno (m/s²). */
+  ropeWindAccel: number;
+  /** bamboleo máximo que la racha mete en la tabla (escalar con signo). */
+  wobble: number;
+}
 export interface TuningData {
   schemaVersion: number;
   tick: TickData; limb: LimbTuning; rope: RopeTuning;
@@ -28,6 +44,7 @@ export interface TuningData {
    *  (los pies resbalan tras una gracia; la cuerda de porteo hace de seguro). */
   fall: { teamFallSeconds: number; teamFallMeters: number; twoHandsGraceSeconds?: number; slipReGripLock?: number };
   anchors: { attachSeconds: number; defaultMaxForceHand: number; defaultMaxForceFoot: number; loadSpikeWindow: number };
+  weather: WeatherTuning;
 }
 export interface AnchorTypeData {
   label: string; gripQuality: number; durability: number | null;
@@ -88,7 +105,7 @@ export interface InputMapData {
 }
 export interface HudData {
   tension: { warn: number; blinkHz: number; gradient: string[] };
-  fatigue: { barColor: string; maxHeightPx: number };
+  fatigue: { barColor: string; maxHeightPx: number; warnAt?: number; critAt?: number };
   levelBubble: { warnDeltaH: number; badDeltaH: number; colors: Record<string, string> };
   ropeIndicator: { tensionColor: string; slackColor: string; overstretchBlink: boolean };
   altitude: { chipColor: string; showNarrativeHeight: boolean };
@@ -162,7 +179,7 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
   const ajv = new Ajv({ allErrors: true, strict: false });
   const defs: Record<string, object> = {
     tuning: {
-      type: "object", required: ["tick", "limb", "rope", "richMan", "balance", "fall", "anchors"],
+      type: "object", required: ["tick", "limb", "rope", "richMan", "balance", "fall", "anchors", "weather"],
       properties: {
         schemaVersion: { type: "integer" },
         tick: { type: "object", required: ["fixedDeltaSeconds", "maxStepsPerFrame"], properties: { fixedDeltaSeconds: posNum, maxStepsPerFrame: { type: "integer", minimum: 1 } } },
@@ -179,6 +196,10 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
         balance: { type: "object", required: ["warnDeltaH", "badDeltaH"], properties: { warnDeltaH: posNum, badDeltaH: posNum } },
         fall: { type: "object", required: ["teamFallSeconds", "teamFallMeters"], properties: { teamFallSeconds: posNum, teamFallMeters: posNum, twoHandsGraceSeconds: posNum, slipReGripLock: posNum } },
         anchors: { type: "object", required: ["attachSeconds", "defaultMaxForceHand", "defaultMaxForceFoot"], properties: { attachSeconds: posNum, defaultMaxForceHand: posNum, defaultMaxForceFoot: posNum, loadSpikeWindow: posNum } },
+        weather: { type: "object", required: ["minGapSeconds", "maxGapSeconds", "warningSeconds", "gustSeconds", "minAltitudeM", "pushPerSecondM", "ropeWindAccel", "wobble"], properties: {
+          minGapSeconds: posNum, maxGapSeconds: posNum, warningSeconds: posNum, gustSeconds: posNum,
+          minAltitudeM: posNum, pushPerSecondM: posNum, ropeWindAccel: posNum, wobble: posNum,
+        } },
       },
     },
     anchor_types: {

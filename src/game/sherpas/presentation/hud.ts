@@ -11,6 +11,16 @@ export type BalanceUiState = "equilibrado" | "aviso" | "desequilibrado";
 export interface HudStartChoice { difficulty: string; seed: number; lang: Lang; resume: boolean; mute: boolean; daltonism: boolean; reduceShake: boolean; disablePee: boolean }
 
 export interface HudLimbsState { tension: number; fatigue: number; anchored: boolean }
+
+/** Estado legible del chip de una extremidad — el PAPEL CLARO de los
+ *  indicadores (petición del jugador): libre / firme / cansada / ¡se suelta!. */
+export type ChipState = "free" | "ok" | "warn" | "crit";
+export function chipState(anchored: boolean, fatigue: number, warnAt = 0.45, critAt = 0.75): ChipState {
+  if (!anchored) return "free";
+  if (fatigue >= critAt) return "crit";
+  if (fatigue >= warnAt) return "warn";
+  return "ok";
+}
 export interface HudTickState {
   timeS: number;
   players: HudLimbsState[][];
@@ -47,7 +57,13 @@ const CSS = `
 .sphud .p-title { font-size:11px; letter-spacing:.08em; text-transform:uppercase; opacity:.85; margin-bottom:6px; display:flex; justify-content:space-between; }
 .sphud .p-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:1px; }
 .sphud .limb-row { display:flex; gap:7px; }
-.sphud .limb { width:44px; text-align:center; }
+.sphud .limb { width:44px; text-align:center; border:1.5px solid transparent; border-radius:9px; padding:2px 0 3px; transition:border-color .18s, opacity .18s; }
+.sphud .limb.ok { border-color:rgba(90,212,106,.45); }
+.sphud .limb.warn { border-color:#e8c34a; }
+.sphud .limb.crit { border-color:#ff5a5a; animation:limbcrit .5s steps(2,end) infinite; }
+.sphud .limb.free { opacity:.42; }
+@keyframes limbcrit { 50% { box-shadow:0 0 0 3px rgba(255,90,90,.4); } }
+.sphud.windgust .limb { border-color:#8fc7ff; animation:limbcrit .65s steps(2,end) infinite; }
 .sphud .ring { width:34px; height:34px; border-radius:50%; margin:0 auto; position:relative; background:conic-gradient(var(--c) calc(var(--t)*360deg), rgba(255,255,255,.13) 0); }
 .sphud .ring::after { content:''; position:absolute; inset:5px; border-radius:50%; background:#12181e; }
 .sphud .ring.warn { animation: sphblink .14s linear infinite alternate; }
@@ -198,7 +214,7 @@ export class SherpaHud {
       const player = key === "p1" ? 0 : 1;
       const color = player === 0 ? "#d97b2f" : "#2f9bd9";
       const chips = limbLabels.map((limb) => `
-        <div class="limb" data-limb="${limb}">
+        <div class="limb free" data-limb="${limb}" title="${esc(this.t("hud.limbChipTip"))}">
           <div class="ring" style="--t:0;--c:#5ad46a"></div>
           <div class="limb-label">${esc(this.t(`limb.${limb}`))}</div>
           <div class="fat"><i style="width:0%;--fc:${this.hud.fatigue.barColor}"></i></div>
@@ -212,6 +228,8 @@ export class SherpaHud {
   update(state: HudTickState): void {
     const grad = this.daltonism ? this.hud.daltonismPalette.tensionGradient : this.hud.tension.gradient;
     const gradColor = (t: number): string => grad[Math.min(grad.length - 1, Math.floor(Math.min(1, t) * grad.length))];
+    const warnAt = this.hud.fatigue.warnAt ?? 0.45;
+    const critAt = this.hud.fatigue.critAt ?? 0.75;
     for (const key of ["p1", "p2"] as const) {
       const player = key === "p1" ? 0 : 1;
       const limbs = state.players[player] ?? [];
@@ -225,6 +243,12 @@ export class SherpaHud {
         ring.classList.toggle("warn", l.anchored && t > this.hud.tension.warn);
         const fat = node.querySelector<HTMLElement>(".fat > i")!;
         fat.style.width = `${Math.round(l.fatigue * 100)}%`;
+        // PAPEL CLARO DEL INDICADOR (petición del jugador): el chip entero
+        // cambia de estado — libre / firme / cansada / ¡se va a soltar!
+        const cs = chipState(l.anchored, l.fatigue, warnAt, critAt);
+        node.classList.remove("ok", "warn", "crit", "free");
+        node.classList.add(cs);
+        fat.style.background = cs === "crit" ? "#ff5a5a" : cs === "warn" ? "#e8c34a" : "var(--fc)";
       });
     }
     // altitud + progreso
@@ -290,6 +314,12 @@ export class SherpaHud {
     this.el.subtitle!.textContent = text;
     this.el.subtitle!.classList.remove("hidden");
     this.subtitleUntil = performance.now() + durS * 1000;
+  }
+
+  /** Racha de viento: los chips de extremidades pulsan (ponte a dos apoyos
+   *  buenos antes de que llegue el empuje). */
+  setWindChips(active: boolean): void {
+    this.root.classList.toggle("windgust", active);
   }
 
   telegraph(text: string, seconds: number): void {

@@ -70,5 +70,15 @@
     "defaultMaxForceHand": 420,
     "defaultMaxForceFoot": 560,
     "loadSpikeWindow": 0.12
+  },
+  "weather": {
+    "minGapSeconds": 14,
+    "maxGapSeconds": 24,
+    "warningSeconds": 2.2,
+    "gustSeconds": 3.4,
+    "minAltitudeM": 2.2,
+    "pushPerSecondM": 0.42,
+    "ropeWindAccel": 1.0,
+    "wobble": 0.35
   }
 }

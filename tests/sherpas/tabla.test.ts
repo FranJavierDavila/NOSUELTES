@@ -7,7 +7,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadSherpasData, type SherpasData } from "../../src/game/sherpas/core/data";
-import { PlankSystem, loadShare } from "../../src/game/sherpas/physics/plank";
+import { PlankSystem, PLANK_DEFAULTS, loadShare } from "../../src/game/sherpas/physics/plank";
 import { v3, vLen, vSub, type V3 } from "../../src/game/physics/pbd/math";
 
 const fsLoader = async (path: string): Promise<unknown> =>
@@ -19,7 +19,7 @@ let Z = 0;
 
 beforeAll(async () => {
   data = await loadSherpasData(fsLoader, "public/content/sherpas");
-  t = data.tuning.plank!;
+  t = { ...PLANK_DEFAULTS, ...data.tuning.plank };
   Z = data.wallGen.wall.zFront;
 });
 

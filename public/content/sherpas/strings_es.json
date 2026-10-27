@@ -54,7 +54,11 @@
     "wetAnchors": "¡Anclajes mojados abajo!",
     "gripLocked": "Extremidad bloqueada {s}s",
     "howToTitle": "Cómo se sube",
-    "howToSub": "PULSA una mano o pie y ARRASTRALO: las presas cercanas lo imantan (aro verde) y al soltar se fija, si alcanzas. Subid LOS DOS a la misma altura: si uno se adelanta, la tabla se inclina y el ricachón resbala · H = ayuda"
+    "howToSub": "PULSA una mano o pie y ARRASTRALO: las presas cercanas lo imantan (aro verde) y al soltar se fija, si alcanzas. Subid LOS DOS a la misma altura: si uno se adelanta, la tabla se inclina y el ricachón resbala · H = ayuda",
+    "windWarn": "¡RACHA DE VIENTO ENTRANTE!",
+    "windGust": "¡AGÁRRATE! VIENTO LATERAL",
+    "limbCrit": "¡{limb} AL LÍMITE! Se va a soltar…",
+    "limbChipTip": "Tensión (aro) y fatiga (barra): ámbar = cansada, rojo parpadeo = ¡se va a soltar! Cambia esa extremidad de presa."
   },
   "limb": {
     "hand_l": "M.Izq",

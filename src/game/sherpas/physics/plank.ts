@@ -14,14 +14,16 @@
 //    CAE al vacío (fellOff → caída de equipo).
 //  - Si los sherpas se separan demasiado, los tira suavemente el uno hacia el
 //    otro (la tabla no puede estirarse).
-//  - Cuerda visual analítica: catenaria entre hombro/arnés y cada cabo (con
-//    comba solo si sobra cuerda): imposible que "se pierda por la pantalla".
+//  - Cuerda visual = CADENA VERLET decorativa de nodos (petición del jugador:
+//    "que se comporte realmente como una cuerda... pequeños cilindros unidos
+//    que permitan que se doble y balancee de forma más natural"). Los extremos
+//    van CLAVADOS (mochila ↔ cabo de la tabla): imposible que se pierda.
 import { v3, vAdd, vSub, vScale, vLen, vClone, type V3 } from "../../physics/pbd/math";
 
 export interface PlankTuning {
   ropeLen: number;        // cuerda de porteo por lado (m)
   plankLen: number;       // largo total de la tabla (m)
-  ropeSag: number;        // comba visual (fracción de la holgura)
+  ropeSag: number;        // (legado) comba visual analítica; la usa el fallback
   slideAccel: number;     // aceleración de deslizamiento a 45° (m/s²)
   restAngleDeg: number;   // cono de rozamiento: bajo este ángulo no resbala
   recentreRate: number;   // recentrado del ricachón con tabla plana (m/s)
@@ -31,6 +33,10 @@ export interface PlankTuning {
   swingDamping: number;   // amortiguación verlet de los cabos
   iterations: number;     // proyecciones por tick
   maxSpanSlackM: number;  // margen antes de tirar de los sherpas
+  // --- cuerda visual (cadena verlet; valores desde tuning.rope vía match) ---
+  visualNodes: number;    // nodos del dibujo (segmentos = visualNodes)
+  nodeDamping: number;    // amortiguación por tick (0..1)
+  slackGravity: number;   // gravedad de la comba (m/s²)
 }
 
 export const PLANK_DEFAULTS: PlankTuning = {
@@ -46,6 +52,9 @@ export const PLANK_DEFAULTS: PlankTuning = {
   swingDamping: 0.9,
   iterations: 10,
   maxSpanSlackM: 0.25,
+  visualNodes: 14,
+  nodeDamping: 0.975,
+  slackGravity: 9.81,
 };
 
 export interface PlankState {
@@ -88,6 +97,8 @@ export interface PlankStepParams {
   wobble: number;
   /** aplica un tirón suave al sherpa (separación máxima de la pareja). */
   moveSherpa(p: 0 | 1, delta: V3): void;
+  /** viento lateral para la cuerda visual (aceleración x, m/s²) — rachas. */
+  ropeWindX?: number;
   /** el lado cargado por el ricachón TIRA hacia abajo de su sherpa (opcional;
    *  solo cuando su cuerda está tensa y la carga es claramente asimétrica). */
   loadTug?: (p: 0 | 1, dy: number) => void;
@@ -96,13 +107,81 @@ export interface PlankStepParams {
 const END_Z_OFF = 0.45;   // la tabla cuelga algo separada de la pared
 const G = 9.81;
 const MAX_END_SPEED = 0.06; // por tick (verlet): ≤ 3.6 m/s, nada puede vuele
-const ROPE_NODES = 9;
+const ROPE_ITERS = 16;      // restricciones de la cuerda VISUAL (decorativa)
+const ROPE_AMBIENT_WIND = 0.045; // vaivén ambiental mínimo (m/s²): nunca muerta
 const RICH_WALK_SPEED = 0.24; // m/s: el ricachón pasea despacio (es un señor)
 const RICH_LOAD = 0.55;       // cuánto pesa el ricachón en los cabos (palanca)
 const RICH_LOAD_G = 0.9;      // fracción de su peso que llega a las cuerdas
 
+/** Cadena VERLET decorativa de la cuerda (no es física de juego): los extremos
+ *  van clavados a sus anclajes, los nodos interiores caen por gravedad y
+ *  heredan el movimiento → se DOBLA en curvas y SE BALANCEA con inercia. */
+class RopeChain {
+  private pts: { p: V3; prev: V3 }[] = [];
+
+  constructor(private readonly n: number) {}
+
+  private seed(from: V3, to: V3): void {
+    this.pts = [];
+    for (let i = 0; i <= this.n; i++) {
+      const f = i / this.n;
+      const p = v3(
+        from.x + (to.x - from.x) * f,
+        from.y + (to.y - from.y) * f,
+        from.z + (to.z - from.z) * f,
+      );
+      this.pts.push({ p, prev: vClone(p) });
+    }
+  }
+
+  /** Avanza la cadena. restTotal = longitud de cuerda del tramo: si sobra, la
+ *  comba cae por gravedad; si falta, queda tensa y recta. windX empuja en x. */
+  update(from: V3, to: V3, dt: number, restTotal: number, damping: number, gravity: number, windX: number): V3[] {
+    if (dt <= 0 || this.pts.length !== this.n + 1) {
+      this.seed(from, to); // spawn/respawn: recta clavada, sin historial
+      return this.pts.map((pt) => pt.p);
+    }
+    const dt2 = dt * dt;
+    const g = gravity * dt2;
+    const w = windX * dt2;
+    for (const pt of this.pts) {
+      const vx = (pt.p.x - pt.prev.x) * damping;
+      const vy = (pt.p.y - pt.prev.y) * damping;
+      const vz = (pt.p.z - pt.prev.z) * damping;
+      pt.prev = pt.p;
+      pt.p = v3(pt.p.x + vx + w, pt.p.y + vy - g, pt.p.z + vz);
+    }
+    // clavijas: extremos EXACTOS a sus anclajes (los tests lo exigen a 1e-6)
+    this.pts[0] = { p: vClone(from), prev: vClone(from) };
+    this.pts[this.n] = { p: vClone(to), prev: vClone(to) };
+    // restricción unilateral (cuerda: solo frena si se estira de más)
+    const rest = restTotal / this.n;
+    for (let it = 0; it < ROPE_ITERS; it++) {
+      for (let i = 0; i < this.n; i++) {
+        const a = this.pts[i].p;
+        const b = this.pts[i + 1].p;
+        const d = vSub(b, a);
+        const len = vLen(d) || 1e-6;
+        if (len <= rest) continue;
+        const corr = vScale(d, (len - rest) / len);
+        const aPin = i === 0;
+        const bPin = i + 1 === this.n;
+        if (aPin && !bPin) this.pts[i + 1].p = vSub(b, corr);
+        else if (bPin && !aPin) this.pts[i].p = vAdd(a, corr);
+        else if (!aPin && !bPin) {
+          this.pts[i].p = vAdd(a, vScale(corr, 0.5));
+          this.pts[i + 1].p = vSub(b, vScale(corr, 0.5));
+        }
+      }
+    }
+    return this.pts.map((pt) => pt.p);
+  }
+}
+
 export class PlankSystem {
   private t: PlankTuning;
+  private chainA: RopeChain | null = null;
+  private chainB: RopeChain | null = null;
   private ends: [PlankEnd, PlankEnd] = [
     { pos: v3(0, 0, 0), prev: v3(0, 0, 0) },
     { pos: v3(0, 0, 0), prev: v3(0, 0, 0) },
@@ -251,10 +330,10 @@ export class PlankSystem {
       p.moveSherpa(1, vScale(n, -pull * 0.5));
     }
 
-    return this.buildState(p.a, p.b, false, dt, p.time, p.visualA, p.visualB);
+    return this.buildState(p.a, p.b, false, dt, p.time, p.visualA, p.visualB, p.ropeWindX ?? 0);
   }
 
-  private buildState(a: V3, b: V3, _reset: boolean, dt = 0, time = 0, visualA?: V3, visualB?: V3): PlankState {
+  private buildState(a: V3, b: V3, _reset: boolean, dt = 0, time = 0, visualA?: V3, visualB?: V3, ropeWindX = 0): PlankState {
     void _reset;
     const t = this.t;
     const [el, er] = this.ends;
@@ -290,11 +369,15 @@ export class PlankSystem {
       }
     }
 
-    // cuerdas visuales analíticas: comba solo si sobra cuerda (siempre acaban
-    // EN el cabo de la tabla: imposible que se pierdan por la pantalla).
-    // Nacen en la MOCHILA del sherpa si hay punto visual (van = harness).
-    const nodesA = ropeNodes(visualA ?? a, el.pos, t, time);
-    const nodesB = ropeNodes(visualB ?? b, er.pos, t, time);
+    // cuerdas visuales = CADENA VERLET (se dobla y balancea de verdad): nacen
+    // en la MOCHILA del sherpa (visualA = harness) y acaban CLAVADAS en el cabo
+    // de la tabla. Con viento (rachas) y vaivén ambiental mínimo.
+    const windX = ropeWindX + Math.sin(time * 0.55) * ROPE_AMBIENT_WIND;
+    this.chainA ??= new RopeChain(t.visualNodes);
+    this.chainB ??= new RopeChain(t.visualNodes);
+    const restTotal = t.ropeLen * 0.97;
+    const nodesA = this.chainA.update(visualA ?? a, el.pos, dt, restTotal, t.nodeDamping, t.slackGravity, windX);
+    const nodesB = this.chainB.update(visualB ?? b, er.pos, dt, restTotal, t.nodeDamping, t.slackGravity, windX);
 
     // tensión falseada legible (para HUD/reparto): base ≈ medio equipo + la
     // PARTE DEL RICACHÓN que toca a cada lado por palanca (comer pesa, moverse
@@ -333,23 +416,6 @@ export class PlankSystem {
   private wobbleAccum = 0;
   addWobble(w: number): void { this.wobbleAccum += w; }
   drainWobble(): number { const w = this.wobbleAccum; this.wobbleAccum = 0; return w; }
-}
-
-/** Cadena visual entre el sherpa y el cabo: recta con comba proporcional a la holgura. */
-function ropeNodes(from: V3, to: V3, t: PlankTuning, time: number): V3[] {
-  const dist = vLen(vSub(to, from));
-  const sag = Math.max(0, t.ropeLen * 0.97 - dist) * t.ropeSag;
-  const nodes: V3[] = [];
-  for (let i = 0; i <= ROPE_NODES; i++) {
-    const f = i / ROPE_NODES;
-    const sway = sag > 0.01 ? Math.sin(time * 1.9 + f * 3.1) * 0.012 * sag : 0;
-    nodes.push(v3(
-      from.x + (to.x - from.x) * f + sway,
-      from.y + (to.y - from.y) * f - Math.sin(f * Math.PI) * sag,
-      from.z + (to.z - from.z) * f,
-    ));
-  }
-  return nodes;
 }
 
 /** Reparto de carga (doc 4.4): sale de las tensiones, no se inventa. */

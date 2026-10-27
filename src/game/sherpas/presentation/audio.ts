@@ -7,6 +7,13 @@ type SfxDef = AudioData["sfx"][string];
 
 const NOISE_SECONDS = 2;
 
+/** Slug determinista texto→fichero (djb2): igual que scripts/gen_rico_tts.mjs. */
+export function ricoSlug(text: string): string {
+  let h = 5381;
+  for (let i = 0; i < text.length; i++) h = ((h * 33) ^ text.charCodeAt(i)) >>> 0;
+  return h.toString(16).padStart(8, "0");
+}
+
 export class SherpaAudio {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
@@ -16,6 +23,12 @@ export class SherpaAudio {
   private data: AudioData;
   private lastCreak = 0;
   private disposed = false;
+  private muted = false;
+  /** canal de VOZ del ricachón (TTS + realce "grito burlón"). */
+  private voiceGain: GainNode | null = null;
+  private voiceCache = new Map<string, AudioBuffer | null>();
+  private gustBoost = 0;
+  private altT = 0;
 
   constructor(data: AudioData) {
     this.data = data;
@@ -35,9 +48,26 @@ export class SherpaAudio {
     }
     const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     this.ctx = new Ctor();
+    // primado de voces del navegador: getVoices() llega vacío hasta que el
+    // evento dispara — sin esto, el PRIMER grito del ricachón saldría sin voz.
+    try {
+      const synth = window.speechSynthesis;
+      if (synth) {
+        synth.getVoices();
+        synth.onvoiceschanged = () => { synth.getVoices(); };
+      }
+    } catch { /* sin síntesis de voz: la escalera cae al gibberish */ }
     this.master = this.ctx.createGain();
     this.master.gain.value = this.data.masterVolume;
     this.master.connect(this.ctx.destination);
+    // canal de voz: realce de agudos para que el grito SEA burlón ("¡ja!")
+    this.voiceGain = this.ctx.createGain();
+    this.voiceGain.gain.value = 1;
+    const shelf = this.ctx.createBiquadFilter();
+    shelf.type = "highshelf";
+    shelf.frequency.value = 2600;
+    shelf.gain.value = 4.5;
+    this.voiceGain.connect(shelf).connect(this.master);
     // buffer de ruido blanco reutilizable (viento + sfx noise)
     const len = Math.floor(this.ctx.sampleRate * NOISE_SECONDS);
     this.noiseBuffer = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
@@ -65,15 +95,91 @@ export class SherpaAudio {
 
   /** Silencio en vivo (ajustes): ganancia maestra a 0 sin tirar el contexto. */
   setMuted(muted: boolean): void {
+    this.muted = muted;
+    if (muted) {
+      try { window.speechSynthesis?.cancel(); } catch { /* sin voz */ }
+    }
     if (this.master && this.ctx) this.master.gain.value = muted ? 0 : this.data.masterVolume;
   }
 
   /** Altura narrativa actual → ganancia del viento (doc 10). */
   setAltitude(narrativeM: number, maxNarrativeM: number): void {
+    this.altT = maxNarrativeM > 0 ? Math.min(1, Math.max(0, narrativeM / maxNarrativeM)) : 0;
+    this.applyWind();
+  }
+
+  /** Racha de viento (0..1): el viento de fondo sube DE VERDAD durante la racha. */
+  gustLevel(level: number): void {
+    this.gustBoost = Math.max(0, Math.min(1, level));
+    this.applyWind();
+  }
+
+  private applyWind(): void {
     if (!this.ctx || !this.windGain) return;
-    const t = maxNarrativeM > 0 ? Math.min(1, Math.max(0, narrativeM / maxNarrativeM)) : 0;
-    const g = this.data.wind.baseGain + (this.data.wind.gainAtTop - this.data.wind.baseGain) * t;
-    this.windGain.gain.setTargetAtTime(g, this.ctx.currentTime, 0.5);
+    const base = this.data.wind.baseGain + (this.data.wind.gainAtTop - this.data.wind.baseGain) * this.altT;
+    const g = base * (1 + this.gustBoost * 1.6);
+    this.windGain.gain.setTargetAtTime(g, this.ctx.currentTime, 0.4);
+  }
+
+  /** VOZ DEL RICACHÓN (petición del jugador: "escucharse gritando con tono
+   *  burlesco"). Escalera de resiliencia:
+   *  1. MP3 TTS pregenerado (scripts/gen_rico_tts.mjs) con pitch/velocidad
+   *     aleatorios por reproducción → nunca suena dos veces igual.
+   *  2. speechSynthesis del navegador con pitch alto (voz aguda burlona).
+   *  3. Charla sintética cómica (gibberish) — nunca silencio total. */
+  shout(text: string, lang: string): void {
+    if (this.muted || this.disposed || !text) return;
+    const path = `/audio/rico/${lang === "en" ? "en" : "es"}/${ricoSlug(text)}.mp3`;
+    const cached = this.voiceCache.get(path);
+    if (cached) { this.playVoice(cached); return; }
+    if (cached === null) { this.speak(text, lang); return; }
+    void this.loadVoice(path).then((buf) => {
+      if (buf) this.playVoice(buf);
+      else this.speak(text, lang);
+    });
+  }
+
+  private async loadVoice(path: string): Promise<AudioBuffer | null> {
+    if (!this.ctx) return null;
+    this.voiceCache.set(path, null); // evita tormenta de fetch paralelos
+    try {
+      const res = await fetch(path);
+      if (!res.ok) return null;
+      const raw = await res.arrayBuffer();
+      const buf = await this.ctx.decodeAudioData(raw);
+      this.voiceCache.set(path, buf);
+      return buf;
+    } catch { return null; }
+  }
+
+  private playVoice(buf: AudioBuffer): void {
+    if (!this.ctx || !this.voiceGain) return;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    // "gritando con tono burlesco": cada grito con levantón y velocidad propia
+    src.playbackRate.value = 1.08 + Math.random() * 0.18;
+    const g = this.ctx.createGain();
+    g.gain.value = 0.95;
+    src.connect(g).connect(this.voiceGain);
+    src.start();
+  }
+
+  private speak(text: string, lang: string): void {
+    try {
+      const s = window.speechSynthesis;
+      if (!s) { this.play("gibberish"); return; }
+      s.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = lang === "en" ? "en-US" : "es-ES";
+      // tono agudo y rápido = burlón (petición del jugador)
+      u.pitch = 1.55 + Math.random() * 0.25;
+      u.rate = 1.1 + Math.random() * 0.2;
+      u.volume = 1;
+      const want = u.lang.slice(0, 2).toLowerCase();
+      const voice = s.getVoices().find((v) => (v.lang ?? "").toLowerCase().startsWith(want));
+      if (voice) u.voice = voice;
+      s.speak(u);
+    } catch { this.play("gibberish"); }
   }
 
   /** Crujido de cuerda/hielo proporcional a la tensión (doc 4.5 telegrafía sonora). */

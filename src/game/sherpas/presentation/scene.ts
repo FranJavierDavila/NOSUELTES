@@ -76,7 +76,7 @@ export class SherpaScene {
   // veían — petición del jugador: "no se ven las cuerdas desde las mochilas").
   private ropeSegs: Mesh[][] = [[], []];
   private ropeMat: StandardMaterial | null = null;
-  private static readonly ROPE_POOL = 12;
+  private static readonly ROPE_POOL = 16; // ≥ visualNodes de tuning.rope
   private trashMesh: Mesh | null = null;
   private urineMeshes: Mesh[] = [];
   private birdMeshes = new Map<number, { body: Mesh; shadow: Mesh }>();

@@ -54,7 +54,11 @@
     "richFell": "THE RICH MAN FELL!",
     "richFellSub": "The plank tipped over… back to the last camp.",
     "richStands": "THE RICH MAN STANDS UP!",
-    "richWalks": "the rich man strolls along the plank…"
+    "richWalks": "the rich man strolls along the plank…",
+    "windWarn": "WIND GUST INCOMING!",
+    "windGust": "HOLD ON! SIDE WIND",
+    "limbCrit": "{limb} AT ITS LIMIT! About to let go…",
+    "limbChipTip": "Tension (ring) and fatigue (bar): amber = tired, flashing red = about to let go! Move that limb to another hold."
   },
   "limb": {
     "hand_l": "L.Hand",
