@@ -623,3 +623,23 @@ Work Log:
 Stage Summary:
 - El ricachón está VIVO: 8 gestos graciosos sentado con props (bocadillo, copita), se pone DE PIE, pasea por la tabla (ciclo de paso visible) y su masa desplazada escora la tabla, reparte la Carga A/B del HUD y tira hacia abajo del sherpa cargado. El paseo puro no mata; la escora física sí. Subtítulos ES/EN anuncian de pie y paseo.
 - Lección de diseño guardada en tests/sherpas/actividad.test.ts: la actividad idle nunca debe depender de la cola del director (monopolio) — de ahí el aburrimiento a los 4-7 s.
+
+---
+Task ID: 28
+Agent: Z.ai (principal)
+Task: "Analiza el documento maestro para seguir con las mejoras. Si los escaladores sueltan las dos manos ese escalador cae. Las rutas deben variar de tal forma que en determinados momentos los escaladores tengan que estar muy separados y otras juntos para dar variedad."
+
+Work Log:
+- Documento maestro analizado (upload/Pasted Content_1793090794558.txt = "Sherpas al Límite — Documento de arquitectura v1.0"): reglas de caída 4.1/6.2 (todas las extremidades sueltas → ragdoll, la cuerda hace de seguro; rescate 6.2.5), generador 8.1 y regla de oro 11.3 (zonas por parámetros, no ramas por id). Decisiones nuevas anotadas en DECISIONS.md D21/D22.
+- REGLA DE DOS MANOS (sherpaRig.ts): sin NINGUNA mano anclada NI viajando durante fall.twoHandsGraceSeconds (0,5 s en tuning.json) los pies RESBALAN (nueva ReleaseCause "slip", lock slipReGripLock 0,35 s) y el cuerpo cae. Soltar UNA mano sigue siendo legal (colgar de 3 apoyos). La gracia deja re-agarrar (test).
+- CAPTURA POR CUERDA DE PORTEO (plank.ts 2b): si un sherpa cae POR DEBAJO de su cabo (solo pasa en caída), proyección posicional (moveSherpa pos+prev juntos, cap 0,24 m/tick) lo deja pendular a ≤ ropeLen; el cabo baja 0,4×corr → la tabla se escora y el compañero nota la carga. Re-agarrable (rescate doc 6.2.5).
+- PATRONES DE RUTA (wallGenerator.ts + wall_gen.json route): tramos de 2 bandas (20 m) con patrón determinista por semilla: JUNTOS (muestreo solo |x| ≤ 0,85), SEPARADOS (dos vías |x| ≥ 0,55 con puente inferior) y LIBRE (3:2:2). Ambos patrones con EMBUDO de anchura completa en la base del tramo (1,6 m) para entrar/salir del patrón. Fracción de ancho escala los intentos (densidad de fase conservada). El parche del validador y las columnas de último recurso respetan la zona (una escalera firme por vía en separados). Arranque (banda 0) y campamentos siempre libres.
+- DOS DEFECTOS ESTRUCTURALES destapados por el validador independiente de 100 semillas (generador.test.ts): (1) banda escasa sin presas en su 1,2 m alto → banda siguiente sin semillas BFS (huérfana) → CORONA de continuidad (presas firmes en el 1,2 m alto por columna del patrón, ANTES de validar); (2) franja de márgenes 0,3+0,3 m entre bandas podía dejar el salto prevTail→banda a 1,69 m > maxStep 1,675 → GARANTÍA de ENTRADA (presa firme en el puente clavada a ≤ climbStep de la presa previa más alta).
+- Feedback (match.ts): subtítulo hud.twoHandsFall (ES/EN) + shake + audio + pánico del ricachón al resbalar; PlayerFell lleva cause two_hands|no_grips; sonda E2E nueva: hands[{freeS,grips}×2] y route{band,pattern}.
+- Despliegue: build standalone OK; el servidor viejo (pid de las 20:38, patrón pgrep "bun server.js" no matcheaba la ruta completa) servía HTML viejo con chunks 500 — reiniciado con pkill -f standalone/server.js + rsync static+public al standalone. Lección: pgrep -f "standalone/server.js".
+- E2E real (Playwright): inicio 4+4 agarres, patrón banda 0 libre; teclas 1/2 (soltar dos manos P1) → sonda freeS 0,5→slip→grips 0; caída real con ¡DESNIVEL FUERTE! + ¡EL RICACHÓN RESBALA! → ¡EL RICACHÓN HA CAÍDO! (captura t28-3) → respawn limpio 4+4, tabla nivelada, carga 50/50, 60 fps (t28-4).
+
+Stage Summary:
+- Commit ca478ab. Regla de dos manos + captura por cuerda + rutas juntos/separados en producción (:3000), con data-driven total (tuning.json/wall_gen.json/strings).
+- Tests: caida.test.ts nuevo 9/9; sherpas 75/75; tsc 15 errores = baseline preexistente (examples/skills/tests-game); eslint limpio; vitest global 215/220 (5 fallos preexistentes de selfcollision del prototipo NO SUELTES).
+- Pendiente conocido: caída individual de un sherpa arrastra la tabla y suele costar la partida (ricachón cae → respawn) — coherente con doc 6.1.4 pero duro; afinar slideAccel/catch si el jugador lo pide. Cámara marea menos con reduceShake. GitHub push sigue pendiente de token nuevo.
