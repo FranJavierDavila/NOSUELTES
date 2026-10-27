@@ -6,7 +6,7 @@
  * los pliegues son relativos a ella (codos hacia fuera de la pared, rodillas hacia ella).
  */
 import { BodyProfileDefinition, CharacterDefinition, ChallengeDefinition, HoldDefinition, LimbId, Vec3Tuple, WallDefinition } from "../../types";
-import { AngleConstraint, BodyTopology, FoldConstraint, Particle, PbdSolver, Stick, TwistConstraint } from "./solver";
+import { AngleConstraint, BodyTopology, FoldConstraint, HingeConstraint, Particle, PbdSolver, Stick, TwistConstraint } from "./solver";
 import { V3, v3, vAdd, vSub, vScale, vLen, vDot, vClone } from "./math";
 
 /** Indices fijos de particulas (contrato interno para render y biomecanica). */
@@ -40,6 +40,7 @@ export interface RagdollRig {
   sticks: Stick[];
   angles: AngleConstraint[];
   folds: FoldConstraint[];
+  hinges: HingeConstraint[];
   twists: TwistConstraint[];
   limbParticle: Map<LimbId, number>;
   armChain: number;
@@ -173,13 +174,38 @@ export function buildRagdollRig(
   //   (tolera 2 cm de la linea hombro-mano hacia el muro, nada mas).
   // - RODILLA: la flexion lleva el talon atras y el vertice adelante; prohibido el
   //   giro invertido (rodilla hacia atras = hiperextension visible).
+  // sideSign: el solver usa la normal LOCAL del segmento que gobierna la articulacion
+  // (pared, placa o techo); el signo declara el lado anatomico por tipo de articulacion
+  // (+1 el vertice a favor de la normal = codo fuera de la cara; -1 en contra = rodilla
+  // hacia la cara). dir queda como referencia/fallback y para diagnosticos.
   const nrm = wallNormal ?? { x: 0, y: 0, z: -1 };
   const folds: FoldConstraint[] = [
-    { id: "fold_elbow_l", j: P.elbowL, a: P.shL, b: P.handL, dir: v3(nrm.x, nrm.y, nrm.z), minSide: -0.02, strength: 1, side: 0 },
-    { id: "fold_elbow_r", j: P.elbowR, a: P.shR, b: P.handR, dir: v3(nrm.x, nrm.y, nrm.z), minSide: -0.02, strength: 1, side: 0 },
-    { id: "fold_knee_l", j: P.kneeL, a: P.hipL, b: P.footL, dir: v3(-nrm.x, -nrm.y, -nrm.z), minSide: 0.012, strength: 1, side: 0 },
-    { id: "fold_knee_r", j: P.kneeR, a: P.hipR, b: P.footR, dir: v3(-nrm.x, -nrm.y, -nrm.z), minSide: 0.012, strength: 1, side: 0 }
+    { id: "fold_elbow_l", j: P.elbowL, a: P.shL, b: P.handL, dir: v3(nrm.x, nrm.y, nrm.z), sideSign: 1, minSide: -0.02, strength: 1, side: 0 },
+    { id: "fold_elbow_r", j: P.elbowR, a: P.shR, b: P.handR, dir: v3(nrm.x, nrm.y, nrm.z), sideSign: 1, minSide: -0.02, strength: 1, side: 0 },
+    { id: "fold_knee_l", j: P.kneeL, a: P.hipL, b: P.footL, dir: v3(-nrm.x, -nrm.y, -nrm.z), sideSign: -1, minSide: 0.012, strength: 1, side: 0 },
+    { id: "fold_knee_r", j: P.kneeR, a: P.hipR, b: P.footR, dir: v3(-nrm.x, -nrm.y, -nrm.z), sideSign: -1, minSide: 0.012, strength: 1, side: 0 }
   ];
+
+  // BISAGRAS (codo/rodilla son bisagras, no bolas): el vertice solo puede separarse
+  // de la cuerda DENTRO del plano de flexion (ver HingeConstraint en solver.ts).
+  // Tolerancia desde datos (hingeToleranceM del perfil): holgada para permitir la
+  // reorientacion natural del plano (cruzarse de brazos, bandera, rana), estrecha
+  // para bloquear el giro de goma y las luxaciones laterales.
+  const elbowHinge = joints.elbow.hingeToleranceM;
+  const kneeHinge = joints.knee.hingeToleranceM;
+  const hinges: HingeConstraint[] = [];
+  if (elbowHinge && elbowHinge > 0) {
+    hinges.push(
+      { id: "hinge_elbow_l", j: P.elbowL, a: P.shL, b: P.handL, tol: elbowHinge, limb: "hand_l", dev: 0 },
+      { id: "hinge_elbow_r", j: P.elbowR, a: P.shR, b: P.handR, tol: elbowHinge, limb: "hand_r", dev: 0 }
+    );
+  }
+  if (kneeHinge && kneeHinge > 0) {
+    hinges.push(
+      { id: "hinge_knee_l", j: P.kneeL, a: P.hipL, b: P.footL, tol: kneeHinge, limb: "foot_l", dev: 0 },
+      { id: "hinge_knee_r", j: P.kneeR, a: P.hipR, b: P.footR, tol: kneeHinge, limb: "foot_r", dev: 0 }
+    );
+  }
 
   // Guinada de pelvis limitada (anti-"cadera girada"): la barra de caderas sigue a la
   // de hombros; el tope vivo vive en balance.twistLimitRad (presets/F3).
@@ -208,7 +234,7 @@ export function buildRagdollRig(
   const armChain = s.upperArm.length + s.forearm.length;
   const legChain = s.thigh.length + s.shin.length;
 
-  return { particles, sticks, angles, folds, twists, limbParticle, armChain, legChain };
+  return { particles, sticks, angles, folds, hinges, twists, limbParticle, armChain, legChain };
 }
 
 /**
@@ -405,7 +431,7 @@ export function spawnRagdoll(
     legChain: rig.legChain,
     spineLen: s.torso.size[1] * 0.95
   };
-  solver.setRagdoll(rig.particles, rig.sticks, rig.angles, rig.limbParticle, topology, rig.folds, rig.twists);
+  solver.setRagdoll(rig.particles, rig.sticks, rig.angles, rig.limbParticle, topology, rig.folds, rig.twists, rig.hinges);
   // Anclajes iniciales requeridos por el desafio (8.1) antes de la relajacion.
   for (const req of challenge.start.requiredAnchors) {
     const hold = holdById.get(req.holdId);

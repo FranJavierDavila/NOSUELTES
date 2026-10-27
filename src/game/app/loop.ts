@@ -111,9 +111,15 @@ const POSTURE_GRACE_S = 0.24;
 
 /** Presets de balance fisico (ADR-008 + XPBD pinVelKill) seleccionables en Ajustes. */
 const PRESET_TUNES: Record<BalancePresetName, BalanceTuning> = {
+  // Peticion del jugador ("menos ragdoll, mas bloqueante, articulaciones fisicamente
+  // reales"): la dureza nueva la aportan las BISAGRAS y los rangos anatomicos
+  // estrechados. Los folds conservan su fuerza calibrada (0.85): a 1.0 empujan el
+  // cuerpo contra la pared y desplazan el equilibrio de colgado (regresion de
+  // alcance verificada en E2). Realista mantiene 1.0 (ya calibrado asi) y ragdoll
+  // sube 0.6 -> 0.7 (sin luxaciones ni en el modo comico).
   realista: { postureTone: 0.95, jointLimitStiffness: 1.0, foldStrength: 1.0, toneFloor: 0.08, stretchTolerance: 1.05, twistLimitRad: 0.3, pinVelKill: 0.55 },
   equilibrado: { postureTone: 0.75, jointLimitStiffness: 1.0, foldStrength: 0.85, toneFloor: 0.12, stretchTolerance: 1.1, twistLimitRad: 0.45, pinVelKill: 0.4 },
-  ragdoll: { postureTone: 0.5, jointLimitStiffness: 0.85, foldStrength: 0.6, toneFloor: 0.25, stretchTolerance: 1.2, twistLimitRad: 0.85, pinVelKill: 0.2 }
+  ragdoll: { postureTone: 0.5, jointLimitStiffness: 0.9, foldStrength: 0.7, toneFloor: 0.25, stretchTolerance: 1.2, twistLimitRad: 0.7, pinVelKill: 0.2 }
 };
 
 /**
@@ -2324,6 +2330,7 @@ export class GameApp {
     forceProne: () => boolean;
     forceSlabStand: () => boolean;
     posture: () => { upDot: number; hands: number; feet: number; badTimer: number; grace: number };
+    hinges: () => { id: string; dev: number; tol: number }[];
     circuit: () => {
       stages: { id: string; index: number; name: string; heightM: number; unlocked: boolean; best: { score: number; timeS: number; stars: number } | null }[];
       current: number;
@@ -2394,6 +2401,7 @@ export class GameApp {
         return this.interaction?.dragging ?? false;
       },
       folds: () => this.solver.debugFolds(),
+      hinges: () => this.solver.debugHinges(),
       chains: () => this.solver.debugChains(),
       tone: () => this.solver.toneLevel(),
       tune: () => ({ ...this.tune }),

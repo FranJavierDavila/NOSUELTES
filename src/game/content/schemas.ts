@@ -64,7 +64,8 @@ const jointRange = {
   properties: {
     minAngle: { type: "number", minimum: -0.2, maximum: 3.2 },
     maxAngle: { type: "number", minimum: 0.2, maximum: 3.3 },
-    stiffness: { type: "number", exclusiveMinimum: 0, maximum: 1 }
+    stiffness: { type: "number", exclusiveMinimum: 0, maximum: 1 },
+    hingeToleranceM: { type: "number", minimum: 0.02, maximum: 0.3 }
   }
 };
 const biomechDefs = {

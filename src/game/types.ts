@@ -51,6 +51,9 @@ export interface JointProfile {
   minAngle: number;
   maxAngle: number;
   stiffness: number;
+  /** Tolerancia de BISAGRA (m): desviacion maxima del vertice respecto al plano de
+   *  flexion (solo codo/rodilla; ausente = bisagra desactivada). */
+  hingeToleranceM?: number;
 }
 
 export interface BiomechProfile {

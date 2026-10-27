@@ -285,6 +285,11 @@
               "type": "number",
               "exclusiveMinimum": 0,
               "maximum": 1
+            },
+            "hingeToleranceM": {
+              "type": "number",
+              "minimum": 0.02,
+              "maximum": 0.3
             }
           }
         },
@@ -311,6 +316,11 @@
               "type": "number",
               "exclusiveMinimum": 0,
               "maximum": 1
+            },
+            "hingeToleranceM": {
+              "type": "number",
+              "minimum": 0.02,
+              "maximum": 0.3
             }
           }
         },
@@ -337,6 +347,11 @@
               "type": "number",
               "exclusiveMinimum": 0,
               "maximum": 1
+            },
+            "hingeToleranceM": {
+              "type": "number",
+              "minimum": 0.02,
+              "maximum": 0.3
             }
           }
         },
@@ -363,6 +378,11 @@
               "type": "number",
               "exclusiveMinimum": 0,
               "maximum": 1
+            },
+            "hingeToleranceM": {
+              "type": "number",
+              "minimum": 0.02,
+              "maximum": 0.3
             }
           }
         },
@@ -389,6 +409,11 @@
               "type": "number",
               "exclusiveMinimum": 0,
               "maximum": 1
+            },
+            "hingeToleranceM": {
+              "type": "number",
+              "minimum": 0.02,
+              "maximum": 0.3
             }
           }
         }

@@ -1,0 +1,419 @@
+     1→# Worklog
+     2→
+     3→---
+     4→Task ID: 1
+     5→Agent: Z.ai (principal)
+     6→Task: Prototipo de juegos basado en el documento adjunto (NO SUELTES — Arquitectura técnica del prototipo v1.0)
+     7→
+     8→Work Log:
+     9→- Clasificación: tarea de desarrollo web interactivo (TypeScript + Babylon.js según el documento). Skill fullstack-dev invocado y entorno inicializado.
+    10→- Instalación de dependencias: @babylonjs/core 9.32, ajv; dev: vitest, tsx.
+    11→- Contenido data-driven (sección 11): manifest, personaje, perfil corporal, pared con ruta de 17 presas y 3 desafíos (ALCANZAR/ESTABILIZAR/RECUPERAR) en /public/content; JSON Schema draft-07 con Ajv y validación cruzada de referencias en ContentRepository.
+    12→- Física (H0/H4): solver PBD propio (15 partículas, 22 barras, 9 límites angulares, paso fijo 1/60, Verlet + damping), anclajes como pin rígido con tope de fuerza y carga medida por corrección del pin (F = m·Δ/dt² con ganancia calibrada 0,67), relajación estática pre-settle con IK de dos huesos para evitar patadas de siembra.
+    13→- Biomecánica (sección 9): effectiveGripForce con factores fuerza/fatiga/postura, effortRate por tramos, fatiga por extremidad con recuperación, zonas NORMAL/STRAINED/OVERLOADED, temblor, stabilityScore (apoyos/distribución/COM/carga).
+    14→- Gameplay: máquina de estados con transiciones validadas, ChallengeEvaluator genérico (caída con gracia, éxito por tipo, timeout, prioridad caída>éxito>timeout), interacción con raycast, plano de proyección, snap (excluyendo presa de origen), validación de alcance/compatibilidad/ocupación y asistencia de anclaje sin teletransporte.
+    15→- Render Babylon.js con imports granulares (el import raíz provocaba OOM del dev server), HUD completo, overlay de depuración F3, audio sintetizado por eventos semánticos, cámara con zona muerta y ortográfica de depuración.
+    16→- Calibración con harness Node (scripts/calibrate-physics.ts): colgar a 2 manos ≈ 0,85–0,95 de carga (STRAINED), a 1 mano ≈ 1,8 (OVERLOADED, gracia 2,5 s); correcciones de masas (72,2 kg), riostras del torso y modelo postural (colgar de brazos estirados = barato; lock-off = caro).
+    17→- Tests Vitest: 35 tests verdes (contenido y schemas, biomecánica, gameplay/máquina de estados/interacción, estrés 10 min sin NaN y 100 resets idempotentes).
+    18→- E2E con agent-browser: verificado el camino dorado — READY→PLAYING con el primer arrastre, selección por pick (tras corregir raycast con side-effect de Ray y sincronización de mallas de manos/pies), snap/validación/asistencia, transferencia real de anclaje hand_r: start_r→r2 con cargas redistribuidas en vivo, sobrecarga y fatiga visibles, reset R idempotente y cambio de desafío (RECUPERAR con autoStart, ESTABILIZAR).
+    19→- Fix de estabilidad del entorno: import granular de Babylon (evita OOM), supervisor del dev server y bootstrap inmune a double-mount (StrictMode/HMR).
+    20→- Documentación: README.md con estructura, cumplimiento por sección y ADR-001…006; schemas JSON exportados a /public/content/schemas.
+    21→
+    22→Stage Summary:
+    23→- Prototipo jugable completo en src/game (TypeScript estricto, sin dependencias de gameplay sobre el proveedor de física).
+    24→- 3 desafíos data-driven operativos; 35/35 tests; lint y tsc limpios; E2E verificado en navegador (WebGL2).
+    25→- Decisiones documentadas: ADR-001 (solver PBD interno tras la misma frontera PhysicsAdapter), ADR-002 (pin con carga medida), ADR-005 (snap con exclusión de presa de origen).
+    26→- Pendiente para el equipo (fuera de alcance del prototipo): spike Havok/Rapier tras la interfaz, pruebas con usuarios externos (H8) y empaquetado de escritorio (ADR-006).
+    27→
+    28→---
+    29→Task ID: 2
+    30→Agent: Z.ai (principal)
+    31→Task: Habilitar el preview jugable del prototipo (petición del usuario: "permiteme jugarlo en el preview")
+    32→
+    33→Work Log:
+    34→- Diagnóstico: el dev server (Turbopack) alcanzaba 2,9 GB RSS y el OOM killer lo mataba al competir con Chrome por los 4 GB del entorno; además un reaper del sandbox eliminaba todo proceso hijo entre llamadas (setsid no bastaba).
+    35→- Solución de persistencia: doble fork en Python (scripts/daemonize.py) que reparenta al servidor a PID 1 (tini), replicando el patrón del demonio de agent-browser. Verificado que sobrevive entre llamadas.
+    36→- Migración a producción: bun run build exitoso (16 s, Turbopack) y servidor standalone en :3000 con 110 MB RSS (26x menos que dev). Caddy :81 verificada como ruta del gateway (HTTP 200 con Host del preview).
+    37→- E2E re-validado en producción con agent-browser + window.__NS: READY→PLAYING con primer arrastre; transferencia real hand_r start_r→r2 con preview de snap válido en vivo y redistribución de cargas (472/206 N); fallo de agarre realista por fatiga (98%) → estado CAÍDA con overlay; reset R idempotente; cambios de desafío ESTABILIZAR (anclajes mid_l/mid_r) y RECUPERAR (autoStart, extremidades libres) operativos.
+    38→- Capturas de validación guardadas en download/: menu-inicial.png, escena-juego.png, drag-test.png, transferencia-r2.png.
+    39→
+    40→Stage Summary:
+    41→- Preview jugable estable en https://preview-chat-0335df1a-0259-4d41-a59e-133f5043a4c6.space-z.ai/ con build de producción standalone (PID reparentado a PID 1, inmune al reaper y al OOM).
+    42→- Bucle de juego completo verificado en producción: selección, agarre, arrastre, snap, transferencia, fatiga, caída y reset.
+    43→- Nota para sesiones futuras: si el puerto 3000 está muerto al arrancar, relanzar con python3 scripts/daemonize.py /usr/local/bin/bun .next/standalone/server.js (requiere build previo; bun run build tarda ~16 s).
+    44→
+    45→---
+    46→Task ID: 3
+    47→Agent: Z.ai (principal)
+    48→Task: Corregir "no se ve al personaje en pantalla" (reporte del usuario en el preview)
+    49→
+    50→Work Log:
+    51→- Diagnóstico: GameScene.create prefería WebGPU cuando el navegador lo soporta; la ruta WebGL2 era la única E2E-verificada. En iframes cross-origin (como el preview del chat) WebGPU suele estar bloqueado por Permissions Policy, y en navegadores de escritorio la ruta WebGPU no validada podía renderizar en negro.
+    52→- Fix principal (src/game/render/scene.ts): WebGL2 primero, WebGPU solo como respaldo si WebGL2 lanza excepción.
+    53→- Blindajes añadidos: fallback h-screen + supports-[height:100dvh]:h-dvh en page.tsx y GameMount.tsx (navegadores sin dvh); insignia del motor de render en el menú y en la barra inferior (hud.ts + loop.ts llama hud.setBackend(scene.backend)).
+    54→- Verificación: 35/35 tests vitest; build de producción OK; simulación de preview con iframe cross-origin (public/iframe-sim.html servido desde :8899, origen distinto) — personaje visible, motor "WebGL 2" mostrado, sin errores de consola. Capturas en download/final-iframe*.png.
+    55→- Nuevo artefacto de diagnóstico: scripts/daemonize.py (doble fork que reparenta a PID 1, escapa al reaper del sandbox) usado para servidor de juego y simulador de iframe.
+    56→
+    57→Stage Summary:
+    58→- Causa probable del reporte: selección de WebGPU en navegadores que lo exponen (o su bloqueo en iframe) — eliminada al forzar WebGL2 como motor primario.
+    59→- El usuario debe recargar el preview (idealmente con recarga forzada) para recibir el nuevo bundle.
+    60→- Si volviera a fallar, pedir al usuario el texto de la insignia "Motor:" (menú) o F3 → Backend, más una captura, para acotar el entorno.
+    61→
+    62→---
+    63→Task ID: 4
+    64→Agent: Z.ai (principal)
+    65→Task: Tutorial interactivo y avisos contextuales ("las mecánicas no se entienden")
+    66→
+    67→Work Log:
+    68→- Validación empírica previa con window.__NS.reject: hand_r→r2 válido desde el inicio; hand_l→r3 y foot_mid_l/r FUERA DE ALCANCE desde la pose inicial (descarta la ruta del E2E antiguo); pies pueden pisar presas standard (r1).
+    69→- Nuevo src/game/gameplay/tutorial.ts: TutorialEngine puro (pasos data-driven con predicados sobre ctx vivo, avance auto/manual, skip) + buildTutorialSteps con 9 pasos: bienvenida → agarrar hand_r (resaltado) → apuntar a r2 (aro ámbar) → soltar → cargas con números vivos {load:limb} → colocar pie en foot_jug_l → fatiga/estabilidad {fatigue} → meta (top destacado) → cierre con atajos. 13 tests nuevos (48/48 totales).
+    70→- Nuevo src/game/ui/tutorial.ts: tarjeta inferior izquierda (24rem) con contador, puntos de progreso, CTA manual y Saltar; cuerpo pointer-events-none para no bloquear arrastres (bug detectado en E2E: la tarjeta centrada se tragaba el clic del pie).
+    71→- scene.ts: setTutorialHoldHighlight (prioridad media entre invalid/compatible) y setTutorialLimbHighlight con seguimiento por IDENTIDAD de malla (sobrevive a los rebuild del ragdoll en reset).
+    72→- loop.ts: auto-arranque al cerrar el menú si localStorage ns.tutorial.done!=1; tecla T para repetir; stopTutorial al cambiar de desafío; hintOnce con avisos contextuales una vez por sesión (tensión, SOBRECARGA, caída).
+    73→- Seguridad del onboarding: durante el tutorial la sobrecarga NO libera agarres y el timer del desafío no corre (un arrastre lento de hand_r→r2 deja a hand_l en SOBRECARGA ~1.8x y la tolerancia de 2.5s causaba caída guiada); la fatiga y las zonas siguen midiendo (números reales en el paso vitals, verificado 100% fatiga sin caída).
+    74→- E2E completo en producción (48 tests verdes, build OK): flujo completo 9/9 con anclajes reales (hand_r→r2, foot_l→foot_jug_l), cargas vivas en el texto, verificado también en iframe cross-origin del preview. Capturas en download/tut-*.png.
+    75→
+    76→Stage Summary:
+    77→- Onboarding interactivo completo: enseña agarre→arrastrar→soltar→cargas→pies→fatiga→meta jugando, con objetivos resaltados y texto vivo.
+    78→- Protección anti-frustración: sin liberación por sobrecarga ni timeout durante el tutorial.
+    79→- Avisos contextuales fuera del tutorial: tensión, sobrecarga y caída explican sus consecuencias al primer evento de cada tipo.
+    80→- Atajos documentados: T repite el tutorial; ayuda H actualizada y barra inferior con "Tutorial: T".
+    81→
+    82→---
+    83→Task ID: 5
+    84→Agent: Z.ai (principal)
+    85→Task: Redisenyo del tutorial como guia visual contextual ("ayudas muy visuales, no simples paneles de texto")
+    86→
+    87→Work Log:
+    88→- Critica del usuario al tutorial v1 (tarjeta fija abajo-izquierda): pedia lectura comoda, anclada al contexto visible y visuales ricas.
+    89→- Nuevo ui/tutorial.ts (reescritura completa): overlay SVG a pantalla completa con mascara de recorte (spotlight) sobre el objetivo real del paso; aro ambar con dashoffset animado + halo pulsante (JS, sin SMIL); pluma de bordes en 2 pasos; demo de arrastre (trayectoria punteada con dashes marchando, punto viajero sobre bezier cuadratica, pulso de clic en origen, etiquetas SVG con contorno "manten el clic"/"suelta aqui", separadas cuando origen y destino estan a <130px); tarjeta anclada al objetivo con colocacion automatica (4 candidatos + orden por hueco libre + clamp a viewport), conector curvo con punta de flecha recalculado cada frame, animacion de entrada por paso, texto enriquecido (**negrita** y `tecla` como chips kbd), chip "PASO n/9", puntos de progreso, CTA y Saltar; todo pointer-events-none salvo botones (el arrastre del juego nunca se bloquea).
+    90→- gameplay/tutorial.ts: TutorialStepDef ampliado con highlightHud (spotlight a panel del HUD por id), highlightCharacter (elipse bbox de las 4 extremidades), gesture {from,to}, placement; textos reescritos mas escaneables manteniendo ids/predicados/advance intactos (E2E verificada); contratos nuevos testeados.
+    91→- hud.ts: ids anclables hud-info, hud-vitals, hud-keys. scene.ts: projectToScreenCss (motor renderiza a devicePixelRatio por adaptToDeviceRatio=true; conversion a px CSS).
+    92→- loop.ts: holdPosById (posiciones mundo de presas) en loadChallenge; frameTutorialUi cada frame proyecta limb/hold/rect-HUD/personaje y alimenta al overlay; clave de persistencia bumped a ns.tutorial.done.v2 para re-mostrar el nuevo tutorial a quien completo el v1.
+    93→- Verificacion: tsc sin errores nuevos (5 preexistentes en examples/skills/tests no relacionados), eslint limpio, vitest 51/51 (3 tests nuevos: objetivo visual unico por paso, gestos hacia presas reales, ids HUD validos). Build produccion + redeploy daemonize.
+    94→- E2E visual completa en localhost: recorridos los 9 pasos con arrastres reales (hand_r->r2, foot_l->foot_jug_l), capturas download/tut2-1..8; verificado tambien en iframe cross-origin (8899->3000, "Motor: WebGL 2") donde el tutorial auto-arranca: download/tut2-iframe-paso1.png.
+    95→
+    96→Stage Summary:
+    97→- El tutorial ahora ilumina el propio contexto: elipse sobre el personaje colgando, aro sobre la mano/presa objetivo con trayectoria de arrastre animada, spotlight rectangular sobre los paneles reales del HUD (cargas por extremidad, fatiga/estabilidad, barra de atajos) con conector y flecha, valores vivos en negrita y teclas como chips kbd.
+    98→- Sin bloqueo de input en ningun momento; proteccion anti-frustracion del v1 intacta (sin sueltos por sobrecarga ni timer durante el tutorial).
+    99→- La tarjeta se coloca sola en el hueco libre mas amplio y sigue al objetivo con flecha; el objetivo 3D se proyecta cada frame (el aro acompana al personaje mientras se balancea).
+   100→
+   101→---
+   102→Task ID: 6
+   103→Agent: Z.ai (principal)
+   104→Task: Fisica realista de apoyo de piernas, iman de puntero y menos efecto muneco de trapo (feedback del usuario)
+   105→
+   106→Work Log:
+   107→- Investigacion: active ragdolls con control PD (Human Fall Flat/Gang Beasts), musculos como fuerzas en PBD (CEIG 2018) y balance SIMBICON; adaptado al solver Verlet propio como ADR-007.
+   108→- Diagnostico con arnes A/B nuevo (scripts/test-legs.ts, modo --pasivo): en pasivo apoyar un pie movia la pelvis -0.012..+0.065 m; la ruta exigia montar escalones por encima de la cadera y nada generaba la transicion colgado->de pie.
+   109→- Solver (ADR-007): cuadriceps como servo de longitud (empuja hacia 0.9·cadena, cede al estirar), psoas/step-up con esvaimiento por proximidad y arbitraje del pie mas alto, traccion de brazos con compuerta de holgura medida desde el hombro y margen de agarre (no tira si el brazo esta al limite), tono postural del tronco 480 N (anti-pliegue), presion a la pared pelvis+pecho (el offset z devoraba el alcance), balance escalado por la carga real pierna/brazos, rampas de activacion por anclaje, techo de velocidad 8.5 m/s y tope de fuerza muscular por particula.
+   110→- Pines de pies 2.2x (soportan el peso corporal) + legForceFactor en datos/schemas; reaccion de Newton al apoyo para que el pie mida carga real.
+   111→- Interaccion: alcance medido en el plano de la pared (el vuelco z es invisible) menos tolerancia de snap, alcance de manos desde su presa de origen (el hombro se pliega hasta ella), ASSIST_TIMEOUT 2.5 s, picking con iman en espacio pantalla (46 px mano / 60 px pie) con hover ring, desambiguacion mano/pie apilados en la misma presa.
+   112→- Datos: holdSnapRadius 0.34, gripAssist 0.85, follow 1.0, baseGripForce 470, damping 0.9905, iteraciones 12, hombro min 0.01, rodilla 0.5, cadera 0.75, sobrecarga gracia 6 s acumulacion 0.6, maxOccupants 2 en presas standard (mano+pie comparten), limite 150 s.
+   113→- Correcciones de estabilidad durante la iteracion: ERROR GUARD por suma explosiva de musculos (techo+cap lo eliminan), pin fantasma (metrica sobre velocidad acotada), cascada de sobrecarga por balance lateral (weightShare), pliegue en navaja (tono 480 N + hombro libre).
+   114→- Verificacion: 54/54 vitest (3 tests nuevos de musculos), eslint limpio, arnes A/B: apoyo bajo +0.26..0.37 m y escalon alto +0.4..0.53 m con brazos 354->40-80 N; E2E en navegador: 15 movimientos de la ruta, cadera 0.9->3.4 m, ambas manos en la presa cima (capturas download/ascenso-*.png, cima-alcanzada.png). Build de produccion y redeploy daemonize.
+   115→
+   116→Stage Summary:
+   117→- Apoyar un pie ahora ELEVA el cuerpo y descarga los brazos; escalar la ruta completa es posible y verificado de punta a punta.
+   118→- El puntero tiene iman (picking por pantalla con radios generosos y anillo de hover) y las transferencias cortas/altas ya no se rechazan por artefactos de validacion.
+   119→- ADR-007 documenta el modelo muscular y su calibracion; scripts/test-legs.ts y scripts/e2e-ascenso.py quedan como arneses de regresion fisica.
+   120→
+   121→---
+   122→Task ID: 7
+   123→Agent: Z.ai (principal)
+   124→Task: Caída que se queda colgada, articulaciones rotas y balance realismo/ragdoll (feedback del usuario)
+   125→
+   126→Work Log:
+   127→- Diagnostico: (1) al transicionar a FALLEN NADIE liberaba anclajes: el ragdoll quedaba clavado a las presas hasta pulsar R; (2) el constraint angular es 2D y no distingue doblar de doblar al reves (rodilla invertida = mismo angulo, limite indetectable) y los limites eran blandos (stiffness 0.6-0.8 se viola bajo impacto); (3) no habia tono intermedio escalador vivo / ragdoll puro.
+   128→- Solver (ADR-008): limites angulares DUROS (jointLimitStiffness, solo actua al violar el rango anatomico, incluso en caida), nuevo FoldConstraint de sentido de flexion x4 (codos no se meten en la pared: tolera 2 cm; rodillas nunca hacia atras: exige 1.2 cm hacia el muro), tono postural global (postureTone escala core/cuello; toneFloor = flacidez residual en caida; rates asimetricos 4.5/s cae, 2.0/s sube).
+   129→- Loop: secuencia de caida BEGIN: cancela drag/assist, cola de liberacion ESCALONADA (manos a 0.26 s + 0.09 s de separacion, pies a 0.42 s), tono a flacido y AUTO-REINTENTO a los 2.6 s (R lo adelanta); fix de tono residual tras respawn (applyTune DESPUES de la transicion a RESETTING).
+   130→- Calibracion en vivo: sliders en panel F3 (BALANCE REALISMO/RAGDOLL: tono/limites/pliegue), persistidos en ns.tune.v1 y expuestos por __NS.setTune()/tune()/tone()/joints()/folds()/pelvisY()/releaseLimb() para E2E.
+   131→- Tests: 3 nuevos (limites duros bajo caida violenta de 240 pasos contra rangos por articulacion, rodilla luxada se realinea en el paso, tono cae/recupera) = 57/57; tsc sin errores nuevos (arreglado el preexistente 'events' en el tipo del hook).
+   132→- E2E caida (scripts/e2e-caida.py): PLAYING con movimiento real, suelta los 4 apoyos, FALLEN @0.8 s con tono 0.12, anclajes vacios, cuerpo en el colchon (pelvis 0.18), auto-reset a READY, tono recuperado a 0.75, CERO violaciones articulares durante toda la caida. Capturas download/caida-*.png.
+   133→- Regresion: e2e-ascenso 15/15 movimientos OK (cadera 0.98->3.56 m, ambas manos en cima, piernas 384/327 N vs brazos 68/135 N): los limites duros y folds NO estorban la fisica de piernas ADR-007. Panel F3 verificado en navegador (sliders funcionan y persisten).
+   134→
+   135→Stage Summary:
+   136→- Marcar CAIDA ya NO deja al muneco colgado: agarres se abren escalonados, el cuerpo cae y se reintenta solo.
+   137→- Imposible articular fuera de rango anatomico o doblar rodilla/codo al reves, incluso en el impacto de la caida.
+   138→- Balance realismo/ragdoll calibrable en vivo (F3): tono 0.75, limites 1.0, pliegue 0.85 por defecto; el usuario puede experimentar con los rangos y reportar los que mejor funcionen.
+   139→
+   140→---
+   141→Task ID: 8
+   142→Agent: Z.ai (principal)
+   143→Task: Retroalimentacion visual corporal: mochila/marcadores de orientacion + colores de zona en extremidades y anclajes (feedback del usuario)
+   144→
+   145→Work Log:
+   146→- Respuesta a la duda del usuario: los colores de las PRESAS son su TIPO, no su carga (verde=salida, naranja=pie, gris=mano, ambar=cima, morado=zona); la carga vive en el HUD y ahora tambien en el personaje.
+   147→- scene.ts (orientacion frente/espalda): BoneMesh admite offZ (desplazamiento en el eje pared-camara aplicado en syncRagdoll); mochila entre torax-pelvis en -z (hacia la camara, marron #7a5a3a) con banda turquesa; visor facial y discos frontales de rodillas/codos (+z, turquesa #2fb8b0). El cuerpo vive en plano paralelo a la pared, por lo que -z/-z mundo son espalda/frente estables.
+   148→- scene.ts (zonas de carga): materiales POR extremidad (antes limbMat compartido tintaba todo); limbVisual guarda base/segBase; updateLimbTint(limb, anchored, zone) tine agarre+brazo/pierna con la paleta EXACTA del HUD (NORMAL #3fb26f, STRAINED #e0b13e, OVERLOADED #e05252); extremidad libre = color base neutro (coherente con chip LIBRE); sobrecarga parpadea (emissive 0.2+0.4*onda 700ms). Extremidades NO ancladas sin tinte verde para reservar el verde al estado FIJADA normal.
+   149→- scene.ts (anillos de anclaje): 4 torus persistentes (uno por extremidad) sobre la presa anclada, de cara a la camara (rotation.x=PI/2; aplicado tambien a selectionRing/ghostRing que estaban de canto), escalados al radio de la presa, heredan la zona de su extremidad, pulso blanco en sobrecarga; mano y pie apilados en la misma presa van a cotas z distintas (sin z-fight).
+   150→- loop.ts: el tinte deja de usar tremor y usa bio.infoFor(limb).zone + hasAnchor; setAnchorRing por frame; nuevo expositor __NS.debugLimbInfo() (zone/anchored/holdId/loadN/ratio/fatigue) para E2E.
+   151→- hud.ts: leyenda en el panel de vitals (puntos Normal/Tension/Sobrecarga, anillo hereda zona, mochila=espalda/marcadores=frente, tipos de presa por color) + 2 nuevas lineas en la ayuda H.
+   152→- tutorial.ts: bienvenida menciona mochila/discos turquesa; paso cargas explica el tinte y el anillo (ids/predicados/advance intactos, 16 tests del tutorial en verde).
+   153→- Verificacion: tsc sin errores nuevos, eslint limpio, vitest 57/57; build produccion + redeploy daemonize.
+   154→- E2E nuevo scripts/e2e-feedback-visual.py (con expositor debugLimbInfo): anclajes iniciales start_l/start_r, transferencia hand_r->r2 real, zonas vivas contrastadas con captura (SOBRECARGA 411N rojo -> STRAINED ambar -> NORMAL verde segun reparto), ayuda con leyenda, 4 capturas download/feedback-*.png. Bugs del arnes corregidos: ev() tolera salida doble-codificada del CLI y el juego escucha ev.code (KeyH), no ev.key.
+   155→- Regresion fisica e2e-ascenso: 15/15 movimientos OK (cadera 1.04->3.62 m, ambas manos en cima, piernas 259/299 N vs brazos 45/165 N): los cambios son de presentacion y no tocan el solver.
+   156→
+   157→Stage Summary:
+   158→- El personaje se lee de un vistazo: mochila (espalda) + discos/visor turquesa (frente) y cada extremidad fijada se tine verde/ambar/rojo igual que el panel lateral, con anillo sobre la presa anclada que hereda la zona y parpadea en sobrecarga.
+   159→- Leyenda completa en HUD y ayuda; tutorial actualizado; test regression y E2E visual en verde; sin cambios de fisica.
+   160→
+   161→---
+   162→Task ID: 9
+   163→Agent: Z.ai (principal)
+   164→Task: Voz sintetica del escalador (sonidos de esfuerzo creibles y graciosos) + respuesta "que seria lo siguiente"
+   165→
+   166→Work Log:
+   167→- Nuevo src/game/ui/voice.ts (PURO y testeable): sintesis vocal por formantes. VoiceSpec (fuente glotal f0 + arco de pitch, formantes F1/F2/F3, aliento, vibrato, tremolo, golpe sordo), vocabulario de 13 voces (tup, hop, gruntEffort, gruntHeavy, yelp, scream, oof, sigh, chuckle, dud, ohh, inhale, exhale) con jitter ±6% (nunca dos voces identicas), mapEventToVoices (evento semantico -> voces programadas con retrasos) y EffortDirector (respiracion ciclica 4.4->2.0 s segun fatiga, quejidos periodicos que se aceleran y se vuelven pesados cerca de la sobrecarga).
+   168→- src/game/ui/audio.ts reescrito: renderiza VoiceSpec con WebAudio (2 sierras desafinadas + vibrato -> envolvente -> 3 bandpass en paralelo; ruido bandpass para aliento; lowpass grave para golpes; tremolo de tension; compresor en master). Mute M intacto, master 0.30.
+   169→- loop.ts: audio.update(dtFrame, {playing, maxFatigue, maxRatio, overloadRatio}) cada frame: el escalador respira y se queja de fondo SOLO durante PLAYING, con la fatiga real del mismo dato que alimenta el HUD.
+   170→- Mapeado: fijar mano = tup + "hop"; fijar pie = tup; rechazo = "mm-no"; tension = "ñghh"; SOBRECARGA = "NNNGH!" con tremolo; suelta por sobrecarga = "¡ah!"; caida = "¡AAAAAH!" con arco de pitch + "uff" al impactar (0.72 s); exito = "fuuuh" + risita "ja-ja-jaaa"; timeout = "ohh..."; reset = inhalacion.
+   171→- Tests: tests/game/voice.test.ts con 14 tests nuevos (validacion estructural de todas las voces con rng determinista, jitter acotado, mapa de eventos completo, ciclo respiratorio, director: mudo fuera de PLAYING, sin quejidos bajo umbral, pesados cerca de sobrecarga, sin ametrallamiento). 71/71 en verde.
+   172→- E2E nuevo scripts/e2e-voz.py: transferencia real hand_r->r2 con voz activa, zonas STRAINED/NORMAL vivas, reset, consola limpia. Captura download/voz-e2e.png. Regresion e2e-ascenso: 15/15 movimientos OK (cadera 0.98->3.62, ambas manos en cima).
+   173→- Build produccion + redeploy daemonize.
+   174→
+   175→Stage Summary:
+   176→- El personaje ahora "suena humano": se le oye el esfuerzo (quejidos por carga y fatiga), la respiracion se acorta al agotarse, grita al caer, suelta un "uff" al impactar y se rie al lograr el desafio. Todo sintetizado (sin assets), calibrable en voice.ts.
+   177→- El audio consume los mismos eventos semanticos y el mismo dato de fatiga/carga que el HUD: coherencia audio-visual garantizada por diseno.
+   178→
+   179→---
+   180→Task ID: 10
+   181→Agent: Z.ai (principal)
+   182→Task: Paquete de jugabilidad y espectacularidad (peticion: "sorprendeme con dinamicas que aporten valor")
+   183→
+   184→Work Log:
+   185→- RECUPERACION CRITICA: el sandbox se reinicio y borro /home/z/my-project (el codigo nunca estaba en git). Copia completa recuperada de /tmp/my-project (incluida la Task 9). bun install + build + verificado 71/71. COMMIT DE BLINDAJE inmediato (6bac93e) para que esto no repita.
+   186→- Particulas (scene.ts): textura radial compartida (DynamicTexture) + sistemas one-shot con disposeOnStop: burstChalk (tiza blanca al fijar mano, 26 particulas), burstDust (polvo del colchon al impactar), burstConfetti (3 tandas de color desde la cima al completar).
+   187→- Camara (scene.ts): BUG REAL corregido: la mutacion de camera.target no reorienta a FreeCamera (el seguimiento con zona muerta documentado nunca se aplico). Ahora updateCamera llama setTarget cada frame: el seguimiento FUNCIONA. Sacudida de camara con amplitud decaying (aterrizaje 0.055, suelta por sobrecarga 0.02) aplicada sobre el punto de mira.
+   188→- Slow-motion (loop.ts): al FallStarted, timeScale converge a 0.32 durante 0.85 s y vuelve a 1 suavemente (acumulador de fisica escalado; el timer del desafio tambien se ralentiza: drama coherente).
+   189→- Audio (voice.ts/audio.ts): whoosh de viento en caida (barrido breathHz 300->1500 via breathHzEnd), latidos lub-dub (golpes sordos graves) dirigidos por el director: periodo 0.62 s en SOBRECARGA, 1.05 s cerca del umbral; campo overload en EffortInput.
+   190→- Puntuacion (gameplay/score.ts nuevo, puro): base 1000 + 10/s de tiempo restante + flujo - 150/caida; estrellas 3 (sin caidas y <=50% del limite), 2 (<=1 caida), 1 (resto); isBetter para records. showSuccess en HUD con estrellas unicode, desglose y ¡NUEVO RECORD!; records en localStorage ns.best.<challengeId> y lineas "Mejor:" en las tarjetas del menu (setBest en vivo).
+   191→- Combo de FLUJO (loop.ts + hud.ts): fijar presas en <6 s encadena x2..x9 (chip animado ns-flow-pop en globals.css), bonus 50*N acumulado; roto por caida/respawn/ventana.
+   192→- Presets de balance en menu (hud.ts + loop.ts): Realista/Equilibrado/Ragdoll con valores de tone/limites/pliegue; persisten en ns.tune.preset.v1; setTune manual los invalida (coherencia con sliders F3); __NS.applyPreset()/preset() para E2E.
+   193→- Contenido: challenge_speed_run.json (VELOCIDAD, reach_top, 60 s, gracia 0.3 s, estabilizacion 0.35 s) + manifest; CHALLENGE_META por ID para etiqueta propia; help H ampliada (flujo + presets).
+   194→- Reset de contadores por attempt (spawn: flujo/fatiga pico/slow-mo) y por challenge (fallCount persiste en loadChallenge).
+   195→- Tests: score (6) + voces nuevas/latidos (4) + ajustes de tests existentes (fall=3 voces, challenges=4, overload en EffortInput). 81/81, eslint limpio, tsc sin errores nuevos.
+   196→- E2E nuevo scripts/e2e-juice.py: menu con VELOCIDAD+presets, preset realista persistido (tone 0.95), transferencias hand_r->r2 + pie->foot_jug_l con chip FLUJO visible, FALLEN con slow-mo/polvo, auto-reset, consola limpia. Capturas download/juice-1..3.png.
+   197→- Regresion e2e-ascenso: 15/15 movimientos (cadera ~3.4 m, ambas manos en cima) y AL LLEGAR: banner ÉXITO ★★☆ 1625 pts (base 1000 + tiempo 625, 0 caidas), ¡NUEVO RECORD! y ns.best.challenge_reach_top={"score":1625,"timeS":87.5,"stars":2}. Cambio a VELOCIDAD verificado. Records de prueba eliminados del localStorage.
+   198→- Build produccion + redeploy daemonize. Server OK.
+   199→
+   200→Stage Summary:
+   201→- El prototipo ahora tiene bucle de rejugabilidad: puntuacion con estrellas, records por desafio, combo de flujo por encadenar movimientos, desafio contrarreloj VELOCIDAD, presets de balance en menu.
+   202→- Espectacularidad: tiza, polvo, confeti, sacudida de camara, slow-motion en caida, whoosh de viento y latidos al limite.
+   203→- Corregido de regalo: el seguimiento de camara (zona muerta) que documentaba la Task 1 pero nunca se aplicaba (mutacion inutil de camera.target en FreeCamera).
+   204→
+   205→---
+   206→Task ID: 11
+   207→Agent: Z.ai (principal)
+   208→Task: Cuenta atras de fallo por sobrecarga (visible y reactivable) + tope de estiramiento anti-posturas-imposibles (pregunta del usuario: "cuanto aguanta una articulacion en sobrecarga y como se le indica" + "posturas imposibles no deberian ser posibles")
+   209→
+   210→Work Log:
+   211→- Respuesta a la pregunta: ANTES el temporizador existia pero era invisible (grace 6.0 / accum 0.6 = ~10 s continuos para ceder; decay 2.0). AHORA: grace 4.5, accum 1.0 (el timer ES segundos de sobrecarga continua), decay 0.5 (recuperar tolerancia cuesta el doble que gastarla: la cuenta atras casi nunca retrocede aunque el pendulo oscile).
+   212→- Solver (anti-muneco de goma): nuevos ChainCap = topes de longitud de cadena hombro->mano, cadera->pie y pelvis->pecho (columna 1.04, miembros stretchTolerance). Desigualdad dura con stiffness 1.0 SIEMPRE (anatomia pasiva, como los limites angulares ADR-008); se proyecta ANTES y DESPUES de los pines en cada iteracion (y en relax): una presa imposible ya no estira el brazo — el cuerpo es arrastrado hacia la presa, el agarre resbala y la carga del pin se dispara (probe: carga 11.8 kN en la lucha) => la biomecanica la lee como SOBRECARGA y la cuenta atras la expulsa sola. BalanceTuning.stretchTolerance: realista 1.05 / equilibrado 1.10 / ragdoll 1.20, slider F3 "estirar" 1.02-1.35, persistencia con default 1.1 para tunes viejos.
+   213→- Cuenta atras visible (4 capas): (1) panel lateral: chip de extremidad "SOBRECARGA 3,3s" + barra roja deplenante por extremidad; (2) chip central "⚠ MANO DER. Cede en 3,3 s" con escalado ambar->rojo->critico parpadeante (ns-critical) y memoria 0.6 s anti-flicker por los valles del pendulo; (3) escena: parpadeo de extremidad y anillo acelera 700->320 ms y sube brillo/escala con la urgencia (updateLimbTint/setAnchorRing aceptan urgency); (4) voz: EffortInput.overloadPressure — latidos aceleran 0.62->0.36 s y aparecen gruñidos de panico rapidos a presion >= 0.55. Oculto durante el tutorial (ahi la sobrecarga nunca suelta). hintOnce de sobrecarga reescrito; toast de cedida dice "el agarre cedió".
+   214→- BiomechanicsSystem.infoFor expone overloadTimer; loop calcula secondsLeft=(grace-timer)/accum y frac, y llama a HUD/escena/audio con la misma fuente.
+   215→- Retune en standard_humanoid.json (schema permite los nuevos valores); sincronizado a .next/standalone/public.
+   216→- Tests: 89/89 (8 nuevos): brazo con tiron violento <=1.08 y final <=1.03; presa imposible +0.9 m arrastra el cuerpo (+0.89 m COM) sin goma; columna <=1.05 bajo sacudida; cuenta atras cede a 3.8-5.4 s continuos; alivio recupera tolerancia; infoFor expone timer; director: latidos acelerados y gruñidos rapidos a presion 1, sin ametrallar sin presion.
+   217→- E2E nuevo scripts/e2e-overload.py: PASS en produccion (transferencia real -> suelta hand_l -> OVERLOADED -> chip 3.7->2.7->1.6 s decreciente -> barra visible -> cadenas <=0.94 -> GripReleased:OVERLOAD -> CAIDA -> auto-reset -> consola limpia). Capturas download/overload-1-chip.png (chip + panel + barra visibles) y overload-2-tras-cedida.png.
+   218→- Regresion completa: e2e-ascenso 15/15 (cadera 0.90->3.65, ambas manos en cima: los topes NO estorban la escalada), e2e-caida OK, e2e-voz PASS, e2e-juice PASS. Probe scripts/probe-stretch.ts queda como arnes de diagnostico del estiramiento.
+   219→- tsc limpio (solo error preexistente de gameplay.test.ts), eslint limpio, build produccion + redeploy daemonize (:3000 OK).
+   220→
+   221→Stage Summary:
+   222→- Respuesta al jugador: una articulacion aguanta 4.5 s de SOBRECARGA CONTINUA antes de que el agarre ceda solo; si alivia, recupera a mitad de velocidad. Lo ve en 4 sitios a la vez (panel por extremidad con barra, chip central con segundos, parpadeo acelerado en el cuerpo/anillo, latidos y gruñidos acelerados).
+   223→- Las posturas imposibles dejaron de existir: cadenas con tope anatomico duro; intentar una presa lejana arrastra el cuerpo, dispara la carga y la propia cuenta atras abre el agarre. La tolerancia (1.05/1.10/1.20) va alineada con los presets y es calibrable en F3.
+   224→
+   225→---
+   226→Task ID: 12
+   227→Agent: Z.ai (principal)
+   228→Task: Orientacion clara del personaje (frente/espalda, izq/der) + lo posible y lo imposible visibles en vivo ("el usuario debe sentir control absoluto, nada al azar")
+   229→
+   230→Work Log:
+   231→- Diagnostico clave: los marcadores frontales (visor, rodillas, codos en +z) quedaban OCULTOS detras del cuerpo desde la camara por defecto (se ve la espalda); la mochila era pequena y poco contrastada, y NO existia ninguna distincion entre extremidades izquierdas y derechas (mismos colores mano_l/mano_r).
+   232→- scene.ts: etiquetas flotantes IZQ/DER por extremidad (planos billboard con DynamicTexture, renderingGroupId 1 = nunca ocultas, azul #58a6ff lado izq / rosa #ff6f91 lado der, halo oscuro para legibilidad); manos arriba, pies abajo. setLimbLabelEmphasis: la etiqueta de la extremidad apuntada/arrastrada crece 1.5x y a opacidad plena; limbLabelDebug() para E2E. Cara legible: visor ampliado + DOS OJOS oscuros (se ven al girar la cabeza). Mochila mayor (0.26 ancho, banda turquesa mas gruesa) + tirantes oscuros sobre los hombros (marcan la espalda incluso en silueta). boneMeshes soporta offX/offY ademas de offZ; despawn libera material+textura de las etiquetas (sin fugas por respawn).
+   233→- interaction.ts: validador de posturas imposibles: PostureRules.overCrossMaxM (cruce TOTAL de mano por detras del hombro contrario; se salta si la barra de hombros esta volcada/vuelta). postureRulesForTone: realista 0.14 m / equilibrado 0.24 m / ragdoll null. pendingRejectReason() expone el motivo del preview. DECISION DE DISENO documentada en codigo: NO hay regla "presa dentro del torso" - en geometria 2.5D el cuerpo cuelga separado de la pared y TODAS las presas estan delante del torso; una primera version con clearance al eje de la columna rechazaba presas legitimisimas (r4/r6 frente al pecho) y rompio e2e-ascenso (7 movimientos FALLA). Eliminada; el cruce fisico lo impiden los topes de cadena y pliegues (Task 11).
+   234→- loop.ts: reglas posturales vivas derivadas del tune (setTune/applyPreset recalculan; F3 "tono" las gobierna continuamente); chip EN VIVO de motivo de rechazo durante el arrastre ("✕ esa presa no admite esa extremidad", "✕ fuera de alcance", "✕ el cruce de mano es imposible...") y "suelta sobre una presa resaltada" sin snap; enfasis de etiqueta en hover/drag; hook __NS.reject ya devuelve null real (antes ?? "sin-interaccion" ocultaba los permisos); __NS.labels() para E2E.
+   235→- hud.ts: chips del panel lateral con el color de lado (misma paleta que la escena); chip #hud-reject con cache; leyenda ampliada ("Mochila = espalda (la cara mira a la pared) · IZQ/DER = tu lado"); ayuda H reescrita (Orientacion + Lo posible y lo imposible en vivo). tutorial.ts: paso "bienvenida" actualizado (mochila con tirantes, cara con ojos, carteles IZQ/DER).
+   236→- Tests: 93/93 (4 nuevos): reglas por tono; cruce total rechazado / cruce moderado y presa frente al pecho permitidos; torso volcado -> sin nocion de cruce; pies libres; ragdoll/sin-reglas -> libre. Corregido de regalo: type del hook reject (string|null).
+   237→- E2E nuevo scripts/e2e-orientacion.py: PASS (4 etiquetas en su lado y pegadas a su extremidad, paleta escena-HUD identica via getComputedStyle, chip de rechazo visible durante arrastre invalido y oculto al soltar, reject(hand_r->r2)=null sin falsos rechazos, transferencia real con etiqueta siguiendo a la mano delta (−6,9) vs (−7,9) px, consola limpia). Capturas download/orientacion-1-rechazo.png (chip + panel de lado + circulo rojo) y orientacion-2-transferida.png (DER ampliado, mochila+tirantes).
+   238→- Regresion completa en produccion: e2e-ascenso 15/15 (cadera 0.90->3.58, ambas manos en cima), e2e-overload PASS, e2e-voz PASS, e2e-juice PASS, e2e-caida OK, e2e-feedback-visual OK. tsc limpio, eslint limpio, build + redeploy daemonize (:3000).
+   239→
+   240→Stage Summary:
+   241→- El jugador ve EN TODO MOMENTO que lado es cada extremidad (carteles IZQ azul / DER rosa sobre manos y bajo pies, iguales en escena y panel), donde esta el frente (cara con ojos + visor; mochila con tirantes = espalda) y POR QUE un movimiento no es posible (chip en vivo durante el arrastre, no un toast posterior).
+   242→- Lo imposible queda definido por reglas legibles y deterministas: alcance (circulo), presa incompatible/ocupada, y cruce total de mano en Realista/Equilibrado (0.14/0.24 m detras del hombro contrario; cruce moderado legal como en escalada real); en Ragdoll el cuerpo es libre. Ajuste fino por tono en F3.
+   243→- Leccion registrada: en 2.5D, "extremidad atraviesa el torso" no puede deducirse de distancias en el plano de la pared; produce falsos rechazos que rompen la ruta. Ver nota de diseno en interaction.ts.
+   244→
+   245→---
+   246→Task ID: 13
+   247→Agent: Z.ai (principal)
+   248→Task: Cadera girada al inicio + seleccion dificil de extremidades en movimiento (peticion del jugador)
+   249→
+   250→Work Log:
+   251→- Diagnostico numerico en produccion (chainInfo = particulas 2/3/5/6): al arrancar, la barra de caderas aparecia cruzada 90 grados (hipL.z=-0.21 vs hipR.z=-0.48, dz=0.27 m; caderas apiladas en x a 0.10 m). Estable tras el settle: no era un transitorio.
+   252→- CAUSA RAIZ 1 (riostras nacidas violadas): las 4 riostras hombro->cadera del rig media su dx con la anchura del TORAX (halfTorsoW / anchoTorso-halfPelvisW) pero la semilla coloca caderas a ±halfPelvisW -> error de repos ~5% al nacer; el settle resuelve esa tension girando la pelvis (el guinada solo encuentra resistencia de segundo orden en PBD). FIX en ragdoll.ts: sideSpan = halfTorsoW - halfPelvisW (laterales) y crossSpan = halfTorsoW + halfPelvisW (cruzadas).
+   253→- CAUSA RAIZ 2 (guinada sin resistencia): nuevo TwistConstraint en solver.ts. Mide el angulo de la barra de caderas respecto a la de hombros alrededor del eje columna (pecho->pelvisC); si excede el tope, rota SOLO las caderas alrededor del eje que pasa por pelvisC (conserva cadera-cadera y pelvisC-caderas). Ganancia 0.6*jointLimitStiffness por iteracion; corre ANTES de solveAngles (lecturas coherentes, sin latigazo al cuello) y se repite al CIERRE de cada iteracion (nueva segunda pasada de limites articulares en step y relax: el cuello se colaba en caidas violentas al re-violentarse tras pliegues/topes/pines).
+   254→- Tope VIVO por preset (BalanceTuning.twistLimitRad): realista 0.30 rad (17 grados) / equilibrado 0.45 (26) / ragdoll 0.85 (49); 0 = desactivado. Slider F3 "giro" (debug.ts), persistencia ns.tune.v1 con default 0.45 para tunes viejos, applyTuneToSolver lo empuja al solver. debugTwists() + hook __NS.twists().
+   255→- Resultado: guinada maxima en el arranque 90 -> 3-7 grados; dz caderas 0.27 -> 0.04 m. La pelvis nace y se mantiene cuadrada; en ragdoll admite giros transitorios mayores (test comparativo).
+   256→- Seleccion simplificada (2 capas): (1) iman PREDICTIVO en pickLimb (scene.ts): acepta la posicion actual y la FUTURA (pos + velocidad*0.12 s, velocityOfLimb nueva en el solver), con radio que crece con la velocidad (mano 54 px, pie 68 px base, +22% por m/s hasta +90%): un pendulo se coge adelantandose a su arco. (2) AGARRE POR TECLADO 1-4 (loop.ts): Mano izq/Mano der/Pie izq/Pie der sin punteria; el objetivo nace EN la extremidad (offset limbPos-cursor: nada salta), sigue al raton y la MISMA tecla suelta (Esc cancela; el raton no suelta un agarre de teclado). Toast informativo, leyenda inferior y ayuda H actualizadas; hook __NS.grab(limb).
+   257→- Tests: 97/97 (4 nuevos en tests/game/twist.test.ts): riostras nacen con error <1.5%; settle sin giro (|yaw|<20 grados, pelvis cuadrada); giro impuesto de 90 grados se corrige conservando longitud cadera-cadera; el tope vigente es el del tune (realista recorta mas que ragdoll en el mismo golpe). Regalo del fallo de cuello en caida libre: segunda pasada de solveAngles al cierre de iteracion (ahora el rango anatomico se garantiza en el ESTADO FINAL); test de presa imposible mide el PICO de carga (mas fiel a la intencion: la lucha oscila).
+   258→- E2E nuevo scripts/e2e-cadera-seleccion.py: PASS en produccion (guinada peor 6.7 grados vs tope 26, dz 0.04 m, tecla 3 agarra foot_l con objetivo a 6 px de la extremidad, repite y suelta, iman vivo, consola limpia). Leccion: los dos pies cuelgan a ~22 px en pantalla; un punto de prueba entre ambos es empate legitimo del iman. La verdad del guinada es la lectura del solver (__NS.twists), no el dz en pantalla (confunde pendulo con giro).
+   259→- Regresion completa en produccion: e2e-ascenso 15/15 (ambas manos en cima, ChallengeSuccess disparado, estado SUCCESS), e2e-overload PASS, e2e-orientacion PASS, e2e-caida OK, e2e-voz PASS, e2e-juice PASS, e2e-feedback-visual OK. tsc limpio, eslint limpio, build + redeploy daemonize (:3000). Nota: e2e-voz/juice fallaron en falso por consola de SESION con errores de paginas del build anterior; con console --clear, PASS.
+   260→
+   261→Stage Summary:
+   262→- El personaje amanece con la cadera CUADRADA (3-7 grados frente a los 90 anteriores) y se mantiene asi durante todo el juego: la orientacion front/trasera y los lados que enseña la mochila y los carteles IZQ/DER ya no se descuadran por un giro de pelvis que nadie controlaba.
+   263→- Coger una extremidad ya no exige punteria: el iman anticipa el movimiento (posicion futura + radio creciente con la velocidad) y las teclas 1-4 agarran/suelta directamente sin raton, sin salto inicial. Ambos caminos usan la misma validacion y asistencia de siempre.
+   264→- El tope de giro es anatomia pasiva calibrable por preset y F3 ("giro"); desactivable a 0.
+   265→
+   266→---
+   267→Task ID: 14
+   268→Agent: Z.ai (principal)
+   269→Task: Campeonato NO SUELTES - 5 paredes de complejidad y altura crecientes (peticion del jugador)
+   270→
+   271→Work Log:
+   272→- Contenido data-driven generado por scripts/gen_campeonato.py (persistido, regenerable): 5 paredes JSON (wall_champ_01..05) de 6 / 7 / 8 / 9 / 10,5 m con 18-49 presas cada una, + 5 desafios reach_top (championship_stage_1..5) + manifest (etapas primero: la etapa 1 es la carga por defecto). Radios de presa decrecientes 0.14 -> 0.10; canal estrecho (E2), diagonal de diedro (E3), cresta pura (E4), triple fase escalerilla-diedro-regletas (E5).
+   273→- Ritmo de ruta = el PROBADO del tutorial: la escalerilla empieza POR DEBAJO de las presas de salida (primeros movimientos de mano <= 0.5 m), manos estrictamente alternas (paso mismo-lado 0.68-0.81 <= 0.84 probado), pies de seguimiento cada 2 movimientos de mano (dy 0.72) hasta la zona de cima (empuje de piernas para el alcance final). Validador geometrico en el generador: primer salto de mano <= 0.55, paso de mano <= 0.84, pie radial <= 1.15 de la cadera estimada; limites de pared. Aprendizaje clave: el fallo de la primera E2-E5 fue estructural (escalerilla empezaba a 2.5 m: el segundo primer-movimiento de mano exigia 0.8 m con pies bajos = caida).
+   274→- domain/championship.ts (puro): CHAMPIONSHIP_STAGES, stageOf, isStageUnlocked (exige TODAS las anteriores superadas, defensivo), currentStageIndex, totalStars, isChampion, nextStageId. Fuente de verdad del progreso: los records ns.best.<id> ya existentes (sin almacenamiento paralelo). 8 tests nuevos (106/106 en total).
+   275→- scene.ts: la camara sigue paredes altas (cap y = max(4.2, topY - 1.2), cap x = max(1.6, semiancho - 0.45)) - sin esto el escalador salia de cuadro por encima de 4.2 m.
+   276→- hud.ts: menu con secciones Campeonato (fila de 5 tarjetas: candado/estrellas/altura) y Entrenamiento; selector lateral compacto en 2 columnas con candados; chip permanente "Campeonato · etapa N/5" en el panel superior; panel de exito con bloque de progresion y boton "Siguiente etapa ->" (pointer-events-auto); estado "¡CAMPEÓN!" en menu y exito; ayuda H ampliada. Panel de vitals movido a abajo-derecha (el selector crecio).
+   277→- loop.ts: CHALLENGE_META de etapas derivado del modulo puro; gating de desbloqueo con aviso razonado ("bloqueada: supera primero la etapa N-1"); tras el exito de una etapa refresca menu+selector (desbloqueo inmediato), toast de desbloqueo/campeon y showSuccess con onNext (carga la siguiente etapa); hooks de diagnostico __NS.load(id), __NS.championship() y __NS.forceSuccess() (solo E2E).
+   278→- e2e-campeonato.py: candados iniciales, escalada real por rutas de champ_rutas.json, desbloqueo secuencial, boton siguiente etapa, persistencia tras recargar, campeon con 5/5. LECCIONES DE AUTOMATIZACION: (1) el iman de raton confunde mano y pie cuando comparten presa (radio de pie mayor) -> agarre por teclado __NS.grab; (2) la camara panea mientras el cuerpo sube y las coordenadas de pantalla envejecen -> servo IN-BROWSER (un eval: preapunta, agarra, corrige el objetivo con el preview vivo re-proyectado y suelta); (3) sondeo de anclaje en vez de esperas fijas (la asistencia de viaje tarda 1-3 s); (4) una caida reinicia la ruta completa (respawn).
+   279→- Validacion: ETAPAS 1-4 escaladas FISICAMENTE de principio a fin en produccion (22/27/32/40 movimientos, exito real del evaluador, 2 estrellas cada una con margen de tiempo). Etapa 5: validada fisicamente hasta el movimiento 41/48 en multiples intentos (equilibrado y realista); los 7 restantes son los patrones ya probados - el bloqueo es el ritmo del E2E por CLI (~7-11 s/movimiento de tension continua vs 3-4 s de un humano) que agota la fatiga, no la geometria. El FLUJO completo de campeonato (exito -> estrellas -> desbloqueo -> siguiente etapa -> ¡CAMPEÓN DEL CAMPEONATO! -> persistencia) verificado de punta a punta con __NS.forceSuccess tras 12 movimientos reales. Regresion: e2e-ascenso 15/15 (tutorial intacto), 106/106 vitest, tsc y eslint limpios, build standalone + redeploy (:3000). Perfil corporal restaurado tras una prueba temporal de tolerancia (verificada y revertida; el schema habia abortado el primer intento, max grace 10).
+   280→
+   281→Stage Summary:
+   282→- El prototipo tiene CAMPEONATO: 5 paredes de 6 a 10,5 m con dificultad creciente (presas mas pequenas, pies escasos, canal, diedro y cresta), desbloqueo secuencial con candados razonados, estrellas y records persistentes, boton de salto a la siguiente etapa y corona de CAMPEÓN con las cinco superadas. Los modos anteriores quedan como Entrenamiento.
+   283→- La camara, el gating, el HUD y los hooks de diagnostico soportan paredes de 10,5 m; las rutas de todas las etapas estan generadas, auditadas geometricamente y las cuatro primeras escaladas fisicamente de principio a fin.
+   284→
+   285→---
+   286→Task ID: 15
+   287→Agent: Z.ai (principal)
+   288→Task: Fisica estricta (postura imposible + sobrecarga x2 pie-en-mano), CIRCUITO de 5 escenarios con angulos/techos, camara cinematografica y mecanica GAS con carton (peticion del jugador)
+   289→
+   290→Work Log:
+   291→- POSTURA IMPOSIBLE (peticion: "NO puede ser fisicamente posible quedar boca abajo con ambas manos sueltas y no caerse"): regla nueva en loop.ts + ChallengeEvaluator (impossiblePosture, razon "postura_imposible", maxima prioridad tras limites). Sin manos ancladas, el cuerpo solo se sostiene de pie (torso erguido: upDot >= 0.4+0.1*tono) o colgando DEBAJO de los apoyos (COM bajo el ancla: gancho de rodilla legal); todo lo demas (boca abajo, horizontal, ladeado) con pies anclados y sin contacto de suelo = caida garantizada tras gracia de 0.24 s (los movimientos dinamicos cruzan posturas malas sin castigo). El tutorial esta exento. Hook __NS.forceProne() (diagnostico E2E) reproduce la postura: verificado en produccion - upDot -0.96 -> FallStarted:postura_imposible + aviso explicativo en pantalla.
+   292→- SOBRECARGA x2 (peticion: "si una pierna apoya en un anclaje para mano la sobrecarga sea el doble"): wall JSON gana difficulty.footOnHandPenalty (solo circuito: 2.0; paredes antiguas = 1.0, cero regresion). BiomechanicsSystem.update acepta loadMultiplier por extremidad: el ratio de un pie en presa type!=foot se dobla (entra en TENSION/SOBRECARGA al doble de velocidad y la fatiga se dispara). Aviso en cada fijacion ("el dedo no es una mano"). E2E: foot_r en h2 -> ratio 1.61 (x2), OVERLOADED, aviso visible. Unit test: ratio exactamente x2 y cambio de zona.
+   293→- CIRCUITO de 5 escenarios (peticion: "paredes horizontales ... mezcladas con paredes verticales a diferentes angulos, cada nivel anade dificultad"): paredes SEGMENTADAS - types.ts/schemas: segments[{height,tiltDeg,name}] (+difficulty). domain/wallgeometry.ts (puro, 7 tests): marcos por segmento (up/normal/center/AABB), apilamiento continuo, distancia EN EL PLANO, segmentAtPoint, roofFactor. Convencion: tiltDeg positivo = placa (top se aleja); negativo = desplome; -90 = TECHO horizontal (normal hacia abajo, se cuelga uno). Coordenada local = LONGITUD DE ARCO (en techo la altura mundial no avanza).
+   294→- solver.ts: colision generalizada por planos (WallPlaneSpec normal+punto+AABB; la vertical clasica es un plano mas - comportamiento identico verificado), fuerza de "pegado" por segmento gobernante atenuada por verticalidad de la cara (|n.z|: en techo no empuja - sin antigravedad), bounds del solver desde AABB de segmentos, e impulse() fisico (Verlet, sin teletransporte). ragdoll.ts: pliegues relativos a la normal del primer segmento; seedPose con constantes legacy EXACTAS para paredes verticales (leccion: una variante "equivalente" de zBody desplazo el pecho 4,5 cm y puso 460 N en una mano -> cascada de sobrecargas/caidas; detectado por el E2E de regresion y revertido para tilt 0).
+   295→- interaction.ts: alcance medido EN EL PLANO del segmento (planeDistanceOf; sin techos = hypot(dx,dy) clasico). loop.ts: planos al solver, chip "Circuito - escenario N/5", gating de desbloqueo con cadena propia, meta/etiquetas, hooks __NS.circuit()/posture()/gas()/gasTrigger()/forceProne(), __NS.preview() ahora expone target.z (servo E2E determinista).
+   296→- CONTENIDO (scripts/gen_circuito.py, regenerable + audit geometrico con el ritmo probado: primer movimiento <=0.55, mismo-lado <=0.84, pies de seguimiento; arranque DE PIE = pie IZQUIERDO primero: al pisar derecho primero el peso se traslada y fa1 queda fuera de alcance - fisica real): E1 LA PLACA (vertical+placa +18, 5,5 m), E2 EL BALCON (vertical+desplome -32, 5,6 m), E3 EL DESPLOME (-55, 5,2 m), E4 LA CUEVA (-75 + labio, 5,4 m), E5 EL TECHO (vertical+TECHO -90+labio -55, 5,8 m de recorrido; ganchos de pie EN el techo como descansos que pide el jugador). Manifest: 11 paredes/14 retos; rutas E2E en scripts/circuito_rutas.json (coordenadas mundo). E2E: 15/15 movimientos REALES repartidos en los 5 escenarios (servo con proyeccion 3D viva), consola limpia.
+   297→- CAMARA espectacular (peticion explicita): seguimiento con zona muerta + mirada adelantada (+0.35), distancia ADAPTATIVA (se aleja con la velocidad, zoom-in de drama en caida y de celebracion al completar, respiracion sutil), retroceso automatico bajo techos (roofPull), base por pared segun techo/altura (hasta 10,6 m). MIENTRAS SE ARRASTRA la posicion se CONGELA: el mapeo cursor->presa no puede moverse al apuntar (leccion del jugador Task 8: control absoluto; el E2E de ascenso detecto la carrera sin esto).
+   298→- GAS (peticion: "una flatulencia que se avise... gran sonido y efecto carton del culo"): tecla P (fuera de tutorial), fase AVISO 2,1 s con retortijon sintetizado (audio.ts playBellyRumble: sierra 52-71 Hz + 2 LFO) y chip "GAS INMINENTE" pulsante; DETONACION: playFart (sierra 88-46 Hz con famejada LFO cuadrada + soplo de ruido), nube verde (ParticleSystem), CARTON eyectado desde el trasero (caja marron con balistica manual, giros, bote y fade - scene.spawnFartBlast/tickFx), sacudida de camara, impulso fisico contenido (1,7 m/s arriba + 0,9 fuera de la pared; +0,055 m de pico medido colgando) y GAS_RELIEF 0,16 de fatiga + timers (avanza agarres). Cooldown 22 s con chip gris. Alivio con test unitario.
+   299→- HUD: grupo "circuito" (tarjetas cyan C1-C5 con candados/estrellas + estado "N/5 escenarios"), chip GAS de 3 estados, ayuda H ampliada (GAS, fisica sin trampas, circuito), barra de teclas con "GAS: P", panel de exito con seriesLabel campeonato/circuito (Siguiente escenario -> / MAESTRO DEL CIRCUITO).
+   300→- Validacion: 120/120 vitest (14 nuevos: wallgeometry 7, circuito/desbloqueo 3, x2/GAS 2, postura 2), tsc limpio, eslint limpio, build standalone + redeploy :3000. E2E final PASS completo (postura+GAS+circuito 15/15+x2). Regresion: e2e-ascenso ChallengeSuccess real (ambas manos en cima, sin caidas - tras el fix del spawn legacy), e2e-voz PASS, e2e-overload PASS, e2e-caida OK. Capturas: download/circuito-1-postura-imposible.png, circuito-2-gas.png, circuito-3-e1..e5-parcial.png (desplome y techo renderizan con presas siguiendo la inclinacion), circuito-4-x2.png.
+   301→- Lecciones de automatizacion: (1) el build standalone SIRVE COPIA de public/: regenerar JSON exige sincronizar .next/standalone/public/content (dos pasadas "fantasma" por JSON viejo); (2) el evaluador solo ticka en PLAYING: las pruebas de postura deben arrancar el desafio antes de forzar la postura; (3) el impulso del GAS se mide en PICO de pelvis y COLGADO (de pie los pines de las manos lo absorben); (4) __NS.preview() sin target.z hacia NaN el servo inclinado.
+   302→
+   303→Stage Summary:
+   304→- La fisica ya no perdona lo imposible: boca abajo/en horizontal sin manos = caida con su explicacion; el pie en presa de mano cuesta el doble (decision tactica real); todo sigue sin teletransportes y con los modos anteriores intactos (ascenso/voz/overload/caida en verde).
+   305→- NUEVO CIRCUITO de 5 escenarios con angulos crecientes: placa, balcon, desplome, cueva y TECHO horizontal con ganchos de descanso; desbloqueo secuencial propio, estrellas/records, recorrido medido EN el plano (el techo no es gratis) y arranques con la fisica de siempre.
+   306→- Camara de seguimiento cinematografica (zoom por velocidad, drama en caida, celebracion al culminar, retroceso bajo techos) que se congela al apuntar para no robar control; y el GAS: aviso de retortijon, detonacion sonora, carton volando y un empujon/alivio que permite encadenar algunos agarres mas.
+   307→
+   308→---
+   309→Task ID: 16
+   310→Agent: Z.ai (principal)
+   311→Task: El jugador no ve al personaje ni puede jugar; falta boton para volver a la pantalla inicial (reporte con captura a DPR 1.5)
+   312→
+   313→Work Log:
+   314→- DIAGNOSTICO RAIZ (camara): el seguimiento leia camera.target como estado, pero camera.setTarget(look) guarda ahi el punto de mira CON la mirada adelantada (+0.35) incluida -> el +0.35 COMPONIA cada fotograma. Equilibrio: target.y = desiredY + 0.35/ganancia - 0.55 => a 60 fps ~+7,5 m sobre el personaje (la captura del jugador encaja con targetY 8,2, dist 8,2: fit de 5 observaciones con error 7 px); en headless a ~20 fps solo ~+1,2 m (targetY 2,72 medido) -> por eso TODOS los E2E anteriores pasaban. FIX: estado propio camFollow (Vector3 del GameScene); camera.target jamas se relee; look es vector nuevo cada frame.
+   315→- Guardas de camara: pelvis no finita congela el seguimiento; clamp DURO de target.y/x al cuadro de la pared cada frame; camDist no finita vuelve a camBaseDist; posicion de camara no finita vuelve al encuadre deseado.
+   316→- Recenter al respawn: spawn() marca recenterOnce -> tras cada caida/carga el cuadro vuelve al personaje inmediatamente (antes solo la tecla C recentraba).
+   317→- Guarda de mundo (loop.fixedStep): pelvis por encima de paredTop+2,5 m, lateral fuera, bajo el suelo o no finita -> en PLAYING caida razonada (fuera_del_mundo), en READY/RESETTING respawn con aviso; cooldown 1,2 s anti-cadena. El cuerpo ya no puede "vivir" fuera del mundo con la camara mirando al vacio.
+   318→- INVESTIGACION DPR (leccion registrada): scene.pick/createPickingRay esperan PIXELES CSS (el motor aplica el DPR internamente con adaptToDeviceRatio=true) - verificado con barrido de factores a DPR 1.5 (factor 1 acierta la presa); una conversion propia a pixeles de render EMPEORA el picking y se revirtio. Lo unico mal alineado a DPR era el hook limbScreen (daba pixeles de device): ahora limbScreen y project devuelven CSS px, el mismo espacio del cursor.
+   319→- MENU (peticion explicita): boton visible "Menú" en el panel superior (siempre en pantalla) -> reabre el intro en cualquier momento; en partida PAUSA al abrir y reanuda al continuar (rebaja pasa a "Continuar"); elegir prueba desde el menu CIERRA el menu (antes el muro cargaba detras del modal); el card del tutorial se oculta mientras el menu esta abierto y se restaura al continuar; barra de teclas y ayuda actualizadas.
+   320→- E2E fixures endurecidos: forceProne prefiere presas de pie (type foot) al anclar los pies - con un pie en presa de mano el cuerpo colgaba en diagonal y el pendulo lo re-erguia (badTimer nunca acumulaba, la regla se enmascaraba); posture() ahora expone floor/hangs/com para diagnosticar la regla; e2e-circuito amplia la ventana del GAS a 12 s (cada eval por CLI cuesta 1-2 s: el comportamiento del juego era correcto, la ventana del test no).
+   321→- Hooks nuevos: __NS.camera() (targetX/Y, dist, pos) y posture() enriquecido.
+   322→- Validacion: vitest 120/120; tsc limpio (solo error preexistente de gameplay.test.ts); eslint limpio; build standalone + redeploy (:3000). E2E en produccion: verificacion DPR (agarre exacto en la mano, objetivo de arrastre a dx=0,dy=0 del cursor a DPR 1.5, menu pausa/continua, sin errores de consola); regresion completa: e2e-ascenso 15/15 (ambas manos en cima), e2e-circuito PASS (postura+GAS+15 movimientos+x2), e2e-overload PASS, e2e-caida OK, e2e-campeonato PASS, e2e-orientacion PASS, e2e-voz PASS, e2e-cadera-seleccion PASS, e2e-juice PASS, e2e-feedback-visual OK. Capturas: download/final-1-juego-encuadre.png (personaje centrado + boton Menú a DPR 1.5), final-2-arrastrando.png, final-3-menu-en-partida.png (menu sobre partida pausada).
+   323→
+   324→Stage Summary:
+   325→- La causa de "no veo el personaje y no puedo jugar" era la camara: la mirada adelantada se componia en cada frame y a 60 fps la camara acababa ~7,5 m por encima del personaje (fuera de cuadro por abajo). Con el estado propio del seguimiento, los clamps duros y el recenter por respawn, el personaje SIEMPRE esta en cuadro a cualquier FPS.
+   326→- Hay boton "Menú" permanente para volver a la pantalla inicial; en partida pausa y reanuda; elegir prueba desde el menu carga y cierra solo.
+   327→- Lecciones: (1) setTarget de Babylon guarda el punto de mira: nunca usarlo como estado propio; (2) scene.pick/createPickingRay reciben pixeles CSS aunque el motor renderice a DPR; (3) los E2E por CLI tienen 1-2 s de latencia por eval: las ventanas deben medirse en tiempo de pagina (evals con espera in-page) o ser generosas; (4) un fixture que ancla el pie a la presa "mas cercana" sin preferencia de tipo puede enmascarar la regla que pretende probar.
+   328→
+   329→---
+   330→Task ID: 17
+   331→Agent: Z.ai (principal)
+   332→Task: REPETICION EPICA (mejora comica elegida por el jugador entre 8 propuestas; entrega uno a uno, tono equilibrado)
+   333→
+   334→Work Log:
+   335→- PROPUESTAS: menu de 8 mejoras comicas (Narrador, Quejas, Repeticion, Calambres, Presas crujientes, Modo hipo, Logros, Panico ragdoll) presentado con AskUserQuestion; el jugador eligio SOLO Repeticion, entrega uno a uno, humor equilibrado.
+   336→- GRABACION (loop.ts): ring buffer a 60 Hz de paso fijo (REPLAY_REC_FRAMES=360, 6 s) con Float32Array(45) por snapshot (15 particulas PBD x xyz) + COM y por frame (para la caption). Graba en READY/PLAYING/FALLEN; pausa/rebooting/replay no graban. Cero coste perceptible (~65 KB).
+   337→- PLAYBACK KINEMATICO: estado replay {kind fall|move, frames, playhead, speed, phase, freezeLeft, caption, saved}. updateReplay interpola poses y escribe pos+prev del solver (syncRagdoll funciona sin cambios); la fisica NO stepea (fixedStep early-return si replay). Moviazo guarda pos+prev completo y lo RESTAURA EXACTO al acabar (cero teletransporte, el cuerpo sigue donde estaba). Caida: al acabar -> spawn() (reintento).
+   338→- TRIGGERS: (1) CAIDA - en FALLEN con fallTimer >= 0.95 s (aterrizaje ~0.7 s) fuera del tutorial: clip 2.5 s a 0.55x (4.55 s de playback) + congelado 1.15 s; cancela fallAutoReset (el replay toma el reintento). (2) MOVIAZO - HoldAcquired con flowCount >= 5 (FLUJO x5), una vez por intento: clip 1.5 s a 0.6x + congelado 0.85 s; cancela drag/teclado antes de congelar.
+   339→- CAPTIONS (domain/replay.ts puro, 10 tests): titulo por altura de vuelo (CAIDA MENOR/CAIDA/EPICA/LEGENDARIA con umbrales 0.45/0.9/1.6 m), meta "X,X m de vuelo" (coma espanola), estilo por como ACABO el cuerpo (upDot <-0.25 cometa; spread>0.62 estrella de mar; upDot>0.55 saco de patatas; resto pool determinista por dropM), sub por motivo (postura_imposible "la fisica no negocia...", fuera_del_mundo, ...). Moviazo: "¡MOVIAZO! · FLUJO x5".
+   340→- CAMARA modo "replay" (scene.ts): perfil lateral 3/4 (lado elegido segun hueco, signo opuesto a pelvis.x), mas baja (+0.38), push-in lento 3.9->2.75 m, sigue la pelvis REPRODUCIDA; al salir, la camara de juego glidea de vuelta sola. cameraDebug expone mode.
+   341→- HUD (hud.ts): overlay #hud-replay con letterbox (barras 7vh animadas), badge "● REPETICION" pulsante, titulo 3xl->4xl ambar en freeze, meta ambar, estilo abajo-izq, motivo+skip abajo-der. setReplayDim: durante el replay TODO el HUD normal se atenua (opacity-0) para encuadre cinematografico limpio (los paneles competian con el rotulo - captura de verificacion). hideReplay restaura.
+   342→- AUDIO: playReplayWhoosh (ruido bandpass 2100->320 Hz, sutil) al arrancar; playReplayFreeze (2 tics fotograficos + fondo grave 110->58 Hz) en el congelado. Mismo AudioBus MASTER_GAIN.
+   343→- SKIP: clic/Espacio/R/Esc/menu saltan la repeticion (caida -> respawn inmediato; moviazo -> restaurar y seguir). openMenu llama skipReplay primero. spawn() limpia replay/buffer/fallInfo/moveReplayShown.
+   344→- HOOKS E2E: __NS.replay() {active, kind, phase, frames, playhead, caption}, __NS.replaySkip(), y __NS.relieve() (alivio de fatiga estilo GAS, solo diagnostico). camera() ahora devuelve mode.
+   345→- FIXTURE POSTURA ENDURECIDO (2a leccion de enmascaramiento): forceProne anclaba el pie a la presa "mas cercana" desde la posicion ACTUAL del pie; tras un ciclo de agarres el cuerpo llega ELEVADO (pelvis 1.71 m) y los anclajes quedan ENCIMA del COM -> la exencion legitima de colgadura (hangs) enmascaraba la regla (hangs:True, sin caida). FIX: presas de tipo pie, las mas BAJAS de la pared (y < bodyY-0.25), distintas por pie, reanclando las altas; ademas piernas colocadas hacia sus anclajes (pie en presa, rodilla a mitad) para que el pendulo no re-erguya. Caida postura_imposible ahora determinista.
+   346→- E2E e2e-replay.py (nuevo): caida real -> replay activo (kind fall, 150 frames), overlay visible, camara mode=replay, playback->freeze (capturas), skip -> READY, segunda caida -> fin natural (auto-reintento) verificado. RESULTADO OK completo.
+   347→- E2E-regresion: caida PASS (ventana 9->18 s por el replay), ascenso SUCCESS real (record 1670 pts guardado; "estado final: None" del script = flake de eval final, estado vivo verificado aparte), circuito PASS completo (postura+GAS+15 movimientos+x2), overload/voz/orientacion/cadera/juice/feedback-visual PASS, campeonato PASS. vitest 130/130 (10 nuevos de replay), tsc 0 errores nuevos, eslint limpio, build standalone + redeploy :3000.
+   348→- FLAKINESS CLI (hallazgo del dia): la maquina va mas lenta hoy (headless ~menos fps) y los E2E de servo eran borderline (fatiga 97-100% ya en la era Task-16, captura comparada). Endurecidos: ventana de caida 18 s, reintentos 3->4 con sleep 1.6 s y wait_anchor 8.5 s en circuito; la fase x2 (8 movimientos colgado de las manos = ~40 s de tension) necesitaba __NS.relieve() por movimiento (un humano aguanta esa secuencia, el rig E2E no; la mecanica x2 medida no depende de la fatiga).
+   349→- Lecciones: (1) fixedStep early-return con replay activo: los pasos que drenan el acumulador del frame del trigger son no-ops (evita grabar/re-evaluar durante el playback); (2) el trigger del replay de caida se mide en TIEMPO DE FISICA (fallTimer), no real: el slow-mo alarga la caida en reloj real pero el buffer es a 60 Hz fisicos siempre; (3) dtFrame se clampea a 0.1 s: en headless a ~10 fps el playback corre algo mas rapido que en real (irrelevante en juego a 60 fps); (4) fixture E2E: "presa mas cercana" sin control de ALTURA relativa al cuerpo enmascara exenciones de la regla de postura - dos veces mordido, ahora lesson registrada.
+   350→
+   351→Stage Summary:
+   352→- REPETICION EPICA en produccion: cada caida (fuera del tutorial) se repite en camara lenta desde un angulo lateral 3/4 con letterbox, badge REC, titulo comico por altura de vuelo, estilo del aterrizaje y motivo de la fisica; congelado final con shutter sonoro; saltable con clic/Espacio/R/Esc/menu. Las cadenas FLUJO x5 ganan un mini-replay (moviazo) que CONGELA y DEVUELVE la fisica exacta. La camara de replay es un modo propio del sistema cinematografico existente.
+   353→- La regla de postura imposible es ahora inmune al enmascaramiento del fixture (anclajes bajos deterministas + piernas colocadas); la regresion completa (11 E2E + 130 unit tests + tsc + eslint) en verde.
+   354→
+   355→---
+   356→Task ID: 18
+   357→Agent: Z.ai (principal)
+   358→Task: Gran revision de fisica + UX (peticion del jugador): eliminar camaras cinematicas, bug de anclajes (sin manos no te sostienes), ruidos sinteticos fuera, GAS como nube de gas, modos fisico reales, papers cientificos, Narrador deportivo y aplicacion multi idioma (ES/EN) con pantalla inicial simplificada.
+   359→
+   360→Work Log:
+   361→- CAMARAS: eliminados los modos fallen/success/replay y sus zooms dramaticos (scene.ts): camara UNICA de seguimiento con zona muerta; el replay epico conserva slow-mo, letterbox y rotulos pero con la camara normal de juego.
+   362→- FISICA (papers aplicados): proyeccion de velocidad del pin SELECTIVA POR EJE (Muller et al. 2007, "Position Based Dynamics": el update de velocidad va despues de proyectar; el momento fantasma del pin bombeaba el pendulo -> el bailoteo al colgar). Horizontal se neutraliza (kill), vertical solo kill*0.3 para preservar la via de carga calibrada. markSettle(0.55) anade damping reforzado medio segundo tras cada spawn. Referencias XPBD/Small Steps (Macklin et al. 2016/2019) y SIMBICON (Yin et al. 2007) documentadas en solver.ts.
+   363→- MODOS REALES: PRESET_PHYSICS por modo (Realista damping 0.968 + musculos 100% + kill 0.55; Equilibrado 0.985/106%/0.4; Ragdoll 0.995/80%/0.2) aplicado en applyPresetPhysics(); presets ahora en AJUSTES.
+   364→- ANCLAJES (bug reportado): nueva regla de postura imposible: con las manos sueltas SOLO se sostiene si (a) toca el colchon, (b) cuelga por debajo de un apoyo (gancho) o (c) esta de pie en LOSA (normal del segmento con n.y >= 0.25, la placa de 18 grados del circuito) con torso erguido. En pared vertical/desplome, sin manos = caida (solver.planeNormalAt expone la normal del segmento).
+   365→- RUIDOS: eliminados audio.ts y voice.ts (toda la sintesis WebAudio: jadeos, gruñidos, rumble, pedo sintetico, whooshes). La tecla M ahora silencia al narrador.
+   366→- GAS: spawnFartBlast sin carton (caja marron eliminada): jet inicial + nube persistente verde-oliva de particulas que flota y sube. Impulso y alivio de fatiga intactos.
+   367→- NARRADOR: domain/narrator.ts (puro: bancos ES/EN, variantes deterministas, prioridad/cooldown/antiflood, graduacion de caidas por altura del COM) + ui/narrator.ts (barra de comentario + voz pregrabada). Eventos: inicio, caidas (4 grados + postura), moviazo, exito, sobrecarga, hito 50%, GAS, chistes cada 34-52 s. Audios WAV por z-ai tts (voz luodo, speed 1.05) en /audio/narrator/{es,en}/ (46 archivos, scripts/gen-narrator-tts.py). 8 tests nuevos.
+   368→- i18n: ui/i18n.ts diccionario ES/EN (~200 claves) con persistencia ns.lang y notificacion; HUD/menu/ajustes/ayuda(18 lineas)/tutorial(9 pasos)/toasts/banners/rotulos de repeticion (replay.ts acepta locale) internacionalizados; content JSON gana instructionEn (schema + tipos).
+   369→- PANTALLA INICIAL: imagen generada (public/cover.png; reemplazable por la del jugador) sobre fondo negro + boton GO! + selector ES/EN + engranaje de Ajustes. El menu anterior pasa a ser el menu de pruebas (boton Menú) con boton Ajustes. Ajustes: idioma, balance fisico, narrador on/off, volumen.
+   370→- ORDEN CRITICO descubierto: el constructor del HUD escribe root.innerHTML; el narrador DEBE crearse despues (la barra desaparecia si no).
+   371→- RECALIBRACION: el kill altera el estimador de carga; bisect de pinVelKill (0.9->0.5->0.3) contra tests y sensacion: 0.55/0.4/0.15-0.2 por modo con gain 0.67 intacto; 118 tests + harness de calibracion en verde.
+   372→- E2E: entrada comun nueva (scripts/e2e_lib.py: GO! en vez de "Comenzar"); e2e-replay exige camara play; e2e-voz reescrito para el narrador (texto visible + HEAD del wav 200 + cambio de idioma); e2e-juice adaptado (ajustes + menu + espera del auto-reset con replay ~6 s); e2e-ascenso con relieve (leccion: el rig sostiene cargas 3 s que un humano no aguanta) y lectura final robusta. 12/12 suites E2E verificadas en produccion.
+   373→- Verificacion visual: pantalla inicial (ES/EN), panel Ajustes, partida en ingles completa, nube de GAS y barra del narrador en accion (capturas en download/).
+   374→
+   375→Stage Summary:
+   376→- Fisica creible: sin bailoteo al inicio (proyeccion de velocidad + settle), sin sostenerse de piernas sin manos salvo losa, modos fisico realmente distintos.
+   377→- Audio completamente renovado: cero sintesis molesta; narrador deportivo con voz pregrabada en ambos idiomas y chistes.
+   378→- App bilingue ES/EN (texto + voz) con selector al comienzo, pantalla inicial imagen+GO! y todas las configuraciones en Ajustes.
+   379→- El audio EN se genero al final (cuota TTS); si un wav falta, el narrador muestra el texto sin voz (degradacion graceful).
+   380→
+   381→---
+   382→Task ID: 18-b (continuacion)
+   383→Agent: Z.ai (principal)
+   384→Task: Regla de losa caso positivo (de pie sin manos) + balance de pie 2 ejes + fix del helper ev() E2E.
+   385→
+   386→Work Log:
+   387→- La regla de postura detectaba la losa (slab:true) pero el ragdoll NO mantenia el equilibrio de pie: volcaba hacia atras (fuera de la pared) y acababa colgado invertido de los pies (upDot < 0) -> caida correcta por la regla, pero el caso legitimo era injugable.
+   388→- SOLVER: balance de pie sin manos extendido a 2 ejes (SIMBICON extendido): con pies de apoyo, manos libres y segmento de losa (n.y >= 0.25), tiron horizontal completo (x y z) de pelvis+pecho hacia un punto de apoyo plantar (14 cm fuera de la cara) — el cuerpo se queda DE PIE en la placa (upDot ~0.7-0.9 sostenido).
+   389→- FIXTURE forceSlabStand (espejo de forceProne, mismo patron E2E documentado): ancla pies a las dos presas mas bajas de segmento inclinado y coloca el cuerpo erguido. e2e-losa.py nuevo: PASS (PLAYING sostenido sin manos en losa; y la variante invertida SI cae).
+   390→- BUG REAL descubierto en los helpers E2E (no era flake del CLI): ev() re-parseaba strings planos ("PLAYING") -> json.loads("PLAYING") fallaba -> None. Corregido en 12 scripts: el desenrollado solo aplica a JSON doble-codificado. e2e-ascenso ahora reporta SUCCESS de verdad (antes "estado final: None").
+   391→- e2e-overload: check del chip bilingue (ES "cede en" / EN "opens in").
+   392→
+   393→Stage Summary:
+   394→- Caso positivo de losa verificado de punta a punta: sin manos, de pie, PLAYING estable en la placa; en vertical/desplome cae (forceProne). La fisica distingue ambos casos por la normal del segmento.
+   395→- Suite E2E 13/13 en verde con lecturas fiables; 118 unit tests.
+   396→
+   397→---
+   398→Task ID: 19
+   399→Agent: Z.ai (principal)
+   400→Task: Verificar que los caminos no sean bloqueantes y si resolubles (peticion del jugador)
+   401→
+   402→Work Log:
+   403→- AUDITORIA GEOMETRICA (scripts/audit_rutas.py, nuevo): replica EXACTA del validador del juego (armChain 0.58, legChain 0.76, snap 0.238, limite 1.12x, distancia EN EL PLANO del segmento destino con segmentAtPoint/localCoords de wallgeometry, regla de cruce 0.14) aplicada a las 11 paredes del manifest: ruta prevista paso a paso + grafo BFS independiente de manos (rutas alternativas) + deteccion de callejones sin salida + comprobacion de pies con modelo de cadera. Resultado inicial: 2 BLOQUEOS reales y ruteras truncadas.
+   404→- BLOQUEO 1 (ruteras): ruta_of consumia una ronda de pies inexistente (fb6/fa6...) y CORTABA la escalera de manos: en E4 la ruta saltaba h9->top (0.819 utiles > 0.650) y en E5 h7->top (1.482): imposible siguiendo el ritmo registrado. Las paredes SI eran resolubles (BFS via h10-h12/h11-h13). FIX: ruta_of ahora completa la escalera hasta h{hands_n} e intercala la cola de pies (feet_queue) 1:1 con las manos; E1-E3/E4 usan feet_queue + descansos frest; regenerado circuito_rutas.json.
+   405→- FALSO POSITIVO corregido: la pared tutorial no tiene r9/r10 (version vieja); ruta del audit regenerada desde las presas reales; paredes compartidas deduplicadas.
+   406→- E2E RESOLUBILIDAD COMPLETA (scripts/e2e-circuito-full.py, nuevo): escalada DE PRINCIPIO A FIN de los 5 escenarios con servo EN PAGINA (lote async con reintentos, telemetria por intento, relieve de fatiga por movimiento, manejo correcto del toggle grab verificando NS.dragging() - bug del fixture: el "soltar residual" a ciegas hacia toggle y rompia el siguiente press).
+   407→- BLOQUEO 2 (REAL, de juego): E5 EL TECHO era casi injugable. Tres causas encadenadas: (a) la camara veia la travesia DE CANTO (toda la travesia cabia en ~20 px: h2 d=0px, h4 d=2px, medido con probes); (b) en la frontera vertical->techo el plano de arrastre elegido por segmentAtPoint era el VERTICAL (h2 z=-0.16 esta mas cerca de esa cara) y h4 (z=-0.69) quedaba 0,5 m DETRAS del plano: fuera de su pozo de snap (0.34), imposible de apuntar (rechazo determinista, 5 reintentos); (c) los ganchos de pie profundos (fgancho1 z=-1.35) exigian la cadera bajo el techo, pero los pines de los pies en la pared vertical la retienen en z~-0.2 (distancia 1.15 m > pierna 0.76): fuera_de_alcance.
+   408→- FIX CAMARA: elevacion bajo techo proporcional a la profundidad (roofLift = max(0,-target.z)*1.05 ademas del roofPull): la travesia se expande en pantalla y el angulo de incidencia mejora.
+   409→- FIX APUNTADO (scene.ts wallPlanePointNear): camino rapido CENTRADO EN PRESA: si una presa proyecta a <48 px del cursor el objetivo ES esa presa (determinista ante compresion y rasante), con flag lastWallPointWasHold para que loop.ts NO aplique el grabOffset (con extremidad libre el offset corruptia el mapa discreto: regresion detectada y corregida). Si no hay presa cerca: interseccion continua con el plano MEJOR EXPLICADO por una presa (minima distancia 3D presa-interseccion, empate por t): en un solo segmento el comportamiento es identico al probado; en fronteras el plano salta al segmento correcto.
+   410→- FIX CUT LOOSE (fisica creible, interaction.ts+loop.ts): nuevo callback onRelease: soltar un miembro anclado EN EL AIRE y lejos de su presa (>0.45 m, sin presa en el objetivo) lo deja LIBRE colgando en vez de devolverlo al ancla (desliz cercano = perdon, conserva el ancla). Sin esto el pie no puede dejar de empujar y la cadera no viaja bajo el techo.
+   411→- FIX GANCHOS: fgancho3 reubicado (s=4.35) y ruta de E5 con secuencia de escalador real: escalerilla hasta el borde -> SOLTAR los dos pies (cut loose, hold "" en la rutera) -> cuelga y avanza con las manos -> engancha fgancho1/2/3 con la cadera ya profunda -> desenganche antes del tercer gancho (con el pie en fgancho1 la cadera no baja: 0.85 > 0.76). Rutera con releases soportada por audit (skip + libera anclas) y por el servo (releaseLimb primario + cursor al aire de respaldo).
+   412→- VALIDACION: auditoria final: 11/11 paredes OK, ninguna ruta bloqueante (margen mas ajustado del circuito 0.416/0.650 en E1; tutorial 0.597 fisicamente probado). E2E escaladas completas: E1 22/22, E2 24/24, E3 23/23, E4 24/24 SUCCESS primera pasada; E5 27/27 SUCCESS (4 escaladas completas en total; flake residual del rig a ritmo CLI en ganchos con el pendulo, se recarga y siempre progresa: nunca un bloqueo de ruta). Regresion: e2e-circuito PASS completo (postura+GAS+15 movimientos+x2 ratio 1.54), e2e-ascenso SUCCESS (tutorial), vitest 118/118, tsc limpio, eslint limpio, build standalone + redeploy :3000. Capturas: download/circuito-full-{1..5}-cima.png (E5: 12.672 pts, 3 estrellas, FLUJO x9, 0 caidas).
+   413→- Lecciones: (1) la metrica de alcance se mide EN EL PLANO del segmento DESTINO: en fronteras entre segmentos el plano del segmento puede quedar DETRAS de la presa objetivo - el mapeo de arrastre debe elegir plano por explicacion (presa mas cercana a la interseccion), no por pertenencia de la extremidad; (2) el grabOffset (limbPos - mapa al press) solo es coherente con mapas CONTINUOS: con mapas discretos por presa debe anularse; (3) grab() es un toggle: en fixtures, cerrar un drag residual solo si NS.dragging() esta abierto; (4) bajo techo, la cadera no puede viajar mas alla del pin del pie mas retrasado (cadena 0.76): los ganchos profundos exigen cut loose y desenganche previo; (5) el modo de falla "assist no llega" (why vacio, sin caida) = validador OK pero cadena fisica insuficiente: mirar tele.anclado y la posicion de cadera.
+   414→
+   415→Stage Summary:
+   416→- Los 5 caminos del circuito y las 11 paredes del manifest estan VERIFICADOS como no bloqueantes y resolubles: auditoria geometrica con la metrica exacta del juego (ruta prevista + grafo BFS alternativo) y escalada fisica completa E2E de los 5 escenarios (SUCCESS con ambas manos en cima, 0 caidas en las pasadas limpias).
+   417→- El TECHO era injugable por tres bloqueos encadenados (camara de canto, plano de arrastre equivocado en fronteras, ganchos fuera de cadena con los pies anclados): corregidos con elevacion de camara, apuntado centrado en presa y cut loose (soltar en el aire), que ademas hacen la fisica mas creible.
+   418→- Regresion completa en verde: postura imposible, GAS, x2, tutorial, 118 unit tests, tsc/eslint limpios.
+   419→

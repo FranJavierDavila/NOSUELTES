@@ -60,13 +60,52 @@ export interface FoldConstraint {
   a: number;
   /** Extremo hijo (mano/pie). */
   b: number;
-  /** Direccion unitaria del lado PERMITIDO (mundo). */
+  /** Direccion unitaria del lado PERMITIDO (mundo). Solo FALLBACK: el solver usa
+   *  la normal LOCAL del segmento de pared que gobierna la articulacion (ver
+   *  sideSign), orientada con el signo de este vector la primera vez. */
   dir: V3;
+  /** +1 = lado permitido a favor de la normal local de la superficie (codo: fuera
+   *  del muro); -1 = en contra (rodilla: vertice hacia la cara). */
+  sideSign: 1 | -1;
   /** Separacion minima exigida en esa direccion (m): tolera recto, prohibe el giro. */
   minSide: number;
   strength: number;
   /** Lectura de diagnostico: lado actual (m). */
   side: number;
+}
+
+/**
+ * Restriccion de BISAGRA (peticion del jugador: "no podemos tener articulaciones
+ * rotas"). El constraint angular es 2D: limita la MAGNITUD de la flexion pero deja
+ * que el antebrazo gire libremente alrededor del eje hombro->mano (codo de goma que
+ * sale lateralmente) y la pantorrilla alrededor de cadera->pie (rodilla en tijera).
+ * Anatomicamente codo y rodilla son BISAGRAS: el vertice solo puede alejarse de la
+ * cuerda padre-hijo DENTRO del plano de flexion. Ese plano es el que contiene la
+ * cuerda y la normal de la superficie escalada (el codo flexiona en un plano
+ * paralelo a la cara; la rodilla, con el vertice hacia ella). Implementacion: el
+ * vertice debe quedar a |d| <= tol del plano de bisagra (tuberia alrededor de la
+ * cuerda), con la normal del plano recalculada cada iteracion desde la geometria
+ * viva y la normal LOCAL del segmento (correcta en placas y techos, no solo en la
+ * pared vertical). Tolerancia holgada (~10-12 cm): bloquea el giro de goma y los
+ * extremes, y admite la reorientacion natural del plano por rotacion del hombro/
+ * cadera (cruzarse de brazos, bandera). Referencias: limites articulares pasivos
+ * como en ragdolls de juegos (Bender et al. 2014, "A Survey on Position-Based
+ * Simulation Methods", sec. 3.3: joint limits como constraints de proyeccion).
+ */
+export interface HingeConstraint {
+  id: string;
+  /** Particula del vertice articular (codo/rodilla). */
+  j: number;
+  /** Extremo padre (hombro/cadera). */
+  a: number;
+  /** Extremo hijo (mano/pie). */
+  b: number;
+  /** Desviacion maxima del vertice respecto al plano de flexion (m). */
+  tol: number;
+  /** Extremidad de la cadena (para la regla de compresion; null = siempre activa). */
+  limb: LimbId | null;
+  /** Lectura de diagnostico: desviacion lateral actual (m). */
+  dev: number;
 }
 
 /**
@@ -264,7 +303,12 @@ export interface SolverEnv {
   balance: BalanceTuning;
 }
 
-export interface JointAngleReadout {
+export interface JointAngleReadout { // (marcador de seccion)
+  __marker?: never;
+  /**
+   * Placeholder para mantener el orden de declaraciones; la interfaz real esta
+   * definida mas abajo y se re-exporta intacta.
+   */
   id: string;
   angle: number;
   /** 0 = centro de rango, 1 = en el limite mas cercano. */
@@ -301,6 +345,7 @@ export class PbdSolver {
   private sticks: Stick[] = [];
   private angles: AngleConstraint[] = [];
   private folds: FoldConstraint[] = [];
+  private hinges: HingeConstraint[] = [];
   private twists: TwistConstraint[] = [];
   private chainCaps: ChainCap[] = [];
   /** Duracion del ultimo paso (velocityOfLimb). */
@@ -385,12 +430,14 @@ export class PbdSolver {
     limbParticle: Map<LimbId, number>,
     topology?: BodyTopology,
     folds: FoldConstraint[] = [],
-    twists: TwistConstraint[] = []
+    twists: TwistConstraint[] = [],
+    hinges: HingeConstraint[] = []
   ): void {
     this.particles = particles;
     this.sticks = sticks;
     this.angles = angles;
     this.folds = folds;
+    this.hinges = hinges;
     this.twists = twists;
     this.limbParticle = limbParticle;
     this.topology = topology ?? null;
@@ -455,6 +502,11 @@ export class PbdSolver {
   /** Lecturas de diagnostico del sentido de flexion (lado actual vs minimo). */
   debugFolds(): { id: string; side: number; minSide: number }[] {
     return this.folds.map((f) => ({ id: f.id, side: f.side, minSide: f.minSide }));
+  }
+
+  /** Lecturas de diagnostico de las bisagras (desviacion lateral vs tolerancia). */
+  debugHinges(): { id: string; dev: number; tol: number }[] {
+    return this.hinges.map((h) => ({ id: h.id, dev: h.dev, tol: h.tol }));
   }
 
   /** Lecturas de diagnostico del guinada de pelvis (rad y tope vigente). */
@@ -618,6 +670,7 @@ export class PbdSolver {
       this.solveTwists();
       this.solveAngles();
       this.solveFolds();
+      this.solveHinges();
       this.solveChainCaps();
       for (const anchor of this.anchors.values()) {
         const p = this.particles[anchor.particle];
@@ -628,10 +681,11 @@ export class PbdSolver {
       // (si no, la relajacion convergeria con los brazos estirados).
       this.solveChainCaps();
       // Cierre de la iteracion con los limites articulares: los otros constraints
-      // (pliegues, topes, pines) pueden re-violentar un angulo ya corregido; asi el
-      // rango anatomico queda garantizado EN EL ESTADO FINAL (el cuello, el mas
-      // flexible, era el que se colaba en caidas violentas).
+      // (pliegues, bisagras, topes, pines) pueden re-violentar un angulo ya
+      // corregido; asi el rango anatomico queda garantizado EN EL ESTADO FINAL
+      // (el cuello, el mas flexible, era el que se colaba en caidas violentas).
       this.solveAngles();
+      this.solveHinges();
       this.solveCollisions();
     }
     for (const p of this.particles) {
@@ -747,6 +801,11 @@ export class PbdSolver {
       this.solveTwists();
       this.solveAngles();
       this.solveFolds();
+      // NOTA BISAGRAS: NO corren dentro del bucle de iteraciones. Corregir la
+      // desviacion lateral 12 veces por paso, contra pin y musculos re-violandola,
+      // bombea el modo pendular del cuerpo (ciclo limite: el montaje del step-up
+      // oscilaba montar/caer). La bisagra actua en el CIERRE ANATOMICO (una vez por
+      // paso, ver abajo): frontera dura por frame sin bombear el pendulo.
       this.solveChainCaps();
       // 4b) Anclajes: pin rigido con tope de fuerza. La carga requerida se mide como la
       // fuerza necesaria para mantener el pin (F = m x correccion / dt^2), un estimador
@@ -769,6 +828,7 @@ export class PbdSolver {
       this.solveChainCaps();
       // Cierre de iteracion: limites articulares sobre el estado final (ver relax).
       this.solveAngles();
+      this.solveHinges();
       this.solveCollisions();
     }
     // NOTA: la correccion del pin genera momento "fantasma" en Verlet; ya no se
@@ -783,6 +843,32 @@ export class PbdSolver {
       anchor.stretch = vLen(vSub(anchor.point, this.particles[anchor.particle].pos));
       anchorLoads[anchor.limb] = anchor.loadN;
       anchorStretch[anchor.limb] = anchor.stretch;
+    }
+    // CIERRE ANATOMICO (limites duros de verdad): ultima proyeccion de angulos y
+    // bisagras tras pines y colisiones, de modo que el ESTADO FINAL del paso respeta
+    // el rango anatomico. Sin ella, la colision del suelo en el aterrizaje empuja
+    // DESPUES del ultimo solveAngles de la iteracion y el cuello se colaba un frame
+    // (visible en caidas violentas; lo mide el test de limites duros).
+    //
+    // COMPENSACION DE PREV (Muller et al. 2007, como en el pin): mover pos sin tocar
+    // prev inyecta velocidad fantasma (vel = pos - prev) y el cierre se convierte en
+    // un percutor: cualquier violacion transitoria se auto-excita (el cuello oscilaba
+    // 0.28<->2.23 rad a 2 Hz tras forceProne). Sumando a prev el mismo delta, el
+    // cierre es una proyeccion PURAMENTE POSICIONAL: fija la frontera anatomica sin
+    // bombear energia al pendulo.
+    const preClosure: V3[] = this.particles.map((p) => vClone(p.pos));
+    this.solveAngles();
+    this.solveHinges();
+    for (let i = 0; i < this.particles.length; i++) {
+      const p = this.particles[i];
+      const dx = p.pos.x - preClosure[i].x;
+      const dy = p.pos.y - preClosure[i].y;
+      const dz = p.pos.z - preClosure[i].z;
+      if (dx !== 0 || dy !== 0 || dz !== 0) {
+        p.prev.x += dx;
+        p.prev.y += dy;
+        p.prev.z += dz;
+      }
     }
     // PROYECCION DE VELOCIDAD DEL PIN (Muller et al. 2007): la correccion posicional
     // del anclaje no debe convertirse en velocidad. Se devuelve parte de la
@@ -951,7 +1037,16 @@ export class PbdSolver {
         // acercarse la pelvis al nivel del pie la fuerza se hace horizontal (COM sobre
         // el apoyo) y el cuadriceps toma el relevo por encima. Solo el pie MAS ALTO
         // monta (arbitracion: transferencia de peso al escalon).
-        if (stepUpFoot === anchor.limb && dy / dist < 0.02) {
+        //
+        // NO STEP-UP EN CARAS VOLADAS (peticion del jugador: articulaciones reales):
+        // un gancho de pie bajo techo/desplome severo (normal local con n.y < -0.1,
+        // cara por ENCIMA del escalador) es TENSION, no un escalon que montar: el
+        // psoas hacia el gancho arrastraba el torso entero arriba y hacia el gancho
+        // (900 N), desplazaba el equilibrio colgante y convertia alcances legales en
+        // cruces imposibles (E5: shL.x 0.39 con h5 a 0.14 = cruce). Pre-tarea la
+        // rodilla de goma absorbia el tirón; con bisagras reales el torso pagaba
+        // la factura.
+        if (stepUpFoot === anchor.limb && dy / dist < 0.02 && this.planeNormalAt(anchor.point.x, anchor.point.y, anchor.point.z).y >= -0.1) {
           const boost = 0.9 + 0.3 * this.climbDrive;
           // Esvaimiento por proximidad: al acercarse la pelvis al nivel del pie la
           // fuerza cede (sin sobregiro mas alla de la postura natural de pie).
@@ -1125,8 +1220,8 @@ export class PbdSolver {
         continue;
       }
       const ang = angleBetween(va, vb);
-      c.currentAngle = ang;
       const target = clamp(ang, c.min, c.max);
+      c.currentAngle = ang;
       if (Math.abs(target - ang) < 1e-5) continue;
       const axis = vCross(va, vb);
       const axisLen = vLen(axis);
@@ -1137,6 +1232,9 @@ export class PbdSolver {
       if (w <= 0) continue;
       pb.pos = vAdd(pb.pos, vScale(delta, (pb.invMass * k) / w));
       pa.pos = vSub(pa.pos, vScale(delta, (pa.invMass * k) / w));
+      // Readout VERAZ: re-medir tras la correccion (el cierre anatomico corre DESPUES
+      // de pines y colisiones; un readout obsoleto escondia la correccion aplicada).
+      c.currentAngle = angleBetween(vSub(pa.pos, pj.pos), vSub(pb.pos, pj.pos));
     }
   }
 
@@ -1146,6 +1244,15 @@ export class PbdSolver {
    * angulo); esto prohibe rodillas que flexionan hacia atras y codos que se meten en
    * la pared. Correccion dura y repartida: el vertice al lado permitido, los extremos
    * con la contra-mitad (conservacion aproximada).
+   *
+   * NORMAL LOCAL (peticion del jugador): la referencia ya no es un vector fijo del
+   * primer segmento de pared sino la normal del segmento que gobierna la articulacion
+   * AHORA (governingPlane, la misma que la colision): en la pared vertical coincide
+   * con el vector almacenado; en placa y techo del circuito apunta a la cara real que
+   * toca la articulacion, de modo que el codo flexiona "fuera de la superficie" y la
+   * rodilla "hacia ella" en cualquier segmento. sideSign fija el lado anatomico por
+   * tipo de articulacion (+1 codo, -1 rodilla) sin depender de la orientacion del
+   * vector semilla.
    */
   private solveFolds(): void {
     const k = clamp(this.env.balance.foldStrength, 0, 1);
@@ -1156,13 +1263,102 @@ export class PbdSolver {
       const mx = (pa.pos.x + pb.pos.x) * 0.5;
       const my = (pa.pos.y + pb.pos.y) * 0.5;
       const mz = (pa.pos.z + pb.pos.z) * 0.5;
-      const side = (pj.pos.x - mx) * f.dir.x + (pj.pos.y - my) * f.dir.y + (pj.pos.z - mz) * f.dir.z;
+      const ln = this.governingPlane(pj.pos.x, pj.pos.y, pj.pos.z).n;
+      // Orientacion: la normal local a favor del lado anatomico declarado. Si el
+      // vector semilla fuese perpendicular a la normal local (cambio de segmento),
+      // sideSign sigue siendo la verdad anatomica (por eso existe).
+      const dirX = ln.x * f.sideSign;
+      const dirY = ln.y * f.sideSign;
+      const dirZ = ln.z * f.sideSign;
+      const side = (pj.pos.x - mx) * dirX + (pj.pos.y - my) * dirY + (pj.pos.z - mz) * dirZ;
       f.side = side;
       if (side >= f.minSide) continue;
       const corr = (f.minSide - side) * k;
-      pj.pos = vAdd(pj.pos, vScale(f.dir, corr * 0.7));
-      pa.pos = vSub(pa.pos, vScale(f.dir, corr * 0.15));
-      pb.pos = vSub(pb.pos, vScale(f.dir, corr * 0.15));
+      pj.pos = vAdd(pj.pos, v3(dirX * corr * 0.7, dirY * corr * 0.7, dirZ * corr * 0.7));
+      pa.pos = vSub(pa.pos, v3(dirX * corr * 0.15, dirY * corr * 0.15, dirZ * corr * 0.15));
+      pb.pos = vSub(pb.pos, v3(dirX * corr * 0.15, dirY * corr * 0.15, dirZ * corr * 0.15));
+    }
+  }
+
+  /**
+   * BISAGRAS (peticion del jugador: "las articulaciones deben limitarse a angulos y
+   * rotaciones fisicamente reales"): el vertice (codo/rodilla) solo puede separarse
+   * de la cuerda padre-hijo DENTRO del plano de flexion. Ese plano es el que contiene
+   * la cuerda y la normal LOCAL de la superficie (la misma de los folds), asi el
+   * plano de flexion acompana al segmento de pared que se escala. Proyeccion: si la
+   * distancia con signo d del vertice al plano excede +-tol, se devuelve al tubo
+   * (dureza = jointLimitStiffness: es anatomia pasiva, no musculo). Caso degenerado
+   * (cuerda paralela a la normal, brazo en cruz perpendicular a la cara): sin plano
+   * definido, no actua.
+   *
+   * CORRECCION SOLO EN EL VERTICE: no arrastra los extremos (hombro/cadera y mano/
+   * pie). Los sticks ya redistribuyen la correccion por masa en la misma iteracion,
+   * y asi la bisagra NUNCA pelea con los pines ni con los musculos: en el step-up
+   * (pie por encima de la cadera) el arrastre de cadera/pie por dos bisagras a la
+   * vez robaba el impulso de la pierna y los brazos acababan sobrecargados.
+   *
+   * REGLA DE COMPRESION (rodilla): una pierna que SOSTIENE PESO (pie anclado por
+   * debajo de la cadera) esta comprimida por la reaccion y no puede luxar; ademas
+   * su valgo natural en apoyos asimetricos supera la tolerancia y la bisagra la
+   * pelearia (oscilacion de pie en placa). La bisagra de rodilla se aplica solo con
+   * el pie LIBRE (caida, cut loose) o EN TENSION (talón/gancho por encima de la
+   * cadera). El CODO siempre activo: los brazos cuelgan en TENSION al colgar, que
+   * es exactamente donde se ve el muneco de goma.
+   */
+  private solveHinges(): void {
+    const k = clamp(this.env.balance.jointLimitStiffness, 0, 1);
+    if (k <= 0) {
+      for (const h of this.hinges) h.dev = 0;
+      return;
+    }
+    for (const h of this.hinges) {
+      // Regla de compresion: pierna que sostiene peso (pie anclado a la altura de la
+      // cadera o por debajo) = articulacion comprimida, sin luxacion posible.
+      if (h.limb !== null) {
+        const anchor = this.anchors.get(h.limb);
+        if (anchor && h.limb.startsWith("foot")) {
+          const rootIdx = this.topology?.rootOf.get(h.limb);
+          const rootY = rootIdx === undefined ? Number.NEGATIVE_INFINITY : this.particles[rootIdx].pos.y;
+          if (anchor.point.y <= rootY + 0.02) {
+            h.dev = 0;
+            continue;
+          }
+        }
+      }
+      const pj = this.particles[h.j];
+      const pa = this.particles[h.a];
+      const pb = this.particles[h.b];
+      const ux = pb.pos.x - pa.pos.x;
+      const uy = pb.pos.y - pa.pos.y;
+      const uz = pb.pos.z - pa.pos.z;
+      const ul = Math.hypot(ux, uy, uz);
+      if (ul < 1e-9) {
+        h.dev = 0;
+        continue;
+      }
+      const ln = this.governingPlane(pj.pos.x, pj.pos.y, pj.pos.z).n;
+      // Normal del plano de flexion: cuerda x normal de superficie.
+      const hx = uy * ln.z - uz * ln.y;
+      const hy = uz * ln.x - ux * ln.z;
+      const hz = ux * ln.y - uy * ln.x;
+      const hl = Math.hypot(hx, hy, hz);
+      if (hl < 1e-6) {
+        // Cuerda casi paralela a la normal: el plano de flexion es indefinido (y la
+        // desviacion lateral apenas tiene sentido geometrico); no actua.
+        h.dev = 0;
+        continue;
+      }
+      const d = ((pj.pos.x - pa.pos.x) * hx + (pj.pos.y - pa.pos.y) * hy + (pj.pos.z - pa.pos.z) * hz) / hl;
+      h.dev = Math.abs(d);
+      const excess = Math.abs(d) - h.tol;
+      if (excess <= 0) continue;
+      const corr = excess * k;
+      const s = d >= 0 ? -1 : 1;
+      const fx = (hx / hl) * s * corr;
+      const fy = (hy / hl) * s * corr;
+      const fz = (hz / hl) * s * corr;
+      // Solo el vertice: ver nota de diseno arriba (sin contra-correccion en pa/pb).
+      pj.pos = vAdd(pj.pos, v3(fx, fy, fz));
     }
   }
 
