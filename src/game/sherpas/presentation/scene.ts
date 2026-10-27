@@ -67,7 +67,11 @@ export class SherpaScene {
   private holdMeshes = new Map<string, Mesh>();
   private holdMasters = new Map<string, Mesh>();
   private rigVisuals: (RigVisual | null)[] = [null, null];
-  private richVisual: { bones: Bone[]; head: Mesh } | null = null;
+  private richVisual: {
+    bones: Bone[]; head: Mesh;
+    hat: Mesh; brim: Mesh; glasses: Mesh; // personalidad fija
+    snack: Mesh; cup: Mesh;               // props de gesto (comiendo/brindando)
+  } | null = null;
   // Cuerdas de porteo: cadenas de CILINDROS gruesos (las líneas de 1px no se
   // veían — petición del jugador: "no se ven las cuerdas desde las mochilas").
   private ropeSegs: Mesh[][] = [[], []];
@@ -392,13 +396,32 @@ export class SherpaScene {
     mk("shinR", RM.kneeR, RM.footR, 0.055, body, 0.34);
     const head = MeshBuilder.CreateSphere("rm_head", { diameter: 0.26, segments: 10 }, this.scene);
     head.material = body;
-    this.richVisual = { bones, head };
+    // TOCADO Y PONENTE (petición: "gestos curiosos y graciosos"): copa de
+    // picnic + gafas de sol — se lee rico a cualquier distancia de cámara.
+    const dark = mat(this.scene, "richDark", "#241d2e");
+    const hat = MeshBuilder.CreateCylinder("rm_hat", { diameterTop: 0.11, diameterBottom: 0.13, height: 0.1, tessellation: 10 }, this.scene);
+    hat.material = dark;
+    const brim = MeshBuilder.CreateCylinder("rm_brim", { diameter: 0.24, height: 0.016, tessellation: 10 }, this.scene);
+    brim.material = dark;
+    const glasses = MeshBuilder.CreateBox("rm_glasses", { width: 0.2, height: 0.045, depth: 0.028 }, this.scene);
+    glasses.material = mat(this.scene, "richGlass", "#15151d");
+    // props de gesto: bocadillo (comiendo) y copita de vino (brindando)
+    const snack = MeshBuilder.CreateBox("rm_snack", { width: 0.11, height: 0.05, depth: 0.055 }, this.scene);
+    snack.material = mat(this.scene, "richSnack", "#d9a066");
+    const cup = MeshBuilder.CreateCylinder("rm_cup", { diameterTop: 0.055, diameterBottom: 0.04, height: 0.085, tessellation: 8 }, this.scene);
+    cup.material = mat(this.scene, "richCup", "#8e2f3c");
+    this.richVisual = { bones, head, hat, brim, glasses, snack, cup };
   }
 
   despawnRichMan(): void {
     if (!this.richVisual) return;
     for (const b of this.richVisual.bones) b.mesh.dispose();
     this.richVisual.head.dispose();
+    this.richVisual.hat.dispose();
+    this.richVisual.brim.dispose();
+    this.richVisual.glasses.dispose();
+    this.richVisual.snack.dispose();
+    this.richVisual.cup.dispose();
     this.richVisual = null;
   }
 
@@ -414,6 +437,18 @@ export class SherpaScene {
     }
     const headP = lerp(RM.head);
     vis.head.position.set(headP.x, headP.y, headP.z);
+    // tocado y gafas siguen a la cabeza (la cara mira a −z)
+    vis.hat.position.set(headP.x, headP.y + 0.18, headP.z);
+    vis.brim.position.set(headP.x, headP.y + 0.135, headP.z);
+    vis.glasses.position.set(headP.x, headP.y + 0.035, headP.z - 0.115);
+    // props de gesto: visibles SOLO en su estado (el gesto se lee mejor con
+    // objeto en mano: bocadillo al comer, copita al brindar)
+    const handL = lerp(RM.handL);
+    const handR = lerp(RM.handR);
+    vis.snack.position.set(handR.x, handR.y + 0.035, handR.z - 0.02);
+    vis.snack.setEnabled(sim.gesture === "comiendo");
+    vis.cup.position.set(handL.x, handL.y + 0.055, handL.z - 0.01);
+    vis.cup.setEnabled(sim.gesture === "brindando");
   }
 
   // ---------- cámara compartida (doc 9) ----------

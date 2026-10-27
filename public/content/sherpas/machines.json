@@ -116,6 +116,32 @@
         "pataleando": {
           "duration": 4.0,
           "next": "colgando"
+        },
+        "aplaudiendo": {
+          "duration": 2.6,
+          "next": "colgando"
+        },
+        "brindando": {
+          "duration": 3.2,
+          "next": "colgando"
+        },
+        "mirando": {
+          "duration": 3.8,
+          "next": "colgando"
+        },
+        "de_pie": {
+          "durationRange": [
+            4.0,
+            8.0
+          ],
+          "next": "colgando"
+        },
+        "caminando": {
+          "durationRange": [
+            2.2,
+            3.6
+          ],
+          "next": "de_pie"
         }
       }
     }

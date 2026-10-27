@@ -357,6 +357,25 @@ export class SherpasMatch {
     // DESLIZA y puede caer al vacío (caída de equipo, petición del jugador).
     this.brain.tick(dt, this.simTime);
     const wobble = this.rich.drainWobble();
+    // pose del ricachón mandada por el FSM: sentado ⇄ de pie ⇄ caminando
+    // (petición del jugador). Caminar desplaza la masa REAL sobre la tabla: el
+    // lado cargado se hunde, tira de su sherpa y descarga al otro.
+    const wantsStand = this.brain.state === "de_pie" || this.brain.state === "caminando";
+    const psPrev = this.plankState;
+    const richStanding = wantsStand && !!psPrev && !psPrev.grounded && !psPrev.fellOff;
+    this.rich.standing = richStanding;
+    // el paseo no AGRAVA la escora: si ya está desplazado >0,2 m hacia un lado,
+    // solo le dejamos caminar hacia el centro o hacia el lado contrario.
+    let walkDir: -1 | 0 | 1 = 0;
+    if (this.brain.state === "caminando" && richStanding) {
+      const d = this.brain.walkDir;
+      const s = psPrev ? psPrev.slide : 0;
+      if (!(Math.sign(d) === Math.sign(s) && Math.abs(s) > 0.2)) walkDir = d;
+    }
+    this.rich.walkDir = walkDir;
+    this.plank.setRichStanding(richStanding);
+    this.plank.setRichMass(this.rich.currentMass());
+    if (walkDir !== 0) this.plank.walkSlide(walkDir, dt);
     this.plankState = this.plank.step(dt, {
       a: this.sherpas[0].waist(),
       b: this.sherpas[1].waist(),
@@ -371,6 +390,12 @@ export class SherpasMatch {
         w.pos = vAdd(w.pos, delta);
         w.prev = vAdd(w.prev, delta); // tirón de posición sin velocidad fantasma
       },
+      // el ricachón cargado de un lado tira hacia abajo de SU sherpa (palanca):
+      loadTug: (p, dy) => {
+        const w = this.sherpas[p].rig.particles[P.pelvisC];
+        w.pos = vAdd(w.pos, v3(0, dy, 0));
+        w.prev = vAdd(w.prev, v3(0, dy, 0)); // posición, sin velocidad fantasma
+      },
     });
     const ps = this.plankState;
     if (ps.fellOff && !this.richFellHandled) {
@@ -380,8 +405,8 @@ export class SherpasMatch {
       this.onTeamFell(true);
     }
     if (this.rich.seated) {
-      // pose sentada (la tabla la sostiene; también durante el congelado de cima).
-      this.rich.sitPose(ps.center, ps.angle, ps.slide, this.simTime);
+      // pose de juego (sentado/gestos ⇄ de pie/paseo; también durante el congelado de cima).
+      this.rich.pose(ps.center, ps.angle, ps.slide, this.simTime);
     }
     const rmInfo = this.rich.step(dt);
     if (rmInfo.bumpWall > 1) this.d.bus.emit("RichBumpWall", { speed: rmInfo.bumpWall });
@@ -768,6 +793,11 @@ export class SherpasMatch {
       void p;
     });
     on("RichMassChanged", () => { /* lectura HUD vía rig; reservado para HUD futuro */ });
+    on("RichManState", (p) => {
+      // avisos legibles de las nuevas gracias del ricachón (petición del jugador)
+      if (p.state === "de_pie") this.d.hud.subtitle(this.d.hud.t("hud.richStands"), 2.2);
+      else if (p.state === "caminando") this.d.hud.subtitle(this.d.hud.t("hud.richWalks"), 2.2);
+    });
     on("CampReached", (p) => {
       this.lastEventTimes.set("CampReached", this.simTime);
       this.director.notify("CampReached", this.simTime);
@@ -880,7 +910,7 @@ export class SherpasMatch {
     this.d.hud.debug(
       `${this.d.scene.backend} · ${fps} fps · tick ${this.tickMs.toFixed(1)} ms\n` +
       `T A:${this.sherpas[0].maxTension().toFixed(2)} B:${this.sherpas[1].maxTension().toFixed(2)} · tabla ${pkD ? `${pkD.tiltDeg.toFixed(0)}° desliz ${(pkD.slideFrac * 100).toFixed(0)}%` : "—"}\n` +
-      `ricachón: ${st.richState} · ${Math.round(this.rich.currentMass())} kg${this.rich.seated ? " (sentado)" : " (CAYENDO)"}\n` +
+      `ricachón: ${st.richState} · ${Math.round(this.rich.currentMass())} kg${this.rich.seated ? (this.rich.standing ? " (de pie)" : " (sentado)") : " (CAYENDO)"}\n` +
       `A(${waD.x.toFixed(2)},${waD.y.toFixed(2)}) B(${wbD.x.toFixed(2)},${wbD.y.toFixed(2)}) R(${rD.x.toFixed(2)},${rD.y.toFixed(2)}) anclas ${this.sherpas[0].anchorsCount()}+${this.sherpas[1].anchorsCount()}` +
       (this.dragLimb ? ` · arrastre ${this.dragLimb}` : ""),
     );
@@ -904,6 +934,12 @@ export class SherpasMatch {
       holds: holdsProbe,
       drag: this.dragLimb ? { p: this.dragPlayer, l: this.dragLimb, magnet: magnetId } : null,
       plank: pkD ? { tiltDeg: Math.round(pkD.tiltDeg * 10) / 10, slide: Math.round(pkD.slideFrac * 100) / 100, fell: pkD.fellOff } : null,
+      rich: {
+        state: this.brain.state,
+        gesture: this.rich.gesture,
+        standing: this.rich.standing,
+        slideM: pkD ? Math.round(pkD.slide * 100) / 100 : 0,
+      },
     });
   }
 

@@ -51,7 +51,9 @@
     "plank.tilt": "tilted {deg}°",
     "plank.slip": "THE RICH MAN IS SLIPPING!",
     "richFell": "THE RICH MAN FELL!",
-    "richFellSub": "The plank tipped over… back to the last camp."
+    "richFellSub": "The plank tipped over… back to the last camp.",
+    "richStands": "THE RICH MAN STANDS UP!",
+    "richWalks": "the rich man strolls along the plank…"
   },
   "limb": {
     "hand_l": "L.Hand",

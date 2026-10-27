@@ -131,4 +131,72 @@ describe("tabla de porteo (petición del jugador)", () => {
     expect(s.shareA).toBeCloseTo(0.75);
     expect(s.shareB).toBeCloseTo(0.25);
   });
+
+  it("el ricachón CAMINA: walkSlide desplaza la masa y descarga un lado / carga el otro", () => {
+    const a = v3(-1, 2.4, Z - 0.22);
+    const b = v3(1, 2.4, Z - 0.22);
+    const plank = new PlankSystem(t);
+    plank.reset(a, b, Z);
+    plank.setRichMass(150);
+    let last = plank.state(a, b);
+    for (let i = 0; i < 60 * 2; i++) {
+      plank.walkSlide(1, 1 / 60);
+      last = plank.step(1 / 60, { a, b, wallFrontZ: Z, time: i / 60, wobble: 0, moveSherpa: () => {} });
+    }
+    expect(last.slide).toBeGreaterThan(0.2); // caminó hacia la derecha
+    expect(last.tensionB).toBeGreaterThan(last.tensionA); // B carga más
+    expect(last.fellOff).toBe(false); // 2 s no bastan para llegar al borde
+  });
+
+  it("el paseo solo NO despacha al ricachón (clamp 65% de media tabla)", () => {
+    const a = v3(-1, 2.4, Z - 0.22);
+    const b = v3(1, 2.4, Z - 0.22);
+    const plank = new PlankSystem(t);
+    plank.reset(a, b, Z);
+    let last = plank.state(a, b);
+    for (let i = 0; i < 60 * 10; i++) {
+      plank.walkSlide(1, 1 / 60);
+      last = plank.step(1 / 60, { a, b, wallFrontZ: Z, time: i / 60, wobble: 0, moveSherpa: () => {} });
+    }
+    expect(last.fellOff).toBe(false);
+    expect(last.slide).toBeLessThanOrEqual((t.plankLen / 2) * 0.66);
+  });
+
+  it("caminar sobre tabla ESCORADA hacia el lado bajo → la física lo cae", () => {
+    // A alto, B bajo (~25°): el lado bajo es el derecho (+1)
+    const a = v3(-1, 3.0, Z - 0.22);
+    const b = v3(1, 2.0, Z - 0.22);
+    const plank = new PlankSystem(t);
+    plank.reset(a, b, Z);
+    let last = plank.state(a, b);
+    for (let i = 0; i < 60 * 4 && !last.fellOff; i++) {
+      plank.walkSlide(1, 1 / 60); // camina hacia el lado BAJO: agrava la pendiente
+      last = plank.step(1 / 60, { a, b, wallFrontZ: Z, time: i / 60, wobble: 0, moveSherpa: () => {} });
+    }
+    expect(last.fellOff).toBe(true);
+  });
+
+  it("el lado cargado por el ricachón TIRA hacia abajo de su sherpa (loadTug)", () => {
+    const a = v3(-1, 2.4, Z - 0.22);
+    const b = v3(1, 2.4, Z - 0.22);
+    const plank = new PlankSystem(t);
+    plank.reset(a, b, Z);
+    plank.setRichMass(150);
+    const tugs: { p: 0 | 1; dy: number }[] = [];
+    let last = plank.state(a, b);
+    for (let i = 0; i < 60 * 2; i++) {
+      plank.walkSlide(-1, 1 / 60); // camina hacia la IZQUIERDA (lado A)
+      last = plank.step(1 / 60, {
+        a, b, wallFrontZ: Z, time: i / 60, wobble: 0,
+        moveSherpa: () => {},
+        loadTug: (p, dy) => tugs.push({ p, dy }),
+      });
+    }
+    expect(tugs.length).toBeGreaterThan(0);
+    for (const tg of tugs) {
+      expect(tg.p).toBe(0); // solo el sherpa del lado cargado
+      expect(tg.dy).toBeLessThan(0); // tirón hacia abajo
+    }
+    expect(last.slide).toBeLessThan(-0.3);
+  });
 });

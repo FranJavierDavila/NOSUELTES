@@ -4,10 +4,20 @@
 import type { EventBus } from "../core/bus";
 import type { MachinesData, RichManActionsData, RichManTuning } from "../core/data";
 import { makeRng, type Rng } from "../core/rng";
-import { RichManSim, RM } from "../physics/richMan";
+import { RichManSim, RM, type RichGesture } from "../physics/richMan";
 import { v3, type V3 } from "../../physics/pbd/math";
 
-export type RichManState = "colgando" | "dormitando" | "insultando" | "comiendo" | "tirando_basura" | "meandome" | "pataleando";
+export type RichManState =
+  | "colgando" | "dormitando" | "insultando" | "comiendo" | "tirando_basura"
+  | "meandome" | "pataleando"
+  // nuevos (petición del jugador: gestos graciosos sentado + de pie + pasear):
+  | "de_pie" | "caminando" | "aplaudiendo" | "brindando" | "mirando";
+
+/** estados que se dibujan como GESTO cinemático sobre la pose sentada. */
+const GESTURE_STATES: RichManState[] = [
+  "dormitando", "insultando", "comiendo", "tirando_basura",
+  "aplaudiendo", "brindando", "mirando", "pataleando",
+];
 
 export interface RichManDeps {
   machines: MachinesData;
@@ -19,11 +29,21 @@ export interface RichManDeps {
 
 export class RichManBrain {
   state: RichManState;
+  /** dirección de paseo elegida al ENTRAR en caminando (−1 izq / +1 der); la
+   *  aplica match a la tabla (plank.walkSlide) si la tabla está en condiciones. */
+  walkDir: -1 | 0 | 1 = 0;
   private stateTime = 0;
   private stateDuration = 0;
   private actionQueue: { kind: RichManState; payload?: unknown }[] = [];
   private kickTimer = 0;
   private noiseTimer = 0;
+  /** ya caminó en este episodio de pie (acota la cadena de_pie⇄caminando). */
+  private walkedThisBout = false;
+  /** "aburrimiento": tiempo (s dentro del estado) en que el ricachón, sentado
+   *  y sin nada que hacer, se busca una gracia él solo. Se arma al ENTRAR en
+   *  colgando y dispara UNA vez (el director interrumpe a su ritmo, pero las
+   *  gracias no pueden depender de esa carrera: petición del jugador). */
+  private boredAt = Infinity;
   private sim: RichManSim;
   private deps: RichManDeps;
 
@@ -41,6 +61,7 @@ export class RichManBrain {
     this.actionQueue.length = 0;
     this.kickTimer = 0;
     this.noiseTimer = 0;
+    this.boredAt = Infinity;
     const machine = this.deps.machines.machines.richman_fsm;
     this.enter(machine.initial as RichManState);
   }
@@ -57,6 +78,16 @@ export class RichManBrain {
   private enter(state: RichManState): void {
     this.state = state;
     this.stateTime = 0;
+    if (state === "caminando") {
+      // elige lado al azar: a veces agrava la escora, a veces la compensa
+      this.walkDir = this.deps.rng.next() < 0.5 ? -1 : 1;
+      this.walkedThisBout = true;
+    }
+    if (state === "colgando") {
+      this.walkedThisBout = false;
+      // rearma el aburrimiento para el nuevo ciclo sentado (4-7 s)
+      this.boredAt = 4 + this.deps.rng.next() * 3;
+    }
     const machine = this.deps.machines.machines.richman_fsm;
     const st = machine.states[state];
     this.stateDuration = st.durationRange
@@ -71,16 +102,50 @@ export class RichManBrain {
     const machine = this.deps.machines.machines.richman_fsm;
     this.stateTime += dt;
 
-    // acciones pendientes del director interrumpen estados pasivos (no duros en curso).
-    if (this.actionQueue.length && !["meandome", "pataleando"].includes(this.state)) {
+    // acciones pendientes del director interrumpen estados pasivos (no duros en
+    // curso). DE_PIE y CAMINANDO también se protegen: el paseo del ricachón es
+    // la gracia estrella (petición del jugador) y los insultos pueden esperar
+    // unos segundos a que se siente.
+    if (this.actionQueue.length && !["meandome", "pataleando", "de_pie", "caminando"].includes(this.state)) {
       const next = this.actionQueue.shift()!;
       this.enter(next.kind);
     }
 
     const st = machine.states[this.state];
-    if (this.stateTime >= this.stateDuration && st.next) {
-      this.enter(st.next as RichManState);
+    // ABURRIMIENTO (petición: "gestos y movimientos curiosos y graciosos mientras
+    // está sentado, se puede poner de pie o incluso desplazarse"): sentado y
+    // quieto unos segundos, se busca una gracia EL SOLO, sin esperar a que el
+    // director le deje un hueco (su cola interrumpe a su ritmo).
+    if (this.state === "colgando" && this.stateTime >= this.boredAt) {
+      this.boredAt = Infinity; // una sola vez por ciclo sentado
+      const r = this.deps.rng.next();
+      if (r < 0.3) this.enter("de_pie");
+      else if (r < 0.44) this.enter("aplaudiendo");
+      else if (r < 0.58) this.enter("brindando");
+      else if (r < 0.72) this.enter("mirando");
+      else if (r < 0.88) this.enter("dormitando");
+      // el resto: se queda tan ancho, sigue mirando el paisaje
     }
+    if (this.stateTime >= this.stateDuration) {
+      if (this.state === "colgando") {
+        // del rollo sentado sale VARIADO (respaldo del aburrimiento)
+        const r = this.deps.rng.next();
+        if (r < 0.2) this.enter("de_pie");
+        else if (r < 0.32) this.enter("aplaudiendo");
+        else if (r < 0.44) this.enter("brindando");
+        else if (r < 0.56) this.enter("mirando");
+        else if (st.next) this.enter(st.next as RichManState);
+      } else if (this.state === "de_pie") {
+        // de pie: si aún no paseó, le pica caminar; si ya paseó, se sienta
+        this.enter(!this.walkedThisBout && this.deps.rng.next() < 0.75 ? "caminando" : "colgando");
+      } else if (st.next) {
+        this.enter(st.next as RichManState);
+      }
+    }
+
+    // el gesto visible acompaña al estado (fundido dentro del sim)
+    const gest: RichGesture = GESTURE_STATES.includes(this.state) ? this.state as RichGesture : "ninguno";
+    this.sim.setGesture(gest, time);
 
     // FIX "se retuerce caóticamente": si está en el suelo (caída del equipo o
     // arranque) NO se agita: se queda pasmado y quieto. Los impulsos
