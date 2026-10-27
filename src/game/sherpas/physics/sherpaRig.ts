@@ -107,6 +107,10 @@ export interface SherpaGripTuning {
   attachSeconds: number;
   fatigueRateMultiplier: number;
   reachMarginM: number;
+  /** Regla de dos manos (petición del jugador; doc 4.1/6.2): sin ninguna mano
+   *  comprometida durante la gracia, los pies RESBALAN y el escalador cae.
+   *  Opcional en los tests: faltan valores → 0,5 s / 0,35 s. */
+  fall?: { twoHandsGraceSeconds: number; slipReGripLock: number };
 }
 
 export interface SherpaDeps {
@@ -125,6 +129,8 @@ export interface SherpaStepInfo {
   result: StepResult;
   released: { limb: Limb; cause: ReleaseCause }[];
   gripped: { limb: Limb; anchor: AnchorInstance }[];
+  /** true SOLO en el tick en que la regla de dos manos resbala los pies. */
+  slippedByTwoHands: boolean;
 }
 
 interface GameParticle { pos: V3; prev: V3; mass: number; invMass: number; radius: number }
@@ -164,6 +170,10 @@ export class SherpaRig {
   dragging: Limb | null = null;
   private dragPos: V3 | null = null;
   private dragHold: HoldInstance | null = null;
+  /** regla de dos manos: tiempo sin NINGUNA mano comprometida (s). */
+  private noHandsTimer = 0;
+  /** true SOLO el tick en que el resbalón por dos manos suelta los pies. */
+  slippedByTwoHands = false;
 
   constructor(deps: SherpaDeps, startHolds: { hand_l: HoldInstance; hand_r: HoldInstance; foot_l?: HoldInstance; foot_r?: HoldInstance }) {
     this.deps = deps;
@@ -231,6 +241,8 @@ export class SherpaRig {
   anchorsCount(): number { return LIMBS.reduce((n, l) => n + (this.states.get(l)!.anchored ? 1 : 0), 0); }
   maxTension(): number { return Math.max(...LIMBS.map((l) => this.states.get(l)!.tension)); }
   freeFallDropM(): number { return this.lastDropM; }
+  /** segundos llevados sin NINGUNA mano comprometida (regla de dos manos). */
+  noHandsSeconds(): number { return this.noHandsTimer; }
 
   // ---------- intenciones del jugador ----------
 
@@ -425,6 +437,33 @@ export class SherpaRig {
       if (hold) this.startTravel(limb, hold);
     }
 
+    // 1b. REGLA DE DOS MANOS (petición del jugador: "si sueltan las dos manos
+    //     ese escalador cae"; doc 4.1/6.2). Sin NINGUNA mano anclada NI viajando
+    //     a una presa, el escalador se despega: tras la gracia los pies
+    //     RESBALAN y el cuerpo cae — la cuerda de porteo hace de seguro.
+    this.slippedByTwoHands = false;
+    const handBusy = (l: Limb): boolean => {
+      const st = this.states.get(l)!;
+      return st.anchored || st.traveling;
+    };
+    if (!handBusy("hand_l") && !handBusy("hand_r")) {
+      this.noHandsTimer += dt;
+      const grace = this.deps.tuning.fall?.twoHandsGraceSeconds ?? 0.5;
+      const feetGripped = this.states.get("foot_l")!.anchored || this.states.get("foot_r")!.anchored;
+      if (this.noHandsTimer >= grace && feetGripped) {
+        const lock = this.deps.tuning.fall?.slipReGripLock ?? 0.35;
+        for (const foot of ["foot_l", "foot_r"] as const) {
+          if (!this.states.get(foot)!.anchored) continue;
+          this.forceRelease(foot, lock, "slip");
+          released.push({ limb: foot, cause: "slip" });
+        }
+        this.slippedByTwoHands = true;
+        this.noHandsTimer = 0;
+      }
+    } else {
+      this.noHandsTimer = 0;
+    }
+
     // 2. Cuerpo: verlet amortiguado hacia el atractor de colgado. Nada puede explotar.
     const body = this.rig.particles[P.pelvisC];
     const nAnchored = this.anchorsCount();
@@ -527,7 +566,7 @@ export class SherpaRig {
 
     result.maxSpeed = vAbs / dt;
     result.com = this.com();
-    return { result, released, gripped };
+    return { result, released, gripped, slippedByTwoHands: this.slippedByTwoHands };
   }
 
   // ---------- cargas (falseadas, suaves, con techo) ----------
@@ -781,6 +820,8 @@ export class SherpaRig {
     this.loadDyn = 0;
     this.fallStartY = null;
     this.lastDropM = 0;
+    this.noHandsTimer = 0;
+    this.slippedByTwoHands = false;
     this.aim = v3(
       (startHolds.hand_l.pos.x + startHolds.hand_r.pos.x) / 2,
       startHolds.hand_r.pos.y,

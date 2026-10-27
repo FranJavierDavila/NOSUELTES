@@ -126,6 +126,11 @@ export class SherpasMatch {
       attachSeconds: this.data.tuning.anchors.attachSeconds,
       fatigueRateMultiplier: preset.fatigueRateMultiplier,
       reachMarginM: 0.05,
+      // regla de dos manos (petición del jugador): soltar ambas → resbalón y caída.
+      fall: {
+        twoHandsGraceSeconds: this.data.tuning.fall.twoHandsGraceSeconds ?? 0.5,
+        slipReGripLock: this.data.tuning.fall.slipReGripLock ?? 0.35,
+      },
     };
     const mkDeps = (player: 0 | 1) => ({
       player,
@@ -345,8 +350,15 @@ export class SherpasMatch {
       const info = this.sherpas[p].step(dt, 1);
       for (const r of info.released) this.d.bus.emit("LimbReleased", { playerId: p, limb: r.limb, cause: r.cause });
       for (const g of info.gripped) this.d.bus.emit("LimbGripped", { playerId: p, limb: g.limb, anchorId: g.anchor.hold.id });
+      if (info.slippedByTwoHands) {
+        // regla de dos manos: aviso legible + susto del ricachón (doc 6.2).
+        this.d.audio.play("fall");
+        this.d.hud.subtitle(this.d.hud.fmt("hud.twoHandsFall", { name: `P${p + 1}` }), 2.8);
+        this.d.scene.shake(this.d.hud.wantsReduceShake ? 0.015 : 0.05);
+        this.brain.panic();
+      }
       if (prevAnchors[p] > 0 && this.sherpas[p].anchorsCount() === 0) {
-        this.d.bus.emit("PlayerFell", { playerId: p });
+        this.d.bus.emit("PlayerFell", { playerId: p, cause: info.slippedByTwoHands ? "two_hands" : "no_grips" });
         this.sayInsult("fall");
         this.brain.panic();
       }
@@ -940,6 +952,12 @@ export class SherpasMatch {
         standing: this.rich.standing,
         slideM: pkD ? Math.round(pkD.slide * 100) / 100 : 0,
       },
+      // regla de dos manos + patrón de ruta (sonda E2E)
+      hands: ([0, 1] as const).map((p) => ({
+        freeS: Math.round(this.sherpas[p].noHandsSeconds() * 100) / 100,
+        grips: this.sherpas[p].anchorsCount(),
+      })),
+      route: { band: this.gen.bandIndexOf((waD.y + wbD.y) / 2), pattern: this.gen.patternIdOfBand(this.gen.bandIndexOf((waD.y + wbD.y) / 2)) },
     });
   }
 

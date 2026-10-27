@@ -191,6 +191,25 @@ export class PlankSystem {
       for (const e of this.ends) e.prev = vSub(e.prev, v3(0, Math.abs(w) * 0.004, 0));
     }
 
+    // 2b. CAPTURA DE CAÍDA (doc 4.1/6.2 + petición del jugador: "si sueltan las
+    //     dos manos ese escalador cae"): si un sherpa ha caído POR DEBAJO de su
+    //     cabo (solo pasa en caída: en normal el cabo cuelga bajo la cintura),
+    //     la cuerda de porteo hace de seguro y lo cuelga de la tabla. El sherpa
+    //     queda pendular a ≤ ropeLen del cabo y puede RE-AGARRARSE (rescate);
+    //     el tirón baja ese lado de la tabla y el compañero nota la carga.
+    for (const [i, s] of [[0, p.a], [1, p.b]] as const) {
+      const e = this.ends[i];
+      const dd = vSub(e.pos, s);
+      const dist = vLen(dd);
+      if (dist > t.ropeLen && e.pos.y > s.y + 0.05) {
+        const n = vScale(dd, 1 / (dist || 1e-6));
+        const over = dist - t.ropeLen;
+        const corr = vScale(n, Math.min(0.24, over)); // captura firme (≤ caída a 9 m/s por tick)
+        p.moveSherpa(i as 0 | 1, corr); // pos y prev juntos: sin velocidad fantasma, el péndulo sale solo
+        e.pos = vSub(e.pos, vScale(corr, 0.4)); // la cuerda tira también del cabo: la tabla se escora
+      }
+    }
+
     // 3. proyecciones: palo rígido + cuerdas unilaterales + suelo.
     for (let it = 0; it < t.iterations; it++) {
       const d = vSub(this.ends[1].pos, this.ends[0].pos);

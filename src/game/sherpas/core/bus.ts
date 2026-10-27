@@ -2,7 +2,7 @@
 // La comunicación hacia arriba es SIEMPRE por EventBus (doc 3.1).
 
 export type Limb = "hand_l" | "hand_r" | "foot_l" | "foot_r";
-export type ReleaseCause = "overload" | "exhaustion" | "bird" | "trash" | "player" | "broken_anchor" | "transfer";
+export type ReleaseCause = "overload" | "exhaustion" | "bird" | "trash" | "player" | "broken_anchor" | "transfer" | "slip";
 export type AnchorTypeId = "rock_firm" | "rock_loose" | "ice" | "ice_thin" | "snow" | "ice_urine" | string;
 
 export interface SherpasEvents {
@@ -31,7 +31,7 @@ export interface SherpasEvents {
   BirdAborted: { birdId: number };
   BirdStolen: { birdId: number };
   // Progresión
-  PlayerFell: { playerId: 0 | 1 };
+  PlayerFell: { playerId: 0 | 1; cause?: "two_hands" | "no_grips" };
   TeamFell: { record: unknown };
   CampReached: { campId: string; phase: number };
   SummitReached: { record: unknown };

@@ -24,7 +24,9 @@ export interface TuningData {
   /** tabla de porteo (opcional: faltan valores → PLANK_DEFAULTS). */
   plank?: PlankTuning;
   balance: { warnDeltaH: number; badDeltaH: number };
-  fall: { teamFallSeconds: number; teamFallMeters: number };
+  /** Doc 4.1/6.2 + petición del jugador: soltar las DOS manos → el escalador cae
+   *  (los pies resbalan tras una gracia; la cuerda de porteo hace de seguro). */
+  fall: { teamFallSeconds: number; teamFallMeters: number; twoHandsGraceSeconds?: number; slipReGripLock?: number };
   anchors: { attachSeconds: number; defaultMaxForceHand: number; defaultMaxForceFoot: number; loadSpikeWindow: number };
 }
 export interface AnchorTypeData {
@@ -44,6 +46,12 @@ export interface WallGenData {
   validator: { maxAddsPerBand: number; minHoldsPerBand: number };
   camp: { zoneHeightM: number; zoneWidthM: number; restRingRadiusM: number };
   start: { yBaseM: number; maxStartSeparationM: number };
+  /** Patrones de ruta por tramos de bandas (variedad: a veces obliga a escalar
+   *  MUY separados, otras juntos). Opcional: ausente → todo "libre". */
+  route?: {
+    patternBands: number;
+    patterns: { id: string; weight: number; clusterHalfWidthM?: number; clusterBridgeM?: number; laneGapHalfWidthM?: number; laneBridgeM?: number }[];
+  };
 }
 export interface ConditionData { type: string; value?: number; event?: string; gt?: number; state?: string }
 export interface EffectData { type: string; [k: string]: unknown }
@@ -169,7 +177,7 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
         } },
         richMan: { type: "object", required: ["mass", "foodBonus"], properties: { mass: posNum, foodBonus: num, massTransitionSeconds: posNum, harnessOffsetY: num, bumpWallSpeed: posNum, bumpImpulseToRope: num } },
         balance: { type: "object", required: ["warnDeltaH", "badDeltaH"], properties: { warnDeltaH: posNum, badDeltaH: posNum } },
-        fall: { type: "object", required: ["teamFallSeconds", "teamFallMeters"], properties: { teamFallSeconds: posNum, teamFallMeters: posNum } },
+        fall: { type: "object", required: ["teamFallSeconds", "teamFallMeters"], properties: { teamFallSeconds: posNum, teamFallMeters: posNum, twoHandsGraceSeconds: posNum, slipReGripLock: posNum } },
         anchors: { type: "object", required: ["attachSeconds", "defaultMaxForceHand", "defaultMaxForceFoot"], properties: { attachSeconds: posNum, defaultMaxForceHand: posNum, defaultMaxForceFoot: posNum, loadSpikeWindow: posNum } },
       },
     },
@@ -199,6 +207,12 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
         validator: { type: "object", properties: { maxAddsPerBand: { type: "integer", minimum: 1 }, minHoldsPerBand: { type: "integer", minimum: 1 } } },
         camp: { type: "object", required: ["zoneHeightM"], properties: { zoneHeightM: posNum, zoneWidthM: posNum, restRingRadiusM: posNum } },
         start: { type: "object", required: ["yBaseM"], properties: { yBaseM: posNum, maxStartSeparationM: posNum } },
+        route: { type: "object", required: ["patternBands", "patterns"], properties: {
+          patternBands: { type: "integer", minimum: 1 },
+          patterns: { type: "array", minItems: 1, items: { type: "object", required: ["id", "weight"], properties: {
+            id: { type: "string" }, weight: posNum, clusterHalfWidthM: posNum, clusterBridgeM: posNum, laneGapHalfWidthM: posNum, laneBridgeM: posNum,
+          } } },
+        } },
       },
     },
     events: {

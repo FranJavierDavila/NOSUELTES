@@ -14,6 +14,30 @@ export interface WallLayout {
   phaseSpans: { phase: number; yMin: number; yMax: number; narrativeBase: number }[];
 }
 
+/** Patrón de ruta de un tramo de bandas (petición del jugador: "las rutas deben
+ *  variar: a veces muy separados, otras juntos"). La ZONA se expresa por
+ *  parámetros, nunca por ramas por id (doc 11.3):
+ *  - clusterHalfWidthM  → muestreo solo en |x| ≤ half (obliga a escalar JUNTOS).
+ *  - laneGapHalfWidthM  → muestreo solo en |x| ≥ gap (dos vías: MUY SEPARADOS),
+ *    con puente de anchura completa en la base del tramo (laneBridgeM) para que
+ *    la pareja pueda repartirse a ambas vías.
+ *  - sin parámetros     → pared completa (libre). */
+export interface RoutePattern {
+  id: string;
+  weight: number;
+  clusterHalfWidthM?: number;
+  clusterBridgeM?: number;
+  laneGapHalfWidthM?: number;
+  laneBridgeM?: number;
+}
+
+type PatternZone =
+  | { kind: "full" }
+  | { kind: "cluster"; half: number; bridge: number }
+  | { kind: "lanes"; gap: number; bridge: number };
+
+const ZONE_FULL: PatternZone = { kind: "full" };
+
 export interface GeneratorDeps {
   phases: PhaseData[];
   wallGen: WallGenData;
@@ -37,6 +61,7 @@ export class WallGenerator {
   private holdCounter = 0;
   private widthM: number;
   private zHold: number;
+  private patternCache = new Map<number, RoutePattern>();
 
   constructor(deps: GeneratorDeps, seed: Seed) {
     this.deps = deps;
@@ -95,6 +120,74 @@ export class WallGenerator {
   }
 
   bandIndexOf(y: number): number { return Math.floor(y / this.deps.wallGen.bandHeightM); }
+
+  // ---------- patrones de ruta (variedad juntos/separados) ----------
+
+  private patternZoneOf(pat: RoutePattern): PatternZone {
+    if (pat.clusterHalfWidthM !== undefined) {
+      return { kind: "cluster", half: Math.min(pat.clusterHalfWidthM, this.widthM / 2 - this.deps.wallGen.sample.marginXM), bridge: pat.clusterBridgeM ?? 1.6 };
+    }
+    if (pat.laneGapHalfWidthM !== undefined) {
+      return { kind: "lanes", gap: pat.laneGapHalfWidthM, bridge: pat.laneBridgeM ?? 1.6 };
+    }
+    return ZONE_FULL;
+  }
+
+  /** Patrón del tramo al que pertenece la banda (determinista por semilla).
+   *  Arranque y campamentos siempre "libres" (zonas seguras, doc 8.3). */
+  patternOfBand(index: number): RoutePattern {
+    const cached = this.patternCache.get(index);
+    if (cached) return cached;
+    const route = this.deps.wallGen.route;
+    const pick = (): RoutePattern =>
+      ({ id: "libre", weight: 1 });
+    let pat: RoutePattern;
+    if (!route || !route.patterns.length || index === 0 || this.layout.campZones.some((c) => index * this.deps.wallGen.bandHeightM < c.yTop && (index + 1) * this.deps.wallGen.bandHeightM > c.yBase)) {
+      pat = route?.patterns.find((p) => p.id === "libre") ?? pick();
+    } else {
+      const group = Math.floor(index / Math.max(1, route.patternBands));
+      const rng = makeRng(bandRngSeed(this.seed, 0x51ed0000 + group));
+      const patterns = route.patterns;
+      const total = patterns.reduce((s, p) => s + Math.max(0, p.weight), 0);
+      let r = rng.range(0, Math.max(1e-6, total));
+      pat = patterns[patterns.length - 1];
+      for (const p of patterns) { r -= Math.max(0, p.weight); if (r <= 0) { pat = p; break; } }
+    }
+    this.patternCache.set(index, pat);
+    return pat;
+  }
+
+  patternIdOfBand(index: number): string { return this.patternOfBand(index).id; }
+
+  /** ¿Ese x,y es muestreable según la zona del patrón? Ambos patrones dejan un
+   *  PUENTE de anchura completa en la base del tramo: es el embudo por el que
+   *  la pareja ENTRA al patrón (converge al clúster o se reparte a las vías)
+   *  desde la banda anterior, sea cual sea su patrón. */
+  private xInPatternZone(x: number, y: number, yMin: number, zone: PatternZone): boolean {
+    if (zone.kind === "cluster") {
+      if (y < yMin + zone.bridge) return true; // embudo de convergencia
+      return Math.abs(x) <= zone.half;
+    }
+    if (zone.kind === "lanes") {
+      if (y < yMin + zone.bridge) return true; // puente de reparto a ambas vías
+      return Math.abs(x) >= zone.gap;
+    }
+    return true;
+  }
+
+  /** Fracción del ancho de pared muestreable (para conservar la densidad de fase). */
+  private patternWidthFrac(zone: PatternZone): number {
+    if (zone.kind === "cluster") return Math.min(1, (2 * zone.half) / this.widthM);
+    if (zone.kind === "lanes") return Math.max(0.2, 1 - (2 * zone.gap) / this.widthM);
+    return 1;
+  }
+
+  /** x de las columnas firmes de último recurso DENTRO de la zona del patrón. */
+  private patternFallbackXs(zone: PatternZone): number[] {
+    if (zone.kind === "cluster") return [0];
+    if (zone.kind === "lanes") return [-(zone.gap + 0.35), zone.gap + 0.35]; // una escalera firme por vía
+    return [0];
+  }
 
   /** Genera (una vez) y devuelve la banda i, validando alcanzabilidad con la anterior. */
   ensureBand(index: number): HoldInstance[] {
@@ -206,28 +299,51 @@ export class WallGenerator {
       }
     }
 
-    // 3. muestreo tipo Poisson-disk con densidad de la fase (doc 8.1.1-2).
+    // 3. muestreo tipo Poisson-disk con densidad de la fase (doc 8.1.1-2),
+    //    RECORTADO a la zona del patrón de ruta del tramo (juntos/separados):
+    //    la fracción muestreable escala los intentos para conservar la densidad.
     const density = isCampBand ? Math.min(1, phase.anchorDensity + 0.15) : phase.anchorDensity;
+    const pat = this.patternOfBand(index);
+    const pzone = this.patternZoneOf(pat);
     const minDist = g.sample.minDistanceM;
-    const area = this.widthM * bandH;
+    const area = this.widthM * bandH * this.patternWidthFrac(pzone);
     const attempts = Math.floor((area * density) / (minDist * minDist) * 1.9);
     const marginX = g.sample.marginXM;
     const yLo = yMin + (isCampBand ? g.camp.zoneHeightM : g.sample.marginYM);
     for (let i = 0; i < attempts; i++) {
       const x = rng.range(-this.widthM / 2 + marginX, this.widthM / 2 - marginX);
       const y = rng.range(yLo, yMax - g.sample.marginYM);
+      if (!this.xInPatternZone(x, y, yMin, pzone)) continue;
       if (placed.some((p) => Math.hypot(p.x - x, p.y - y) < minDist)) continue;
       const type = isCampBand ? "rock_firm" : rng.weighted(phase.typeWeights as Record<string, number>);
       holds.push(this.makeHold(`h${this.holdCounter++}`, x, y, type, index, false));
       placed.push(v3(x, y, this.zHold));
     }
 
-    // 4. VALIDADOR (doc 8.1.3): grafo conectado con la banda anterior dentro del
+    // 4. CORONA DE CONTINUIDAD (antes de validar: el validador tiene que VER
+    //    estas presas y parchear si alguna columna no encadena): la banda
+    //    SIEMPRE termina con presas firmes en su 1,2 m superior, en las columnas
+    //    de la zona del patrón. Sin esto, una banda escasa (p. ej. "juntos")
+    //    puede acabar sin presas altas y la banda SIGUIENTE nace sin semillas
+    //    de BFS → tramo huérfano e in escalable.
+    const topTail = holds.filter((h) => h.pos.y > yMax - 1.2 && !h.camp);
+    if (topTail.length < 2) {
+      for (const cx of this.patternFallbackXs(pzone)) {
+        for (const dy of [0.35, 1.05]) {
+          const y = yMax - dy;
+          if (placed.some((p) => Math.hypot(p.x - cx, p.y - y) < 0.3)) continue;
+          holds.push(this.makeHold(`crown${index}_${cx.toFixed(1)}_${y.toFixed(2)}`, cx, y, "rock_firm", index, false));
+          placed.push(v3(cx, y, this.zHold));
+        }
+      }
+    }
+
+    // 5. VALIDADOR (doc 8.1.3): grafo conectado con la banda anterior dentro del
     //    alcance de extremidades. Si falla, añade presas hasta satisfacerlo.
     const prevTail = index > 0 ? this.ensureBand(index - 1).filter((h) => h.pos.y > yMin - 1.2) : [];
     this.validateAndPatch(holds, placed, prevTail, yMin, yMax, rng, phase, index, isCampBand);
 
-    // 5. ruta segura con ratio de roca firme (doc 8.1.4) por dificultad.
+    // 6. ruta segura con ratio de roca firme (doc 8.1.4) por dificultad.
     this.enforceSafePath(holds, prevTail, yMin, yMax);
 
     return holds;
@@ -252,6 +368,7 @@ export class WallGenerator {
   ): void {
     const g = this.deps.wallGen;
     const validator = g.validator;
+    const zone = this.patternZoneOf(this.patternOfBand(index));
     const entersBand = (h: HoldInstance) => h.pos.y > yMin - 1.2 && h.pos.y < yMax;
     const all = [...prevTail, ...holds];
     const connected = (): boolean => {
@@ -280,6 +397,7 @@ export class WallGenerator {
       adds++;
       const x = rng.range(-this.widthM / 2 + g.sample.marginXM, this.widthM / 2 - g.sample.marginXM);
       const y = rng.range(yMin + 0.2, yMax - 0.15);
+      if (!this.xInPatternZone(x, y, yMin, zone)) continue; // el parche respeta el patrón
       const tooClose = placed.some((p) => Math.hypot(p.x - x, p.y - y) < g.sample.minDistanceM * 0.6);
       if (tooClose) continue;
       const type = isCampBand ? "rock_firm" : rng.weighted(phase.typeWeights as Record<string, number>);
@@ -289,10 +407,27 @@ export class WallGenerator {
       all.push(hold);
     }
     if (!connected()) {
-      // último recurso determinista: columna central de presas firmes.
-      for (let y = yMin + 0.4; y < yMax; y += g.reach.verticalBodySpanM * 0.55) {
-        const hold = this.makeHold(`col${index}_${y.toFixed(1)}`, 0, y, "rock_firm", index, false);
-        if (!placed.some((p) => Math.hypot(p.x, p.y - y) < 0.25)) { holds.push(hold); placed.push(v3(0, y, this.zHold)); all.push(hold); }
+      // último recurso determinista: columna(s) firmes DENTRO de la zona del
+      // patrón (una escalera por vía en "separados": la pared sigue partiéndose).
+      for (const cx of this.patternFallbackXs(zone)) {
+        for (let y = yMin + 0.4; y < yMax; y += g.reach.verticalBodySpanM * 0.55) {
+          const hold = this.makeHold(`col${index}_${cx.toFixed(1)}_${y.toFixed(1)}`, cx, y, "rock_firm", index, false);
+          if (!placed.some((p) => Math.hypot(p.x - cx, p.y - y) < 0.25)) { holds.push(hold); placed.push(v3(cx, y, this.zHold)); all.push(hold); }
+        }
+      }
+      // GARANTÍA DE ENTRADA: la franja de márgenes entre bandas (0,3+0,3 m) más
+      // los laterales puede dejar el salto prevTail→banda a > maxStep (huérfano
+      // aunque el interior sea escalable). Presa firme de entrada en el PUENTE
+      // (siempre en zona), clavada a ≤ climbStep de la presa más alta previa.
+      if (prevTail.length && !holds.some((h) => prevTail.some((p) => this.climbStep(p, h)))) {
+        const from = prevTail.reduce((best, h) => (h.pos.y > best.pos.y ? h : best));
+        const m = g.sample.marginXM;
+        const ex = Math.max(-this.widthM / 2 + m, Math.min(this.widthM / 2 - m, from.pos.x));
+        const ey = yMin + 0.4;
+        const hold = this.makeHold(`entry${index}`, ex, ey, "rock_firm", index, false);
+        holds.push(hold);
+        placed.push(v3(ex, ey, this.zHold));
+        all.push(hold);
       }
     }
   }

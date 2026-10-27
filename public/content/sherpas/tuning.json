@@ -61,7 +61,9 @@
   },
   "fall": {
     "teamFallSeconds": 1.5,
-    "teamFallMeters": 12
+    "teamFallMeters": 12,
+    "twoHandsGraceSeconds": 0.5,
+    "slipReGripLock": 0.35
   },
   "anchors": {
     "attachSeconds": 0.16,
