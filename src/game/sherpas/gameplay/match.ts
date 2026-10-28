@@ -1626,6 +1626,8 @@ export class SherpasMatch {
       // JUICE T38 (sonda E2E): contadores de FX de juice (chispas/furia/viñeta)
       fx: this.d.scene.getFxCounts(),
       vignette: Math.round(this.d.hud.vignetteLevel() * 1000) / 1000,
+      // RELIEVE T39 (sonda E2E): teselación del muro alrededor de la cámara
+      relief: this.d.scene.getReliefInfo(),
       // rachas de viento (sonda E2E)
       weather: { phase: this.weather.state, dir: this.weather.dir, level: Math.round(this.weather.windLevel * 100) / 100, storm: this.weather.storm },
       // Task 31 (sonda E2E): cajas, flatulencia, salientes, hielo resbaladizo

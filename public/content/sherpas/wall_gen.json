@@ -1,150 +1,176 @@
 {
-  "bandHeightM": 10,
-  "wall": {
-    "widthM": 4.2,
-    "zFront": -0.18,
-    "depthM": 0.6,
-    "holdProudM": 0.04
-  },
-  "sample": {
-    "minDistanceM": 0.5,
-    "marginXM": 0.35,
-    "marginYM": 0.3,
-    "holdRadiusMin": 0.1,
-    "holdRadiusMax": 0.14
-  },
-  "reach": {
-    "armReachM": 0.75,
-    "legReachM": 0.9,
-    "bandValidateHeightM": 1.5,
-    "verticalBodySpanM": 1.35,
-    "marginM": 0.1
-  },
-  "validator": {
-    "maxAddsPerBand": 24,
-    "minHoldsPerBand": 6
-  },
-  "camp": {
-    "zoneHeightM": 2.2,
-    "zoneWidthM": 2.8,
-    "restRingRadiusM": 1.4
-  },
-  "start": {
-    "yBaseM": 0.4,
-    "maxStartSeparationM": 2.2
-  },
-  "route": {
-    "patternBands": 2,
-    "patterns": [
-      {
-        "id": "libre",
-        "weight": 3
-      },
-      {
-        "id": "juntos",
-        "weight": 2,
-        "clusterHalfWidthM": 0.85,
-        "clusterBridgeM": 1.6
-      },
-      {
-        "id": "separados",
-        "weight": 2,
-        "laneGapHalfWidthM": 0.55,
-        "laneBridgeM": 1.6
-      }
-    ],
-    "activePlan": "ascenso_clasico",
-    "plans": {
-      "ascenso_clasico": {
-        "description": "Ritmo autorado: pareja apretada al arranque, vías separadas en el hielo, respiro libre, remate juntos antes de cada campamento. Cicla hasta la cima.",
-        "segments": [
-          {
-            "pattern": "juntos",
-            "bands": 2
-          },
-          {
-            "pattern": "separados",
-            "bands": 2
-          },
-          {
-            "pattern": "libre",
-            "bands": 1
-          },
-          {
-            "pattern": "separados",
-            "bands": 1
-          },
-          {
-            "pattern": "juntos",
-            "bands": 2
-          },
-          {
-            "pattern": "libre",
-            "bands": 2
-          },
-          {
-            "pattern": "separados",
-            "bands": 2
-          },
-          {
-            "pattern": "juntos",
-            "bands": 1
-          }
-        ]
-      },
-      "via_doble": {
-        "description": "Dos vías paralelas casi todo el ascenso: máxima separación con puentes de reparto.",
-        "segments": [
-          {
-            "pattern": "separados",
-            "bands": 3
-          },
-          {
-            "pattern": "libre",
-            "bands": 1
-          },
-          {
-            "pattern": "separados",
-            "bands": 3
-          }
-        ]
-      },
-      "pegaos": {
-        "description": "Escalada en clúster: la pareja NUNCA se aleja (modo fácil de coordinación).",
-        "segments": [
-          {
-            "pattern": "juntos",
-            "bands": 3
-          },
-          {
-            "pattern": "libre",
-            "bands": 1
-          }
-        ]
-      }
-    }
-  },
-  "salientes": {
-    "chancePerBand": 0.32,
-    "minWidthM": 1.2,
-    "maxWidthM": 2.2,
-    "depthM": 0.42,
-    "heightM": 0.5,
-    "fatigueMult": 1.6,
-    "minBand": 2
-  },
-  "entrantes": {
-    "chancePerBand": 0.34,
-    "minWidthM": 0.9,
-    "maxWidthM": 1.8,
-    "depthM": 0.3,
-    "heightM": 1.7,
-    "minBand": 1,
-    "holdSetbackM": 0.3,
-    "fatigueMult": 1.15
-  },
-  "surprise": {
-    "minBand": 3,
-    "chancePerBand": 0.16
+ "bandHeightM": 10,
+ "wall": {
+  "widthM": 4.2,
+  "zFront": -0.18,
+  "depthM": 0.6,
+  "holdProudM": 0.04
+ },
+ "sample": {
+  "minDistanceM": 0.5,
+  "marginXM": 0.35,
+  "marginYM": 0.3,
+  "holdRadiusMin": 0.1,
+  "holdRadiusMax": 0.14
+ },
+ "reach": {
+  "armReachM": 0.75,
+  "legReachM": 0.9,
+  "bandValidateHeightM": 1.5,
+  "verticalBodySpanM": 1.35,
+  "marginM": 0.1
+ },
+ "validator": {
+  "maxAddsPerBand": 24,
+  "minHoldsPerBand": 6
+ },
+ "camp": {
+  "zoneHeightM": 2.2,
+  "zoneWidthM": 2.8,
+  "restRingRadiusM": 1.4
+ },
+ "start": {
+  "yBaseM": 0.4,
+  "maxStartSeparationM": 2.2
+ },
+ "route": {
+  "patternBands": 2,
+  "patterns": [
+   {
+    "id": "libre",
+    "weight": 3
+   },
+   {
+    "id": "juntos",
+    "weight": 2,
+    "clusterHalfWidthM": 0.85,
+    "clusterBridgeM": 1.6
+   },
+   {
+    "id": "separados",
+    "weight": 2,
+    "laneGapHalfWidthM": 0.55,
+    "laneBridgeM": 1.6
+   }
+  ],
+  "activePlan": "ascenso_clasico",
+  "plans": {
+   "ascenso_clasico": {
+    "description": "Ritmo autorado: pareja apretada al arranque, vías separadas en el hielo, respiro libre, remate juntos antes de cada campamento. Cicla hasta la cima.",
+    "segments": [
+     {
+      "pattern": "juntos",
+      "bands": 2
+     },
+     {
+      "pattern": "separados",
+      "bands": 2
+     },
+     {
+      "pattern": "libre",
+      "bands": 1
+     },
+     {
+      "pattern": "separados",
+      "bands": 1
+     },
+     {
+      "pattern": "juntos",
+      "bands": 2
+     },
+     {
+      "pattern": "libre",
+      "bands": 2
+     },
+     {
+      "pattern": "separados",
+      "bands": 2
+     },
+     {
+      "pattern": "juntos",
+      "bands": 1
+     }
+    ]
+   },
+   "via_doble": {
+    "description": "Dos vías paralelas casi todo el ascenso: máxima separación con puentes de reparto.",
+    "segments": [
+     {
+      "pattern": "separados",
+      "bands": 3
+     },
+     {
+      "pattern": "libre",
+      "bands": 1
+     },
+     {
+      "pattern": "separados",
+      "bands": 3
+     }
+    ]
+   },
+   "pegaos": {
+    "description": "Escalada en clúster: la pareja NUNCA se aleja (modo fácil de coordinación).",
+    "segments": [
+     {
+      "pattern": "juntos",
+      "bands": 3
+     },
+     {
+      "pattern": "libre",
+      "bands": 1
+     }
+    ]
+   }
   }
+ },
+ "salientes": {
+  "chancePerBand": 0.32,
+  "minWidthM": 1.2,
+  "maxWidthM": 2.2,
+  "depthM": 0.42,
+  "heightM": 0.5,
+  "fatigueMult": 1.6,
+  "minBand": 2
+ },
+ "entrantes": {
+  "chancePerBand": 0.34,
+  "minWidthM": 0.9,
+  "maxWidthM": 1.8,
+  "depthM": 0.3,
+  "heightM": 1.7,
+  "minBand": 1,
+  "holdSetbackM": 0.3,
+  "fatigueMult": 1.15
+ },
+ "surprise": {
+  "minBand": 3,
+  "chancePerBand": 0.16
+ },
+ "relief": {
+  "enabled": true,
+  "algorithm": "voronoi",
+  "chunkHeightM": 3,
+  "viewRadiusM": 9.5,
+  "maxChunks": 9,
+  "cellAreaM2": 0.3,
+  "extrudeLevels": 4,
+  "extrudeMinM": 0.03,
+  "extrudeMaxM": 0.11,
+  "anchorExtrudeM": 0.02,
+  "jointM": 0.024,
+  "lloydIterations": 1,
+  "colorJitter": 0.07,
+  "normalTilt": 0.22,
+  "palette": [
+   "#4d5663",
+   "#5c6472",
+   "#6e727b",
+   "#57616f",
+   "#7b7d83",
+   "#8a8577",
+   "#9a9184"
+  ],
+  "backColor": "#262e38"
+ }
 }

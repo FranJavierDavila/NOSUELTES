@@ -2,6 +2,8 @@
 // Ningún módulo lee archivos por su cuenta; todos pasan por aquí.
 import Ajv, { type ValidateFunction } from "ajv";
 import type { Limb } from "./bus";
+import type { ReliefData } from "../world/wallRelief";
+export type { ReliefData } from "../world/wallRelief";
 
 export interface TickData { fixedDeltaSeconds: number; maxStepsPerFrame: number }
 export interface LimbTuning {
@@ -227,6 +229,13 @@ export interface WallGenData {
   /** Presas sorpresa (SUPER FLATULENCIA): probabilidad por banda de convertir
    *  UNA presa en apoyo verde de superpoder (nunca en banda 0/campamento). */
   surprise?: { minBand: number; chancePerBand: number };
+  /** RELIEVE POR TESELACIÓN (Task 39, petición del jugador: "generar patrones
+   *  de muros mediante algún algoritmo de rotura como Diagramas de Voronoi o
+   *  fracturación tectónica... el tramo visible por la cámara se construye con
+   *  formas poligonales con diferentes niveles de extrusión... los anclajes se
+   *  colocan sobre las caras de esos polígonos, centrando las caras en ellos y
+   *  rompiendo a su alrededor"). Opcional: ausente → pared plana de siempre. */
+  relief?: ReliefData;
 }
 export interface ConditionData { type: string; value?: number; event?: string; gt?: number; state?: string }
 export interface EffectData { type: string; [k: string]: unknown }
@@ -437,6 +446,17 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
           depthM: posNum, heightM: posNum, fatigueMult: posNum, minBand: { type: "integer", minimum: 0 },
         } },
         surprise: { type: "object", required: ["minBand", "chancePerBand"], properties: { minBand: { type: "integer", minimum: 0 }, chancePerBand: { type: "number", exclusiveMinimum: 0, maximum: 1 } } },
+        // RELIEVE POR TESELACIÓN (T39): Voronoi / fracturación tectónica data-driven.
+        relief: { type: "object", required: ["enabled", "algorithm"], properties: {
+          enabled: { type: "boolean" },
+          algorithm: { enum: ["voronoi", "tectonic"] },
+          chunkHeightM: posNum, viewRadiusM: posNum, maxChunks: { type: "integer", minimum: 1 },
+          cellAreaM2: posNum, extrudeLevels: { type: "integer", minimum: 1 },
+          extrudeMinM: num, extrudeMaxM: num, anchorExtrudeM: num, jointM: num,
+          lloydIterations: { type: "integer", minimum: 0 }, colorJitter: num, normalTilt: num,
+          palette: { type: "array", minItems: 1, items: { type: "string", minLength: 4 } },
+          backColor: { type: "string", minLength: 4 },
+        } },
         entrantes: { type: "object", required: ["chancePerBand", "minWidthM", "maxWidthM", "depthM", "heightM", "minBand"], properties: {
           chancePerBand: { type: "number", exclusiveMinimum: 0, maximum: 1 }, minWidthM: posNum, maxWidthM: posNum,
           depthM: posNum, heightM: posNum, minBand: { type: "integer", minimum: 0 },

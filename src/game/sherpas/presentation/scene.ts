@@ -22,6 +22,7 @@ import type { LinesMesh } from "@babylonjs/core/Meshes/linesMesh";
 import "@babylonjs/core/Meshes/instancedMesh"; // side-effect requerido por createInstance (fix Task 21)
 import { InstancedMesh } from "@babylonjs/core/Meshes/instancedMesh";
 import "@babylonjs/core/Rendering/edgesRenderer"; // ARISTAS BLANCAS de pared rocosa (petición del jugador)
+import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData"; // RELIEVE por teselación (T39)
 import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator"; // LUZ Y SOMBRA (profundidad)
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
@@ -42,6 +43,11 @@ import type { DragReachInfo } from "../physics/sherpaRig";
 import { RichManSim, RM } from "../physics/richMan";
 import type { CameraData, HudData, PerfTuning, VfxData } from "../core/data";
 import type { WallLayout } from "../world/wallGenerator";
+import {
+  bandsAround, buildReliefChunk, planChunks, reliefFromData, seedChunk, tectonicCells, voronoiCells,
+  type ReliefCell, type ReliefData, type ReliefResolved, type Rect,
+} from "../world/wallRelief";
+import { makeRng } from "../core/rng";
 
 interface Bone { a: number; b: number; mesh: Mesh; rest: number; offY?: number }
 interface RigVisual { bones: Bone[]; head: Mesh; roots: Mesh[] }
@@ -166,9 +172,28 @@ export class SherpaScene {
   private perfStats = { fps: 0, frameTimeMs: 0, activeMeshes: 0, drawCalls: 0, meshes: 0, scale: 1 };
   private tmpProj = new Vector3(0, 0, 0);
   private idMatrix = Matrix.Identity();
+  // RELIEVE POR TESELACIÓN (T39, petición del jugador): muro poligonal estilo
+  // mampostería — Voronoi / fracturación tectónica con NIVELES de extrusión,
+  // celdas centradas en los ANCLAJES, construido SOLO en la zona visible de la
+  // cámara (chunks LRU) para optimizar el dibujado.
+  private reliefCfg: ReliefResolved | null = null;
+  private reliefHolds: { x: number; y: number }[] = [];
+  private reliefMeshes = new Map<number, { mesh: Mesh; cells: number; tris: number }>();
+  private reliefHoleRects: Rect[] = [];
+  private reliefSalientRects: Rect[] = [];
+  private reliefWallW = 5.4;
+  private reliefFaceZ = -0.18;
+  private reliefTopY = 0;
+  private reliefLastCamY = NaN;
+  private reliefPending: number[] = []; // cola de chunks por construir (drena 2/frame)
+  private reliefFront = 0; // z extra para overlays (cotas/aim/alcance) por delante de las piedras
+  private reliefStats = { cells: 0, tris: 0, builds: 0 };
+  private reliefMat: StandardMaterial | null = null;
 
-  private constructor(engine: AbstractEngine, backend: string, camData: CameraData, hudData: HudData, perf?: PerfTuning, vfx?: VfxData) {
+  private constructor(engine: AbstractEngine, backend: string, camData: CameraData, hudData: HudData, perf?: PerfTuning, vfx?: VfxData, relief?: ReliefData | null) {
     this.vfxData = vfx;
+    // convención del proyecto: dato ausente → comportamiento anterior (pared plana).
+    this.reliefCfg = relief ? reliefFromData(relief) : null;
     this.engine = engine;
     this.backend = backend;
     this.camData = camData;
@@ -255,7 +280,7 @@ export class SherpaScene {
     }
   }
 
-  static async create(canvas: HTMLCanvasElement, camData: CameraData, hudData: HudData, perf?: PerfTuning, vfx?: VfxData): Promise<SherpaScene> {
+  static async create(canvas: HTMLCanvasElement, camData: CameraData, hudData: HudData, perf?: PerfTuning, vfx?: VfxData, relief?: ReliefData | null): Promise<SherpaScene> {
     // WebGL2 PRIMERO (fix Task 22, regresión del árbol roto): en iframes
     // cross-origin WebGPU cae a adaptador bloqueado → canvas negro a 6 fps.
     let engine: AbstractEngine;
@@ -268,7 +293,7 @@ export class SherpaScene {
       engine = gpu;
       backend = "WebGPU";
     }
-    return new SherpaScene(engine, backend, camData, hudData, perf, vfx);
+    return new SherpaScene(engine, backend, camData, hudData, perf, vfx, relief);
   }
 
   private makeDotTexture(): Texture {
@@ -342,7 +367,25 @@ export class SherpaScene {
     const wallFaceZ = -0.18; // cara frontal de la caja de pared (zFront)
     const wallDepth = 0.6;
     const wallTop = layout.totalHeightM + 4;
-    const rock = mat(this.scene, "rock", "#3c4652");
+    // RELIEVE (T39): contexto para el generador de teselación — la pared base
+    // queda como MORTERO (juntas oscuras entre piedras, como la referencia).
+    const rc = this.reliefCfg;
+    this.reliefWallW = wallW;
+    this.reliefFaceZ = wallFaceZ;
+    this.reliefTopY = layout.totalHeightM + 2;
+    this.reliefHoleRects = (layout.entrantes ?? []).map((e) => ({
+      xMin: e.xMin - 0.02, xMax: e.xMax + 0.02,
+      yMin: e.yMid - e.heightM / 2 - 0.02, yMax: e.yMid + e.heightM / 2 + 0.02,
+    }));
+    this.reliefSalientRects = (layout.salientes ?? []).map((s) => ({
+      xMin: s.xMin - 0.06, xMax: s.xMax + 0.06,
+      yMin: s.yMid - s.heightM / 2 - 0.05, yMax: s.yMid + s.heightM / 2 + s.heightM * 0.9,
+    }));
+    if (rc) {
+      this.reliefFront = rc.extrudeMaxM + 0.045; // cotas/aim/alcance por DELANTE de las piedras
+      this.reliefLastCamY = NaN; // fuerza el primer build
+    }
+    const rock = mat(this.scene, "rock", rc ? rc.backColor : "#3c4652");
     rock.diffuseTexture = null;
     // PERF (60 FPS): la roca estática se FUNDE en un mesh por material — 1 draw
     // call y 1 renderizador de aristas en vez de uno por bloque (con ~12
@@ -552,12 +595,141 @@ export class SherpaScene {
     }
   }
 
+  // ---------- RELIEVE por teselación (T39): piedras solo donde mira la cámara ----------
+
+  /** Streaming de chunks de relieve: la cámara pide los chunks de su radio
+   *  vertical (viewRadiusM); LRU con presupuesto maxChunks; máx 2 builds por
+   *  frame (sin tirones) drenando una COLA de pendientes — la subida rápida
+   *  nunca deja la pared a oscuras alrededor de los escaladores. */
+  private updateRelief(): void {
+    const rc = this.reliefCfg;
+    if (!rc || !this.worldBuilt || this.disposed) return;
+    const camY = this.camTarget.y;
+    const moved = !Number.isFinite(this.reliefLastCamY) || Math.abs(camY - this.reliefLastCamY) > 0.35;
+    if (!moved && this.reliefPending.length === 0 && this.reliefMeshes.size > 0) return; // idle: coste ≈ 0
+    if (moved) {
+      this.reliefLastCamY = camY;
+      const h = rc.chunkHeightM;
+      const maxChunk = Math.max(0, Math.ceil(this.reliefTopY / h) - 1);
+      let wanted = bandsAround(camY, rc.viewRadiusM, h, 0, maxChunk);
+      // recorte al presupuesto, los más cercanos a la cámara ganan
+      if (wanted.length > rc.maxChunks) {
+        wanted = wanted
+          .slice()
+          .sort((a, b) => Math.abs((a + 0.5) * h - camY) - Math.abs((b + 0.5) * h - camY))
+          .slice(0, rc.maxChunks)
+          .sort((a, b) => a - b);
+      }
+      const plan = planChunks([...this.reliefMeshes.keys()], wanted, rc.maxChunks, camY, h);
+      for (const c of plan.dispose) {
+        const e = this.reliefMeshes.get(c);
+        if (e) { e.mesh.dispose(); this.reliefMeshes.delete(c); }
+      }
+      // cola ordenada por cercanía a la cámara: lo que se VE se construye primero
+      this.reliefPending = plan.create
+        .slice()
+        .sort((a, b) => Math.abs((a + 0.5) * h - camY) - Math.abs((b + 0.5) * h - camY));
+    }
+    let builds = 0;
+    while (this.reliefPending.length && builds < 2) {
+      const c = this.reliefPending.shift()!;
+      if (this.reliefMeshes.has(c)) continue;
+      if (this.reliefBuildChunk(c)) builds++;
+    }
+  }
+
+  /** Construye la losa de relieve del chunk c: semillas (anclajes + relleno),
+   *  teselación (Voronoi o tectónica), extrusión por niveles y malla única. */
+  private reliefBuildChunk(c: number): boolean {
+    const rc = this.reliefCfg;
+    if (!rc) return false;
+    const h = rc.chunkHeightM;
+    const rect: Rect = {
+      xMin: -this.reliefWallW / 2, xMax: this.reliefWallW / 2,
+      yMin: c * h, yMax: Math.min(this.reliefTopY, (c + 1) * h),
+    };
+    if (rect.yMax - rect.yMin < 0.2) return false;
+    // semilla estable por chunk (misma partida = misma piedra; los anclajes
+    // cambian por partida → las celdas que los portan se rompen a su alrededor)
+    const seed = (Math.imul(c + 1, 0x9e3779b9) ^ 0x51ed2700) >>> 0;
+    const rng = makeRng(seed);
+    const anchors = this.reliefHolds.filter((p) => p.y >= rect.yMin - 0.3 && p.y <= rect.yMax + 0.3);
+    const cells: ReliefCell[] = rc.algorithm === "tectonic"
+      ? tectonicCells(rect, anchors, rng, rc)
+      : voronoiCells(seedChunk(rect, anchors, rng, rc), rect, rc);
+    if (!cells.length) return false;
+    const geom = buildReliefChunk(cells, {
+      wallFaceZ: this.reliefFaceZ,
+      zBack: this.reliefFaceZ + 0.015,
+      holes: this.reliefHoleRects,
+      salients: this.reliefSalientRects,
+    }, rc, seed ^ 0xabcdef);
+    if (!geom.positions.length) return false;
+    // material único con COLOR POR VÉRTICE (una piedra = un tono de la paleta)
+    if (!this.reliefMat) {
+      const m = new StandardMaterial("reliefM", this.scene);
+      m.diffuseColor = new Color3(1, 1, 1); // el tono lo dan los vertex colors
+      m.specularColor = new Color3(0.02, 0.02, 0.02);
+      // CULLING ACTIVO: caras y costillas se emiten con orientación CONSISTENTE
+      // hacia fuera (normal frontal (0,0,-1) + costillas exteriores) — el motor
+      // descarta las caras traseras (mitad del rasterizado en software).
+      m.backFaceCulling = true;
+      this.reliefMat = m;
+    }
+    const mesh = new Mesh(`relief_${c}`, this.scene);
+    const vd = new VertexData();
+    vd.positions = new Float32Array(geom.positions);
+    vd.normals = new Float32Array(geom.normals);
+    vd.colors = new Float32Array(geom.colors);
+    vd.indices = geom.indices;
+    vd.applyToMesh(mesh);
+    mesh.material = this.reliefMat;
+    mesh.receiveShadows = true; // las piedras reciben la sombra de los cuerpos
+    mesh.isPickable = false;
+    mesh.freezeWorldMatrix();
+    this.reliefMeshes.set(c, { mesh, cells: geom.cells, tris: geom.tris });
+    this.reliefStats.builds++;
+    return true;
+  }
+
+  /** Info del relieve (sonda E2E/perf): chunks vivos, piedras y triángulos. */
+  getReliefInfo(): { chunks: number; cells: number; tris: number; builds: number; algorithm: string; viewBand: number } {
+    let cells = 0, tris = 0;
+    for (const e of this.reliefMeshes.values()) { cells += e.cells; tris += e.tris; }
+    return {
+      chunks: this.reliefMeshes.size,
+      cells, tris,
+      builds: this.reliefStats.builds,
+      algorithm: this.reliefCfg?.algorithm ?? "off",
+      viewBand: Number.isFinite(this.reliefLastCamY) && this.reliefCfg
+        ? Math.floor(this.reliefLastCamY / this.reliefCfg.chunkHeightM) : -1,
+    };
+  }
+
   setSnowDensity(perSecond: number): void {
     this.snowBaseRate = perSecond; // setWind recalcula el emitRate con la racha
     this.snowSystem.emitRate = perSecond;
   }
 
   addHolds(holds: HoldInstance[], colors: Record<string, string>): void {
+    // RELIEVE (T39): los anclajes son SEMILLAS de la teselación — cada presa
+    // genera SU piedra (cara centrada en ella, fractura a su alrededor). Si la
+    // losa ya estaba construida sin ellas, se reconstruye.
+    if (this.reliefCfg && holds.length) {
+      let minY = Infinity, maxY = -Infinity;
+      for (const h of holds) {
+        this.reliefHolds.push({ x: h.pos.x, y: h.pos.y });
+        if (h.pos.y < minY) minY = h.pos.y;
+        if (h.pos.y > maxY) maxY = h.pos.y;
+      }
+      const ch = this.reliefCfg.chunkHeightM;
+      for (const [c, entry] of this.reliefMeshes) {
+        if (c * ch <= maxY + 0.4 && (c + 1) * ch >= minY - 0.4) {
+          entry.mesh.dispose();
+          this.reliefMeshes.delete(c);
+        }
+      }
+    }
     for (const h of holds) {
       if (this.holdMeshes.has(h.id)) continue;
       const hex = colors[h.type] ?? TYPE_COLORS[h.type] ?? "#8d99ae";
@@ -1184,7 +1356,8 @@ export class SherpaScene {
       this.aimMarkers[player] = m;
     }
     m.isVisible = true;
-    m.position.set(aim.x, aim.y, wallFrontZ - 0.1);
+    // el relieve protruye hasta extrudeMaxM: el aim va SIEMPRE por delante
+    m.position.set(aim.x, aim.y, wallFrontZ - 0.1 - this.reliefFront);
     const pulse = 1 + Math.sin(performance.now() / 280) * 0.1;
     m.scaling.setAll(pulse);
   }
@@ -1271,7 +1444,7 @@ export class SherpaScene {
     setBoth(dash2, "alpha", al * 0.55);
     dash1.isVisible = true;
     dash2.isVisible = true;
-    const z = wallFrontZ - 0.12;
+    const z = wallFrontZ - 0.12 - this.reliefFront;
     dash1.position.set(info.root.x, info.root.y, z);
     dash1.scaling.setAll(Math.max(0.05, info.reachM)); // radio = alcance (ya reducido por fatiga)
     dash2.position.set(info.root.x, info.root.y, z - 0.005);
@@ -1316,7 +1489,8 @@ export class SherpaScene {
   setCheckpoints(ys: number[], wallFrontZ: number, wallW: number): void {
     this.clearCheckpoints();
     const green = "#5ad46a";
-    const z = wallFrontZ - 0.1;
+    // el relieve protruye: la cota vive POR DELANTE de las piedras (nunca tapada)
+    const z = wallFrontZ - 0.1 - this.reliefFront;
     const half = wallW / 2 - 0.22;
     if (!this.cpFlagMat) {
       this.cpFlagMat = mat(this.scene, "cpFlagM", green);
@@ -1517,6 +1691,8 @@ export class SherpaScene {
 
   render(): void {
     if (this.disposed) return;
+    // RELIEVE (T39): streaming de piedras alrededor de la cámara (coste ≈ 0 en idle).
+    this.updateRelief();
     // BLINDAJE (física de juego): el motor puede quedar con depth-write a false
     // (observado en el entorno del preview: con la escritura de profundidad off,
     // el muro/suelo —dibujados al final— tapaban sherpas y presas). Se re-fuerza
