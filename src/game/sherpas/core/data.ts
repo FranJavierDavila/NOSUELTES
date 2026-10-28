@@ -449,13 +449,23 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
         // RELIEVE POR TESELACIÓN (T39): Voronoi / fracturación tectónica data-driven.
         relief: { type: "object", required: ["enabled", "algorithm"], properties: {
           enabled: { type: "boolean" },
-          algorithm: { enum: ["voronoi", "tectonic"] },
+          algorithm: { enum: ["voronoi", "tectonic", "estratificada"] },
           chunkHeightM: posNum, viewRadiusM: posNum, maxChunks: { type: "integer", minimum: 1 },
           cellAreaM2: posNum, extrudeLevels: { type: "integer", minimum: 1 },
           extrudeMinM: num, extrudeMaxM: num, anchorExtrudeM: num, jointM: num,
           lloydIterations: { type: "integer", minimum: 0 }, colorJitter: num, normalTilt: num,
           palette: { type: "array", minItems: 1, items: { type: "string", minLength: 4 } },
           backColor: { type: "string", minLength: 4 },
+          // ROCA ESTRATIFICADA (T40): campo de altura fractal (wallRock.ts)
+          gridStepM: posNum, dispMaxM: posNum,
+          macroAmpM: num, macroFreqM: posNum,
+          strataThicknessM: posNum, strataAmpM: num, strataTiltX: num,
+          ridgeAmpM: num, ridgeFreqM: posNum, ridgeOctaves: { type: "integer", minimum: 1 },
+          warpAmpM: num, warpFreqM: posNum,
+          crackAmpM: num, crackWidthM: posNum, crackPerStratum: { type: "integer", minimum: 0 },
+          flattenRadiusM: posNum, anchorBackM: num,
+          baseColor: { type: "string", minLength: 4 }, toneVar: num, grainVar: num, aoStrength: num,
+          textureSizePx: { type: "integer", minimum: 64 }, textureTileM: posNum, textureContrast: num,
         } },
         entrantes: { type: "object", required: ["chancePerBand", "minWidthM", "maxWidthM", "depthM", "heightM", "minBand"], properties: {
           chancePerBand: { type: "number", exclusiveMinimum: 0, maximum: 1 }, minWidthM: posNum, maxWidthM: posNum,

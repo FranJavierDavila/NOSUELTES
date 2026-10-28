@@ -17,6 +17,11 @@ import {
   planChunks, pointInPoly, polyArea, polyCentroid, reliefFromData, seedChunk,
   tectonicCells, voronoiCells, type Poly, type Rect,
 } from "../../src/game/sherpas/world/wallRelief";
+import {
+  ROCK_DEFAULTS, buildRockChunk, fbm, hash2i, makeRockField, ridgedFbm, rockFromData,
+  rockSample, rockTextureRGBA, rockZAt, strataHardness, valueNoise,
+  type RockField, type RockFeature,
+} from "../../src/game/sherpas/world/wallRock";
 import { makeRng } from "../../src/game/sherpas/core/rng";
 
 const RECT: Rect = { xMin: -2.7, xMax: 2.7, yMin: 10, yMax: 13 };
@@ -347,7 +352,7 @@ describe("datos del relieve (wall_gen.relief)", () => {
     const raw = JSON.parse(readFileSync(join(process.cwd(), "public/content/sherpas/wall_gen.json"), "utf8"));
     expect(raw.relief).toBeDefined();
     expect(raw.relief.enabled).toBe(true);
-    expect(["voronoi", "tectonic"]).toContain(raw.relief.algorithm);
+    expect(["voronoi", "tectonic", "estratificada"]).toContain(raw.relief.algorithm);
     const resolved = reliefFromData(raw.relief);
     expect(resolved.algorithm).toBe(raw.relief.algorithm);
     expect(resolved.extrudeMaxM).toBeGreaterThan(resolved.extrudeMinM);
@@ -356,5 +361,251 @@ describe("datos del relieve (wall_gen.relief)", () => {
     const fsLoader = async (path: string): Promise<unknown> => JSON.parse(readFileSync(join(process.cwd(), path), "utf8"));
     const data = await loadSherpasData(fsLoader, "public/content/sherpas");
     expect(data.wallGen.relief?.algorithm).toBeDefined();
+  });
+});
+
+// ============================================================================
+// ROCA ESTRATIFICADA (T40, petición del jugador): "el patrón Voronoi no
+// parece una rotura natural... mejor un color uniforme con variaciones
+// ligeras de tono y rugosidad simulando piedra, texturizada con mapas de
+// roca... una rotura ESTRATIFICADA más natural... una gran roca creíble con
+// salientes y entrantes". Campo de altura fractal: fBm + ridged multifractal
+// + domain warping + erosión diferencial por estratos + grietas escalonadas.
+// ============================================================================
+
+const rockCfg = rockFromData({ algorithm: "estratificada" });
+function rockField(opts?: { anchors?: RockField["anchors"]; features?: RockFeature[]; seed?: number }): RockField {
+  const f = makeRockField(rockCfg, 5.4, -0.18, opts?.seed ?? 0x5eed0123);
+  if (opts?.anchors) f.anchors.push(...opts.anchors);
+  if (opts?.features) f.features.push(...opts.features);
+  return f;
+}
+
+describe("wallRock — primitivas de ruido", () => {
+  it("hash2i es determinista y en [0,1)", () => {
+    expect(hash2i(10, 20, 7)).toBe(hash2i(10, 20, 7));
+    expect(hash2i(10, 20, 7)).not.toBe(hash2i(10, 21, 7));
+    for (let i = -50; i < 50; i++) {
+      const v = hash2i(i * 37, i * 11, 123);
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThan(1);
+    }
+  });
+
+  it("valueNoise/fbm/ridgedFbm son deterministas y acotados", () => {
+    for (const [x, y] of [[0.3, 4.7], [-2.1, 15.3], [3.9, 88.2]] as const) {
+      const n1 = valueNoise(x, y, 5);
+      expect(n1).toBe(valueNoise(x, y, 5));
+      expect(n1).toBeGreaterThanOrEqual(0);
+      expect(n1).toBeLessThan(1);
+      const f1 = fbm(x, y, 5, 4);
+      expect(f1).toBe(fbm(x, y, 5, 4));
+      expect(f1).toBeGreaterThanOrEqual(0);
+      expect(f1).toBeLessThanOrEqual(1);
+      const r1 = ridgedFbm(x, y, 5, 4);
+      expect(r1).toBe(ridgedFbm(x, y, 5, 4));
+      expect(r1).toBeGreaterThanOrEqual(0);
+      expect(r1).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("fbm depende de la semilla (semillas distintas → campos distintos)", () => {
+    expect(fbm(1.5, 2.5, 1, 4)).not.toBe(fbm(1.5, 2.5, 2, 4));
+  });
+});
+
+describe("wallRock — campo de altura estratificado", () => {
+  it("MUESTRA determinista: misma (x,y) → misma d y color", () => {
+    const f = rockField();
+    const a = rockSample(f, 1.234, 11.567);
+    const b = rockSample(f, 1.234, 11.567);
+    expect(a.d).toBe(b.d);
+    expect(a.col).toEqual(b.col);
+    const g = rockField({ seed: 0x1234567 });
+    expect(rockSample(g, 1.234, 11.567).d).not.toBe(a.d);
+  });
+
+  it("d ACOTADA: la roca siempre flota delante del plano base y bajo el techo", () => {
+    const f = rockField();
+    const rng = makeRng(4242);
+    for (let i = 0; i < 500; i++) {
+      const x = rng.range(-2.7, 2.7);
+      const y = rng.range(0, 40);
+      const { d } = rockSample(f, x, y);
+      expect(d).toBeGreaterThanOrEqual(0.015 - 1e-9);
+      expect(d).toBeLessThanOrEqual(rockCfg.dispMaxM + 1e-9);
+    }
+  });
+
+  it("EROSIÓN DIFERENCIAL: dureza CONSTANTE por capa, variada ENTRE capas", () => {
+    const f = rockField();
+    const hs = new Set<number>();
+    for (let L = -5; L < 60; L++) hs.add(Math.round(strataHardness(f, L) * 1e4));
+    expect(hs.size).toBeGreaterThan(8); // estratos de dureza variada
+    expect(strataHardness(f, 7)).toBe(strataHardness(f, 7)); // determinista
+  });
+
+  it("SALIENTE: el campo ABOMBA hasta su cota dentro del rect (feather suave)", () => {
+    const f = rockField({ features: [{ xMin: -1.2, xMax: 0.8, yMin: 11, yMax: 12, dz: 0.46, featherM: 0.5 }] });
+    const { d } = rockSample(f, -0.2, 11.5); // centro del saliente
+    expect(d).toBeGreaterThan(0.4); // llega a la cota del bombo
+    const fuera = rockSample(f, 2.4, 11.5).d; // lejos del saliente
+    expect(fuera).toBeLessThan(0.35);
+  });
+
+  it("ENTRANTE: el campo SE HUNDE dentro del rect (nicho con fondo retrasado)", () => {
+    const f = rockField({ features: [{ xMin: -0.6, xMax: 0.6, yMin: 11.2, yMax: 12.9, dz: -0.25, featherM: 0.28 }] });
+    const { d } = rockSample(f, 0, 12); // dentro del nicho
+    expect(d).toBeLessThan(-0.1); // NEGATIVO: metido en la pared
+    const fuera = rockSample(f, 2.2, 12).d;
+    expect(fuera).toBeGreaterThan(0.01);
+  });
+
+  it("ANCLAJES PRIMERO: la roca se aplana a la cota de la presa; lejos el relieve varía", () => {
+    // dz del ancla = wallFaceZ - (zPresa + anchorBack): presa a z=-0.64 → d=0.448
+    const dz = -0.18 - (-0.64 + 0.012);
+    const f = rockField({ anchors: [{ x: 0, y: 11.5, dz }] });
+    const en = rockSample(f, 0.02, 11.52);
+    expect(Math.abs(en.d - dz)).toBeLessThan(0.012); // roca pegada a la cota de la presa
+    let distinto = 0;
+    for (let i = 0; i < 40; i++) {
+      const d = rockSample(f, -2.4 + i * 0.12, 20 + (i % 7) * 0.9).d;
+      if (Math.abs(d - dz) > 0.02) distinto++;
+    }
+    expect(distinto).toBeGreaterThan(20);
+  });
+
+  it("rockZAt es coherente con el campo (z = faceZ − d)", () => {
+    const f = rockField();
+    const s = rockSample(f, -1.1, 14.2);
+    expect(rockZAt(f, -1.1, 14.2)).toBeCloseTo(-0.18 - s.d, 12);
+  });
+});
+
+describe("wallRock — malla del chunk (continuidad sin costuras)", () => {
+  it("GEOMETRÍA válida: índices, normales unitarias (hacia cámara), RGBA y UVs", () => {
+    const f = rockField({ anchors: [{ x: -0.5, y: 11.2, dz: 0.048 }] });
+    const geom = buildRockChunk(f, 10, 13);
+    expect(geom.verts).toBeGreaterThan(1500);
+    expect(geom.tris).toBeGreaterThan(2600); // retícula ~72×40 × 2 tris
+    expect(geom.indices.length).toBe(geom.tris * 3);
+    expect(geom.positions.length).toBe(geom.verts * 3);
+    expect(geom.colors.length).toBe(geom.verts * 4); // RGBA
+    expect(geom.uvs.length).toBe(geom.verts * 2);
+    for (const i of geom.indices) {
+      expect(i).toBeGreaterThanOrEqual(0);
+      expect(i).toBeLessThan(geom.verts);
+    }
+    for (let i = 0; i < geom.normals.length; i += 3) {
+      const l = Math.hypot(geom.normals[i]!, geom.normals[i + 1]!, geom.normals[i + 2]!);
+      expect(Math.abs(l - 1)).toBeLessThan(0.01);
+      expect(geom.normals[i + 2]!).toBeLessThan(0); // normal hacia la cámara (−z)
+    }
+    for (const c of geom.colors) { expect(c).toBeGreaterThanOrEqual(0); expect(c).toBeLessThanOrEqual(1); }
+  });
+
+  it("COSTURAS EXACTAS: el borde inferior del chunk N reproduce el superior del N−1", () => {
+    const f = rockField({ anchors: [{ x: 0.3, y: 13.05, dz: 0.05 }] });
+    const a = buildRockChunk(f, 10, 13);
+    const b = buildRockChunk(f, 13, 16);
+    const rowsA = Math.round(3 / rockCfg.gridStepM); // filas del chunk A (yMin..yMax)
+    const W = Math.round(5.4 / rockCfg.gridStepM) + 1;
+    for (let i = 0; i < W; i++) {
+      const zTopA = a.positions[(rowsA * W + i) * 3 + 2]!;
+      const zBotB = b.positions[i * 3 + 2]!;
+      expect(zTopA).toBeCloseTo(zBotB, 9);
+    }
+  });
+
+  it("RELIEVE REAL: la superficie NO es plana (roca base + bombo de saliente)", () => {
+    const plano = buildRockChunk(rockField(), 10, 13);
+    const rango = (g: ReturnType<typeof buildRockChunk>): number => {
+      let a = Infinity, b = -Infinity;
+      for (let i = 2; i < g.positions.length; i += 3) { a = Math.min(a, g.positions[i]!); b = Math.max(b, g.positions[i]!); }
+      return b - a;
+    };
+    expect(rango(plano)).toBeGreaterThan(0.06); // la roca base ya tiene desniveles
+    const f2 = rockField({ features: [{ xMin: -1.2, xMax: 0.8, yMin: 10.6, yMax: 11.6, dz: 0.46, featherM: 0.5 }] });
+    const conSaliente = buildRockChunk(f2, 10, 13);
+    expect(rango(conSaliente)).toBeGreaterThan(0.3); // el saliente ABOMBA de verdad
+    // la roca SIEMPRE queda delante del plano base (sin z-fight)
+    let zMax2 = -Infinity;
+    for (let i = 2; i < plano.positions.length; i += 3) zMax2 = Math.max(zMax2, plano.positions[i]!);
+    expect(zMax2).toBeLessThanOrEqual(-0.18 - 0.02 + 1e-6);
+  });
+});
+
+describe("wallRock — textura procedural de roca", () => {
+  it("mapa determinista por semilla y distinto entre semillas", () => {
+    const a = rockTextureRGBA(64, 99, 0.5);
+    const b = rockTextureRGBA(64, 99, 0.5);
+    expect(Buffer.from(a).equals(Buffer.from(b))).toBe(true);
+    const c = rockTextureRGBA(64, 100, 0.5);
+    expect(Buffer.from(a).equals(Buffer.from(c))).toBe(false);
+  });
+
+  it("TILEABLE: la primera columna es tonalmente continua con la última (u=0 ≡ u=1)", () => {
+    const size = 32;
+    const tex = rockTextureRGBA(size, 7, 0.5);
+    for (let j = 0; j < size; j++) {
+      const izq = (j * size + 0) * 4;
+      const der = (j * size + (size - 1)) * 4;
+      expect(Math.abs(tex[izq]! - tex[der]!)).toBeLessThan(60);
+    }
+  });
+
+  it("RANGO RGBA válido y opaco, con grano real (no plano)", () => {
+    const tex = rockTextureRGBA(48, 5, 0.7);
+    let mn = 255, mx = 0;
+    for (let i = 0; i < tex.length; i += 4) {
+      expect(tex[i]!).toBeLessThanOrEqual(255);
+      expect(tex[i + 3]!).toBe(255); // opaco
+      mn = Math.min(mn, tex[i]!);
+      mx = Math.max(mx, tex[i]!);
+    }
+    expect(mx - mn).toBeGreaterThan(30); // hay grano/manchas visibles
+  });
+});
+
+describe("wallRock — datos (wall_gen.relief algorithm estratificada)", () => {
+  it("rockFromData: defaults defensivos y clamps (dato roto → defaults)", () => {
+    const d = rockFromData({ algorithm: "estratificada" });
+    expect(d.enabled).toBe(true);
+    expect(d.algorithm).toBe("estratificada");
+    expect(d.chunkHeightM).toBeGreaterThan(0);
+    expect(d.gridStepM).toBeGreaterThan(0);
+    expect(d.baseColor.length).toBeGreaterThanOrEqual(4);
+    const roto = rockFromData({
+      algorithm: "estratificada", chunkHeightM: -5, gridStepM: 99, dispMaxM: 0,
+      textureSizePx: 10, toneVar: 42, crackPerStratum: -3,
+    } as never);
+    expect(roto.chunkHeightM).toBeGreaterThan(0);
+    expect(roto.gridStepM).toBeLessThanOrEqual(0.3);
+    expect(roto.toneVar).toBeLessThanOrEqual(0.4);
+    expect(roto.crackPerStratum).toBeGreaterThanOrEqual(0);
+    // algoritmo distinto/ausente → defaults (la escena decide rama por algorithm)
+    expect(rockFromData({ algorithm: "voronoi" } as never).algorithm).toBe("estratificada");
+    expect(rockFromData(null).algorithm).toBe("estratificada");
+  });
+
+  it("el pack real pide roca ESTRATIFICADA con parámetros sanos y el Ajv la acepta", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const raw = JSON.parse(readFileSync(join(process.cwd(), "public/content/sherpas/wall_gen.json"), "utf8"));
+    expect(raw.relief.algorithm).toBe("estratificada");
+    const resolved = rockFromData(raw.relief);
+    expect(resolved.enabled).toBe(true);
+    expect(resolved.dispMaxM).toBeGreaterThan(0.3); // roca con volumen
+    expect(resolved.strataThicknessM).toBeGreaterThan(0.2); // estratos visibles
+    expect(resolved.textureSizePx).toBeGreaterThanOrEqual(64);
+    const { loadSherpasData } = await import("../../src/game/sherpas/core/data");
+    const fsLoader = async (path: string): Promise<unknown> => JSON.parse(readFileSync(join(process.cwd(), path), "utf8"));
+    const data = await loadSherpasData(fsLoader, "public/content/sherpas");
+    expect(data.wallGen.relief?.algorithm).toBe("estratificada");
+  });
+
+  it("defaults del módulo intactos", () => {
+    expect(ROCK_DEFAULTS.algorithm).toBe("estratificada");
+    expect(ROCK_DEFAULTS.chunkHeightM).toBe(3);
   });
 });

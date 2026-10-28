@@ -21,8 +21,8 @@ import "@babylonjs/core/Meshes/Builders/linesBuilder"; // grietas/aristas + CÍR
 import type { LinesMesh } from "@babylonjs/core/Meshes/linesMesh";
 import "@babylonjs/core/Meshes/instancedMesh"; // side-effect requerido por createInstance (fix Task 21)
 import { InstancedMesh } from "@babylonjs/core/Meshes/instancedMesh";
-import "@babylonjs/core/Rendering/edgesRenderer"; // ARISTAS BLANCAS de pared rocosa (petición del jugador)
-import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData"; // RELIEVE por teselación (T39)
+import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData"; // RELIEVE por teselación (T39) + roca estratificada (T40)
+import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture"; // MAPA DE ROCA procedural (T40)
 import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator"; // LUZ Y SOMBRA (profundidad)
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
@@ -47,6 +47,10 @@ import {
   bandsAround, buildReliefChunk, planChunks, reliefFromData, seedChunk, tectonicCells, voronoiCells,
   type ReliefCell, type ReliefData, type ReliefResolved, type Rect,
 } from "../world/wallRelief";
+import {
+  buildRockChunk, makeRockField, rockFromData, rockTextureRGBA, ROCK_SEED,
+  type RockData, type RockField, type RockResolved,
+} from "../world/wallRock";
 import { makeRng } from "../core/rng";
 
 interface Bone { a: number; b: number; mesh: Mesh; rest: number; offY?: number }
@@ -189,11 +193,18 @@ export class SherpaScene {
   private reliefFront = 0; // z extra para overlays (cotas/aim/alcance) por delante de las piedras
   private reliefStats = { cells: 0, tris: 0, builds: 0 };
   private reliefMat: StandardMaterial | null = null;
+  // ROCA ESTRATIFICADA (T40): campo de altura fractal — sustituye a la
+  // teselación cuando el pack pide algorithm "estratificada".
+  private reliefRaw: ReliefData | null = null;
+  private rockCfg: RockResolved | null = null;
+  private rockField: RockField | null = null;
+  private rockMat: StandardMaterial | null = null;
 
   private constructor(engine: AbstractEngine, backend: string, camData: CameraData, hudData: HudData, perf?: PerfTuning, vfx?: VfxData, relief?: ReliefData | null) {
     this.vfxData = vfx;
     // convención del proyecto: dato ausente → comportamiento anterior (pared plana).
     this.reliefCfg = relief ? reliefFromData(relief) : null;
+    this.reliefRaw = relief ?? null; // datos CRUDOS: la rama roca lee de aquí
     this.engine = engine;
     this.backend = backend;
     this.camData = camData;
@@ -385,6 +396,37 @@ export class SherpaScene {
       this.reliefFront = rc.extrudeMaxM + 0.045; // cotas/aim/alcance por DELANTE de las piedras
       this.reliefLastCamY = NaN; // fuerza el primer build
     }
+    // ROCA ESTRATIFICADA (T40): campo de altura fractal continuo — sustituye a
+    // la teselación cuando el pack pide algorithm "estratificada". Los
+    // salientes/entrantes pasan a ser DESPLAZAMIENTOS del campo (feather
+    // suave): la roca los envuelve de forma natural, sin recortes rectos.
+    const rk = rc && rc.algorithm === "estratificada"
+      ? rockFromData(this.reliefRaw as unknown as Partial<RockData> | null)
+      : null;
+    this.rockCfg = rk;
+    this.rockField = null;
+    if (rk && rk.enabled) {
+      const f = makeRockField(rk, wallW, wallFaceZ);
+      // salientes: el macizo ABOMBA hasta la cota de sus presas (bombo rocoso)
+      for (const s of layout.salientes ?? []) {
+        f.features.push({
+          xMin: s.xMin - 0.06, xMax: s.xMax + 0.06,
+          yMin: s.yMid - s.heightM / 2 - 0.05, yMax: s.yMid + s.heightM / 2 + s.heightM * 0.9,
+          dz: wallFaceZ - s.z, featherM: 0.5,
+        });
+      }
+      // entrantes: la roca SE HUNDE hasta el fondo del nicho (interior oscuro ya existente)
+      for (const e of layout.entrantes ?? []) {
+        f.features.push({
+          xMin: e.xMin - 0.02, xMax: e.xMax + 0.02,
+          yMin: e.yMid - e.heightM / 2 - 0.02, yMax: e.yMid + e.heightM / 2 + 0.02,
+          dz: -(Math.max(0.08, e.depthM) - 0.05), featherM: 0.28,
+        });
+      }
+      this.rockField = f;
+      this.reliefFront = Math.max(0.2, ...f.features.map((ft) => ft.dz)) + 0.045;
+      this.reliefLastCamY = NaN; // fuerza el primer build
+    }
     const rock = mat(this.scene, "rock", rc ? rc.backColor : "#3c4652");
     rock.diffuseTexture = null;
     // PERF (60 FPS): la roca estática se FUNDE en un mesh por material — 1 draw
@@ -438,9 +480,9 @@ export class SherpaScene {
       wallMesh.name = "wallMerged";
       wallMesh.receiveShadows = true;
       wallMesh.freezeWorldMatrix();
-      wallMesh.enableEdgesRendering();
-      wallMesh.edgesWidth = 4.5;
-      wallMesh.edgesColor = new Color4(0.92, 0.96, 1, 0.42);
+      // (T40) SIN enableEdgesRendering: las aristas dibujadas eran las
+      // "líneas verticales grises de arriba a abajo" que el jugador mandó
+      // eliminar — la roca estratificada ya tiene volumen real.
     }
 
     // VOLUMEN HUNDIDO de cada entrante: caja oscura DENTRO del muro, visible
@@ -481,18 +523,13 @@ export class SherpaScene {
       merged.name = "entrantesMerged";
       merged.receiveShadows = true;
       merged.freezeWorldMatrix();
-      merged.enableEdgesRendering();
-      merged.edgesWidth = 6;
-      merged.edgesColor = new Color4(0.9, 0.94, 1, 0.6);
+      // (T40) sin aristas dibujadas: la roca estratificada envuelve el nicho.
     }
     if (entLips.length) {
       const merged = Mesh.MergeMeshes(entLips, true, true, undefined, false, false)!;
       merged.name = "entranteLipsMerged";
       merged.receiveShadows = true;
       merged.freezeWorldMatrix();
-      merged.enableEdgesRendering();
-      merged.edgesWidth = 6;
-      merged.edgesColor = new Color4(0.95, 0.97, 1, 0.8);
       this.shadowGen?.addShadowCaster(merged, false);
     }
 
@@ -512,15 +549,13 @@ export class SherpaScene {
     }
 
     // SALIENTES (petición: "que se noten... VERDADEROS volúmenes 3D que
-    // sobresalgan"): ya son cajas reales; ahora IRREGULARES — dos volúmenes
-    // desalineados (cuerpo + capuchón más ancho y menos profundo) para que la
-    // silueta no sea un rectángulo perfecto. Reciben y CASTAN sombra.
-    // PERF: material único compartido + fusión en UN mesh (1 draw, 1 arista,
-    // 1 caster) — antes eran 2 mallas + 2 aristas + 2 casters POR saliente.
+    // sobresalgan"): en modo ROCA ESTRATIFICADA (T40) el campo de altura forma
+    // el bombo COMO ROCA (silueta irregular, textura continua) — las cajas
+    // rectas solo existen para la teselación clásica.
     const salientBoxes: Mesh[] = [];
     const salRock = mat(this.scene, "salienteM", "#46525f");
     salRock.specularColor = new Color3(0.03, 0.03, 0.03);
-    for (const s of layout.salientes) {
+    for (const s of this.rockField ? [] : layout.salientes) {
       const w = s.xMax - s.xMin;
       const depth = wallFaceZ - s.z + 0.06; // del muro al frente del saliente
       if (w <= 0.05 || depth <= 0.05) continue;
@@ -549,50 +584,14 @@ export class SherpaScene {
       merged.name = "salientesMerged";
       merged.receiveShadows = true;
       merged.freezeWorldMatrix();
-      merged.enableEdgesRendering();
-      merged.edgesWidth = 7;
-      merged.edgesColor = new Color4(0.95, 0.97, 1, 0.85);
+      // (T40) sin aristas dibujadas (líneas verticales eliminadas a petición)
       this.shadowGen?.addShadowCaster(merged, false);
     }
 
-    // GRIETAS (pared rocosa): polilíneas blancas tenues sobre la cara del muro,
-    // deterministas (LCG con semilla fija: la pared no cambia entre visitas).
-    // Se RECORTAN en los huecos de los entrantes (nada flota en el aire).
-    // PERF: UN solo LineSystem (1 draw call) en vez de ~100 meshes de línea.
-    const inHole = (x: number, y: number): boolean =>
-      holes.some((h) => x >= h.xMin - 0.05 && x <= h.xMax + 0.05 && y >= h.yMin - 0.05 && y <= h.yMax + 0.05);
-    let lcg = 0x9e3779b9 >>> 0;
-    const rnd = (): number => { lcg = (Math.imul(lcg, 1664525) + 1013904223) >>> 0; return lcg / 4294967296; };
-    const crackLines: Vector3[][] = [];
-    for (let y = 4; y < layout.totalHeightM - 2; y += 6 + rnd() * 5) {
-      const cracks = rnd() < 0.35 ? 2 : 1;
-      for (let c = 0; c < cracks; c++) {
-        let pts: Vector3[] = [];
-        let cx = (rnd() * 2 - 1) * (wallW / 2 - 0.4);
-        let cy = y + rnd() * 3;
-        const flush = (): void => {
-          if (pts.length >= 2) crackLines.push(pts);
-          pts = [];
-        };
-        if (!inHole(cx, cy)) pts.push(new Vector3(cx, cy, wallFaceZ + 0.01)); else flush();
-        const segs = 6 + Math.floor(rnd() * 5);
-        for (let i = 0; i < segs; i++) {
-          cx += (rnd() * 2 - 1) * 0.34;
-          cx = Math.max(-wallW / 2 + 0.25, Math.min(wallW / 2 - 0.25, cx));
-          cy += 0.3 + rnd() * 0.5;
-          if (inHole(cx, cy)) flush();
-          else pts.push(new Vector3(cx, cy, wallFaceZ + 0.01));
-        }
-        flush();
-      }
-    }
-    if (crackLines.length) {
-      const sys = MeshBuilder.CreateLineSystem("crackSystem", { lines: crackLines }, this.scene);
-      sys.color = new Color3(0.88, 0.92, 0.98);
-      sys.alpha = 0.32;
-      sys.isPickable = false;
-      sys.freezeWorldMatrix();
-    }
+    // (T40) GRIETAS DIBUJADAS ELIMINADAS: las polilíneas blancas verticales
+    // que recorrían el muro eran parte del falso patrón "piedra a piedra" que
+    // el jugador mandó quitar. La roca estratificada tiene grietas REALES
+    // (surcos del campo de altura) y vetas en el mapa de textura.
   }
 
   // ---------- RELIEVE por teselación (T39): piedras solo donde mira la cámara ----------
@@ -638,17 +637,55 @@ export class SherpaScene {
     }
   }
 
-  /** Construye la losa de relieve del chunk c: semillas (anclajes + relleno),
-   *  teselación (Voronoi o tectónica), extrusión por niveles y malla única. */
+  /** Construye la losa de relieve del chunk c. ROCA ESTRATIFICADA (T40):
+   *  retícula de campo de altura fractal con UVs y textura de roca. MODO
+   *  CLÁSICO: semillas (anclajes + relleno), teselación (Voronoi o tectónica),
+   *  extrusión por niveles y malla única. */
   private reliefBuildChunk(c: number): boolean {
     const rc = this.reliefCfg;
     if (!rc) return false;
     const h = rc.chunkHeightM;
+    const yMin = c * h, yMax = Math.min(this.reliefTopY, (c + 1) * h);
+    if (yMax - yMin < 0.2) return false;
+    const mesh = new Mesh(`relief_${c}`, this.scene);
+    // ---- ROCA ESTRATIFICADA: campo de altura continuo (sin costuras entre
+    // chunks: d solo depende de (x,y) mundial) + textura procedural ----
+    if (this.rockField) {
+      const geom = buildRockChunk(this.rockField, yMin, yMax);
+      if (!geom.positions.length) { mesh.dispose(); return false; }
+      if (!this.rockMat) {
+        const m = new StandardMaterial("rockM", this.scene);
+        const size = this.rockField.cfg.textureSizePx;
+        const data = rockTextureRGBA(size, ROCK_SEED ^ 0x7a3f11, this.rockField.cfg.textureContrast);
+        const tex = RawTexture.CreateRGBATexture(data, size, size, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
+        tex.wrapU = Texture.WRAP_ADDRESSMODE;
+        tex.wrapV = Texture.WRAP_ADDRESSMODE;
+        m.diffuseTexture = tex; // mapa de roca (grano + manchas + vetas)
+        m.diffuseColor = new Color3(1, 1, 1); // el tono final = textura × vertex colors
+        m.specularColor = new Color3(0.02, 0.02, 0.02);
+        m.backFaceCulling = true; // cara frontal con winding consistente
+        this.rockMat = m;
+      }
+      const vd = new VertexData();
+      vd.positions = new Float32Array(geom.positions);
+      vd.normals = new Float32Array(geom.normals);
+      vd.colors = new Float32Array(geom.colors);
+      vd.uvs = new Float32Array(geom.uvs);
+      vd.indices = geom.indices;
+      vd.applyToMesh(mesh);
+      mesh.material = this.rockMat;
+      mesh.receiveShadows = true; // la roca recibe la sombra de los cuerpos
+      mesh.isPickable = false;
+      mesh.freezeWorldMatrix();
+      this.reliefMeshes.set(c, { mesh, cells: geom.verts, tris: geom.tris });
+      this.reliefStats.builds++;
+      return true;
+    }
+    // ---- MODO CLÁSICO: teselación por piedras (Voronoi / tectónica) ----
     const rect: Rect = {
       xMin: -this.reliefWallW / 2, xMax: this.reliefWallW / 2,
-      yMin: c * h, yMax: Math.min(this.reliefTopY, (c + 1) * h),
+      yMin, yMax,
     };
-    if (rect.yMax - rect.yMin < 0.2) return false;
     // semilla estable por chunk (misma partida = misma piedra; los anclajes
     // cambian por partida → las celdas que los portan se rompen a su alrededor)
     const seed = (Math.imul(c + 1, 0x9e3779b9) ^ 0x51ed2700) >>> 0;
@@ -657,14 +694,14 @@ export class SherpaScene {
     const cells: ReliefCell[] = rc.algorithm === "tectonic"
       ? tectonicCells(rect, anchors, rng, rc)
       : voronoiCells(seedChunk(rect, anchors, rng, rc), rect, rc);
-    if (!cells.length) return false;
+    if (!cells.length) { mesh.dispose(); return false; }
     const geom = buildReliefChunk(cells, {
       wallFaceZ: this.reliefFaceZ,
       zBack: this.reliefFaceZ + 0.015,
       holes: this.reliefHoleRects,
       salients: this.reliefSalientRects,
     }, rc, seed ^ 0xabcdef);
-    if (!geom.positions.length) return false;
+    if (!geom.positions.length) { mesh.dispose(); return false; }
     // material único con COLOR POR VÉRTICE (una piedra = un tono de la paleta)
     if (!this.reliefMat) {
       const m = new StandardMaterial("reliefM", this.scene);
@@ -676,13 +713,12 @@ export class SherpaScene {
       m.backFaceCulling = true;
       this.reliefMat = m;
     }
-    const mesh = new Mesh(`relief_${c}`, this.scene);
-    const vd = new VertexData();
-    vd.positions = new Float32Array(geom.positions);
-    vd.normals = new Float32Array(geom.normals);
-    vd.colors = new Float32Array(geom.colors);
-    vd.indices = geom.indices;
-    vd.applyToMesh(mesh);
+    const vd2 = new VertexData();
+    vd2.positions = new Float32Array(geom.positions);
+    vd2.normals = new Float32Array(geom.normals);
+    vd2.colors = new Float32Array(geom.colors);
+    vd2.indices = geom.indices;
+    vd2.applyToMesh(mesh);
     mesh.material = this.reliefMat;
     mesh.receiveShadows = true; // las piedras reciben la sombra de los cuerpos
     mesh.isPickable = false;
@@ -700,7 +736,7 @@ export class SherpaScene {
       chunks: this.reliefMeshes.size,
       cells, tris,
       builds: this.reliefStats.builds,
-      algorithm: this.reliefCfg?.algorithm ?? "off",
+      algorithm: this.rockField ? "estratificada" : (this.reliefCfg?.algorithm ?? "off"),
       viewBand: Number.isFinite(this.reliefLastCamY) && this.reliefCfg
         ? Math.floor(this.reliefLastCamY / this.reliefCfg.chunkHeightM) : -1,
     };
@@ -715,16 +751,24 @@ export class SherpaScene {
     // RELIEVE (T39): los anclajes son SEMILLAS de la teselación — cada presa
     // genera SU piedra (cara centrada en ella, fractura a su alrededor). Si la
     // losa ya estaba construida sin ellas, se reconstruye.
+    // ROCA (T40): cada presa APLANA el campo a SU cota (la piedra descansa en
+    // la roca: superficie 12 mm por detrás del centro de la presa).
     if (this.reliefCfg && holds.length) {
       let minY = Infinity, maxY = -Infinity;
       for (const h of holds) {
         this.reliefHolds.push({ x: h.pos.x, y: h.pos.y });
+        if (this.rockField) {
+          this.rockField.anchors.push({
+            x: h.pos.x, y: h.pos.y,
+            dz: this.reliefFaceZ - (h.pos.z + this.rockField.cfg.anchorBackM),
+          });
+        }
         if (h.pos.y < minY) minY = h.pos.y;
         if (h.pos.y > maxY) maxY = h.pos.y;
       }
       const ch = this.reliefCfg.chunkHeightM;
       for (const [c, entry] of this.reliefMeshes) {
-        if (c * ch <= maxY + 0.4 && (c + 1) * ch >= minY - 0.4) {
+        if (c * ch <= maxY + 0.55 && (c + 1) * ch >= minY - 0.55) {
           entry.mesh.dispose();
           this.reliefMeshes.delete(c);
         }
