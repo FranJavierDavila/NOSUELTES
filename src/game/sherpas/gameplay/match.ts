@@ -96,6 +96,11 @@ export class SherpasMatch {
   private pendingBubbles: { text: string; until: number }[] = [];
   private wallFrontZ: number;
   readonly wallWidthM: number;
+  // CAJAS DEL RICACHÓN (petición del jugador): apiladas sobre la tabla, PESAN,
+  // pueden CAER (escora/vuelco) y ENOJAN MUCHO al ricachón.
+  private boxes: { count: number; side: -1 | 1; until: number } | null = null;
+  private icePlateWarned = false;
+  private fartFxNext: [number, number] = [0, 0];
   // arrastre de extremidades con puntero (esquema del desarrollo anterior)
   private pointerDrag: PointerDrag;
   private dragPlayer: 0 | 1 | null = null;
@@ -135,6 +140,8 @@ export class SherpasMatch {
         twoHandsGraceSeconds: this.data.tuning.fall.twoHandsGraceSeconds ?? 0.5,
         slipReGripLock: this.data.tuning.fall.slipReGripLock ?? 0.35,
       },
+      // SUPER FLATULENCIA (petición del jugador): presas verdes → pedo-propulsor.
+      fart: this.data.tuning.fart,
     };
     const mkDeps = (player: 0 | 1) => ({
       player,
@@ -187,6 +194,13 @@ export class SherpasMatch {
       waist: (p) => this.sherpas[p].waist(),
       anchoredLimbs: (p) => LIMBS.filter((l) => this.sherpas[p].states.get(l)!.anchored),
       limbWorldPos: (p, l) => this.sherpas[p].limbPos(l),
+      // CÓNDOR: pose de la tabla para posarse y PESAR (petición del jugador).
+      plankPose: () => ({
+        center: this.plankState?.center ?? v3(0, 1, 0),
+        angle: this.plankState?.angle ?? 0,
+        halfLen: this.plankLenM / 2,
+        z: (this.plankState?.center.z ?? 0),
+      }),
     }, deps.bus, seed);
     this.insults = new InsultSystem(this.data.insults[deps.hud.lang], seed);
     this.balance = new BalanceMonitor(this.data.tuning, deps.bus);
@@ -279,6 +293,15 @@ export class SherpasMatch {
         this.kbAimUntil[intent.playerId] = this.simTime + 4;
       }
       if (intent.shoo) this.doShoo(intent.playerId);
+      // SUPER FLATULENCIA (petición del jugador): con carga, PUM hacia arriba.
+      if (intent.fart && rig.launchFart()) {
+        this.d.audio.play("fart");
+        this.d.hud.subtitle(this.d.hud.t("hud.fartGo"), 2.2);
+        this.d.bus.emit("FartLaunched", { playerId: intent.playerId, fromY: rig.waist().y });
+        this.fartFxNext[intent.playerId] = 0; // el gas empieza YA
+      } else if (intent.fart) {
+        this.d.hud.subtitle(this.d.hud.t("hud.fartNeed"), 1.6);
+      }
     }
   }
 
@@ -372,6 +395,24 @@ export class SherpasMatch {
         this.d.scene.shake(this.d.hud.wantsReduceShake ? 0.015 : 0.05);
         this.brain.panic();
       }
+      // SUPER FLATULENCIA GANADA: presa verde agarrada → carga lista (una vez
+      // por agarre: el propio info.fartGained solo es true el tick de llegada).
+      if (info.fartGained) {
+        this.d.audio.play("chime");
+        const hint = this.d.hud.fmt("hud.fartReady", { key: p === 0 ? "F" : "P" });
+        this.d.hud.subtitle(hint, 3.2);
+        this.d.bus.emit("FartGained", { playerId: p });
+      }
+      // PLACAS DE HIELO: aviso UNA vez por partida (luego lo aprende el cuerpo).
+      if (!this.icePlateWarned) {
+        for (const g of info.gripped) {
+          if (g.anchor.hold.type === "ice_plate") {
+            this.icePlateWarned = true;
+            this.d.hud.subtitle(this.d.hud.t("hud.icePlateWarn"), 3.4);
+            break;
+          }
+        }
+      }
       if (prevAnchors[p] > 0 && this.sherpas[p].anchorsCount() === 0) {
         this.d.bus.emit("PlayerFell", { playerId: p, cause: info.slippedByTwoHands ? "two_hands" : "no_grips" });
         this.sayInsult("fall");
@@ -379,20 +420,26 @@ export class SherpasMatch {
       }
     }
 
-    // RACHAS DE VIENTO (mecánica desequilibrante): aviso legible → racha con
-    // empuje lateral real. Antes de la tabla, para que el wobble y la cuerda
-    // visual la reciban este mismo tick. La puerta es altura de PARED (m desde
-    // la base), no altitud narrativa (5300+ la haría siempre cierta).
+    // RACHAS DE VIENTO + MODO TORMENTA: aviso legible → racha con empuje lateral
+    // real. Antes de la tabla, para que el wobble y la cuerda visual la reciban
+    // este mismo tick. La puerta es altura de PARED (m desde la base), no
+    // altitud narrativa (5300+ la haría siempre cierta).
     const windAlt = Math.min(this.sherpas[0].waist().y, this.sherpas[1].waist().y);
     const wev = this.weather.step(this.simTime, dt, windAlt);
     if (wev.began === "warn") {
       this.d.audio.play("wind_warn");
-      this.d.hud.subtitle(this.d.hud.t("hud.windWarn"), 2.4);
+      // MODO TORMENTA (petición del jugador): telegrafía distinta y más grave.
+      this.d.hud.subtitle(this.d.hud.t(wev.storm ? "hud.stormWarn" : "hud.windWarn"), wev.storm ? 3.2 : 2.4);
       this.d.hud.setWindChips(true);
     } else if (wev.began === "gust") {
-      this.d.hud.subtitle(this.d.hud.t("hud.windGust"), 2.6);
+      this.d.hud.subtitle(this.d.hud.t(wev.storm ? "hud.stormGust" : "hud.windGust"), 2.6);
     } else if (wev.began === "calm") {
       this.d.hud.setWindChips(false);
+    }
+    // RELÁMPAGOS: solo en racha de tormenta (flash + trueno).
+    if (wev.lightning) {
+      this.d.scene.lightningFlash();
+      this.d.audio.play("thunder");
     }
     const wl = this.weather.windLevel;
     this.d.audio.gustLevel(wl);
@@ -461,6 +508,14 @@ export class SherpasMatch {
     this.plank.setRichStanding(richStanding);
     this.plank.setRichMass(this.rich.currentMass());
     if (walkDir !== 0) this.plank.walkSlide(walkDir, dt);
+    // CARGA sobre la tabla (cajas del ricachón + cóndor posado): PESA DE VERDAD.
+    const cargo: { offsetFrac: number; kg: number }[] = [];
+    if (this.boxes) {
+      const bt = this.data.tuning.boxes;
+      cargo.push({ offsetFrac: this.boxes.side * (bt?.offsetFrac ?? 0.55), kg: this.boxes.count * (bt?.massPerBoxKg ?? 9) });
+    }
+    for (const c of this.birds.condorCargo()) cargo.push(c);
+    this.plank.setCargo(cargo);
     this.plankState = this.plank.step(dt, {
       a: this.sherpas[0].waist(),
       b: this.sherpas[1].waist(),
@@ -490,6 +545,38 @@ export class SherpasMatch {
       this.rich.launchFall(ps.fellDir);
       this.d.audio.play("fall");
       this.onTeamFell(true);
+    }
+    // CAJAS: caducidad (el ricachón las recoge) y CAÍDA por escora/vuelco
+    // (petición del jugador: "esos objetos se pueden caer también lo que enoja
+    // mucho al Ricachón que empieza a lanzar insultos").
+    if (this.boxes) {
+      const bt = this.data.tuning.boxes;
+      const fallSlide = bt?.fallSlideFrac ?? 0.5;
+      const fallTilt = bt?.fallTiltDeg ?? 18;
+      if (this.simTime > this.boxes.until) {
+        this.d.hud.subtitle(this.d.hud.t("hud.boxesGone"), 2.2);
+        this.boxes = null;
+      } else if (ps.slideFrac > fallSlide || Math.abs(ps.tiltDeg) > fallTilt || ps.fellOff) {
+        const side = this.boxes.side;
+        const cos = Math.cos(ps.angle), sin = Math.sin(ps.angle);
+        const lx = side * (bt?.offsetFrac ?? 0.55) * (this.plankLenM / 2);
+        const drops: { x: number; y: number; z: number }[] = [];
+        for (let i = 0; i < this.boxes.count; i++) {
+          drops.push({ x: ps.center.x + cos * lx, y: ps.center.y + sin * lx + 0.12 + i * 0.2, z: ps.center.z });
+        }
+        this.d.scene.dropBoxes(drops, -side * 0.8);
+        this.d.audio.play("thud");
+        this.d.audio.play("crackle");
+        this.d.hud.subtitle(this.d.hud.t("hud.boxesFell"), 3);
+        this.propina.add(-4, "boxes_fell", this.d.bus);
+        this.brain.panic();
+        this.d.bus.emit("BoxesFell", { count: this.boxes.count, side });
+        // ESTALLA: dos insultos seguidos (contexto boxes_fell — muy enojado).
+        this.sayInsult("boxes_fell");
+        const line2 = this.insults.pick("boxes_fell");
+        if (line2) this.pendingBubbles.push({ text: line2, until: this.simTime + 3.8 });
+        this.boxes = null;
+      }
     }
     if (this.rich.seated) {
       // pose de juego (sentado/gestos ⇄ de pie/paseo; también durante el congelado de cima).
@@ -681,6 +768,8 @@ export class SherpasMatch {
     this.trash.length = 0;
     this.urine = null;
     this.urineWetIds.clear();
+    this.boxes = null;
+    this.d.scene.syncBoxes(0, 0, v3(0, -10, 0), 0);
     this.lastMinY = Math.min(na.y, nb.y);
     this.frozen = false;
     this.d.scene.spawnSherpa(0, this.sherpas[0].rig);
@@ -807,11 +896,36 @@ export class SherpasMatch {
         if (this.balance.snapshot.state === "desequilibrado") return "unbalanced_rope";
         return "idle_too_long";
       },
+      // CÓNDOR (petición del jugador): opciones de posado desde tuning.condor.
+      condorOptions: () => ({
+        massKg: this.data.tuning.condor?.massKg ?? 16,
+        perchSecondsMin: this.data.tuning.condor?.perchSecondsMin ?? 5,
+        perchSecondsMax: this.data.tuning.condor?.perchSecondsMax ?? 9,
+        offsetFrac: this.data.tuning.condor?.offsetFrac ?? 0.85,
+      }),
+      // CAJAS DEL RICACHÓN (petición del jugador): aparecen sobre la tabla.
+      spawnBoxes: (count: number) => {
+        const bt = this.data.tuning.boxes;
+        const max = bt?.maxBoxes ?? 3;
+        const side: -1 | 1 = this.boxes ? this.boxes.side : (this.rngBoxPick() as -1 | 1);
+        this.boxes = {
+          count: Math.max(1, Math.min(max, count)),
+          side,
+          until: this.simTime + (bt ? (8 + Math.random() * Math.max(4, bt.secondsMax - 8)) : 24),
+        };
+        this.d.hud.subtitle(this.d.hud.t("hud.boxesOn"), 2.8);
+        this.d.bus.emit("BoxesPlaced", { count: this.boxes.count, side });
+      },
     };
   }
 
   private directorCtxMaxTension(): number {
     return Math.max(this.sherpas[0].maxTension(), this.sherpas[1].maxTension());
+  }
+
+  /** lado aleatorio de la tabla para las cajas (mock rng local: cosmético). */
+  private rngBoxPick(): number {
+    return Math.random() < 0.5 ? -1 : 1;
   }
 
   private lastEventTimes = new Map<string, number>();
@@ -853,6 +967,13 @@ export class SherpasMatch {
       this.d.audio.play("wail");
       this.directorCtx().stealFood();
     });
+    // CÓNDOR (petición del jugador): landed → peso visible + ricachón NERVIOSO.
+    on("CondorLanded", () => {
+      this.d.hud.subtitle(this.d.hud.t("hud.condorLanded"), 2.6);
+      const line = this.insults.pick("condor_angry");
+      if (line) this.d.bus.emit("InsultSaid", { lineId: "condor_angry", context: "condor_angry", text: line });
+    });
+    on("CondorLeft", () => { /* se va solo: la carga desaparece con él */ });
     on("InsultSaid", (p) => {
       // VOZ DEL RICACHÓN (petición del jugador: "escucharse gritando con tono
       // burlesco"): TTS pregenerado con tono subido; si falta el fichero,
@@ -864,10 +985,12 @@ export class SherpasMatch {
     on("Telegraph", (p) => {
       const key = p.eventId === "pee" ? "hud.peeTelegraph"
         : p.eventId === "trash" ? "hud.trashTelegraph"
+        : p.eventId === "cajas" ? "hud.boxesTelegraph"
+        : p.eventId === "condor" ? "hud.condorTelegraph"
         : p.eventId.startsWith("bird") ? "hud.birdTelegraph"
         : p.eventId === "kick" ? "hud.kickTelegraph" : null;
       if (key) this.d.hud.telegraph(this.d.hud.t(key), Math.max(0.8, p.seconds));
-      this.d.audio.play("zip");
+      this.d.audio.play(p.eventId === "condor" ? "bird_screech" : "zip");
     });
     on("TrashThrown", () => this.d.audio.play("rustle"));
     on("UrineSplash", (p) => {
@@ -947,6 +1070,40 @@ export class SherpasMatch {
     s.syncBirds(this.birds.birdsForRender());
     // ráfagas visibles: rayas cruzando EN la dirección del viento (rachas)
     s.setWind(this.weather.dir, this.weather.windLevel, frameDt);
+    // MODO TORMENTA: cielo oscuro mientras dura el ciclo (los relámpagos
+    // llegan por evento en simTick → scene.lightningFlash).
+    s.setStorm(this.weather.storm);
+    // CAJAS sobre la tabla (siguen center/angle; 0 cuando no hay).
+    if (this.plankState) {
+      const bt = this.data.tuning.boxes;
+      s.syncBoxes(
+        this.boxes?.count ?? 0,
+        this.boxes ? this.boxes.side * (bt?.offsetFrac ?? 0.55) : 0,
+        this.plankState.center,
+        this.plankState.angle,
+      );
+    }
+    // ESTELA del gas verde durante el vuelo de Super Flatulencia (a ~9 Hz).
+    for (const p of [0, 1] as const) {
+      const rig = this.sherpas[p];
+      if (rig.fartFlying && this.simTime >= this.fartFxNext[p]) {
+        this.fartFxNext[p] = this.simTime + 0.11;
+        s.fxFart(rig.waist());
+      }
+      this.d.hud.setFartCharge(p, rig.hasFartCharge);
+    }
+    // FATIGA SOBRE CADA EXTREMIDAD (petición del jugador): proyectar las 8
+    // insignias sobre las extremidades dibujadas — solo mirando al escalador.
+    const badgeData: { p: 0 | 1; limb: Limb; sx: number; sy: number; tension: number; fatigue: number; anchored: boolean }[] = [];
+    for (const p of [0, 1] as const) {
+      for (const limb of LIMBS) {
+        const w = this.sherpas[p].limbPos(limb);
+        const st = this.sherpas[p].states.get(limb)!;
+        const sp = s.projectToScreenCss(w);
+        badgeData.push({ p, limb, sx: sp.x, sy: sp.y, tension: st.tension, fatigue: st.fatigue, anchored: st.anchored });
+      }
+    }
+    this.d.hud.setLimbBadges(badgeData);
     const wa = this.sherpas[0].waist();
     const wb = this.sherpas[1].waist();
     const camPts = this.plankState ? [wa, wb, this.plankState.center] : [wa, wb];
@@ -994,6 +1151,20 @@ export class SherpasMatch {
     };
     this.d.hud.update(st);
     this.d.audio.setAltitude(st.narrativeY, st.maxNarrativeY);
+    // MINIMAPA (petición del jugador): tramo hasta la próxima base + metros.
+    const minYm = Math.min(this.sherpas[0].waist().y, this.sherpas[1].waist().y);
+    const nextCamp = this.gen.nextCampAbove(minYm);
+    const below = this.gen.campAtOrBelow(minYm);
+    const yLow = below ? below.yBase : 0;
+    const yHigh = nextCamp ? nextCamp.yTop : this.gen.layout.totalHeightM;
+    const span = Math.max(0.5, yHigh - yLow);
+    this.d.hud.updateMinimap({
+      fracA: (this.sherpas[0].waist().y - yLow) / span,
+      fracB: (this.sherpas[1].waist().y - yLow) / span,
+      campFrac: nextCamp ? (yHigh - nextCamp.yBase) / span : 0.06,
+      metersLeft: this.gen.narrativeHeightOf(yHigh) - st.narrativeY,
+      campId: st.nextCampId,
+    });
     const fps = this.hudFrameCount;
     this.hudFrameCount = 0;
     const waD = this.sherpas[0].waist();
@@ -1040,7 +1211,13 @@ export class SherpasMatch {
       })),
       route: { band: this.gen.bandIndexOf((waD.y + wbD.y) / 2), pattern: this.gen.patternIdOfBand(this.gen.bandIndexOf((waD.y + wbD.y) / 2)) },
       // rachas de viento (sonda E2E)
-      weather: { phase: this.weather.state, dir: this.weather.dir, level: Math.round(this.weather.windLevel * 100) / 100 },
+      weather: { phase: this.weather.state, dir: this.weather.dir, level: Math.round(this.weather.windLevel * 100) / 100, storm: this.weather.storm },
+      // Task 31 (sonda E2E): cajas, flatulencia, salientes, hielo resbaladizo
+      boxes: this.boxes ? { count: this.boxes.count, side: this.boxes.side, massKg: this.boxes.count * (this.data.tuning.boxes?.massPerBoxKg ?? 9) } : null,
+      condor: this.birds.condorCargo().length ? { kg: this.birds.condorCargo()[0].kg } : null,
+      cargoKg: Math.round(this.plank.cargoMassKg()),
+      fart: [0, 1].map((p) => ({ charge: this.sherpas[p].hasFartCharge, flying: this.sherpas[p].fartFlying })),
+      salientes: this.gen.layout.salientes.length,
     });
   }
 
@@ -1049,6 +1226,26 @@ export class SherpasMatch {
     if (!span) return 1;
     const y = Math.min(this.sherpas[0].waist().y, this.sherpas[1].waist().y);
     return Math.min(1, Math.max(0, (y - span.yMin) / Math.max(0.1, span.yMax - span.yMin)));
+  }
+
+  /** Sonda E2E (solo pruebas, como setAim): fuerza los eventos del Task 31
+   *  para verificar su presentación sin esperar al azar del director. */
+  debugForce(what: "boxes" | "condor" | "storm" | "fart", player: 0 | 1 = 0): boolean {
+    switch (what) {
+      case "boxes":
+        this.directorCtx().spawnBoxes(3);
+        return true;
+      case "condor":
+        return this.birds.spawn("condor", this.directorCtx().condorOptions());
+      case "storm":
+        this.weather.debugForceStorm();
+        return true;
+      case "fart":
+        this.sherpas[player ?? 0].fartCharge = true; // el disparo lo hace la tecla F/P
+        return true;
+      default:
+        return false;
+    }
   }
 
   // ---------- control ----------

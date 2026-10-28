@@ -69,6 +69,12 @@ export const PLANK_DEFAULTS: PlankTuning = {
   windSlideGain: 0.04,
 };
 
+/** CARGA sobre la tabla (cajas del ricachón, cóndor posado): masa puntual
+ *  expresada como fracción del semilargo (−1 cabo izq … +1 cabo der) + kg.
+ *  PESA DE VERDAD: el lado cargado se hunde (carga del cabo) y la escora
+ *  resultante desliza al ricachón — y si escora demasiado, las cajas CAEN. */
+export interface PlankCargo { offsetFrac: number; kg: number }
+
 export interface PlankState {
   center: V3;
   /** ángulo de la tabla (rad): >0 = extremo derecho más alto. */
@@ -132,6 +138,7 @@ const RICH_LOAD = 0.55;       // cuánto pesa el ricachón en los cabos (palanca
 const RICH_LOAD_G = 0.9;      // fracción de su peso que llega a las cuerdas
 const SHAKE_HZ = 1.5;         // vaivén de la sacudida de viento (oscilación visible)
 const ROPE_FLOOR_Y = 0.02;    // la nieve es sólida: la cuerda reposa, no se hunde
+const CARGO_REF_KG = 60;      // carga de referencia: 60 kg en un cabo = +100% de carga de ese cabo
 
 /** Cadena VERLET decorativa de la cuerda (no es física de juego): los extremos
  *  van clavados a sus anclajes, los nodos interiores caen por gravedad y
@@ -236,6 +243,8 @@ export class PlankSystem {
   private richStanding = false;
   private richWalking = false;
   private richMassKg = 150;
+  /** CARGA sobre la tabla (cajas del ricachón, cóndor posado). */
+  private cargo: PlankCargo[] = [];
   /** sacudida de viento: amplitud 0..1 y fase del vaivén (oscilación visible). */
   private shakeAmp = 0;
   private shakePhase = 0;
@@ -269,6 +278,13 @@ export class PlankSystem {
   /** Masa actual del ricachón (comer pesa de verdad → más carga en las cuerdas). */
   setRichMass(kg: number): void { this.richMassKg = Math.max(30, kg); }
 
+  /** CARGA PUNTUAL sobre la tabla (cajas, cóndor): el lado cargado SE HUNDE
+   *  (palanca real) — y con suficiente escora el ricachón resbala. La lista
+   *  completa la posee el match cada tick (cajas + cóndor pueden convivir). */
+  setCargo(c: PlankCargo[]): void { this.cargo = c; }
+  getCargo(): PlankCargo[] { return this.cargo; }
+  cargoMassKg(): number { return this.cargo.reduce((s, c) => s + c.kg, 0); }
+
   /** Cuelga la tabla NIVELADA bajo el sherpa más bajo (spawn/respawn). */
   reset(a: V3, b: V3, wallFrontZ: number, visualA?: V3, visualB?: V3): PlankState {
     const z = wallFrontZ - END_Z_OFF;
@@ -285,6 +301,7 @@ export class PlankSystem {
     this.fellDir = 0;
     this.shakeAmp = 0;
     this.shakePhase = 0;
+    this.cargo = [];
     return this.buildState(a, b, true, 0, 0, visualA, visualB);
   }
 
@@ -298,10 +315,20 @@ export class PlankSystem {
     //    sobre los escaladores").
     const halfLen = t.plankLen / 2;
     const shareL = Math.max(0, Math.min(1, 0.5 - this.slide / (2 * halfLen)));
+    // CARGA PUNTUAL (cajas/cóndor): palanca real — la masa con offset fraccional
+    // reparte su peso entre los cabos (1±lever)/2. El lado cargado SE HUNDE.
+    let cargoExtraL = 0;
+    let cargoExtraR = 0;
+    for (const c of this.cargo) {
+      const lever = Math.max(-1, Math.min(1, c.offsetFrac));
+      cargoExtraL += (c.kg * (1 - lever)) / 2;
+      cargoExtraR += (c.kg * (1 + lever)) / 2;
+    }
     for (let i = 0; i < 2; i++) {
       const e = this.ends[i];
       const share = i === 0 ? shareL : 1 - shareL;
-      const gLoad = G * (1 + RICH_LOAD * 2 * share);
+      const cargoKg = i === 0 ? cargoExtraL : cargoExtraR;
+      const gLoad = G * (1 + RICH_LOAD * 2 * share + cargoKg / CARGO_REF_KG);
       let vel = vScale(vSub(e.pos, e.prev), t.swingDamping);
       const vAbs = vLen(vel);
       if (vAbs > MAX_END_SPEED) vel = vScale(vel, MAX_END_SPEED / vAbs);
@@ -461,10 +488,21 @@ export class PlankSystem {
     const halfLoad = 420;
     const shareL = Math.max(0, Math.min(1, 0.5 - this.slide / (2 * half)));
     const richT = this.richMassKg * G * RICH_LOAD_G;
+    // la CARGA (cajas/cóndor) también llega a las cuerdas: el lado cargado
+    // tira más de su sherpa (legible en el reparto del HUD).
+    let cargoExtraL2 = 0;
+    let cargoExtraR2 = 0;
+    for (const c of this.cargo) {
+      const lever = Math.max(-1, Math.min(1, c.offsetFrac));
+      cargoExtraL2 += (c.kg * (1 - lever)) / 2;
+      cargoExtraR2 += (c.kg * (1 + lever)) / 2;
+    }
+    const cargoTL = cargoExtraL2 * G * RICH_LOAD_G;
+    const cargoTR = cargoExtraR2 * G * RICH_LOAD_G;
     const tautA = Math.min(1, distA / (t.ropeLen * 0.97)) ** 2;
     const tautB = Math.min(1, distB / (t.ropeLen * 0.97)) ** 2;
-    const tensionA = (halfLoad + richT * shareL) * tautA;
-    const tensionB = (halfLoad + richT * (1 - shareL)) * tautB;
+    const tensionA = (halfLoad + richT * shareL + cargoTL) * tautA;
+    const tensionB = (halfLoad + richT * (1 - shareL) + cargoTR) * tautB;
     const slack = Math.max(0, Math.min(t.ropeLen * 0.97 - distA, t.ropeLen * 0.97 - distB));
 
     return {

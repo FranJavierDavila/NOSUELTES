@@ -30,6 +30,15 @@ export interface SherpasEvents {
   BirdHit: { birdId: number; playerId: 0 | 1; limb: Limb };
   BirdAborted: { birdId: number };
   BirdStolen: { birdId: number };
+  // CÓNDOR (petición del jugador: posa en la tabla y PESA)
+  CondorLanded: { birdId: number; side: -1 | 1 };
+  CondorLeft: { birdId: number };
+  // CAJAS DEL RICACHÓN (petición: cajas sobre la tabla que pueden caer y ENOJAN)
+  BoxesPlaced: { count: number; side: -1 | 1 };
+  BoxesFell: { count: number; side: -1 | 1 };
+  // SUPER FLATULENCIA (presa verde → pedo-propulsor)
+  FartGained: { playerId: 0 | 1 };
+  FartLaunched: { playerId: 0 | 1; fromY: number };
   // Progresión
   PlayerFell: { playerId: 0 | 1; cause?: "two_hands" | "no_grips" };
   TeamFell: { record: unknown };

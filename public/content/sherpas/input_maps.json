@@ -1,30 +1,68 @@
 {
-  "players": {
-    "p1": {
-      "label": "Jugador 1",
-      "keyboard": {
-        "aimUp": "KeyW", "aimDown": "KeyS", "aimLeft": "KeyA", "aimRight": "KeyD",
-        "aimSpeed": 1.8,
-        "grip": { "hand_l": "Digit1", "hand_r": "Digit2", "foot_l": "Digit3", "foot_r": "Digit4" },
-        "shoo": "KeyR"
-      }
+ "players": {
+  "p1": {
+   "label": "Jugador 1",
+   "keyboard": {
+    "aimUp": "KeyW",
+    "aimDown": "KeyS",
+    "aimLeft": "KeyA",
+    "aimRight": "KeyD",
+    "aimSpeed": 1.8,
+    "grip": {
+     "hand_l": "Digit1",
+     "hand_r": "Digit2",
+     "foot_l": "Digit3",
+     "foot_r": "Digit4"
     },
-    "p2": {
-      "label": "Jugador 2",
-      "keyboard": {
-        "aimUp": "ArrowUp", "aimDown": "ArrowDown", "aimLeft": "ArrowLeft", "aimRight": "ArrowRight",
-        "aimSpeed": 1.8,
-        "grip": { "hand_l": "KeyI", "hand_r": "KeyO", "foot_l": "KeyK", "foot_r": "KeyL" },
-        "shoo": "KeyU"
-      },
-      "gamepad": {
-        "index": 1,
-        "aim": { "stick": 0, "deadzone": 0.18, "aimSpeed": 2.4 },
-        "grip": { "hand_l": 2, "hand_r": 3, "foot_l": 0, "foot_r": 1 },
-        "shoo": 5,
-        "gripNames": { "0": "A", "1": "B", "2": "X", "3": "Y", "5": "RB" }
-      }
-    }
+    "shoo": "KeyR",
+    "fart": "KeyF"
+   }
   },
-  "shared": { "pause": "Space", "help": "KeyH", "cameraRecenter": "KeyC" }
+  "p2": {
+   "label": "Jugador 2",
+   "keyboard": {
+    "aimUp": "ArrowUp",
+    "aimDown": "ArrowDown",
+    "aimLeft": "ArrowLeft",
+    "aimRight": "ArrowRight",
+    "aimSpeed": 1.8,
+    "grip": {
+     "hand_l": "KeyI",
+     "hand_r": "KeyO",
+     "foot_l": "KeyK",
+     "foot_r": "KeyL"
+    },
+    "shoo": "KeyU",
+    "fart": "KeyP"
+   },
+   "gamepad": {
+    "index": 1,
+    "aim": {
+     "stick": 0,
+     "deadzone": 0.18,
+     "aimSpeed": 2.4
+    },
+    "grip": {
+     "hand_l": 2,
+     "hand_r": 3,
+     "foot_l": 0,
+     "foot_r": 1
+    },
+    "shoo": 5,
+    "gripNames": {
+     "0": "A",
+     "1": "B",
+     "2": "X",
+     "3": "Y",
+     "5": "RB"
+    },
+    "fart": 4
+   }
+  }
+ },
+ "shared": {
+  "pause": "Space",
+  "help": "KeyH",
+  "cameraRecenter": "KeyC"
+ }
 }

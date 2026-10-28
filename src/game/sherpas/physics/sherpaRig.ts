@@ -21,7 +21,7 @@ import { P } from "../../physics/pbd/ragdoll";
 import type { StepResult } from "../../physics/pbd/solver";
 import type { CharacterDefinition, BodyProfileDefinition, LimbId } from "../../types";
 import type { Limb, ReleaseCause } from "../core/bus";
-import type { LimbTuning, RopeTuning } from "../core/data";
+import type { LimbTuning, RopeTuning, FartTuning } from "../core/data";
 import { AnchorSystem, AnchorInstance, type HoldInstance } from "./anchors";
 
 export const LIMBS: Limb[] = ["hand_l", "hand_r", "foot_l", "foot_r"];
@@ -87,6 +87,8 @@ const GOMA_SERVO_MAX = 0.09;    // corrección posicional máxima por tick (m)
 const DRAG_FOLLOW = 26;         // ganancia de seguimiento del puntero (1/s)
 const DRAG_MAGNET_PULL = 20;    // ganancia de succión hacia la presa imantada (1/s)
 const DRAG_Z_OFF = 0.16;        // separación de la pared mientras arrastra (m)
+const SALIENTE_FATIGUE_PER_M = 1.45; // fatiga extra por metro de saliente (0,42 m → ×1,6)
+const FART_PELVIS_TRAIL_HZ = 9; // nubes de gas verde por segundo durante el vuelo
 
 export interface LimbGripState {
   limb: Limb;
@@ -100,6 +102,8 @@ export interface LimbGripState {
   lockedFor: number;
   /** objetivo de viaje (mundo) mientras la extremidad vuela. */
   target: V3 | null;
+  /** segundos LLEVADOS agarrado a su presa actual (placas de hielo resbalan). */
+  gripSeconds: number;
 }
 
 export interface SherpaGripTuning {
@@ -111,6 +115,8 @@ export interface SherpaGripTuning {
    *  comprometida durante la gracia, los pies RESBALAN y el escalador cae.
    *  Opcional en los tests: faltan valores → 0,5 s / 0,35 s. */
   fall?: { twoHandsGraceSeconds: number; slipReGripLock: number };
+  /** SUPER FLATULENCIA (opcional en tests: ausente → sin superpoder). */
+  fart?: FartTuning;
 }
 
 export interface SherpaDeps {
@@ -131,6 +137,8 @@ export interface SherpaStepInfo {
   gripped: { limb: Limb; anchor: AnchorInstance }[];
   /** true SOLO en el tick en que la regla de dos manos resbala los pies. */
   slippedByTwoHands: boolean;
+  /** true SOLO en el tick en que se gana la carga de Super Flatulencia. */
+  fartGained: boolean;
 }
 
 interface GameParticle { pos: V3; prev: V3; mass: number; invMass: number; radius: number }
@@ -174,6 +182,10 @@ export class SherpaRig {
   private noHandsTimer = 0;
   /** true SOLO el tick en que el resbalón por dos manos suelta los pies. */
   slippedByTwoHands = false;
+  /** SUPER FLATULENCIA: carga lista (presa verde agarrada) y vuelo en curso. */
+  fartCharge = false;
+  private fartLaunchT = 0;
+  private fartTrailAcc = 0;
 
   constructor(deps: SherpaDeps, startHolds: { hand_l: HoldInstance; hand_r: HoldInstance; foot_l?: HoldInstance; foot_r?: HoldInstance }) {
     this.deps = deps;
@@ -189,7 +201,7 @@ export class SherpaRig {
     for (const limb of LIMBS) {
       this.states.set(limb, {
         limb, anchored: false, holdId: null, traveling: false, travelTime: 0,
-        tension: 0, fatigue: 0, overloadTimer: 0, lockedFor: 0, target: null,
+        tension: 0, fatigue: 0, overloadTimer: 0, lockedFor: 0, target: null, gripSeconds: 0,
       });
     }
     this.lastResult = emptyResult();
@@ -243,6 +255,44 @@ export class SherpaRig {
   freeFallDropM(): number { return this.lastDropM; }
   /** segundos llevados sin NINGUNA mano comprometida (regla de dos manos). */
   noHandsSeconds(): number { return this.noHandsTimer; }
+
+  // ---------- SUPER FLATULENCIA (petición del jugador) ----------
+
+  /** ¿Hay carga de pedo-propulsor lista? */
+  get hasFartCharge(): boolean { return this.fartCharge; }
+  /** ¿Vuelo de flatulencia en curso? */
+  get fartFlying(): boolean { return this.fartLaunchT > 0; }
+
+  /** Activación del superpoder: suelta TODO y sale disparado hacia arriba
+   *  (~dos tandas de apoyos). Al acabar, re-agarra lo que pille al alcance:
+   *  si no hay nada… cae (riesgo/estrategia: mejor que la PAREJA también
+   *  salte, o la tabla se escora — la cuerda de porteo hace de seguro). */
+  launchFart(): boolean {
+    if (!this.fartCharge || this.fartLaunchT > 0) return false;
+    this.fartCharge = false;
+    for (const limb of LIMBS) this.forceRelease(limb, 0, "player");
+    this.noHandsTimer = 0;
+    this.fartLaunchT = this.deps.tuning.fart?.launchSeconds ?? 0.9;
+    this.fartTrailAcc = 0;
+    return true;
+  }
+
+  /** Re-agarre automático al terminar el vuelo: la extremidad más cercana a
+   *  cada presa libre dentro del radio gana el viaje (determinista). */
+  private autoGripAfterFart(): void {
+    const r = this.deps.tuning.fart?.autoGripRadiusM ?? 1.5;
+    for (const limb of LIMBS) {
+      if (this.states.get(limb)!.anchored) continue;
+      let best: HoldInstance | null = null;
+      let bd = r;
+      for (const hold of this.deps.anchorSystem.holds.values()) {
+        if (this.deps.anchorSystem.anchorAtHold(hold.id)) continue;
+        const d = vLen(vSub(hold.pos, this.limbPt[limb]));
+        if (d < bd) { bd = d; best = hold; }
+      }
+      if (best) { this.gripWanted[limb] = true; this.startTravel(limb, best); }
+    }
+  }
 
   // ---------- intenciones del jugador ----------
 
@@ -405,6 +455,7 @@ export class SherpaRig {
     st.lockedFor = Math.max(st.lockedFor, lockSeconds);
     st.tension = 0;
     st.overloadTimer = 0;
+    st.gripSeconds = 0;
     this.gripWanted[limb] = false;
     this.fallStartY = null;
   }
@@ -424,6 +475,7 @@ export class SherpaRig {
     const released: SherpaStepInfo["released"] = [];
     const gripped: SherpaStepInfo["gripped"] = [];
     const t = this.deps.tuning;
+    let fartGained = false;
     this.simTime += dt;
 
     // 1. Intenciones → viajes (deterministas). La extremidad arrastrada no
@@ -468,23 +520,40 @@ export class SherpaRig {
     const body = this.rig.particles[P.pelvisC];
     const nAnchored = this.anchorsCount();
     const result = this.lastResult;
-    let vel = vSub(body.pos, body.prev);
-    vel = vScale(vel, nAnchored > 0 ? DAMP_HANG : DAMP_FALL);
-    const vmax = (nAnchored > 0 ? MAX_SPEED_HANG : MAX_SPEED_FALL) * dt;
-    const vAbs = vLen(vel);
-    if (vAbs > vmax) vel = vScale(vel, vmax / vAbs);
-    let acc = v3(0, -G, 0);
-    if (nAnchored > 0) {
-      const target = this.computeHangTarget();
-      const velPerSec = vScale(vel, 1 / dt);
-      acc = vAdd(acc, vAdd(vScale(vSub(target, body.pos), SPRING_K), vScale(velPerSec, -SPRING_C)));
-      const aAbs = vLen(acc);
-      if (aAbs > MAX_ACC) acc = vScale(acc, MAX_ACC / aAbs);
+    let vAbs: number;
+    if (this.fartLaunchT > 0) {
+      // 2a. SUPER FLATULENCIA en vuelo: traslación vertical cinemática (pos y
+      //     prev casi juntos → sin velocidad fantasma al acabarse el gas; los
+      //     agarres ya se soltaron en launchFart y al final re-agarra solo).
+      this.fartLaunchT -= dt;
+      const rise = (t.fart?.risePerSecondM ?? 5) * dt;
+      body.pos = vAdd(body.pos, v3(0, rise, 0));
+      body.prev = v3(body.pos.x, body.pos.y - rise * 0.8, body.pos.z);
+      this.clampBody(body);
+      vAbs = rise / Math.max(1e-4, dt);
+      // el gas verde sale por atrás (el trail lo dispara el match vía fartFlying)
+      this.fartTrailAcc += dt;
+      if (this.fartLaunchT <= 0) this.autoGripAfterFart();
+    } else {
+      let vel = vSub(body.pos, body.prev);
+      vel = vScale(vel, nAnchored > 0 ? DAMP_HANG : DAMP_FALL);
+      const vmax = (nAnchored > 0 ? MAX_SPEED_HANG : MAX_SPEED_FALL) * dt;
+      const vAbsV = vLen(vel);
+      if (vAbsV > vmax) vel = vScale(vel, vmax / vAbsV);
+      let acc = v3(0, -G, 0);
+      if (nAnchored > 0) {
+        const target = this.computeHangTarget();
+        const velPerSec = vScale(vel, 1 / dt);
+        acc = vAdd(acc, vAdd(vScale(vSub(target, body.pos), SPRING_K), vScale(velPerSec, -SPRING_C)));
+        const aAbs = vLen(acc);
+        if (aAbs > MAX_ACC) acc = vScale(acc, MAX_ACC / aAbs);
+      }
+      body.prev = vClone(body.pos);
+      body.pos = vAdd(body.pos, vAdd(vel, vScale(acc, dt * dt)));
+      this.clampBody(body);
+      this.antiGomaServo(body, dt);
+      vAbs = vAbsV;
     }
-    body.prev = vClone(body.pos);
-    body.pos = vAdd(body.pos, vAdd(vel, vScale(acc, dt * dt)));
-    this.clampBody(body);
-    this.antiGomaServo(body, dt);
 
     // 3. Extremidades: arrastrada / anclada / viajando / pendejo.
     for (const limb of LIMBS) {
@@ -531,8 +600,14 @@ export class SherpaRig {
           st.anchored = true;
           st.holdId = anchor.hold.id;
           st.overloadTimer = 0;
+          st.gripSeconds = 0;
           this.limbPt[limb] = vClone(anchor.hold.pos);
           gripped.push({ limb, anchor });
+          // PRESA SORPRESA VERDE → carga de Super Flatulencia (petición).
+          if (anchor.hold.type === "surprise_fart") {
+            this.fartCharge = true;
+            fartGained = true;
+          }
         }
       }
       this.cancelTravel(limb);
@@ -541,6 +616,21 @@ export class SherpaRig {
 
     // 5. Carga falseada y suavizada → tensión, fatiga, sobrecarga.
     this.updateLoads(dt, loadMult, released);
+
+    // 5b. PLACAS DE HIELO (petición del jugador: "placas de hielo resbaladizas"):
+    //     agarrado más de slipAfterSeconds → la extremidad RESBALA (data-driven).
+    for (const limb of LIMBS) {
+      const st = this.states.get(limb)!;
+      if (!st.anchored || !st.holdId) continue;
+      const hold = this.deps.anchorSystem.holds.get(st.holdId);
+      if (!hold) continue;
+      st.gripSeconds += dt;
+      const slipAfter = this.deps.anchorSystem.slipAfterOf(hold.type);
+      if (slipAfter !== null && st.gripSeconds > slipAfter) {
+        this.forceRelease(limb, t.limb.reGripLock, "slip");
+        released.push({ limb, cause: "slip" });
+      }
+    }
 
     // 6. Suelta por intención del jugador.
     for (const limb of LIMBS) {
@@ -566,7 +656,7 @@ export class SherpaRig {
 
     result.maxSpeed = vAbs / dt;
     result.com = this.com();
-    return { result, released, gripped, slippedByTwoHands: this.slippedByTwoHands };
+    return { result, released, gripped, slippedByTwoHands: this.slippedByTwoHands, fartGained };
   }
 
   // ---------- cargas (falseadas, suaves, con techo) ----------
@@ -622,7 +712,10 @@ export class SherpaRig {
         st.overloadTimer = Math.max(0, st.overloadTimer - dt * 2);
       }
       if (T < 0.3) st.fatigue = Math.max(0, st.fatigue - limbT.recoverRate * dt);
-      st.fatigue = Math.min(1, st.fatigue + Math.max(0, T - 0.6) * limbT.fatigueRate * t.fatigueRateMultiplier * dt);
+      // SALIENTES (pared irregular): agarrarse a una presa adelantada (pequeño
+      // techo) fatiga MÁS — proporcional a la profundidad adelantada.
+      const proudMult = 1 + (anchor.hold.proud ?? 0) * SALIENTE_FATIGUE_PER_M;
+      st.fatigue = Math.min(1, st.fatigue + Math.max(0, T - 0.6) * limbT.fatigueRate * t.fatigueRateMultiplier * proudMult * dt);
       if (st.fatigue >= limbT.fatigueReleaseAt) {
         this.forceRelease(limb, limbT.reGripLock, "exhaustion");
         released.push({ limb, cause: "exhaustion" });

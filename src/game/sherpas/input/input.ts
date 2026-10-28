@@ -14,6 +14,8 @@ export interface InputIntent {
   gripToggles: Limb[];
   /** toque de espantar pájaro (flanco). */
   shoo: boolean;
+  /** SUPER FLATULENCIA: activar el superpoder (flanco). */
+  fart: boolean;
 }
 
 export interface SharedKeysHandlers {
@@ -37,6 +39,7 @@ export class InputManager {
   private held = new Set<string>();
   private pendingToggles = new Map<0 | 1, Limb[]>();
   private pendingShoo = new Map<0 | 1, boolean>();
+  private pendingFart = new Map<0 | 1, boolean>();
   private gamepadPrev = new Map<number, boolean[]>();
   private handlers: SharedKeysHandlers;
   private onKeyDown: (e: KeyboardEvent) => void;
@@ -68,6 +71,7 @@ export class InputManager {
           }
         }
         if (k.shoo === code && !e.repeat) { this.pendingShoo.set(b.playerId, true); e.preventDefault(); }
+        if (k.fart && code === k.fart && !e.repeat) { this.pendingFart.set(b.playerId, true); e.preventDefault(); }
       }
       this.held.add(code);
     };
@@ -108,8 +112,10 @@ export class InputManager {
       if (mag > 1) { ax /= mag; ay /= mag; }
       let toggles = this.pendingToggles.get(b.playerId) ?? [];
       let shoo = this.pendingShoo.get(b.playerId) ?? false;
+      let fart = this.pendingFart.get(b.playerId) ?? false;
       this.pendingToggles.set(b.playerId, []);
       this.pendingShoo.set(b.playerId, false);
+      this.pendingFart.set(b.playerId, false);
 
       // gamepad (opcional, solo P2 por defecto): el stick suma al apuntado.
       if (b.gamepad) {
@@ -128,6 +134,10 @@ export class InputManager {
           });
           const shooNow = !!pad.buttons[b.gamepad.shoo]?.pressed;
           if (shooNow && !prev[b.gamepad.shoo]) shoo = true;
+          if (b.gamepad.fart !== undefined) {
+            const fartNow = !!pad.buttons[b.gamepad.fart]?.pressed;
+            if (fartNow && !prev[b.gamepad.fart]) fart = true;
+          }
           this.gamepadPrev.set(b.gamepad.index, pad.buttons.map((btn) => btn.pressed));
         }
       }
@@ -137,6 +147,7 @@ export class InputManager {
         aimDelta: { x: ax * speed * dt, y: ay * speed * dt },
         gripToggles: toggles,
         shoo,
+        fart,
       });
     }
     return intents;

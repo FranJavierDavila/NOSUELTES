@@ -1,79 +1,90 @@
 {
-  "slip": [
-    "I pay you to climb, not to slip!",
-    "I skied better at age six!",
-    "If I slip, I'm docking it from your tip!",
-    "This ice looks suspiciously low-end!",
-    "My masseuse climbs stairs faster!"
-  ],
-  "high_tension": [
-    "Why is that rope trembling? Is trembling normal?",
-    "Don't YOU let go, let the other one let go!",
-    "I weigh exactly right! The gym sculpted me.",
-    "Is this rope brand-name or did you give me the old one?",
-    "Such tension! You can tell I'm a demanding client."
-  ],
-  "bird_hit": [
-    "That bird looked at me wrong first!",
-    "Up here, wildlife works for ME! I like it.",
-    "If one feather touches me, I'm suing!",
-    "A condor wouldn't dare! And I'm such easy prey.",
-    "What useful little animals! They picked me."
-  ],
-  "camp_arrival": [
-    "Finally! Is there no elevator here?",
-    "Where's the camp spa? It was promised.",
-    "What a view! Almost as good as my penthouse.",
-    "Write this down: I arrived first. Well, with help.",
-    "Are we done? I'd barely started suffering."
-  ],
-  "idle_too_long": [
-    "Are we moving in up here, or what?",
-    "My grandma climbs the attic ladder faster.",
-    "Is that the plan, or are you downloading an app?",
-    "Time is money! Mostly mine.",
-    "I pay for climbing minutes, not museum minutes."
-  ],
-  "fall": [
-    "MY BODY IS NOT PREPARED FOR THIS SPEED!",
-    "I'm telling this story at the company dinner!",
-    "Did anyone note that the rope is to blame?",
-    "Rich people bounce too!",
-    "My lawyers will be speaking with gravity!"
-  ],
-  "unbalanced_rope": [
-    "Why am I hanging sideways? I'm a trophy, not a crooked painting!",
-    "Level my elegance, it cost money!",
-    "One of you weighs more than you look. Not saying who.",
-    "My neck feels this, and my neck trades on the market!",
-    "Can the lower team try a tiny bit harder?"
-  ],
-  "sherpa_help": [
-    "Thanks for the save. It's on the tip… if there is one.",
-    "Good work! I'd hire you again. One of you, at least.",
-    "See? Together we're unstoppable. Mostly me.",
-    "This was teamwork: I hung, you pulled.",
-    "Add one more favor to the list I'll never say out loud."
-  ],
-  "eating": [
-    "Altitude opens the appetite. It's science.",
-    "A snack, please. I keep my figure by hanging.",
-    "Eating while hanging burns calories. Net ones.",
-    "This is an energy bar. Fiscally speaking.",
-    "Don't stare. The leader's food is sacred."
-  ],
-  "trash": [
-    "The mountain picks up the trash. It's vertical recycling.",
-    "I'm done! The wrapper flies free.",
-    "Where do I throw it? There's plenty of room below.",
-    "Recycling while hanging is next-level.",
-    "If it hits someone, it means we were doing great."
-  ],
-  "pee": [
-    "Don't look. It's circular hydration.",
-    "The mountain appreciates technical watering.",
-    "What was that? Nothing. A jet of victory.",
-    "Careful with the handholds down there.",
-    "Hotels have pipes for this. Show-offs."
-  ]
+ "slip": [
+  "I pay you to climb, not to slip!",
+  "I skied better at age six!",
+  "If I slip, I'm docking it from your tip!",
+  "This ice looks suspiciously low-end!",
+  "My masseuse climbs stairs faster!"
+ ],
+ "high_tension": [
+  "Why is that rope trembling? Is trembling normal?",
+  "Don't YOU let go, let the other one let go!",
+  "I weigh exactly right! The gym sculpted me.",
+  "Is this rope brand-name or did you give me the old one?",
+  "Such tension! You can tell I'm a demanding client."
+ ],
+ "bird_hit": [
+  "That bird looked at me wrong first!",
+  "Up here, wildlife works for ME! I like it.",
+  "If one feather touches me, I'm suing!",
+  "A condor wouldn't dare! And I'm such easy prey.",
+  "What useful little animals! They picked me."
+ ],
+ "camp_arrival": [
+  "Finally! Is there no elevator here?",
+  "Where's the camp spa? It was promised.",
+  "What a view! Almost as good as my penthouse.",
+  "Write this down: I arrived first. Well, with help.",
+  "Are we done? I'd barely started suffering."
+ ],
+ "idle_too_long": [
+  "Are we moving in up here, or what?",
+  "My grandma climbs the attic ladder faster.",
+  "Is that the plan, or are you downloading an app?",
+  "Time is money! Mostly mine.",
+  "I pay for climbing minutes, not museum minutes."
+ ],
+ "fall": [
+  "MY BODY IS NOT PREPARED FOR THIS SPEED!",
+  "I'm telling this story at the company dinner!",
+  "Did anyone note that the rope is to blame?",
+  "Rich people bounce too!",
+  "My lawyers will be speaking with gravity!"
+ ],
+ "unbalanced_rope": [
+  "Why am I hanging sideways? I'm a trophy, not a crooked painting!",
+  "Level my elegance, it cost money!",
+  "One of you weighs more than you look. Not saying who.",
+  "My neck feels this, and my neck trades on the market!",
+  "Can the lower team try a tiny bit harder?"
+ ],
+ "sherpa_help": [
+  "Thanks for the save. It's on the tip… if there is one.",
+  "Good work! I'd hire you again. One of you, at least.",
+  "See? Together we're unstoppable. Mostly me.",
+  "This was teamwork: I hung, you pulled.",
+  "Add one more favor to the list I'll never say out loud."
+ ],
+ "eating": [
+  "Altitude opens the appetite. It's science.",
+  "A snack, please. I keep my figure by hanging.",
+  "Eating while hanging burns calories. Net ones.",
+  "This is an energy bar. Fiscally speaking.",
+  "Don't stare. The leader's food is sacred."
+ ],
+ "trash": [
+  "The mountain picks up the trash. It's vertical recycling.",
+  "I'm done! The wrapper flies free.",
+  "Where do I throw it? There's plenty of room below.",
+  "Recycling while hanging is next-level.",
+  "If it hits someone, it means we were doing great."
+ ],
+ "pee": [
+  "Don't look. It's circular hydration.",
+  "The mountain appreciates technical watering.",
+  "What was that? Nothing. A jet of victory.",
+  "Careful with the handholds down there.",
+  "Hotels have pipes for this. Show-offs."
+ ],
+ "boxes_fell": [
+  "MY CHINA! YOU TROGLODYTES!",
+  "THOSE BOXES WERE WORTH MORE THAN YOU!",
+  "IDIOTS! USELESS! MOUNTAIN CLOWNS!",
+  "MY VINTAGE WINE! BARBARIANS!",
+  "CONSEQUENCES! NO TIP WHEN WE GET DOWN!"
+ ],
+ "condor_angry": [
+  "GET THAT BIRD OFF! WE ARE FRAGILE!",
+  "THIS IS A PLANK, NOT A NEST!"
+ ]
 }

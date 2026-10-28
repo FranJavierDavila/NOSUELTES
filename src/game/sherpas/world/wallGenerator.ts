@@ -8,10 +8,22 @@ import type { HoldInstance } from "../physics/anchors";
 import { v3, vLen, vSub, type V3 } from "../../physics/pbd/math";
 
 export interface CampZone { campId: string; phase: number; yBase: number; yTop: number; centerX: number }
+/** SALIENTE de pared irregular (petición del jugador: "pared no perpendicular
+ *  y plana... zonas de salientes para complicar la escalada"): franja de pared
+ *  que ADELANTA sus presas (z hacia la cámara) y fatiga más al agarrarse. */
+export interface SalienteZone {
+  band: number;
+  xMin: number; xMax: number;
+  yMid: number; heightM: number;
+  depthM: number;
+  /** z del frente del saliente (donde quedan las presas). */
+  z: number;
+}
 export interface WallLayout {
   totalHeightM: number;
   campZones: CampZone[];
   phaseSpans: { phase: number; yMin: number; yMax: number; narrativeBase: number }[];
+  salientes: SalienteZone[];
 }
 
 /** Patrón de ruta de un tramo de bandas (petición del jugador: "las rutas deben
@@ -75,11 +87,14 @@ export class WallGenerator {
     let y = 0;
     const campZones: CampZone[] = [];
     const phaseSpans: WallLayout["phaseSpans"] = [];
-    let narrativeBase = this.deps.phases[0].narrativeHeight;
     for (const phase of this.deps.phases) {
       const yMin = y;
       const yMax = y + phase.wallHeightM;
-      phaseSpans.push({ phase: phase.id, yMin, yMax, narrativeBase });
+      // FIX minimapa/altitud (Task 31): la base NARRATIVA de cada tramo es SU
+      // narrativeHeight (5300, 6065, 6400…): antes todos los tramos heredaban
+      // la de la fase 1 y la altitud se "rebobinaba" al cambiar de tramo —
+      // y los metros del minimapa salían 0/negativos.
+      phaseSpans.push({ phase: phase.id, yMin, yMax, narrativeBase: phase.narrativeHeight });
       // zona de campamento en la cima de cada fase (doc 8.2: hito de progreso).
       if (phase.camp !== "cima") {
         campZones.push({ campId: phase.camp, phase: phase.id, yBase: yMax - this.deps.wallGen.camp.zoneHeightM, yTop: yMax, centerX: 0 });
@@ -88,7 +103,36 @@ export class WallGenerator {
       }
       y = yMax;
     }
-    return { totalHeightM: y, campZones, phaseSpans };
+    // SALIENTES (pared irregular): zonas elegidas por semilla ANTES de generar
+    // holds (son visibles desde el menú y las bandas perezosas las respetan).
+    const salDeps = this.deps.wallGen.salientes;
+    const salientes: SalienteZone[] = [];
+    if (salDeps) {
+      const bh = this.deps.wallGen.bandHeightM;
+      const bandCount = Math.ceil(y / bh);
+      for (let i = 0; i < bandCount; i++) {
+        if (i < salDeps.minBand) continue;
+        const yMin = i * bh;
+        const yMax = yMin + bh;
+        // sin salientes en bandas de campamento (zonas planas seguras, doc 8.3).
+        if (campZones.some((c) => yMin < c.yTop && yMax > c.yBase)) continue;
+        const rng = makeRng(bandRngSeed(this.seed, 0x5a110000 + i));
+        if (rng.next() >= salDeps.chancePerBand) continue;
+        const w = rng.range(salDeps.minWidthM, Math.max(salDeps.minWidthM, salDeps.maxWidthM));
+        const margin = this.deps.wallGen.sample.marginXM;
+        const lo = -this.widthM / 2 + margin + w / 2;
+        const hi = this.widthM / 2 - margin - w / 2;
+        if (hi <= lo) continue;
+        const xc = rng.range(lo, hi);
+        const yMid = rng.range(yMin + bh * 0.3, yMax - bh * 0.3);
+        salientes.push({
+          band: i, xMin: xc - w / 2, xMax: xc + w / 2,
+          yMid, heightM: salDeps.heightM, depthM: salDeps.depthM,
+          z: this.zHold - salDeps.depthM,
+        });
+      }
+    }
+    return { totalHeightM: y, campZones, phaseSpans, salientes };
   }
 
   phaseOfHeight(y: number): PhaseData {
@@ -320,6 +364,20 @@ export class WallGenerator {
       placed.push(v3(x, y, this.zHold));
     }
 
+    // 3b. SALIENTE de la banda (pared irregular): las presas de su franja
+    //     quedan ADELANTADAS (z hacia la cámara) — un pequeño techo que fatiga
+    //     más (el multiplicador lo aplica el rig vía hold.proud).
+    const sal = this.layout.salientes.find((s) => s.band === index);
+    if (sal) {
+      for (const h of holds) {
+        if (h.camp) continue;
+        if (h.pos.x >= sal.xMin && h.pos.x <= sal.xMax && Math.abs(h.pos.y - sal.yMid) <= sal.heightM * 0.5 + 0.3) {
+          h.pos = v3(h.pos.x, h.pos.y, sal.z);
+          h.proud = sal.depthM;
+        }
+      }
+    }
+
     // 4. CORONA DE CONTINUIDAD (antes de validar: el validador tiene que VER
     //    estas presas y parchear si alguna columna no encadena): la banda
     //    SIEMPRE termina con presas firmes en su 1,2 m superior, en las columnas
@@ -345,6 +403,16 @@ export class WallGenerator {
 
     // 6. ruta segura con ratio de roca firme (doc 8.1.4) por dificultad.
     this.enforceSafePath(holds, prevTail, yMin, yMax);
+
+    // 7. PRESA SORPRESA (SUPER FLATULENCIA, petición del jugador): con
+    //    probabilidad por banda, UNA presa normal se vuelve VERDE superpoder.
+    //    Al final del pipeline para que la ruta segura no la reconvierta.
+    const sur = this.deps.wallGen.surprise;
+    if (sur && index >= sur.minBand && !isCampBand && rng.next() < sur.chancePerBand) {
+      const cands = holds.filter((h) => !h.camp && !h.id.startsWith("start") && !h.proud
+        && h.pos.y > yMin + 2 && h.pos.y < yMax - 2);
+      if (cands.length) cands[Math.floor(rng.next() * cands.length)].type = "surprise_fart";
+    }
 
     return holds;
   }

@@ -38,6 +38,7 @@ describe("actividad del ricachón con director real (petición del jugador)", ()
       bus, 905599,
     );
     const birds = new BirdSystem(data.machines, {
+      plankPose: () => ({ center: v3(0, 1.0, -0.5), angle: 0, halfLen: 0.85, z: -0.5 }),
       waist: () => v3(0, 2.2, -0.5),
       anchoredLimbs: () => [],
       limbWorldPos: () => v3(0, 2.2, -0.5),
@@ -52,6 +53,7 @@ describe("actividad del ricachón con director real (petición del jugador)", ()
         ropeOverstretched: () => false, richHarness: () => v3(0, 1.2, -0.5),
         sherpaBelow: () => null, forceRelease: () => {}, addRichMass: () => {},
         spawnTrash: () => {}, spawnUrine: () => {}, stealFood: () => {}, insultContext: () => "auto",
+        condorOptions: () => ({ massKg: 16, perchSecondsMin: 5, perchSecondsMax: 9, offsetFrac: 0.85 }), spawnBoxes: () => {},
       },
       birds, brain, insults, bus, { trash: [], urine: null }, 905599,
     );

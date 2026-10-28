@@ -24,7 +24,7 @@ beforeAll(async () => {
 });
 
 const mkCtx = (over: Partial<DirectorContext> = {}): { ctx: DirectorContext; trash: V3[]; urine: number[]; released: string[]; mass: number } => {
-  const state = { trash: [] as V3[], urine: [] as number[], released: [] as string[], mass: 85 };
+  const state = { trash: [] as V3[], urine: [] as number[], released: [] as string[], mass: 85, boxes: 0 };
   const ctx: DirectorContext = {
     maxLimbTension: () => 0.2,
     secondsSince: () => 999,
@@ -38,6 +38,8 @@ const mkCtx = (over: Partial<DirectorContext> = {}): { ctx: DirectorContext; tra
     spawnUrine: (s) => state.urine.push(s),
     stealFood: () => { state.mass = 85; },
     insultContext: () => "idle_too_long",
+    condorOptions: () => ({ massKg: 16, perchSecondsMin: 5, perchSecondsMax: 9, offsetFrac: 0.85 }),
+    spawnBoxes: () => { state.boxes = (state.boxes ?? 0) + 1; },
     ...over,
   };
   return { ctx, ...state };
@@ -122,6 +124,7 @@ describe("EventDirector (doc 7.5)", () => {
 });
 
 const birdWorld = () => ({
+  plankPose: () => ({ center: v3(0, 1, -0.5), angle: 0, halfLen: 0.85, z: -0.5 }),
   waist: () => v3(0, 1, -0.4),
   anchoredLimbs: (): Limb[] => ["hand_l", "hand_r"],
   limbWorldPos: () => v3(0, 1.6, -0.35),

@@ -153,6 +153,9 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
           return { x: projected.x * kx, y: projected.y * ky };
         } catch { return null; }
       },
+      /** racha de viento / tormenta / cajas / cóndor / poder (sondas E2E Task 31). */
+      force: (what: string, p?: number): boolean =>
+        state.match ? (state.match as unknown as { debugForce(w: string, p?: number): boolean }).debugForce(what, p) : false,
       /** punto de pared bajo el puntero (la misma función que usa el juego). */
       wall: (cx: number, cy: number): { x: number; y: number; z: number } | null => {
         const p = state.match ? (state.match as unknown as { wallPointFromPointer(x: number, y: number): V3 | null }).wallPointFromPointer(cx, cy) : null;

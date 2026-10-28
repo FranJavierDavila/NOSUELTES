@@ -42,6 +42,7 @@ interface RigVisual { bones: Bone[]; head: Mesh; label: Mesh; roots: Mesh[] }
 const TYPE_COLORS: Record<string, string> = {
   rock_firm: "#8d99ae", rock_loose: "#b08968", ice: "#9ad1e8",
   ice_thin: "#d0f4f7", snow: "#f3f7f4", ice_urine: "#d9e8a3",
+  ice_plate: "#eaf9ff", surprise_fart: "#3fd46a",
 };
 
 const SHERPA_COLORS = [{ body: "#d97b2f", strap: "#e8542f" }, { body: "#2f9bd9", strap: "#1f6fb0" }];
@@ -80,7 +81,7 @@ export class SherpaScene {
   private static readonly STREAK_POOL = 44; // rayas de viento simultáneas
   private trashMesh: Mesh | null = null;
   private urineMeshes: Mesh[] = [];
-  private birdMeshes = new Map<number, { body: Mesh; shadow: Mesh }>();
+  private birdMeshes = new Map<number, { body: Mesh; shadow: Mesh; wingL?: Mesh; wingR?: Mesh }>();
   private aimMarkers: (Mesh | null)[] = [null, null];
   private dragRing: Mesh | null = null;
   private magnetRing: Mesh | null = null;
@@ -97,6 +98,13 @@ export class SherpaScene {
   private streakMat: StandardMaterial | null = null;
   private disposed = false;
   private worldBuilt = false;
+  // MODO TORMENTA: cielo oscuro + RELÁMPAGOS (flash del clearColor+hemi).
+  private hemiLight: HemisphericLight | null = null;
+  private stormMode = false;
+  private flashT = 0;
+  // CAJAS DEL RICACHÓN sobre la tabla + cajas CAYENDO (balístico simple).
+  private boxMeshes: Mesh[] = [];
+  private fallingBoxes: { mesh: Mesh; vel: V3; rot: V3; rotV: V3 }[] = [];
 
   private constructor(engine: AbstractEngine, backend: string, camData: CameraData, hudData: HudData) {
     this.engine = engine;
@@ -110,6 +118,7 @@ export class SherpaScene {
     this.camera.minZ = 0.1;
     const hemi = new HemisphericLight("hemi", new Vector3(0.2, 1, 0.4), this.scene);
     hemi.intensity = 0.85;
+    this.hemiLight = hemi;
     const dir = new DirectionalLight("dir", new Vector3(-0.3, -1, 0.55), this.scene);
     dir.intensity = 0.55;
     this.fxTexture = this.makeDotTexture();
@@ -243,6 +252,22 @@ export class SherpaScene {
       ledge.material = mat(this.scene, `ledgeM_${zone.campId}`, "#e8edf2");
       ledge.freezeWorldMatrix();
     }
+
+    // SALIENTES (pared irregular, petición del jugador: "zonas de salientes
+    // para complicar la escalada"): cajas de roca que ADELANTAN la pared —
+    // las presas de su franja viven en su frente (z más cercano a cámara).
+    const wallFaceZ = -0.18; // cara frontal de la caja de pared (zFront)
+    for (const s of layout.salientes) {
+      const w = s.xMax - s.xMin;
+      const depth = wallFaceZ - s.z + 0.06; // del muro al frente del saliente
+      if (w <= 0.05 || depth <= 0.05) continue;
+      const box = MeshBuilder.CreateBox(`saliente_${s.band}`, { width: w, height: s.heightM, depth }, this.scene);
+      box.position.set((s.xMin + s.xMax) / 2, s.yMid, wallFaceZ - depth / 2);
+      const rockL = mat(this.scene, `salienteM_${s.band}`, "#46525f");
+      rockL.specularColor = new Color3(0.03, 0.03, 0.03);
+      box.material = rockL;
+      box.freezeWorldMatrix();
+    }
   }
 
   setSnowDensity(perSecond: number): void {
@@ -264,6 +289,13 @@ export class SherpaScene {
       const inst = master.createInstance(`hold_${h.id}`);
       inst.position.set(h.pos.x, h.pos.y, h.pos.z);
       // (fix Task 21: la línea setDirection(undefined) crasheaba — eliminada)
+      // PRESA SORPRESA (Super Flatulencia): MÁS GRANDE y brillante — se ve
+      // desde lejos que "esa presa es distinta" (petición del jugador).
+      if (h.type === "surprise_fart") {
+        inst.scaling.setAll(1.45);
+        const im = inst.material as StandardMaterial | null;
+        if (im) im.emissiveColor = Color3.FromHexString("#1d7a35");
+      }
       this.holdMeshes.set(h.id, inst as unknown as Mesh);
     }
   }
@@ -588,6 +620,31 @@ export class SherpaScene {
   fxBreak(pos: V3): void { this.makeBurst("brk", "#b0bec5", 30, pos, 0.3, 0.08, 0.9); this.shake(0.05); }
   fxConfetti(pos: V3): void { this.makeBurst("conf", "#e8c547", 70, pos, 0.9, 0.07, 1.6); }
   fxBump(pos: V3): void { this.makeBurst("bump", "#e0d6c0", 8, pos, 0.1, 0.05, 0.4); }
+  /** SUPER FLATULENCIA: nube de GAS VERDE (imposible de no ver, petición). */
+  fxFart(pos: V3): void {
+    const ps = new ParticleSystem("fart", 26, this.scene);
+    ps.particleTexture = this.fxTexture;
+    ps.emitter = new Vector3(pos.x, pos.y - 0.12, pos.z);
+    ps.minEmitBox = new Vector3(-0.06, -0.05, -0.06);
+    ps.maxEmitBox = new Vector3(0.06, 0.05, 0.06);
+    const c3 = Color3.FromHexString("#7dff4a");
+    ps.color1 = new Color4(c3.r, c3.g, c3.b, 0.85);
+    ps.color2 = new Color4(0.35, 0.85, 0.25, 0.8);
+    ps.colorDead = new Color4(c3.r, c3.g, c3.b, 0);
+    ps.minSize = 0.09; ps.maxSize = 0.28; // crecen: nube que se expande
+    ps.minLifeTime = 0.5; ps.maxLifeTime = 1.0;
+    ps.emitRate = 0;
+    ps.blendMode = ParticleSystem.BLENDMODE_STANDARD;
+    // el chorro sale hacia ABAJO-atrás (culo del escalador) y se expande
+    ps.direction1 = new Vector3(-0.5, -1.6, -0.3);
+    ps.direction2 = new Vector3(0.5, -2.4, 0.3);
+    ps.minEmitPower = 1.2; ps.maxEmitPower = 2.6;
+    ps.gravity = new Vector3(0, 0.6, 0); // el gas SUBE después del chorro
+    ps.manualEmitCount = 22;
+    ps.targetStopDuration = 0.1;
+    ps.disposeOnStop = true;
+    ps.start();
+  }
 
   syncTrash(pos: V3 | null, spin: number): void {
     if (!pos) {
@@ -625,32 +682,118 @@ export class SherpaScene {
     const seen = new Set<number>();
     for (const b of birds) {
       seen.add(b.id);
+      const isCondor = b.kind === "condor";
       let entry = this.birdMeshes.get(b.id);
       if (!entry) {
-        const body = MeshBuilder.CreateSphere(`bird${b.id}`, { diameter: 0.16, segments: 8 }, this.scene);
-        body.material = mat(this.scene, `birdM${b.id}`, b.kind === "pecker" ? "#2f2f38" : "#4a3b2a");
-        const wingL = MeshBuilder.CreateBox(`birdWl${b.id}`, { width: 0.22, height: 0.02, depth: 0.08 }, this.scene);
+        // CÓNDOR: GIGANTE y oscuro (petición: "cóndores que posan y pesan") —
+        // tres veces el pájaro común, con alas anchas que se ven planear.
+        const body = MeshBuilder.CreateSphere(`bird${b.id}`, { diameter: isCondor ? 0.5 : 0.16, segments: 8 }, this.scene);
+        body.material = mat(this.scene, `birdM${b.id}`, isCondor ? "#181820" : b.kind === "pecker" ? "#2f2f38" : "#4a3b2a");
+        const wingL = MeshBuilder.CreateBox(`birdWl${b.id}`, { width: isCondor ? 0.85 : 0.22, height: 0.02, depth: isCondor ? 0.24 : 0.08 }, this.scene);
         wingL.material = body.material;
         wingL.parent = body;
-        const shadow = MeshBuilder.CreateDisc(`birdSh${b.id}`, { radius: 0.35, tessellation: 24 }, this.scene);
+        const wingR = MeshBuilder.CreateBox(`birdWr${b.id}`, { width: isCondor ? 0.85 : 0.22, height: 0.02, depth: isCondor ? 0.24 : 0.08 }, this.scene);
+        wingR.material = body.material;
+        wingR.parent = body;
+        const shadow = MeshBuilder.CreateDisc(`birdSh${b.id}`, { radius: isCondor ? 0.85 : 0.35, tessellation: 24 }, this.scene);
         shadow.rotation.x = Math.PI / 2;
         shadow.material = mat(this.scene, `birdShM${b.id}`, "#000000", { alpha: 0.3 });
-        entry = { body, shadow };
+        entry = { body, shadow, wingL, wingR };
         this.birdMeshes.set(b.id, entry);
       }
       entry.body.position.set(b.pos.x, b.pos.y, b.pos.z);
       const attacking = b.phase === "dive" || b.phase === "impact";
       entry.body.scaling.setAll(attacking ? 1.25 : 1);
+      // aleteo: amplio en vuelo, apenas un temblor posado (el cóndor PESA, no aletea)
+      const flapAmp = b.phase === "perch" || b.phase === "approach" ? (isCondor ? 0.12 : 0.3) : isCondor ? 0.55 : 0.5;
+      const flap = Math.sin(performance.now() / (isCondor ? 160 : 90)) * flapAmp;
+      if (entry.wingL && entry.wingR) {
+        entry.wingL.rotation.z = flap;
+        entry.wingR.rotation.z = -flap;
+        entry.wingL.position.x = isCondor ? -0.62 : -0.2;
+        entry.wingR.position.x = isCondor ? 0.62 : 0.2;
+      }
       entry.shadow.position.set(b.pos.x, Math.max(0.02, b.pos.y - 1.2), -0.16);
-      entry.shadow.isVisible = b.phase === "telegraph" || b.phase === "circle";
+      entry.shadow.isVisible = b.phase === "telegraph" || b.phase === "circle" || b.phase === "approach";
     }
     for (const [id, entry] of this.birdMeshes) {
       if (!seen.has(id)) {
         entry.body.dispose();
         entry.shadow.dispose();
+        entry.wingL?.dispose();
+        entry.wingR?.dispose();
         this.birdMeshes.delete(id);
       }
     }
+  }
+
+  // ---------- tormenta / relámpagos / cajas ----------
+
+  /** MODO TORMENTA: cielo más oscuro (azul noche) mientras dura el ciclo. */
+  setStorm(storm: boolean): void {
+    if (this.stormMode === storm) return;
+    this.stormMode = storm;
+    if (!storm && this.flashT <= 0) {
+      this.scene.clearColor = new Color4(0.055, 0.07, 0.09, 1);
+      if (this.hemiLight) this.hemiLight.intensity = 0.85;
+    } else if (storm) {
+      this.scene.clearColor = new Color4(0.028, 0.032, 0.048, 1);
+      if (this.hemiLight) this.hemiLight.intensity = 0.62;
+    }
+  }
+
+  /** RELÁMPAGO: flash blanco breve (clear color + luz) — tormenta legible. */
+  lightningFlash(): void { this.flashT = 0.14; }
+
+  /** CAJAS del ricachón apiladas sobre la tabla (siguen center/angle).
+   *  count 0/null → sin cajas (cayeron o las recogió). */
+  syncBoxes(count: number, offsetFrac: number, center: V3, angle: number): void {
+    while (this.boxMeshes.length < count) {
+      const i = this.boxMeshes.length;
+      const b = MeshBuilder.CreateBox(`cargoBox${i}`, { width: 0.3, height: 0.2, depth: 0.26 }, this.scene);
+      b.material = mat(this.scene, `cargoBoxM${i}`, i % 2 === 0 ? "#8a5a33" : "#a06a3d");
+      this.boxMeshes.push(b);
+    }
+    const cos = Math.cos(angle), sin = Math.sin(angle);
+    const halfM = 0.85; // media tabla visual (spawnPlank 1.7 m)
+    for (let i = 0; i < this.boxMeshes.length; i++) {
+      const m = this.boxMeshes[i];
+      if (i >= count) { m.isVisible = false; continue; }
+      m.isVisible = true;
+      const lx = offsetFrac * halfM;
+      const ly = 0.11 + i * 0.205;
+      m.position.set(center.x + cos * lx - sin * 0, center.y + sin * lx + ly, center.z + 0.05);
+      m.rotation.set(0, 0, angle);
+    }
+  }
+
+  /** CAÍDA de cajas (balístico cosmético): se las lleva el vacío girando. */
+  dropBoxes(from: { x: number; y: number; z: number }[], dirX: number): void {
+    for (const p of from) {
+      const mesh = MeshBuilder.CreateBox(`fallBox${this.fallingBoxes.length}_${Math.round(p.y * 10)}`, { width: 0.3, height: 0.2, depth: 0.26 }, this.scene);
+      mesh.material = mat(this.scene, `fallBoxM${this.fallingBoxes.length}`, "#8a5a33");
+      mesh.position.set(p.x, p.y, p.z);
+      this.fallingBoxes.push({
+        mesh,
+        vel: v3(dirX * (0.6 + Math.random() * 0.8), -0.4, -0.35 - Math.random() * 0.3),
+        rot: v3(0, 0, 0),
+        rotV: v3(1.4 + Math.random(), 0.9 + Math.random(), 2.1 + Math.random()),
+      });
+    }
+  }
+
+  private stepFallingBoxes(dt: number): void {
+    if (!this.fallingBoxes.length) return;
+    const keep: typeof this.fallingBoxes = [];
+    for (const f of this.fallingBoxes) {
+      f.vel = vAdd(f.vel, v3(0, -9.81 * dt, 0));
+      f.mesh.position.set(f.mesh.position.x + f.vel.x * dt, f.mesh.position.y + f.vel.y * dt, f.mesh.position.z + f.vel.z * dt);
+      f.rot = vAdd(f.rot, vScale(f.rotV, dt));
+      f.mesh.rotation.set(f.rot.x, f.rot.y, f.rot.z);
+      if (f.mesh.position.y > -6) keep.push(f);
+      else f.mesh.dispose();
+    }
+    this.fallingBoxes = keep;
   }
 
   /** Cursor de apuntado del jugador (anillo de su color sobre la pared).
@@ -728,6 +871,18 @@ export class SherpaScene {
     const eng = this.engine as unknown as { _depthCullingState?: { depthMask: boolean }; _gl?: { depthMask(v: boolean): void } };
     if (eng._depthCullingState) eng._depthCullingState.depthMask = true;
     else if (eng._gl) eng._gl.depthMask(true);
+    // RELÁMPAGO de tormenta: blanco breve (fade por frame).
+    if (this.flashT > 0) {
+      this.flashT -= Math.max(0.001, this.engine.getDeltaTime() / 1000);
+      const k = Math.max(0, Math.min(1, this.flashT / 0.14));
+      this.scene.clearColor = new Color4(0.028 + 0.72 * k, 0.032 + 0.72 * k, 0.048 + 0.72 * k, 1);
+      if (this.hemiLight) this.hemiLight.intensity = 0.62 + 2.2 * k;
+      if (this.flashT <= 0 && this.stormMode) {
+        this.scene.clearColor = new Color4(0.028, 0.032, 0.048, 1);
+        if (this.hemiLight) this.hemiLight.intensity = 0.62;
+      }
+    }
+    this.stepFallingBoxes(Math.max(0.001, this.engine.getDeltaTime() / 1000));
     this.scene.render();
   }
 

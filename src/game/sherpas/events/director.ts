@@ -4,7 +4,7 @@
 import type { EventBus, Limb, ReleaseCause } from "../core/bus";
 import type { EventsData, EventDefData, EffectData, ConditionData, PhaseData, DifficultyPresetData, RichManTuning } from "../core/data";
 import { makeRng, type Rng } from "../core/rng";
-import type { BirdSystem } from "./birds";
+import type { BirdSystem, CondorOptions } from "./birds";
 import type { RichManBrain } from "./richManBrain";
 import type { InsultSystem } from "./insults";
 import type { TrashProjectile, UrineEffect } from "./effects";
@@ -26,6 +26,10 @@ export interface DirectorContext {
   spawnUrine(seconds: number, from: V3): void;
   stealFood(): void;
   insultContext(): string;
+  /** CÓNDOR: opciones de posado (masa/tiempos/offset) desde tuning.condor. */
+  condorOptions(): CondorOptions;
+  /** CAJAS DEL RICACHÓN: apila n cajas sobre la tabla (pesan y pueden caer). */
+  spawnBoxes(count: number): void;
 }
 
 const HARD_EVENT_SAFETY_WINDOW_S = 5;
@@ -176,6 +180,20 @@ export class EventDirector {
       }
       case "bird_thief": {
         this.birds.spawn("thief");
+        this.finish(def);
+        break;
+      }
+      case "condor": {
+        // CÓNDOR (petición del jugador): posa y PESA — no ataca a nadie.
+        this.birds.spawn("condor", this.ctx.condorOptions());
+        this.finish(def);
+        break;
+      }
+      case "cajas": {
+        // CAJAS DEL RICACHÓN (petición del jugador): saca 2-3 cajas del equipo
+        // y las apila sobre la tabla. Si luego escora… CAEN y ESTALLA.
+        const n = 2 + (this.rng.next() < 0.4 ? 1 : 0);
+        this.ctx.spawnBoxes(n);
         this.finish(def);
         break;
       }

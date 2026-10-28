@@ -1,8 +1,61 @@
 {
-  "rock_firm":  { "label": "roca_firme",  "gripQuality": 1.0, "durability": null, "color": "#8d99ae" },
-  "rock_loose": { "label": "roca_suelta", "gripQuality": 0.9, "durability": null, "breakOnImpulse": 420, "color": "#b08968" },
-  "ice":        { "label": "hielo",       "gripQuality": 0.8, "durability": 1.0, "wearPerNewtonSecond": 0.0012, "crackAt": 0.4, "color": "#9ad1e8" },
-  "ice_thin":   { "label": "hielo_fino",  "gripQuality": 0.6, "durability": 0.5, "wearPerNewtonSecond": 0.004,  "crackAt": 0.5, "color": "#d0f4f7" },
-  "snow":       { "label": "nieve",       "gripQuality": 0.5, "durability": null, "slipPerSecond": 0.08, "color": "#f3f7f4" },
-  "ice_urine":  { "label": "hielo_de_pis","gripQuality": 0.7, "durability": 0.7, "wearPerNewtonSecond": 0.002, "crackAt": 0.45, "color": "#d9e8a3" }
+ "rock_firm": {
+  "label": "roca_firme",
+  "gripQuality": 1.0,
+  "durability": null,
+  "color": "#8d99ae"
+ },
+ "rock_loose": {
+  "label": "roca_suelta",
+  "gripQuality": 0.9,
+  "durability": null,
+  "breakOnImpulse": 420,
+  "color": "#b08968"
+ },
+ "ice": {
+  "label": "hielo",
+  "gripQuality": 0.8,
+  "durability": 1.0,
+  "wearPerNewtonSecond": 0.0012,
+  "crackAt": 0.4,
+  "color": "#9ad1e8"
+ },
+ "ice_thin": {
+  "label": "hielo_fino",
+  "gripQuality": 0.6,
+  "durability": 0.5,
+  "wearPerNewtonSecond": 0.004,
+  "crackAt": 0.5,
+  "color": "#d0f4f7"
+ },
+ "snow": {
+  "label": "nieve",
+  "gripQuality": 0.5,
+  "durability": null,
+  "slipPerSecond": 0.08,
+  "color": "#f3f7f4"
+ },
+ "ice_urine": {
+  "label": "hielo_de_pis",
+  "gripQuality": 0.7,
+  "durability": 0.7,
+  "wearPerNewtonSecond": 0.002,
+  "crackAt": 0.45,
+  "color": "#d9e8a3"
+ },
+ "ice_plate": {
+  "label": "placa_de_hielo",
+  "gripQuality": 0.75,
+  "durability": 1.6,
+  "wearPerNewtonSecond": 0.0008,
+  "crackAt": 0.55,
+  "slipAfterSeconds": 2.6,
+  "color": "#eaf9ff"
+ },
+ "surprise_fart": {
+  "label": "apoyo_sorpresa",
+  "gripQuality": 1.0,
+  "durability": null,
+  "color": "#3fd46a"
+ }
 }

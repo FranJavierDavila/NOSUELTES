@@ -12,6 +12,9 @@ export interface HoldInstance {
   bandIndex: number;
   /** camp = zona plana segura de campamento. */
   camp?: boolean;
+  /** SALIENTES (pared irregular): profundidad adelantada respecto al plano de
+   *  pared (m). >0 → el agarre cuesta MÁS fatiga (pequeño techo). */
+  proud?: number;
 }
 
 export interface WearTuning {
@@ -134,6 +137,12 @@ export class AnchorSystem {
   anchorOf(player: 0 | 1, limb: Limb): AnchorInstance | undefined { return this.anchorsByPlayer.get(player)?.get(limb); }
   anchorAtHold(holdId: string): AnchorInstance | undefined { return this.occupied.get(holdId); }
   playerAnchors(player: 0 | 1): AnchorInstance[] { return [...this.anchorsByPlayer.get(player)!.values()]; }
+  /** PLACAS DE HIELO: segundos que aguanta el agarre en ese tipo de presa
+   *  antes de RESBALAR (null = nunca resbala). Data-driven (anchor_types). */
+  slipAfterOf(type: string): number | null {
+    const d = this.anchorTypes[type];
+    return d?.slipAfterSeconds ?? null;
+  }
 
   /** Intento de agarre: null si el hold no existe, está roto u ocupado. */
   acquire(holdId: string, player: 0 | 1, limb: Limb): AnchorInstance | null {

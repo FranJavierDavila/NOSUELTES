@@ -212,6 +212,8 @@ export class SherpaAudio {
       case "thud": this.thud(def.dur, def.gain); break;
       case "chime": this.chime(def.dur, def.gain); break;
       case "whoosh": this.whoosh(def.dur, def.gain); break;
+      case "thunder": this.thunder(def.dur, def.gain); break;
+      case "fart": this.fartSynth(def.dur, def.gain); break;
       default: this.burst(600, def.dur, def.gain);
     }
   }
@@ -324,6 +326,63 @@ export class SherpaAudio {
     src.connect(bp).connect(g).connect(this.master!);
     src.start();
     src.stop(ctx.currentTime + dur);
+  }
+
+  /** TRUENO del modo tormenta: estruendo grave con retumbo (ruido + lowpass
+   *  que cae + golpe seco inicial). Sintetizado: sin activos nuevos. */
+  private thunder(dur: number, gain: number): void {
+    const ctx = this.ctx!;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noiseBuffer!;
+    src.loop = true;
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.setValueAtTime(420, ctx.currentTime);
+    lp.frequency.exponentialRampToValueAtTime(90, ctx.currentTime + dur);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, ctx.currentTime);
+    g.gain.linearRampToValueAtTime(gain, ctx.currentTime + 0.05);
+    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + dur);
+    src.connect(lp).connect(g).connect(this.master!);
+    src.start();
+    src.stop(ctx.currentTime + dur + 0.1);
+    // golpe seco inicial (el rayo "parte el aire")
+    this.burst(1400, 0.12, gain * 0.7);
+  }
+
+  /** SUPER FLATULENCIA: pedo-propulsor CÓMICO (serrucho descendente con
+   *  temblor + chorro de gas): un superpoder suena ridículo y POTENTE. */
+  private fartSynth(dur: number, gain: number): void {
+    const ctx = this.ctx!;
+    const t0 = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(110, t0);
+    osc.frequency.exponentialRampToValueAtTime(52, t0 + dur);
+    // temblor del serrucho (LFO sobre la frecuencia)
+    const lfo = ctx.createOscillator();
+    lfo.type = "sine";
+    lfo.frequency.value = 31;
+    const lfoG = ctx.createGain();
+    lfoG.gain.value = 26;
+    lfo.connect(lfoG).connect(osc.frequency);
+    // chorro de gas (ruido paso banda grave)
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.noiseBuffer!;
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.value = 240;
+    bp.Q.value = 0.7;
+    const nG = ctx.createGain();
+    nG.gain.setValueAtTime(gain * 0.8, t0);
+    nG.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    noise.connect(bp).connect(nG).connect(this.master!);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(gain, t0);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(g).connect(this.master!);
+    osc.start(t0); lfo.start(t0); noise.start(t0);
+    osc.stop(t0 + dur + 0.05); lfo.stop(t0 + dur + 0.05); noise.stop(t0 + dur + 0.05);
   }
 
   dispose(): void {

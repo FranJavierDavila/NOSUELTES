@@ -37,6 +37,54 @@ export interface WeatherTuning {
   wobble: number;
   /** ráfagas dentro de la racha (Hz): el empujón late, no deriva lineal. */
   gustPulseHz?: number;
+  /** MODO TORMENTA (petición del jugador): ciclo de racha largo y fuerte con
+   *  cielo oscuro y relámpagos. Probabilidad por ciclo y altura mínima de pared. */
+  stormChance?: number;
+  stormAltitudeM?: number;
+  /** duración de la racha de tormenta = gustSeconds × stormGustMult. */
+  stormGustMult?: number;
+  /** nivel extra de la racha de tormenta (se suma al pico 1.0). */
+  stormLevelBoost?: number;
+  stormWarningSeconds?: number;
+  /** frecuencia de RELÁMPAGOS durante la racha de tormenta (por segundo). */
+  stormLightningHz?: number;
+}
+
+/** SUPER FLATULENCIA (petición del jugador): presas sorpresa verdes que dan
+ *  un pedo-propulsor — sube ~dos tandas de apoyos con gas verde visible. */
+export interface FartTuning {
+  /** velocidad vertical del lanzamiento (m/s). */
+  risePerSecondM: number;
+  /** duración del impulso (s): risePerSecondM × launchSeconds ≈ metros ganados. */
+  launchSeconds: number;
+  /** radio de re-agarre automático al terminar el vuelo (m). */
+  autoGripRadiusM: number;
+}
+
+/** CAJAS DEL RICACHÓN (petición del jugador): saca cajas de su equipo, las
+ *  apila en la tabla (pesa MÁS) y si la tabla escora demasiado… CAEN al vacío
+ *  y el ricachón ESTALLA en insultos. */
+export interface BoxesTuning {
+  massPerBoxKg: number;
+  maxBoxes: number;
+  /** vida de las cajas sobre la tabla (s): ricachón las recoge después. */
+  secondsMin: number;
+  secondsMax: number;
+  /** umbral de deslizamiento/escora que tira las cajas. */
+  fallSlideFrac: number;
+  fallTiltDeg: number;
+  /** offset fraccional en la tabla (−0.5..0.5 del semilargo). */
+  offsetFrac: number;
+}
+
+/** CÓNDOR (petición del jugador): ave gigante que POSA en un extremo de la
+ *  tabla y PESA: ese lado se hunde hasta que se va. */
+export interface CondorTuning {
+  massKg: number;
+  perchSecondsMin: number;
+  perchSecondsMax: number;
+  /** offset fraccional en la tabla (casi el extremo). */
+  offsetFrac: number;
 }
 export interface TuningData {
   schemaVersion: number;
@@ -50,10 +98,16 @@ export interface TuningData {
   fall: { teamFallSeconds: number; teamFallMeters: number; twoHandsGraceSeconds?: number; slipReGripLock?: number };
   anchors: { attachSeconds: number; defaultMaxForceHand: number; defaultMaxForceFoot: number; loadSpikeWindow: number };
   weather: WeatherTuning;
+  fart?: FartTuning;
+  boxes?: BoxesTuning;
+  condor?: CondorTuning;
 }
 export interface AnchorTypeData {
   label: string; gripQuality: number; durability: number | null;
   wearPerNewtonSecond?: number; crackAt?: number; breakOnImpulse?: number; slipPerSecond?: number; color: string;
+  /** PLACAS DE HIELO (petición del jugador): agarrado más de N segundos →
+   *  la extremidad RESBALA (suelta con causa "slip"). Ausente → nunca resbala. */
+  slipAfterSeconds?: number;
 }
 export interface PhaseData {
   id: number; camp: string; narrativeHeight: number; wallHeightM: number;
@@ -74,6 +128,21 @@ export interface WallGenData {
     patternBands: number;
     patterns: { id: string; weight: number; clusterHalfWidthM?: number; clusterBridgeM?: number; laneGapHalfWidthM?: number; laneBridgeM?: number }[];
   };
+  /** PARED IRREGULAR (petición del jugador: "no siempre perpendicular y plana,
+   *  con zonas de salientes para complicar la escalada"). En bandas elegidas
+   *  por semilla nace un SALIENTE: las presas de su franja x quedan ADELANTADAS
+   *  (z + depthM) y su agarre fatiga MÁS (fatigueMult) — es un pequeño techo. */
+  salientes?: {
+    chancePerBand: number;
+    minWidthM: number; maxWidthM: number;
+    depthM: number; heightM: number;
+    fatigueMult: number;
+    /** banda mínima: arranque y primeros metros siempre limpios. */
+    minBand: number;
+  };
+  /** Presas sorpresa (SUPER FLATULENCIA): probabilidad por banda de convertir
+   *  UNA presa en apoyo verde de superpoder (nunca en banda 0/campamento). */
+  surprise?: { minBand: number; chancePerBand: number };
 }
 export interface ConditionData { type: string; value?: number; event?: string; gt?: number; state?: string }
 export interface EffectData { type: string; [k: string]: unknown }
@@ -103,8 +172,8 @@ export interface DifficultyData { presets: Record<string, DifficultyPresetData>;
 export interface InputMapData {
   players: Record<string, {
     label: string;
-    keyboard: { aimUp: string; aimDown: string; aimLeft: string; aimRight: string; aimSpeed: number; grip: Record<string, string>; shoo: string };
-    gamepad?: { index: number; aim: { stick: number; deadzone: number; aimSpeed: number }; grip: Record<string, number>; shoo: number; gripNames: Record<string, string> };
+    keyboard: { aimUp: string; aimDown: string; aimLeft: string; aimRight: string; aimSpeed: number; grip: Record<string, string>; shoo: string; fart?: string };
+    gamepad?: { index: number; aim: { stick: number; deadzone: number; aimSpeed: number }; grip: Record<string, number>; shoo: number; fart?: number; gripNames: Record<string, string> };
   }>;
   shared: { pause: string; help: string; cameraRecenter: string };
 }
@@ -205,7 +274,15 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
         weather: { type: "object", required: ["minGapSeconds", "maxGapSeconds", "warningSeconds", "gustSeconds", "minAltitudeM", "pushPerSecondM", "ropeWindAccel", "wobble"], properties: {
           minGapSeconds: posNum, maxGapSeconds: posNum, warningSeconds: posNum, gustSeconds: posNum,
           minAltitudeM: posNum, pushPerSecondM: posNum, ropeWindAccel: posNum, wobble: posNum, gustPulseHz: posNum,
+          stormChance: { type: "number", exclusiveMinimum: 0, maximum: 1 }, stormAltitudeM: posNum, stormGustMult: posNum,
+          stormLevelBoost: posNum, stormWarningSeconds: posNum, stormLightningHz: posNum,
         } },
+        fart: { type: "object", required: ["risePerSecondM", "launchSeconds", "autoGripRadiusM"], properties: { risePerSecondM: posNum, launchSeconds: posNum, autoGripRadiusM: posNum } },
+        boxes: { type: "object", required: ["massPerBoxKg", "maxBoxes", "fallSlideFrac", "fallTiltDeg"], properties: {
+          massPerBoxKg: posNum, maxBoxes: { type: "integer", minimum: 1 }, secondsMin: posNum, secondsMax: posNum,
+          fallSlideFrac: { type: "number", exclusiveMinimum: 0, maximum: 1 }, fallTiltDeg: posNum, offsetFrac: num,
+        } },
+        condor: { type: "object", required: ["massKg"], properties: { massKg: posNum, perchSecondsMin: posNum, perchSecondsMax: posNum, offsetFrac: num } },
       },
     },
     anchor_types: {
@@ -213,7 +290,7 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
       additionalProperties: { type: "object", required: ["label", "gripQuality", "color"], properties: {
         label: { type: "string" }, gripQuality: { type: "number", exclusiveMinimum: 0, maximum: 1 },
         durability: { type: ["number", "null"], minimum: 0 }, wearPerNewtonSecond: posNum, crackAt: { type: "number", exclusiveMinimum: 0, maximum: 1 },
-        breakOnImpulse: posNum, slipPerSecond: posNum, color: { type: "string" },
+        breakOnImpulse: posNum, slipPerSecond: posNum, slipAfterSeconds: posNum, color: { type: "string" },
       } },
     },
     phases: {
@@ -240,6 +317,11 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
             id: { type: "string" }, weight: posNum, clusterHalfWidthM: posNum, clusterBridgeM: posNum, laneGapHalfWidthM: posNum, laneBridgeM: posNum,
           } } },
         } },
+        salientes: { type: "object", required: ["chancePerBand", "minWidthM", "maxWidthM", "depthM", "heightM", "fatigueMult", "minBand"], properties: {
+          chancePerBand: { type: "number", exclusiveMinimum: 0, maximum: 1 }, minWidthM: posNum, maxWidthM: posNum,
+          depthM: posNum, heightM: posNum, fatigueMult: posNum, minBand: { type: "integer", minimum: 0 },
+        } },
+        surprise: { type: "object", required: ["minBand", "chancePerBand"], properties: { minBand: { type: "integer", minimum: 0 }, chancePerBand: { type: "number", exclusiveMinimum: 0, maximum: 1 } } },
       },
     },
     events: {

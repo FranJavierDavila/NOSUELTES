@@ -94,6 +94,27 @@ const CSS = `
 .sphud .propina .bar { height:8px; border-radius:4px; background:rgba(255,255,255,.12); overflow:hidden; margin-top:4px; }
 .sphud .propina .bar > i { display:block; height:100%; background:var(--pc,#e8c547); border-radius:4px; }
 .sphud .debug { position:absolute; bottom:12px; right:12px; font:10.5px/1.5 ui-monospace,monospace; opacity:.65; text-align:right; white-space:pre; }
+/* FATIGA SOBRE CADA EXTREMIDAD (petición del jugador: "poner similares sobre
+ * cada extremidad de forma que con solo ver al escalador ya tengamos esa
+ * información"): insignia flotante proyectada sobre la extremidad misma. */
+.sphud .badges { position:absolute; inset:0; pointer-events:none; overflow:hidden; }
+.sphud .lbadge { position:absolute; width:22px; height:22px; border-radius:50%; transform:translate(-50%,-50%); border:2px solid rgba(255,255,255,.35); background:conic-gradient(var(--c) calc(var(--t)*360deg), rgba(10,14,18,.62) 0); box-shadow:0 1px 6px rgba(0,0,0,.55); transition:border-color .15s, opacity .15s; }
+.sphud .lbadge::after { content:''; position:absolute; inset:5px; border-radius:50%; background:#12181e; }
+.sphud .lbadge.p0 { border-color:#d97b2f; } .sphud .lbadge.p1 { border-color:#2f9bd9; }
+.sphud .lbadge.warn { border-color:#e8c34a; }
+.sphud .lbadge.crit { border-color:#ff5a5a; animation:limbcrit .5s steps(2,end) infinite; }
+.sphud .lbadge.free { opacity:.4; }
+/* MINIMAPA (petición del jugador: "en una esquina, la zona de escalada hasta
+ * la próxima base y los metros que faltan"): franja vertical a la derecha. */
+.sphud .minimap { position:absolute; right:14px; top:50%; transform:translateY(-50%); width:70px; padding:9px 6px 7px; text-align:center; }
+.sphud .mm-track { position:relative; width:10px; height:168px; margin:0 auto 6px; background:rgba(255,255,255,.1); border-radius:5px; overflow:hidden; }
+.sphud .mm-camp { position:absolute; left:0; right:0; top:0; background:rgba(90,212,106,.45); border-bottom:1.5px solid #5ad46a; }
+.sphud .mm-dot { position:absolute; width:9px; height:9px; border-radius:50%; transform:translate(-50%,50%); box-shadow:0 0 4px rgba(0,0,0,.6); }
+.sphud .mm-dot.a { left:26%; background:#d97b2f; }
+.sphud .mm-dot.b { left:74%; background:#2f9bd9; }
+.sphud .mm-label { font-size:10px; line-height:1.25; opacity:.9; white-space:pre-line; }
+.sphud .fart-ico { display:none; margin-left:6px; }
+.sphud .fart-ico.on { display:inline-block; animation:sphblink .5s linear infinite alternate; }
 .sphud .overlay { position:absolute; inset:0; background:rgba(6,9,12,.86); display:flex; align-items:center; justify-content:center; pointer-events:auto; }
 .sphud .panel { max-width:560px; width:92%; max-height:92%; overflow-y:auto; background:#0e141a; border:1px solid rgba(255,255,255,.1); border-radius:16px; padding:26px 30px; }
 .sphud .panel h1 { margin:0; font-size:30px; letter-spacing:.06em; }
@@ -145,6 +166,7 @@ export class SherpaHud {
     frame.innerHTML = `
       <div class="chip p-panel p1" data-e="p1"></div>
       <div class="chip p-panel p2" data-e="p2"></div>
+      <div class="badges" data-e="badges"></div>
       <div class="center-top">
         <div class="chip alt-line" style="width:100%">
           <span class="alt-big" data-e="alt">—</span>
@@ -156,6 +178,14 @@ export class SherpaHud {
           <div class="chip mini" data-e="level">—</div>
           <div class="chip mini" data-e="share">—</div>
         </div>
+      </div>
+      <div class="chip minimap" data-e="minimap">
+        <div class="mm-track">
+          <div class="mm-camp" data-e="mmCamp" style="height:12%"></div>
+          <i class="mm-dot a" data-e="mmA" style="bottom:0"></i>
+          <i class="mm-dot b" data-e="mmB" style="bottom:0"></i>
+        </div>
+        <div class="mm-label" data-e="mmLabel">—</div>
       </div>
       <div class="chip propina"><span data-e="propinaLabel"></span><span data-e="propinaVal" style="float:right"></span>
         <div class="bar"><i data-e="propinaBar" style="width:50%"></i></div>
@@ -210,47 +240,84 @@ export class SherpaHud {
   // ---------- paneles de jugador ----------
 
   bindPlayers(labels: { p1: string; p2: string }, limbLabels: Limb[]): void {
+    void limbLabels;
+    // FATIGA SOBRE LAS EXTREMIDADES (petición del jugador): los chips de las
+    // esquinas se SUSTITUYEN por insignias proyectadas sobre cada extremidad
+    // (setLimbBadges); el panel queda como etiqueta + indicador de superpoder.
     for (const key of ["p1", "p2"] as const) {
       const player = key === "p1" ? 0 : 1;
       const color = player === 0 ? "#d97b2f" : "#2f9bd9";
-      const chips = limbLabels.map((limb) => `
-        <div class="limb free" data-limb="${limb}" title="${esc(this.t("hud.limbChipTip"))}">
-          <div class="ring" style="--t:0;--c:#5ad46a"></div>
-          <div class="limb-label">${esc(this.t(`limb.${limb}`))}</div>
-          <div class="fat"><i style="width:0%;--fc:${this.hud.fatigue.barColor}"></i></div>
-        </div>`).join("");
       this.el[key]!.innerHTML = `
         <div class="p-title"><span><span class="p-dot" style="background:${color}"></span>${esc(this.fmt("hud.player", { n: player + 1 }))}</span><span style="opacity:.6">${esc(labels[key])}</span></div>
-        <div class="limb-row">${chips}</div>`;
+        <div style="font-size:10.5px;opacity:.8;margin-top:3px"><span class="fart-ico" data-fart="${player}">💨 <b style="color:#7dff4a">${esc(this.t("hud.fartReadyShort"))}</b></span></div>`;
+    }
+    // insignias una por extremidad (8): creadas una sola vez, movidas cada frame.
+    const layer = this.el.badges!;
+    layer.innerHTML = "";
+    for (const p of [0, 1] as const) {
+      for (const limb of ["hand_l", "hand_r", "foot_l", "foot_r"] as Limb[]) {
+        const b = document.createElement("div");
+        b.className = `lbadge p${p} free`;
+        b.dataset.p = String(p);
+        b.dataset.limb = limb;
+        b.title = this.t(`limb.${limb}`);
+        layer.appendChild(b);
+      }
     }
   }
 
-  update(state: HudTickState): void {
-    const grad = this.daltonism ? this.hud.daltonismPalette.tensionGradient : this.hud.tension.gradient;
-    const gradColor = (t: number): string => grad[Math.min(grad.length - 1, Math.floor(Math.min(1, t) * grad.length))];
+  /** FATIGA SOBRE CADA EXTREMIDAD (petición del jugador): posiciona las 8
+   *  insignias en pantalla (proyección de cada extremidad) y pinta su estado:
+   *  anillo = tensión, borde = libre/firme/cansada/¡se suelta!. Llamar cada
+   *  frame: solo toca estilos de nodos ya creados. */
+  setLimbBadges(badges: { p: 0 | 1; limb: Limb; sx: number; sy: number; tension: number; fatigue: number; anchored: boolean }[]): void {
     const warnAt = this.hud.fatigue.warnAt ?? 0.45;
     const critAt = this.hud.fatigue.critAt ?? 0.75;
-    for (const key of ["p1", "p2"] as const) {
-      const player = key === "p1" ? 0 : 1;
-      const limbs = state.players[player] ?? [];
-      this.el[key]?.querySelectorAll<HTMLElement>(".limb").forEach((node, i) => {
-        const l = limbs[i];
-        if (!l) return;
-        const ring = node.querySelector<HTMLElement>(".ring")!;
-        const t = Math.min(1.3, l.tension);
-        ring.style.setProperty("--t", String(Math.min(1, t)));
-        ring.style.setProperty("--c", l.anchored ? gradColor(t) : "rgba(255,255,255,.25)");
-        ring.classList.toggle("warn", l.anchored && t > this.hud.tension.warn);
-        const fat = node.querySelector<HTMLElement>(".fat > i")!;
-        fat.style.width = `${Math.round(l.fatigue * 100)}%`;
-        // PAPEL CLARO DEL INDICADOR (petición del jugador): el chip entero
-        // cambia de estado — libre / firme / cansada / ¡se va a soltar!
-        const cs = chipState(l.anchored, l.fatigue, warnAt, critAt);
-        node.classList.remove("ok", "warn", "crit", "free");
-        node.classList.add(cs);
-        fat.style.background = cs === "crit" ? "#ff5a5a" : cs === "warn" ? "#e8c34a" : "var(--fc)";
-      });
+    const layer = this.el.badges;
+    if (!layer) return;
+    for (const node of layer.children as HTMLCollectionOf<HTMLElement>) {
+      const b = badges.find((x) => x.p === Number(node.dataset.p) && x.limb === node.dataset.limb);
+      // fuera de pantalla/oculta → la insignia desaparece (no ensucia la UI)
+      const off = !b || b.sx < 1 || b.sx > 99 || b.sy < 1 || b.sy > 97;
+      node.style.display = off ? "none" : "block";
+      if (off || !b) continue;
+      node.style.left = `${b.sx}%`;
+      node.style.top = `${b.sy}%`;
+      const t = Math.min(1.3, b.tension);
+      const grad = this.daltonism ? this.hud.daltonismPalette.tensionGradient : this.hud.tension.gradient;
+      node.style.setProperty("--t", String(Math.min(1, t)));
+      node.style.setProperty("--c", b.anchored
+        ? grad[Math.min(grad.length - 1, Math.floor(Math.min(1, t) * grad.length))]
+        : "rgba(255,255,255,.25)");
+      const cs = chipState(b.anchored, b.fatigue, warnAt, critAt);
+      node.classList.remove("ok", "warn", "crit", "free");
+      node.classList.add(cs);
     }
+  }
+
+  /** MINIMAPA (petición del jugador): franja vertical = tramo hasta la próxima
+   *  base, puntos = escaladores, verde = zona del campamento, etiqueta = metros. */
+  updateMinimap(m: { fracA: number; fracB: number; campFrac: number; metersLeft: number; campId: string | null }): void {
+    const campH = `${Math.round(Math.min(1, Math.max(0.04, m.campFrac)) * 100)}%`;
+    this.el.mmCamp!.style.height = campH;
+    const clamp = (v: number): number => Math.min(1, Math.max(0, v));
+    this.el.mmA!.style.bottom = `${clamp(m.fracA) * 100}%`;
+    this.el.mmB!.style.bottom = `${clamp(m.fracB) * 100}%`;
+    this.el.mmLabel!.textContent = m.campId
+      ? this.fmt("hud.minimapTo", { m: Math.max(0, Math.round(m.metersLeft)), camp: m.campId })
+      : this.t("hud.summit");
+  }
+
+  /** Carga de SUPER FLATULENCIA lista (💨 parpadeante en el panel del jugador). */
+  setFartCharge(p: 0 | 1, charged: boolean): void {
+    const ico = this.el.p1?.parentElement?.querySelector(`[data-fart="${p}"]`)
+      ?? document.querySelector(`[data-fart="${p}"]`);
+    if (ico) ico.classList.toggle("on", charged);
+  }
+
+  update(state: HudTickState): void {
+    // (la fatiga de extremidades la pintan las INSIGNIAS sobre cada extremidad:
+    //  setLimbBadges — petición del jugador; aquí queda el resto del HUD)
     // altitud + progreso
     this.el.alt!.textContent = `${Math.round(state.narrativeY)} m`;
     this.el.camp!.textContent = state.nextCampId
