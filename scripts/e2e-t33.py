@@ -25,7 +25,7 @@ def probe(page):
     except Exception:
         return None
 
-def wait_for(page, cond, timeout_s, label):
+def wait_for(page, cond, timeout_s, label, soft=False):
     t0 = time.time()
     last = None
     while time.time() - t0 < timeout_s:
@@ -34,6 +34,8 @@ def wait_for(page, cond, timeout_s, label):
         if p and cond(p):
             return p
         page.wait_for_timeout(250)
+    if soft:
+        return None
     raise SystemExit(f"TIMEOUT esperando {label}; última sonda: {json.dumps(last)[:600]}")
 
 with sync_playwright() as pw:
@@ -56,13 +58,39 @@ with sync_playwright() as pw:
     py = lambda pct: page.viewport_size["height"] * pct / 100.0
     page.wait_for_timeout(4000)  # deja respirar el arranque
 
-    # 2) CÍRCULO SUTIL: arrastrar una mano hacia una presa alcanzable
-    for attempt in range(4):
+    # 2) DRON REPARTIDOR PRIMERO (equipo recién nacido, sin caídas): sonda →
+    #    vuelo + entrega. Si el equipo cayese y el respawn cancelara el vuelo,
+    #    se reintenta (la sonda resetea un dron en curso). Con el paquete ya en
+    #    la tabla, el resto de pasos sigue con la descompensación real.
+    delivered_kg = None
+    for attempt in range(3):
+        assert page.evaluate("window.__SHERPAS_DEBUG && __SHERPAS_DEBUG.force('drone')"), "spawn del dron falló"
+        p = wait_for(page, lambda q: q.get("drone") and q["drone"]["phase"] in ("approach", "hover"), 8, "dron en vuelo")
+        print(f"DRON VUELA  phase={p['drone']['phase']} kg={p['drone']['kg']} frac={p['drone']['frac']}")
+        hover_ok = wait_for(page, lambda q: q.get("drone") and q["drone"]["phase"] == "hover", 20, "hover del dron", soft=True)
+        page.screenshot(path=f"{OUT}/t33-4-dron-hover.png")
+        p2 = wait_for(page, lambda q: q.get("drone") and q["drone"]["phase"] == "delivered", 18, "paquete entregado", soft=True)
+        if p2 and p2.get("drone", {}).get("phase") == "delivered":
+            delivered_kg = p2["drone"]["kg"]
+            break
+        # el equipo cayó y el respawn canceló el vuelo → reintento
+        page.wait_for_timeout(1500)
+    assert delivered_kg is not None, "el dron no pudo entregar en 3 intentos"
+    cargo = wait_for(page, lambda q: q.get("cargoKg", 0) >= delivered_kg - 0.5, 4, "carga en la tabla")
+    print(f"PAQUETE ENTREGADO  kg={delivered_kg} cargoKg={cargo['cargoKg']}")
+    page.screenshot(path=f"{OUT}/t33-5-paquete-en-la-tabla.png")
+
+    # 3) CÍRCULO SUTIL: arrastrar una mano hacia una presa alcanzable
+    for attempt in range(5):
         p = probe(page)
         limbs = {f"{l['p']}_{l['l']}": l for l in p["limbs"]}
         hand = limbs["0_hand_r"]
-        cands = [h for h in p["holds"] if abs(h["wx"] - hand["wx"]) < 0.9 and 0.05 < (h["wy"] - hand["wy"]) < 0.75]
-        assert cands, "sin presas cercanas arriba de hand_r"
+        cands = [h for h in p["holds"] if abs(h["wx"] - hand["wx"]) < 1.2 and 0.05 < (h["wy"] - hand["wy"]) < 0.9]
+        if not cands:
+            # el paquete del dron mueve la tabla: el filtro ±3 m de la sonda
+            # puede dejar fuera las presas vecinas un instante → reintentar
+            page.wait_for_timeout(900)
+            continue
         target = min(cands, key=lambda h: abs(h["wy"] - (hand["wy"] + 0.45)))
         page.mouse.move(px(hand["sx"]), py(hand["sy"]))
         page.mouse.down()
@@ -74,7 +102,7 @@ with sync_playwright() as pw:
         page.mouse.up()
         page.wait_for_timeout(700)
     else:
-        raise SystemExit("el arrastre no encontró imán en 4 intentos")
+        raise SystemExit("el arrastre no encontró imán en 5 intentos")
     r = p["dragReach"]["reachM"]
     assert abs(r - 0.88 * 1.08) < 0.02, f"radio sin fatiga inesperado: {r}"
     page.screenshot(path=f"{OUT}/t33-2-circulo-discontinuo-verde.png")
@@ -105,18 +133,7 @@ with sync_playwright() as pw:
     page.screenshot(path=f"{OUT}/t33-1-pared-3d-huecos-sombras.png")
     print("PARED 3D capturada (huecos de entrantes + salientes + sombras)")
 
-    # 4) DRON REPARTIDOR: forzado por sonda → vuelo + entrega
-    assert page.evaluate("window.__SHERPAS_DEBUG && __SHERPAS_DEBUG.force('drone')"), "spawn del dron falló"
-    p = wait_for(page, lambda q: q.get("drone") and q["drone"]["phase"] in ("approach", "hover"), 8, "dron en vuelo")
-    print(f"DRON VUELA  phase={p['drone']['phase']} kg={p['drone']['kg']} frac={p['drone']['frac']}")
-    wait_for(page, lambda q: q.get("drone") and q["drone"]["phase"] == "hover", 20, "hover del dron")
-    page.screenshot(path=f"{OUT}/t33-4-dron-hover.png")
-    p = wait_for(page, lambda q: q.get("drone") and q["drone"]["phase"] == "delivered", 15, "paquete entregado")
-    cargo = wait_for(page, lambda q: q.get("cargoKg", 0) >= p["drone"]["kg"] - 0.5, 4, "carga en la tabla")
-    print(f"PAQUETE ENTREGADO  kg={p['drone']['kg']} frac={p['drone']['frac']} cargoKg={cargo['cargoKg']}")
-    page.screenshot(path=f"{OUT}/t33-5-paquete-en-la-tabla.png")
-
-    # 5) MINIMAPA: leyenda con los 4 tipos (poder/hielo/saliente/entrante)
+    # 6) MINIMAPA: leyenda con los 4 tipos (poder/hielo/saliente/entrante)
     lg = [page.text_content(".sphud [data-e=mmLgPower]"), page.text_content(".sphud [data-e=mmLgIce]"),
           page.text_content(".sphud [data-e=mmLgSalient]"), page.text_content(".sphud [data-e=mmLgRecess]")]
     assert all(x and x.strip() for x in lg), f"leyenda incompleta: {lg}"

@@ -1369,8 +1369,12 @@ export class SherpasMatch {
       case "fart":
         this.sherpas[player ?? 0].fartCharge = true; // el disparo lo hace la tecla F/P
         return true;
-      case "drone":
+      case "drone": {
+        // determinista: si el director ya lanzó un dron (o está de regreso),
+        // lo recoloca en idle para que la sonda SIEMPRE pueda forzar la entrega.
+        if (this.drone.phase !== "idle") this.drone.reset();
         return this.drone.spawn();
+      }
       case "subir": {
         // SONDA E2E (patrón setAim): re-cuelga al equipo ~12 m más arriba en
         // presas FIRMES reales de una banda generada. Si hay ENTRANTE por

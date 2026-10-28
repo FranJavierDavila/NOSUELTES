@@ -358,7 +358,7 @@ describe("pies sin apoyo → la fatiga de las MANOS crece (petición: 'si tienen
    *  mecánicas ajenas (nieve que derrapa, hielo que se rompe). */
   const buildFatigueRig = (seed = 2024): RigBundle => {
     const b = buildRig(seed);
-    (b.rig as unknown as { deps: { tuning: { limb: Record<string, number> } } }).deps.tuning.limb = {
+    (b.rig as unknown as { deps: { tuning: { limb: typeof data.tuning.limb } } }).deps.tuning.limb = {
       ...data.tuning.limb, baseGripHand: 200, overloadTension: 6, fatigueReleaseAt: 5,
     } as typeof data.tuning.limb;
     return b;
