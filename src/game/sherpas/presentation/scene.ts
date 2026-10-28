@@ -40,7 +40,7 @@ import { v3, vAdd, vScale, vSub, vLen, type V3 } from "../../physics/pbd/math";
 import type { HoldInstance } from "../physics/anchors";
 import type { DragReachInfo } from "../physics/sherpaRig";
 import { RichManSim, RM } from "../physics/richMan";
-import type { CameraData, HudData, PerfTuning } from "../core/data";
+import type { CameraData, HudData, PerfTuning, VfxData } from "../core/data";
 import type { WallLayout } from "../world/wallGenerator";
 
 interface Bone { a: number; b: number; mesh: Mesh; rest: number; offY?: number }
@@ -69,6 +69,10 @@ export class SherpaScene {
   backend = "WebGL 2";
   private camData: CameraData;
   private hudData: HudData;
+  /** Datos vfx.json (T38): los FX nuevos leen de aquí (regla de oro: nada hardcodeado). */
+  private vfxData?: VfxData;
+  /** Contadores de juice (sonda E2E): chispas de chicote / bocanadas de furia. */
+  private fxCounts = { spark: 0, rage: 0 };
   private camTarget = new Vector3(0, 1.5, -0.3);
   private camDist = 7;
   private shakeAmp = 0;
@@ -163,7 +167,8 @@ export class SherpaScene {
   private tmpProj = new Vector3(0, 0, 0);
   private idMatrix = Matrix.Identity();
 
-  private constructor(engine: AbstractEngine, backend: string, camData: CameraData, hudData: HudData, perf?: PerfTuning) {
+  private constructor(engine: AbstractEngine, backend: string, camData: CameraData, hudData: HudData, perf?: PerfTuning, vfx?: VfxData) {
+    this.vfxData = vfx;
     this.engine = engine;
     this.backend = backend;
     this.camData = camData;
@@ -250,7 +255,7 @@ export class SherpaScene {
     }
   }
 
-  static async create(canvas: HTMLCanvasElement, camData: CameraData, hudData: HudData, perf?: PerfTuning): Promise<SherpaScene> {
+  static async create(canvas: HTMLCanvasElement, camData: CameraData, hudData: HudData, perf?: PerfTuning, vfx?: VfxData): Promise<SherpaScene> {
     // WebGL2 PRIMERO (fix Task 22, regresión del árbol roto): en iframes
     // cross-origin WebGPU cae a adaptador bloqueado → canvas negro a 6 fps.
     let engine: AbstractEngine;
@@ -263,7 +268,7 @@ export class SherpaScene {
       engine = gpu;
       backend = "WebGPU";
     }
-    return new SherpaScene(engine, backend, camData, hudData, perf);
+    return new SherpaScene(engine, backend, camData, hudData, perf, vfx);
   }
 
   private makeDotTexture(): Texture {
@@ -935,6 +940,50 @@ export class SherpaScene {
   fxBreak(pos: V3): void { this.makeBurst("brk", "#b0bec5", 30, pos, 0.3, 0.08, 0.9); this.shake(0.05); }
   fxConfetti(pos: V3): void { this.makeBurst("conf", "#e8c547", 70, pos, 0.9, 0.07, 1.6); }
   fxBump(pos: V3): void { this.makeBurst("bump", "#e0d6c0", 8, pos, 0.1, 0.05, 0.4); }
+
+  /** CHISPAS DEL CHICOTE (juice T38, petición "voz + juice restante"): cuando
+   *  la cuerda CAPTURA una caída, estallido ámbar en la cintura — el tirón se
+   *  VE además de sonar (rope_snap) y sacudir. Datos: vfx.ropeSpark. */
+  fxSpark(pos: V3): void {
+    const v = this.vfxData?.ropeSpark;
+    this.makeBurst("spark", v?.color ?? "#ffd54f", v?.count ?? 20, pos, v?.spread ?? 0.18, 0.05, 0.55);
+    this.fxCounts.spark++;
+  }
+
+  /** HUMO DE FURIA (juice T38): bocanadas que SUBEN sobre el ricachón en cada
+   *  insulto — cómic clásico, refuerza quién está enfadado sin leer un texto.
+   *  Sistema propio (gravedad negativa: el humo asciende). Datos: vfx.ragePuff. */
+  fxRage(pos: V3): void {
+    if (!this.scene) return;
+    const v = this.vfxData?.ragePuff;
+    const ps = new ParticleSystem("rage", (v?.count ?? 8) + 6, this.scene);
+    ps.particleTexture = this.fxTexture;
+    ps.emitter = new Vector3(pos.x, pos.y, pos.z);
+    ps.minEmitBox = new Vector3(-0.05, 0, -0.05);
+    ps.maxEmitBox = new Vector3(0.05, 0.06, 0.05);
+    const c3 = Color3.FromHexString(v?.color ?? "#b39ddb");
+    ps.color1 = new Color4(c3.r, c3.g, c3.b, 0.75);
+    ps.color2 = new Color4(c3.r * 0.75, c3.g * 0.75, c3.b * 0.75, 0.6);
+    ps.colorDead = new Color4(c3.r, c3.g, c3.b, 0);
+    ps.minSize = 0.06; ps.maxSize = 0.14;
+    ps.minLifeTime = 0.5; ps.maxLifeTime = 0.9;
+    ps.emitRate = 0;
+    ps.blendMode = ParticleSystem.BLENDMODE_STANDARD;
+    ps.direction1 = new Vector3(-0.25, 1, -0.15);
+    ps.direction2 = new Vector3(0.25, 1.6, 0.15);
+    ps.minEmitPower = 0.5; ps.maxEmitPower = 1.1;
+    ps.gravity = new Vector3(0, 1.2, 0); // el humo SUBE
+    ps.manualEmitCount = v?.count ?? 8;
+    ps.targetStopDuration = 0.06;
+    ps.disposeOnStop = true;
+    ps.start();
+    this.fxCounts.rage++;
+  }
+
+  /** Sonda E2E: cuántos FX de juice se han disparado (spark/rage). */
+  getFxCounts(): { spark: number; rage: number } {
+    return { ...this.fxCounts };
+  }
   /** SUPER FLATULENCIA: nube de GAS VERDE (imposible de no ver, petición). */
   fxFart(pos: V3): void {
     const ps = new ParticleSystem("fart", 26, this.scene);

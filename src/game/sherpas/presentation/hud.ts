@@ -104,6 +104,12 @@ const CSS = `
 .sphud .propina .bar { height:8px; border-radius:4px; background:rgba(255,255,255,.12); overflow:hidden; margin-top:4px; }
 .sphud .propina .bar > i { display:block; height:100%; background:var(--pc,#e8c547); border-radius:4px; }
 .sphud .debug { position:absolute; bottom:12px; right:12px; font:10.5px/1.5 ui-monospace,monospace; opacity:.65; text-align:right; white-space:pre; }
+/* VIÑETA DE PELIGRO (juice T38): borde rojo que APARECE cuando la tensión roza
+ * el límite o la tabla está al borde — el peligro se SIENTE sin leer un chip. */
+.sphud .danger-vignette { position:absolute; inset:0; pointer-events:none; opacity:0; transition:opacity .28s ease-out;
+  background:radial-gradient(ellipse at center, transparent 52%, var(--vc,#ff2d40) 165%); mix-blend-mode:screen; }
+.sphud .danger-vignette.pulse { animation:dangpulse .62s ease-in-out infinite alternate; }
+@keyframes dangpulse { from { filter:brightness(.82); } to { filter:brightness(1.25); } }
 /* FATIGA SOBRE CADA EXTREMIDAD (petición del jugador: "poner similares sobre
  * cada extremidad de forma que con solo ver al escalador ya tengamos esa
  * información"): insignia flotante proyectada sobre la extremidad misma. */
@@ -158,6 +164,8 @@ export class SherpaHud {
   private bubbles: { node: HTMLElement; until: number }[] = [];
   private subtitleUntil = 0;
   private telegraphUntil = 0;
+  /** VIÑETA DE PELIGRO: nivel actual 0..1 (sonda E2E). */
+  private vignetteVal = 0;
   private daltonism = false;
   private reduceShake = false;
   private mute = false;
@@ -177,6 +185,7 @@ export class SherpaHud {
     frame.innerHTML = `
       <div class="chip p-panel p1" data-e="p1"></div>
       <div class="chip p-panel p2" data-e="p2"></div>
+      <div class="danger-vignette" data-e="vignette"></div>
       <div class="badges" data-e="badges"></div>
       <div class="center-top">
         <div class="chip alt-line" style="width:100%">
@@ -223,6 +232,8 @@ export class SherpaHud {
     this.el.mmLgIce!.textContent = this.t("hud.mmIce");
     this.el.mmLgSalient!.textContent = this.t("hud.mmSalient");
     this.el.mmLgRecess!.textContent = this.t("hud.mmRecess");
+    // VIÑETA DE PELIGRO: color desde datos (hud.json dangerVignette.color).
+    if (hud.dangerVignette) this.el.vignette!.style.setProperty("--vc", hud.dangerVignette.color);
   }
 
   t(path: string): string {
@@ -450,9 +461,32 @@ export class SherpaHud {
     if (ico) ico.classList.toggle("on", charged);
   }
 
+  /** Nivel actual de la viñeta 0..1 (sonda E2E). */
+  vignetteLevel(): number { return this.vignetteVal; }
+
+  /** VIÑETA DE PELIGRO (juice T38): opacidad proporcional a lo CERCA que está
+   *  el desastre — tensión máxima por encima de warnAt y/o tabla al borde.
+   *  Data-driven (hud.json dangerVignette): sin dato, no existe. */
+  private updateDangerVignette(state: HudTickState): void {
+    const v = this.hud.dangerVignette;
+    const el = this.el.vignette;
+    if (!v || !el) return;
+    const span = Math.max(0.01, 1.15 - v.warnAt);
+    let d = 0;
+    for (const limbs of state.players) {
+      for (const l of limbs) d = Math.max(d, (l.tension - v.warnAt) / span);
+    }
+    const pd = (state.plankDanger - v.plankDangerAt) / Math.max(0.01, 1 - v.plankDangerAt);
+    d = Math.max(d, pd);
+    this.vignetteVal = Math.max(0, Math.min(1, d));
+    el.style.opacity = String(this.vignetteVal * v.maxOpacity);
+    el.classList.toggle("pulse", this.vignetteVal > 0.25);
+  }
+
   update(state: HudTickState): void {
     // (la fatiga de extremidades la pintan las INSIGNIAS sobre cada extremidad:
     //  setLimbBadges — petición del jugador; aquí queda el resto del HUD)
+    this.updateDangerVignette(state);
     // altitud + progreso
     this.el.alt!.textContent = `${Math.round(state.narrativeY)} m`;
     this.el.camp!.textContent = state.nextCampId

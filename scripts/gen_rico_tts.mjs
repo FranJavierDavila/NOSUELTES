@@ -21,26 +21,41 @@ const SPEED = 1.06;         // algo rápido = burlón
 const VOLUME = 3.2;         // GRITANDO (rango permitido: >0..10)
 const CONCURRENCY = 1;      // la API limita peticiones (429): en fila
 const GAP_MS = 1500;        // pausa entre llamadas
-const RETRIES = 3;
+const RETRIES = 5;
+// T38: la llamada SIN timeout puede quedar COLGADA para siempre (socket muerto,
+// cazado en producción: 4 ficheros y estancada 10 min). Carrera con reloj.
+const CALL_TIMEOUT_MS = 30000;
+// T38: el SDK ESCAPE errores asíncronos (unhandledRejection mataba el proceso
+// a mitad del banco). Sobrevivir y seguir: la escalera del juego cubre con
+// speechSynthesis cualquier fichero que falte (diseño Task 29).
+process.on("unhandledRejection", (e) => {
+  console.error(`(rechazo SDK ignorado: ${String(e).slice(0, 120)})`);
+});
 
 async function genOne(zai, text, path) {
   for (let attempt = 0; attempt <= RETRIES; attempt++) {
     try {
-      const response = await zai.audio.tts.create({
-        input: text, voice: VOICE, speed: SPEED, volume: VOLUME,
-        response_format: "mp3", stream: false,
-      });
+      const response = await Promise.race([
+        zai.audio.tts.create({
+          input: text, voice: VOICE, speed: SPEED, volume: VOLUME,
+          response_format: "wav", stream: false,
+        }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("call timeout 30s")), CALL_TIMEOUT_MS)),
+      ]);
       const arrayBuffer = await response.arrayBuffer();
       const buffer = Buffer.from(new Uint8Array(arrayBuffer));
       if (buffer.length < 800) throw new Error(`buffer corto (${buffer.length}B)`);
       writeFileSync(path, buffer);
       return true;
     } catch (e) {
+      const msg = String(e?.message ?? e);
       if (attempt === RETRIES) {
-        console.error(`FALLO [${path}]: ${e?.message ?? e}`);
+        console.error(`FALLO [${path}]: ${msg}`);
         return false;
       }
-      await new Promise((r) => setTimeout(r, 3000 * (attempt + 1))); // 429 → retroceso
+      // 429 (cuota) → retroceso LARGO (20-100 s); otros errores → 3-15 s.
+      const waitS = msg.includes("429") ? 20 + attempt * 20 : 3 + attempt * 4;
+      await new Promise((r) => setTimeout(r, waitS * 1000));
     }
   }
   return false;
@@ -82,7 +97,10 @@ async function main() {
     process.stdout.write("\n");
   }
   console.log(`LISTO: ok=${ok} skip=${skip} fail=${fail}`);
-  if (fail > 0) process.exitCode = 1;
+  if (fail > 0) {
+    console.log("(re-ejecutable: los que faltan se regeneran con otra pasada cuando la cuota se recupere)");
+    process.exitCode = 1;
+  }
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

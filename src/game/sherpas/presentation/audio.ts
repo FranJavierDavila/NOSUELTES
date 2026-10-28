@@ -156,10 +156,14 @@ export class SherpaAudio {
     if (!this.ctx || !this.voiceGain) return;
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
-    // "gritando con tono burlesco": cada grito con levantón y velocidad propia
-    src.playbackRate.value = 1.08 + Math.random() * 0.18;
+    // "gritando con tono burlesco": cada grito con levantón y velocidad PROPIOS
+    // (rango data-driven en audio.json — el grito REAL grabado usa un rango más
+    // suave que el TTS: una voz humana subida de más suena a picaresca).
+    const v = this.data.voice;
+    const rMin = v?.rateMin ?? 1.08, rMax = v?.rateMax ?? 1.26;
+    src.playbackRate.value = rMin + Math.random() * Math.max(0, rMax - rMin);
     const g = this.ctx.createGain();
-    g.gain.value = 0.95;
+    g.gain.value = v?.gain ?? 0.95;
     src.connect(g).connect(this.voiceGain);
     src.start();
   }

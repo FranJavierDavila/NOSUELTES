@@ -88,6 +88,11 @@ export class WallGenerator {
   private widthM: number;
   private zHold: number;
   private patternCache = new Map<number, RoutePattern>();
+  /** RUTAS POR DATOS (T38): patrón por GRUPO de bandas del plan activo, o null
+   *  si no hay plan válido (→ muestreo aleatorio ponderado como antes). */
+  private planGroups: RoutePattern[] | null;
+  /** id del plan activo (sonda E2E/debug); null = muestreo aleatorio. */
+  readonly planId: string | null;
 
   constructor(deps: GeneratorDeps, seed: Seed) {
     this.deps = deps;
@@ -95,6 +100,25 @@ export class WallGenerator {
     this.widthM = deps.wallGen.wall.widthM;
     this.zHold = deps.wallGen.wall.zFront - deps.wallGen.wall.holdProudM;
     this.layout = this.computeLayout();
+    this.planId = deps.wallGen.route?.activePlan ?? null;
+    this.planGroups = this.resolveRoutePlan(deps.wallGen.route);
+  }
+
+  /** RUTAS POR DATOS: el plan (wall_gen.route.plans[activePlan]) EXPANDE sus
+   *  segmentos a un patrón por grupo de bandas. Cualquier defecto (plan
+   *  desconocido, segmento con patrón inexistente, sin segmentos) → null: el
+   *  generador cae al muestreo ponderado y el juego NUNCA se rompe por datos. */
+  private resolveRoutePlan(route?: WallGenData["route"]): RoutePattern[] | null {
+    if (!route?.plans || !route.activePlan) return null;
+    const plan = route.plans[route.activePlan];
+    if (!plan?.segments?.length) return null;
+    const out: RoutePattern[] = [];
+    for (const seg of plan.segments) {
+      const pat = route.patterns.find((p) => p.id === seg.pattern);
+      if (!pat) return null; // referencia rota → plan inválido
+      for (let i = 0; i < Math.max(1, Math.floor(seg.bands)); i++) out.push(pat);
+    }
+    return out.length ? out : null;
   }
 
   private computeLayout(): WallLayout {
@@ -222,7 +246,10 @@ export class WallGenerator {
   }
 
   /** Patrón del tramo al que pertenece la banda (determinista por semilla).
-   *  Arranque y campamentos siempre "libres" (zonas seguras, doc 8.3). */
+   *  Arranque y campamentos siempre "libres" (zonas seguras, doc 8.3).
+   *  RUTAS POR DATOS (T38): si hay plan activo, el patrón de cada grupo lo fija
+   *  el plan (los grupos más allá del plan CICLAN — el ritmo vuelve a empezar);
+   *  sin plan válido → muestreo aleatorio ponderado (comportamiento anterior). */
   patternOfBand(index: number): RoutePattern {
     const cached = this.patternCache.get(index);
     if (cached) return cached;
@@ -234,15 +261,25 @@ export class WallGenerator {
       pat = route?.patterns.find((p) => p.id === "libre") ?? pick();
     } else {
       const group = Math.floor(index / Math.max(1, route.patternBands));
-      const rng = makeRng(bandRngSeed(this.seed, 0x51ed0000 + group));
-      const patterns = route.patterns;
-      const total = patterns.reduce((s, p) => s + Math.max(0, p.weight), 0);
-      let r = rng.range(0, Math.max(1e-6, total));
-      pat = patterns[patterns.length - 1];
-      for (const p of patterns) { r -= Math.max(0, p.weight); if (r <= 0) { pat = p; break; } }
+      if (this.planGroups && this.planGroups.length) {
+        pat = this.planGroups[group % this.planGroups.length]; // CICLA al acabarse
+      } else {
+        const rng = makeRng(bandRngSeed(this.seed, 0x51ed0000 + group));
+        const patterns = route.patterns;
+        const total = patterns.reduce((s, p) => s + Math.max(0, p.weight), 0);
+        let r = rng.range(0, Math.max(1e-6, total));
+        pat = patterns[patterns.length - 1];
+        for (const p of patterns) { r -= Math.max(0, p.weight); if (r <= 0) { pat = p; break; } }
+      }
     }
     this.patternCache.set(index, pat);
     return pat;
+  }
+
+  /** Vista previa del plan por grupos (sonda E2E/debug): los primeros n grupos
+   *  con su patrón (los grupos de campamento/salida aparecen como "libre"). */
+  planGroupsPreview(n: number): string[] {
+    return Array.from({ length: n }, (_, g) => this.patternIdOfBand(g * Math.max(1, this.deps.wallGen.route?.patternBands ?? 1)));
   }
 
   patternIdOfBand(index: number): string { return this.patternOfBand(index).id; }

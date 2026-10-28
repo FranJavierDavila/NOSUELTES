@@ -523,6 +523,8 @@ export class SherpasMatch {
           this.d.hud.subtitle(this.d.hud.fmt("hud.ropeCatch", { name: `P${p + 1}` }), 2.6);
         }
         this.d.scene.shake(this.d.hud.wantsReduceShake ? 0.02 : 0.055);
+        // JUICE T38: chispas ámbar en la cintura — el chicote se VE agarrar.
+        this.d.scene.fxSpark(this.sherpas[p].rig.particles[P.pelvisC].pos);
         this.propina.add(this.data.tuning.fall.ropeCatchPropina ?? -3, "rope_catch", this.d.bus);
         this.brain.panic(); // el tirón lo despierta/soresalta
         this.d.bus.emit("RopeCaught", { playerId: p, dropM: Math.round(info.rope.dropM * 100) / 100 });
@@ -1054,28 +1056,34 @@ export class SherpasMatch {
    *  → nunca falla; y sin presas ni hielo traicionero ni presa sorpresa. */
   private checkpointRespawnHolds(cp: Checkpoint): [HoldInstance, HoldInstance, HoldInstance?, HoldInstance?] {
     this.gen.ensureUpToY(cp.y + 6);
+    // LECCIÓN T38 (cazada en la regresión t37): elegir la mano de cada sherpa
+    // INDEPENDIENTEMENTE (cada una la más cercana a la línea) puede dejar a los
+    // dos escaladores a 1,4 m de diferencia → la tabla de porteo cuelga
+    // ESCORADA → el ricachón resbala → 2º TeamFell que manda al inicio (¡el
+    // respawn por cotas se invalida a sí mismo!). La PAREJA manda: primero la
+    // mano izquierda más cercana a la cota, y la derecha se elige a SU ALTURA.
+    const pickPair = (near: HoldInstance[]): [HoldInstance, HoldInstance, HoldInstance?, HoldInstance?] | null => {
+      const left = near.filter((h) => h.pos.x < -0.3).sort((a, b) => Math.abs(a.pos.y - cp.y) - Math.abs(b.pos.y - cp.y));
+      const right = near.filter((h) => h.pos.x > 0.3).sort((a, b) => Math.abs(a.pos.y - cp.y) - Math.abs(b.pos.y - cp.y));
+      if (left.length < 2 || right.length < 2) return null;
+      const la = left[0];
+      const ra = [...right].sort((a, b) => Math.abs(a.pos.y - la.pos.y) - Math.abs(b.pos.y - la.pos.y))[0];
+      const lb = left.find((h) => h.id !== la.id && Math.abs(h.pos.y - la.pos.y) < 1.6) ?? left[1];
+      const rb = right.find((h) => h.id !== ra.id && Math.abs(h.pos.y - ra.pos.y) < 1.6) ?? right.find((h) => h.id !== ra.id);
+      return [la, lb, ra, rb];
+    };
     for (const win of [1.2, 2.0, 3.0]) {
       const near = [...this.anchors.holds.values()].filter((h) =>
         !h.camp && h.type === "rock_firm" && Math.abs(h.pos.y - cp.y) <= win);
-      const left = near.filter((h) => h.pos.x < -0.3).sort((a, b) => Math.abs(a.pos.y - cp.y) - Math.abs(b.pos.y - cp.y));
-      const right = near.filter((h) => h.pos.x > 0.3).sort((a, b) => Math.abs(a.pos.y - cp.y) - Math.abs(b.pos.y - cp.y));
-      if (left.length >= 2 && right.length >= 2) {
-        const la = left[0];
-        const lb = left.find((h) => h.id !== la.id && Math.abs(h.pos.y - la.pos.y) < 1.6) ?? left[1];
-        const ra = right[0];
-        const rb = right.find((h) => h.id !== ra.id && Math.abs(h.pos.y - ra.pos.y) < 1.6) ?? right[1];
-        return [la, lb, ra, rb];
-      }
+      const pair = pickPair(near);
+      if (pair) return pair;
     }
     // ampliamos a cualquier presa no traicionera (hielo sí, sorpresa no)
     for (const win of [1.6, 2.4, 3.2]) {
       const near = [...this.anchors.holds.values()].filter((h) =>
         !h.camp && h.type !== "surprise_fart" && h.type !== "ice_plate" && Math.abs(h.pos.y - cp.y) <= win);
-      const left = near.filter((h) => h.pos.x < -0.3).sort((a, b) => Math.abs(a.pos.y - cp.y) - Math.abs(b.pos.y - cp.y));
-      const right = near.filter((h) => h.pos.x > 0.3).sort((a, b) => Math.abs(a.pos.y - cp.y) - Math.abs(b.pos.y - cp.y));
-      if (left.length >= 2 && right.length >= 2) {
-        return [left[0], left[1], right[0], right[1]];
-      }
+      const pair = pickPair(near);
+      if (pair) return pair;
     }
     // respaldo honesto: el campamento por debajo (el validador lo garantiza).
     const camp = this.gen.campAtOrBelow(cp.y);
@@ -1296,6 +1304,8 @@ export class SherpasMatch {
       // burlesco"): TTS pregenerado con tono subido; si falta el fichero,
       // speechSynthesis; si no hay voz, charla sintética cómica.
       this.d.audio.shout(p.text, this.d.hud.lang);
+      // JUICE T38: bocanadas de furia sobre su cabeza — el enojo se VE.
+      this.d.scene.fxRage(this.rich.bodies[RM.head].pos);
       this.d.hud.subtitle(p.text, 3.8);
       this.pendingBubbles.push({ text: p.text, until: this.simTime + 3.8 });
     });
@@ -1572,7 +1582,8 @@ export class SherpasMatch {
     const limbsProbe = ([0, 1] as const).flatMap((p) => LIMBS.map((l) => {
       const w = this.sherpas[p].limbPos(l);
       const sp = this.d.scene.projectToScreenCss(w);
-      return { p, l, sx: Math.round(sp.x * 10) / 10, sy: Math.round(sp.y * 10) / 10, wx: Math.round(w.x * 100) / 100, wy: Math.round(w.y * 100) / 100 };
+      const st = this.sherpas[p].states.get(l)!;
+      return { p, l, sx: Math.round(sp.x * 10) / 10, sy: Math.round(sp.y * 10) / 10, wx: Math.round(w.x * 100) / 100, wy: Math.round(w.y * 100) / 100, t: Math.round(st.tension * 100) / 100 };
     }));
     const holdsProbe: { id: string; sx: number; sy: number; wx: number; wy: number }[] = [];
     for (const h of this.anchors.holds.values()) {
@@ -1605,7 +1616,16 @@ export class SherpasMatch {
       checkpoints: { total: this.cps.list.length, reached: this.cps.reachedCount(), lastY: this.cps.highestReachedY() },
       coop: ([0, 1] as const).map((p) => ({ anchored: this.sherpas[p].belaying, impulse: this.sherpas[p].impulseActive() })),
       respawn: this.lastRespawn,
-      route: { band: this.gen.bandIndexOf((waD.y + wbD.y) / 2), pattern: this.gen.patternIdOfBand(this.gen.bandIndexOf((waD.y + wbD.y) / 2)) },
+      route: {
+        band: this.gen.bandIndexOf((waD.y + wbD.y) / 2),
+        pattern: this.gen.patternIdOfBand(this.gen.bandIndexOf((waD.y + wbD.y) / 2)),
+        // RUTAS POR DATOS (sonda E2E): plan activo + patrón de los primeros grupos
+        plan: this.gen.planId,
+        planGroups: this.gen.planGroupsPreview(10),
+      },
+      // JUICE T38 (sonda E2E): contadores de FX de juice (chispas/furia/viñeta)
+      fx: this.d.scene.getFxCounts(),
+      vignette: Math.round(this.d.hud.vignetteLevel() * 1000) / 1000,
       // rachas de viento (sonda E2E)
       weather: { phase: this.weather.state, dir: this.weather.dir, level: Math.round(this.weather.windLevel * 100) / 100, storm: this.weather.storm },
       // Task 31 (sonda E2E): cajas, flatulencia, salientes, hielo resbaladizo

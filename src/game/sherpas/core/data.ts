@@ -185,10 +185,15 @@ export interface WallGenData {
   camp: { zoneHeightM: number; zoneWidthM: number; restRingRadiusM: number };
   start: { yBaseM: number; maxStartSeparationM: number };
   /** Patrones de ruta por tramos de bandas (variedad: a veces obliga a escalar
-   *  MUY separados, otras juntos). Opcional: ausente → todo "libre". */
+   *  MUY separados, otras juntos). Opcional: ausente → todo "libre".
+   *  RUTAS POR DATOS (T38): plans = secuencias AUTORADAS de patrones por grupos
+   *  de bandas; activePlan elige el plan (los grupos más allá del plan CICLAN).
+   *  Plan ausente/inválido → muestreo aleatorio ponderado (comportamiento previo). */
   route?: {
     patternBands: number;
     patterns: { id: string; weight: number; clusterHalfWidthM?: number; clusterBridgeM?: number; laneGapHalfWidthM?: number; laneBridgeM?: number }[];
+    activePlan?: string;
+    plans?: Record<string, { description?: string; segments: { pattern: string; bands: number }[] }>;
   };
   /** PARED IRREGULAR (petición del jugador: "no siempre perpendicular y plana,
    *  con zonas de salientes para complicar la escalada"). En bandas elegidas
@@ -266,6 +271,9 @@ export interface HudData {
   daltonismPalette: { tensionGradient: string[]; anchorTypeColors: Record<string, string> };
   propina: { color: string; startValue: number; maxValue: number };
   telegraphBanner: { durationSeconds: number; color: string };
+  /** VIÑETA DE PELIGRO (juice T38): borde rojo pulsante cuando la tensión
+   *  máxima roza el límite o la tabla está al borde. Opcional (ausente → nada). */
+  dangerVignette?: { color: string; maxOpacity: number; warnAt: number; plankDangerAt: number };
 }
 export interface CameraData {
   baseDist: number; distPerMeterSpread: number; maxDist: number; minDist: number;
@@ -278,6 +286,10 @@ export interface AudioData {
   ducking: { db: number; attackSeconds: number; releaseSeconds: number; applyTo: string[] };
   creak: { tensionThreshold: number; hzRange: [number, number]; gain: number; minIntervalSeconds: number };
   sfx: Record<string, AudioSfxData>;
+  /** VOZ del ricachón (MP3 reales + TTS): playbackRate aleatorio en el rango
+   *  [rateMin..rateMax] y ganancia por reproducción — nunca suena dos veces igual.
+   *  Opcional: ausente → 1.08..1.26 / 0.95 (comportamiento anterior). */
+  voice?: { rateMin: number; rateMax: number; gain: number };
 }
 export interface VfxData {
   grabChalk: { count: number; spread: number };
@@ -289,6 +301,10 @@ export interface VfxData {
   birdShadow: { radiusM: number; opacity: number };
   breathVaho: { minNarrativeHeight: number; ratePerSecond: number };
   confetti: { count: number; spread: number };
+  /** JUICE T38: chispas ámbar cuando el chicote CAPTURA una caída. */
+  ropeSpark?: { count: number; spread: number; color: string };
+  /** JUICE T38: bocanadas de furia sobre el ricachón en cada insulto. */
+  ragePuff?: { count: number; spread: number; color: string };
 }
 export interface NetData { snapshotHz: number; interpBufferMs: number; fullSnapshotSeconds: number; reconnectPauseSeconds: number; latencyTargetMs: number; note: string }
 export interface VoiceData { opusBitrateKbps: number; echoCancellation: boolean; noiseSuppression: boolean; autoGainControl: boolean; pushToTalkDefault: boolean; vadThreshold: number; peerVolumeDefault?: number; note: string }
@@ -406,6 +422,14 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
           patternBands: { type: "integer", minimum: 1 },
           patterns: { type: "array", minItems: 1, items: { type: "object", required: ["id", "weight"], properties: {
             id: { type: "string" }, weight: posNum, clusterHalfWidthM: posNum, clusterBridgeM: posNum, laneGapHalfWidthM: posNum, laneBridgeM: posNum,
+          } } },
+          // RUTAS POR DATOS (T38): plan activo + secuencias autoradas por segmentos.
+          activePlan: { type: "string" },
+          plans: { type: "object", minProperties: 1, additionalProperties: { type: "object", required: ["segments"], properties: {
+            description: { type: "string" },
+            segments: { type: "array", minItems: 1, items: { type: "object", required: ["pattern", "bands"], properties: {
+              pattern: { type: "string", minLength: 1 }, bands: { type: "integer", minimum: 1 },
+            } } },
           } } },
         } },
         salientes: { type: "object", required: ["chancePerBand", "minWidthM", "maxWidthM", "depthM", "heightM", "fatigueMult", "minBand"], properties: {

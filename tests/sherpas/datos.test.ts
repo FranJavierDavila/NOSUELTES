@@ -48,6 +48,25 @@ describe("pack de datos sherpas (doc 11)", () => {
     await expect(loadSherpasData(broken, "public/content/sherpas")).rejects.toThrow(DataValidationError);
   });
 
+  it("T38 voz + juice restante: audio.voice, vfx spark/rage y viñeta de peligro llegan del dato", async () => {
+    const d = await load();
+    // VOZ (grito REAL del ricachón): rango de playbackRate + ganancia data-driven
+    expect(d.audio.voice).toBeTruthy();
+    expect(d.audio.voice!.rateMin).toBeGreaterThan(0.9);
+    expect(d.audio.voice!.rateMax).toBeGreaterThan(d.audio.voice!.rateMin);
+    expect(d.audio.voice!.gain).toBeGreaterThan(0);
+    // JUICE: chispas del chicote + humo de furia (vfx.json)
+    expect(d.vfx.ropeSpark?.count ?? 0).toBeGreaterThan(0);
+    expect(d.vfx.ragePuff?.color ?? "").toMatch(/^#[0-9a-fA-F]{6}$/);
+    // VIÑETA de peligro (hud.json): color + umbrales coherentes
+    const v = d.hud.dangerVignette;
+    expect(v).toBeTruthy();
+    expect(v!.color).toMatch(/^#[0-9a-fA-F]{6}$/);
+    expect(v!.warnAt).toBeGreaterThan(0.5);
+    expect(v!.maxOpacity).toBeGreaterThan(0);
+    expect(v!.maxOpacity).toBeLessThanOrEqual(1);
+  });
+
   it("EXTENSIBILIDAD (doc 11.5): tipo de anclaje nuevo solo con datos", async () => {
     const d = await load();
     // el "código" genérico (AnchorSystem) acepta un tipo nuevo sin cambios:
