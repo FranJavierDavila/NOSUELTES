@@ -53,9 +53,11 @@ describe("tabla de porteo (petición del jugador)", () => {
     const { last, a, b } = run(90, 2.6, 1.8);
     expect(vLen(vSub(last.ends[0], a))).toBeLessThanOrEqual(t.ropeLen + 1e-3);
     expect(vLen(vSub(last.ends[1], b))).toBeLessThanOrEqual(t.ropeLen + 1e-3);
-    // nodos visuales: primero en el sherpa, último en el cabo
+    // nodos visuales: primero en el sherpa, CABO clavado en su índice y COLA
+    // libre colgando bajo el cabo (Task 30: "un metro hacia abajo")
     expect(vLen(vSub(last.nodesA[0], a))).toBeLessThan(1e-6);
-    expect(vLen(vSub(last.nodesA[last.nodesA.length - 1], last.ends[0]))).toBeLessThan(1e-6);
+    expect(vLen(vSub(last.nodesA[t.visualNodes], last.ends[0]))).toBeLessThan(1e-6);
+    expect(last.nodesA[last.nodesA.length - 1].y).toBeLessThan(last.ends[0].y);
     expect(vLen(vSub(last.nodesB[0], b))).toBeLessThan(1e-6);
   });
 

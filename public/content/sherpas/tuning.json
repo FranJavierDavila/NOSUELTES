@@ -31,7 +31,10 @@
     "slackFactor": 0.9,
     "maxCatchSpeed": 6.0,
     "maxCorrectionPerTick": 0.05,
-    "waistEffectiveMass": 38.0
+    "waistEffectiveMass": 38.0,
+    "tailNodes": 7,
+    "tailLen": 1.0,
+    "visualSlackM": 0.25
   },
   "richMan": {
     "mass": 85,
@@ -77,8 +80,9 @@
     "warningSeconds": 2.2,
     "gustSeconds": 3.4,
     "minAltitudeM": 2.2,
-    "pushPerSecondM": 0.42,
-    "ropeWindAccel": 1.0,
-    "wobble": 0.35
+    "pushPerSecondM": 0.9,
+    "ropeWindAccel": 2.4,
+    "wobble": 0.35,
+    "gustPulseHz": 1.6
   }
 }

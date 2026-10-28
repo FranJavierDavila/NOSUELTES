@@ -159,12 +159,15 @@ export class SherpasMatch {
     ];
 
     // la tabla toma de tuning.rope los parámetros de la cuerda VISUAL (cadena
-    // verlet): única fuente de verdad, sin duplicar datos (doc 11.3).
+    // verlet + COLA colgante): única fuente de verdad, sin duplicar datos (doc 11.3).
     this.plank = new PlankSystem({
       ...this.data.tuning.plank,
       visualNodes: this.data.tuning.rope.visualNodes,
       nodeDamping: this.data.tuning.rope.nodeDamping ?? 0.975,
       slackGravity: this.data.tuning.rope.slackGravity ?? 9.81,
+      ropeTailNodes: this.data.tuning.rope.tailNodes ?? 7,
+      ropeTailLen: this.data.tuning.rope.tailLen ?? 1.0,
+      visualSlack: this.data.tuning.rope.visualSlackM ?? 0.25,
     });
     this.plankLenM = this.data.tuning.plank?.plankLen ?? PLANK_DEFAULTS.plankLen;
     const wa0 = this.sherpas[0].waist();
@@ -393,21 +396,28 @@ export class SherpasMatch {
     }
     const wl = this.weather.windLevel;
     this.d.audio.gustLevel(wl);
-    let windWobble = 0;
     let ropeWindX = 0;
+    let windShake = 0;
     if (wl > 0.001) {
       const wdir = this.weather.dir;
-      // empuje lateral a los CUERPOS: traslación posicional (pos y prev a media
-      // velocidad → deriva con algo de inercia, sin energía fantasma).
-      const dx = wdir * this.data.tuning.weather.pushPerSecondM * wl * dt;
+      // RACHA CON PULSO (ráfagas dentro de la racha): el empujón a los CUERPOS
+      // late con la racha — se nota que el viento te empuja, no una deriva sorda
+      // (petición: "partículas en la dirección del viento y también empujan a
+      // los escaladores"). Traslación posicional (pos y prev a media velocidad
+      // → deriva con inercia, sin energía fantasma; los pins re-cogen los pies).
+      const pulseHz = this.data.tuning.weather.gustPulseHz ?? 1.6;
+      const pulse = 0.72 + 0.28 * Math.sin(this.simTime * Math.PI * 2 * pulseHz);
+      const dx = wdir * this.data.tuning.weather.pushPerSecondM * wl * pulse * dt;
       for (const s of this.sherpas) {
         for (const pt of s.rig.particles) {
           pt.pos = vAdd(pt.pos, v3(dx, 0, 0));
-          pt.prev = vAdd(pt.prev, v3(dx * 0.55, 0, 0));
+          pt.prev = vAdd(pt.prev, v3(dx * 0.62, 0, 0));
         }
       }
-      windWobble = wdir * this.data.tuning.weather.wobble * wl;
       ropeWindX = wdir * this.data.tuning.weather.ropeWindAccel * wl;
+      // sacudida de la tabla: el viento OSCILA (va y vuelve), no acumula deriva
+      // — sacudir sí, despachar al ricachón NO (petición del jugador).
+      windShake = wdir * wl;
     }
 
     // AVISOS DE FATIGA (papel claro de los indicadores, petición del jugador):
@@ -431,7 +441,7 @@ export class SherpasMatch {
     // cada sherpa + pose sentada. Si la tabla se desequilibra, el ricachón
     // DESLIZA y puede caer al vacío (caída de equipo, petición del jugador).
     this.brain.tick(dt, this.simTime);
-    const wobble = this.rich.drainWobble() + windWobble;
+    const wobble = this.rich.drainWobble(); // el viento va por windShake: no mezclar
     // pose del ricachón mandada por el FSM: sentado ⇄ de pie ⇄ caminando
     // (petición del jugador). Caminar desplaza la masa REAL sobre la tabla: el
     // lado cargado se hunde, tira de su sherpa y descarga al otro.
@@ -461,6 +471,7 @@ export class SherpasMatch {
       time: this.simTime,
       wobble,
       ropeWindX,
+      windShake,
       moveSherpa: (p, delta) => {
         const w = this.sherpas[p].rig.particles[P.pelvisC];
         w.pos = vAdd(w.pos, delta);
@@ -926,13 +937,16 @@ export class SherpasMatch {
     s.syncAim(1, !dragging && this.simTime < this.kbAimUntil[1] ? this.sherpas[1].aim : null, this.wallFrontZ);
     if (this.plankState) {
       s.syncRope(this.plankState.nodesA, this.plankState.nodesB);
-      s.syncPlank(this.plankState.center, this.plankState.angle, this.plankLenM);
+      // el ángulo DIBUJADO lleva la oscilación de la racha (solo cosmética)
+      s.syncPlank(this.plankState.center, this.plankState.angle + this.plankState.angleShake, this.plankLenM);
     }
     s.syncRichMan(this.rich, this.alpha);
     const t0 = this.trash[0];
     s.syncTrash(t0 && t0.alive ? t0.pos : null, this.simTime * 6);
     s.syncUrine(this.urine ? this.urine.particles.map((p) => ({ pos: p.pos, life: p.life })) : null);
     s.syncBirds(this.birds.birdsForRender());
+    // ráfagas visibles: rayas cruzando EN la dirección del viento (rachas)
+    s.setWind(this.weather.dir, this.weather.windLevel, frameDt);
     const wa = this.sherpas[0].waist();
     const wb = this.sherpas[1].waist();
     const camPts = this.plankState ? [wa, wb, this.plankState.center] : [wa, wb];
@@ -1012,7 +1026,7 @@ export class SherpasMatch {
       limbs: limbsProbe,
       holds: holdsProbe,
       drag: this.dragLimb ? { p: this.dragPlayer, l: this.dragLimb, magnet: magnetId } : null,
-      plank: pkD ? { tiltDeg: Math.round(pkD.tiltDeg * 10) / 10, slide: Math.round(pkD.slideFrac * 100) / 100, fell: pkD.fellOff } : null,
+      plank: pkD ? { tiltDeg: Math.round(pkD.tiltDeg * 10) / 10, slide: Math.round(pkD.slideFrac * 100) / 100, fell: pkD.fellOff, shakeDeg: Math.round((pkD.angleShake * 180) / Math.PI * 10) / 10 } : null,
       rich: {
         state: this.brain.state,
         gesture: this.rich.gesture,

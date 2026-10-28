@@ -1,9 +1,10 @@
 /**
- * Task 29 — mecánicas desequilibrantes + cuerda real + indicadores:
+ * Task 29/30 — mecánicas desequilibrantes + cuerda real + indicadores:
  *  1. CUERDA VERLET (petición: "que se comporte realmente como una cuerda...
- *     pequeños cilindros unidos que permitan que se doble y balancee").
- *  2. RACHAS DE VIENTO (mecánica desequilibrante): aviso → racha → calma,
- *     determinista por semilla.
+ *     pequeños cilindros unidos que permitan que se doble y balancee") con COLA
+ *     libre colgando del cabo (Task 30: "un metro hacia abajo en ambos lados").
+ *  2. RACHAS DE VIENTO: aviso → racha → calma, determinista por semilla; y
+ *     (Task 30) la racha SACUDE la tabla sin despachar al ricachón.
  *  3. CHIPS DE EXTREMIDADES (papel claro de los indicadores).
  */
 import { describe, it, expect } from "vitest";
@@ -18,22 +19,37 @@ describe("cuerda visual verlet (plank)", () => {
   const mk = () => new PlankSystem({ ...PLANK_DEFAULTS });
 
   /** pasa n ticks con los sherpas fijos; devuelve el último estado. */
-  const run = (plank: PlankSystem, n: number, ay = 3.6, by = 3.2, ax = -1, bx = 1, windX = 0) => {
+  const run = (plank: PlankSystem, n: number, ay = 3.6, by = 3.2, ax = -1, bx = 1, windX = 0, windShake = 0) => {
     const a = v3(ax, ay, Z - 0.22);
     const b = v3(bx, by, Z - 0.22);
     let last = plank.reset(a, b, Z, a, b);
     for (let i = 0; i < n; i++) {
-      last = plank.step(1 / 60, { a, b, wallFrontZ: Z, time: i / 60, wobble: 0, ropeWindX: windX, moveSherpa: () => {} });
+      last = plank.step(1 / 60, { a, b, wallFrontZ: Z, time: i / 60, wobble: 0, ropeWindX: windX, windShake, moveSherpa: () => {} });
     }
     return { last, a, b };
   };
 
-  it("nace con visualNodes+1 nodos y los extremos clavados a 1e-6", () => {
+  it("nace con tramo + COLA y el CABO clavado a 1e-6 (la cola es libre)", () => {
     const p = mk();
     const { last, a } = run(p, 1);
-    expect(last.nodesA.length).toBe(PLANK_DEFAULTS.visualNodes + 1);
+    expect(last.nodesA.length).toBe(PLANK_DEFAULTS.visualNodes + PLANK_DEFAULTS.ropeTailNodes + 1);
     expect(vLen(vSub(last.nodesA[0], a))).toBeLessThan(1e-6);
-    expect(vLen(vSub(last.nodesA[last.nodesA.length - 1], last.ends[0]))).toBeLessThan(1e-6);
+    const cabo = last.nodesA[PLANK_DEFAULTS.visualNodes];
+    expect(vLen(vSub(cabo, last.ends[0]))).toBeLessThan(1e-6);
+  });
+
+  it("la COLA cuelga ~un metro bajo el extremo de la tabla (petición: 'un metro hacia abajo')", () => {
+    const p = mk();
+    const { last } = run(p, 150, 3.6, 3.2, -1, 1);
+    const cabo = last.nodesA[PLANK_DEFAULTS.visualNodes];
+    const tip = last.nodesA[last.nodesA.length - 1];
+    const drop = cabo.y - tip.y;
+    expect(drop).toBeGreaterThan(0.7);  // cuelga hacia abajo de verdad
+    expect(drop).toBeLessThan(1.2);     // ≈ la cola entera (1 m)
+    expect(Math.abs(tip.x - cabo.x)).toBeLessThan(0.35); // casi vertical en calma
+    const caboB = last.nodesB[PLANK_DEFAULTS.visualNodes];
+    const tipB = last.nodesB[last.nodesB.length - 1];
+    expect(caboB.y - tipB.y).toBeGreaterThan(0.7); // ambos lados
   });
 
   it("se DOBLA: con holgura, el punto medio cae por debajo de la línea recta", () => {
@@ -62,17 +78,20 @@ describe("cuerda visual verlet (plank)", () => {
     expect(maxDev).toBeGreaterThan(0.015); // curva/balanceo real, no recta
   });
 
-  it("el viento lateral empuja la cuerda en SU dirección", () => {
+  it("el viento lateral empuja la cuerda en SU dirección (y la cola borda más)", () => {
     const sinViento = run(mk(), 60, 3.6, 3.2, -1, 1, 0).last;
     const conViento = run(mk(), 60, 3.6, 3.2, -1, 1, 2.5).last;
     const midSin = sinViento.nodesA[Math.floor(sinViento.nodesA.length / 2)];
     const midCon = conViento.nodesA[Math.floor(conViento.nodesA.length / 2)];
     expect(midCon.x).toBeGreaterThan(midSin.x + 0.005); // viento +x → cuerda a +x
+    const tipSin = sinViento.nodesA[sinViento.nodesA.length - 1];
+    const tipCon = conViento.nodesA[conViento.nodesA.length - 1];
+    expect(tipCon.x).toBeGreaterThan(tipSin.x + 0.02); // la cola, expuesta, aún más
   });
 
   it("es DETERMINISTA: misma secuencia → mismos nodos", () => {
-    const r1 = run(mk(), 30);
-    const r2 = run(mk(), 30);
+    const r1 = run(mk(), 30, 3.6, 3.2, -1, 1, 0.8, 0.9);
+    const r2 = run(mk(), 30, 3.6, 3.2, -1, 1, 0.8, 0.9);
     for (let i = 0; i < r1.last.nodesA.length; i++) {
       expect(vLen(vSub(r1.last.nodesA[i], r2.last.nodesA[i]))).toBeLessThan(1e-9);
     }
@@ -86,6 +105,60 @@ describe("cuerda visual verlet (plank)", () => {
       expect(Number.isFinite(n.y)).toBe(true);
       expect(Number.isFinite(n.z)).toBe(true);
     }
+  });
+});
+
+describe("racha sobre la tabla: sacudir SIN despachar (Task 30)", () => {
+  // sherpas a la MISMA altura: tabla nivelada (con desnivel el cono de
+  // rozamiento ya desliza solo — eso lo prueba tabla.test.ts; aquí el viento
+  // es el único actor).
+  const A = v3(-1, 3.4, Z - 0.22);
+  const B = v3(1, 3.4, Z - 0.22);
+  const mkRun = (n: number, shake: (i: number) => number) => {
+    const p = new PlankSystem({ ...PLANK_DEFAULTS });
+    p.reset(A, B, Z, A, B);
+    let last = p.state(A, B, 0);
+    let peak = 0;
+    for (let i = 0; i < n; i++) {
+      last = p.step(1 / 60, { a: A, b: B, wallFrontZ: Z, time: i / 60, wobble: 0, windShake: shake(i), moveSherpa: () => {} });
+      peak = Math.max(peak, Math.abs(last.angleShake));
+    }
+    return { last, peak };
+  };
+
+  it("una racha BESTIA constante (nivel 1, 6 s) sacude pero NO tira al ricachón", () => {
+    const { last } = mkRun(60 * 6, () => 1);
+    expect(last.fellOff).toBe(false);
+    expect(last.slideFrac).toBeLessThan(0.3); // oscila alrededor del centro
+  });
+
+  it("una racha hacia −x TAMBIÉN sacude (regresión del signo: el umbral es |windShake|)", () => {
+    const { peak, last } = mkRun(60 * 3, () => -1);
+    expect(last.fellOff).toBe(false);
+    expect((peak * 180) / Math.PI).toBeGreaterThan(2);
+  });
+
+  it("la sacudida SE NOTA: el ángulo dibujado oscila varios grados (y no es terremoto)", () => {
+    const { peak } = mkRun(60 * 4, (i) => (i > 60 ? 1 : 0));
+    const deg = (peak * 180) / Math.PI;
+    expect(deg).toBeGreaterThan(2);
+    expect(deg).toBeLessThan(6);
+  });
+
+  it("al calmar, la oscilación MUERE (la tabla no queda temblando)", () => {
+    const p = new PlankSystem({ ...PLANK_DEFAULTS });
+    p.reset(A, B, Z, A, B);
+    let last = p.state(A, B, 0);
+    let pico = 0;
+    for (let i = 0; i < 60 * 3; i++) {
+      last = p.step(1 / 60, { a: A, b: B, wallFrontZ: Z, time: i / 60, wobble: 0, windShake: 1, moveSherpa: () => {} });
+      pico = Math.max(pico, Math.abs(last.angleShake)); // pico de la racha (el seno cruza por cero)
+    }
+    for (let i = 0; i < 60 * 3; i++) {
+      last = p.step(1 / 60, { a: A, b: B, wallFrontZ: Z, time: 3 + i / 60, wobble: 0, windShake: 0, moveSherpa: () => {} });
+    }
+    expect(pico).toBeGreaterThan(0.01);
+    expect(Math.abs(last.angleShake)).toBeLessThan(pico * 0.2);
   });
 });
 

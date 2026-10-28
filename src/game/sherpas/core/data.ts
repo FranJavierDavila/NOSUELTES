@@ -9,7 +9,7 @@ export interface LimbTuning {
   baseGripHand: number; baseGripFoot: number; armReach: number; legReach: number; mass: number;
   overloadTension: number; fatigueReleaseAt: number; highTension: number;
 }
-export interface RopeTuning { segmentMax: number; totalMax: number; overstretchAt: number; visualNodes: number; nodeRadius: number; slackGravity: number; iterations: number; nodeMass: number; nodeDamping: number; slackFactor: number; maxCatchSpeed: number; maxCorrectionPerTick: number; waistEffectiveMass: number }
+export interface RopeTuning { segmentMax: number; totalMax: number; overstretchAt: number; visualNodes: number; nodeRadius: number; slackGravity: number; iterations: number; nodeMass: number; nodeDamping: number; slackFactor: number; maxCatchSpeed: number; maxCorrectionPerTick: number; waistEffectiveMass: number; /** COLA libre de la cuerda visual: tramos que cuelgan del cabo de la tabla (petición: "un metro hacia abajo en ambos lados"). */ tailNodes?: number; tailLen?: number; /** cuerda de MÁS del dibujo (m): sin holgura la cadena verlet queda tensa y parece un palo. */ visualSlackM?: number }
 export interface RichManTuning { mass: number; foodBonus: number; massTransitionSeconds: number; harnessOffsetY: number; bumpWallSpeed: number; bumpImpulseToRope: number }
 export interface PlankTuning {
   ropeLen: number; plankLen: number; ropeSag: number; slideAccel: number;
@@ -30,8 +30,13 @@ export interface WeatherTuning {
   pushPerSecondM: number;
   /** aceleración lateral de la cuerda visual a nivel pleno (m/s²). */
   ropeWindAccel: number;
-  /** bamboleo máximo que la racha mete en la tabla (escalar con signo). */
+  /** bamboleo máximo que la racha mete en la tabla (escalar con signo).
+   *  LEGADO: la racha ya no entra por aquí (acumulaba deriva y despachaba al
+   *  ricachón) — ahora sacude vía PlankStepParams.windShake. Se conserva por
+   *  compatibilidad del tuning; el esquema lo sigue exigiendo. */
   wobble: number;
+  /** ráfagas dentro de la racha (Hz): el empujón late, no deriva lineal. */
+  gustPulseHz?: number;
 }
 export interface TuningData {
   schemaVersion: number;
@@ -191,6 +196,7 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
         rope: { type: "object", required: ["segmentMax", "totalMax", "overstretchAt", "visualNodes"], properties: {
           segmentMax: posNum, totalMax: posNum, overstretchAt: { type: "number", exclusiveMinimum: 0, maximum: 1 },
           visualNodes: { type: "integer", minimum: 4 }, nodeRadius: posNum, slackGravity: posNum, iterations: { type: "integer", minimum: 2 },
+          tailNodes: { type: "integer", minimum: 1 }, tailLen: posNum, visualSlackM: posNum,
         } },
         richMan: { type: "object", required: ["mass", "foodBonus"], properties: { mass: posNum, foodBonus: num, massTransitionSeconds: posNum, harnessOffsetY: num, bumpWallSpeed: posNum, bumpImpulseToRope: num } },
         balance: { type: "object", required: ["warnDeltaH", "badDeltaH"], properties: { warnDeltaH: posNum, badDeltaH: posNum } },
@@ -198,7 +204,7 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
         anchors: { type: "object", required: ["attachSeconds", "defaultMaxForceHand", "defaultMaxForceFoot"], properties: { attachSeconds: posNum, defaultMaxForceHand: posNum, defaultMaxForceFoot: posNum, loadSpikeWindow: posNum } },
         weather: { type: "object", required: ["minGapSeconds", "maxGapSeconds", "warningSeconds", "gustSeconds", "minAltitudeM", "pushPerSecondM", "ropeWindAccel", "wobble"], properties: {
           minGapSeconds: posNum, maxGapSeconds: posNum, warningSeconds: posNum, gustSeconds: posNum,
-          minAltitudeM: posNum, pushPerSecondM: posNum, ropeWindAccel: posNum, wobble: posNum,
+          minAltitudeM: posNum, pushPerSecondM: posNum, ropeWindAccel: posNum, wobble: posNum, gustPulseHz: posNum,
         } },
       },
     },

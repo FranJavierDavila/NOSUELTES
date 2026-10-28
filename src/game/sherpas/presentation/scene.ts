@@ -76,7 +76,8 @@ export class SherpaScene {
   // veían — petición del jugador: "no se ven las cuerdas desde las mochilas").
   private ropeSegs: Mesh[][] = [[], []];
   private ropeMat: StandardMaterial | null = null;
-  private static readonly ROPE_POOL = 16; // ≥ visualNodes de tuning.rope
+  private static readonly ROPE_POOL = 24; // ≥ visualNodes (14) + cola (7) de tuning.rope
+  private static readonly STREAK_POOL = 44; // rayas de viento simultáneas
   private trashMesh: Mesh | null = null;
   private urineMeshes: Mesh[] = [];
   private birdMeshes = new Map<number, { body: Mesh; shadow: Mesh }>();
@@ -85,6 +86,15 @@ export class SherpaScene {
   private magnetRing: Mesh | null = null;
   private fxTexture: Texture;
   private snowSystem: ParticleSystem;
+  private snowBaseRate = 0;      // emitRate base por fase (el viento añade el suyo)
+  // RACHA DE VIENTO VISIBLE (petición del jugador): RAYAS volando EN la dirección
+  // del viento. Son MALLAS (pool de boxes finos emissive), no un ParticleSystem:
+  // tras el banco de pruebas (t30-particle-test.png) el material de partículas se
+  // quedó tenue/invisible con texturas de canvas — con mallas el control es total
+  // y la dirección se lee por la elongación. Emisor que sigue a la cámara.
+  private streaks: Mesh[] = [];
+  private streakState: { x: number; y: number; z: number; v: number }[] = [];
+  private streakMat: StandardMaterial | null = null;
   private disposed = false;
   private worldBuilt = false;
 
@@ -118,6 +128,22 @@ export class SherpaScene {
     this.snowSystem.direction2 = new Vector3(0.2, -1, 0);
     this.snowSystem.minEmitPower = 0.4; this.snowSystem.maxEmitPower = 1.1;
     this.snowSystem.start();
+
+    // pool de RAYAS de viento: boxes finos horizontales, brillantes (emissive,
+    // sin luz) — cruzan la pantalla como ventisca en la dirección de la racha.
+    this.streakMat = new StandardMaterial("streakM", this.scene);
+    this.streakMat.emissiveColor = new Color3(0.82, 0.9, 1);
+    this.streakMat.diffuseColor = new Color3(0, 0, 0);
+    this.streakMat.specularColor = new Color3(0, 0, 0);
+    this.streakMat.disableLighting = true;
+    for (let i = 0; i < SherpaScene.STREAK_POOL; i++) {
+      const len = 0.55 + Math.random() * 0.65;
+      const m = MeshBuilder.CreateBox(`streak${i}`, { width: len, height: 0.022, depth: 0.022 }, this.scene);
+      m.material = this.streakMat;
+      m.isVisible = false;
+      this.streaks.push(m);
+      this.streakState.push({ x: 0, y: 0, z: 0, v: 6 });
+    }
   }
 
   static async create(canvas: HTMLCanvasElement, camData: CameraData, hudData: HudData): Promise<SherpaScene> {
@@ -145,7 +171,51 @@ export class SherpaScene {
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, 32, 32);
     dt.update();
+    dt.hasAlpha = true; // sin esto el canal alfa del canvas se ignora: rectángulos blancos
     return dt as unknown as Texture;
+  }
+
+  /** Textura de ráfaga: eliminada — el material de partículas de Babylon se
+   *  quedaba tenue/invisible con texturas de canvas (banco de pruebas
+   *  t30-particle-test.png); las ráfagas son mallas del pool `streaks`. */
+
+  /** RACHA DE VIENTO VISIBLE (petición del jugador): rayas volando EN la
+   *  dirección del viento + nieve ambiental que vuela lateral. level 0 = calma.
+   *  Mallas propias (no ParticleSystem): brillo y dirección garantizados. El
+   *  "emisor" sigue a la cámara: el viento se ve a cualquier altura de la pared. */
+  setWind(dir: number, level: number, dt = 1 / 60): void {
+    const cam = this.camera.position;
+    // nieve ambiental: deriva lateral con la racha (ventisca)
+    const on = level > 0.02;
+    const drift = (Math.sign(dir) || 1) * level * 2.8;
+    this.snowSystem.direction1.set(drift - 0.25, -1, 0);
+    this.snowSystem.direction2.set(drift + 0.25, -1.1, 0);
+    this.snowSystem.minEmitPower = 0.4 + level * 2;
+    this.snowSystem.maxEmitPower = 1.1 + level * 3;
+    this.snowSystem.emitRate = this.snowBaseRate + (on ? 150 * level : 0);
+    const se = this.snowSystem.emitter as Vector3;
+    se.set(cam.x, cam.y + 2.5, -0.6);
+
+    // rayas: N activas según el nivel, integradas a mano, envolvente en x
+    const active = on ? Math.round(8 + (SherpaScene.STREAK_POOL - 8) * level) : 0;
+    const d = Math.sign(dir) || 1;
+    for (let i = 0; i < this.streaks.length; i++) {
+      const m = this.streaks[i];
+      if (i >= active) { m.isVisible = false; continue; }
+      const st = this.streakState[i];
+      // (re)siembra DENTRO del frustum visible (la caja apura el uso del pool)
+      if (!m.isVisible || Math.abs(st.x - cam.x) > 7.5) {
+        st.x = cam.x + (Math.random() * 2 - 1) * 7;
+        st.y = cam.y + 0.6 + (Math.random() * 2 - 1) * 2.6;
+        st.z = -1.5 + Math.random() * 1.05;
+        st.v = 5.5 + Math.random() * 5 + level * 5;
+        m.isVisible = true;
+        m.visibility = 0.55 + Math.random() * 0.45; // profundidad: no todas igual
+      }
+      st.x += d * st.v * dt;
+      if (Math.abs(st.x - cam.x) > 7.5) { m.isVisible = false; continue; } // envolver
+      m.position.set(st.x, st.y, st.z);
+    }
   }
 
   // ---------- mundo ----------
@@ -175,7 +245,10 @@ export class SherpaScene {
     }
   }
 
-  setSnowDensity(perSecond: number): void { this.snowSystem.emitRate = perSecond; }
+  setSnowDensity(perSecond: number): void {
+    this.snowBaseRate = perSecond; // setWind recalcula el emitRate con la racha
+    this.snowSystem.emitRate = perSecond;
+  }
 
   addHolds(holds: HoldInstance[], colors: Record<string, string>): void {
     for (const h of holds) {
