@@ -305,6 +305,15 @@ export class PlankSystem {
     return this.buildState(a, b, true, 0, 0, visualA, visualB);
   }
 
+  /** SONDA E2E (debugForce "caida_rico"): dispara la caída EXACTAMENTE por el
+   *  mismo camino natural (fellOff → launchFall → grito → impacto → respawn). */
+  forceFall(): void {
+    if (!this.fell) {
+      this.fell = true;
+      this.fellDir = 1;
+    }
+  }
+
   step(dt: number, p: PlankStepParams): PlankState {
     const t = this.t;
     const zEnd = p.wallFrontZ - END_Z_OFF;

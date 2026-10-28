@@ -44,6 +44,9 @@ export class RichManSim {
   /** sentado en la tabla: pose cinemática, sin física libre (tabla de porteo). */
   seated = true;
   private wobbleAccum = 0;
+  /** techo de velocidad por tick (caída NORMAL 0,14 ≈ 8,4 m/s; al caer de la
+   *  tabla se libera a 0,27 ≈ 16 m/s: la caída del ricachón es CONTUNDENTE). */
+  private velCap = 0.14;
 
   // ---- pose de juego (petición: gestos graciosos + de pie + pasear) ----
   /** DE PIE sobre la tabla: la fija match según el FSM (de_pie/caminando) y
@@ -131,6 +134,7 @@ export class RichManSim {
     this.blend = 0;
     this.walkPhase = 0;
     this.lastPoseTime = -1;
+    this.velCap = 0.14; // respawn: techo normal de nuevo
   }
   pelvis(): V3 { return vClone(this.bodies[RM.pelvis].pos); }
   pelvisVel(): V3 { return vScale(vSub(this.bodies[RM.pelvis].pos, this.bodies[RM.pelvis].prev), 1 / Math.max(1e-4, this.lastDt)); }
@@ -389,11 +393,14 @@ export class RichManSim {
     return o;
   }
 
-  /** Se desliza de la tabla: pasa a ragdoll libre con velocidad heredada. */
+  /** Se desliza de la tabla: pasa a ragdoll libre con velocidad heredada.
+   *  CONTUNDENTE (petición del jugador): impulso ×2,4 con caída real hacia
+   *  abajo + techo de velocidad liberado — se despeña, no se escurre. */
   launchFall(dir: number): void {
     this.seated = false;
-    const kick = v3(dir * 0.9 / 60, -0.5 / 60, -0.15 / 60);
+    const kick = v3(dir * 2.2 / 60, -1.4 / 60, -0.4 / 60);
     for (const b of this.bodies) b.prev = vSub(b.pos, kick);
+    this.velCap = 0.27;
   }
 
   /** Paso propio: gravedad + sticks + mínimos + colisiones. SENTADO: solo la
@@ -417,7 +424,7 @@ export class RichManSim {
       // en contacto con el suelo: frena rápido (nada de retorcerse por el suelo).
       if (b.pos.y < this.floorY + b.radius + 0.06) vel = vScale(vel, 0.82);
       const vAbs = vLen(vel);
-      if (vAbs > 0.14) vel = vScale(vel, 0.14 / vAbs); // ≤ ~8.4 m/s
+      if (vAbs > this.velCap) vel = vScale(vel, this.velCap / vAbs);
       b.prev = vClone(b.pos);
       b.pos = vAdd(b.pos, vAdd(vel, vScale(v3(0, -9.81, 0), dt * dt)));
     }

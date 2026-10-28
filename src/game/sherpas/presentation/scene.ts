@@ -43,7 +43,7 @@ import type { CameraData, HudData, PerfTuning } from "../core/data";
 import type { WallLayout } from "../world/wallGenerator";
 
 interface Bone { a: number; b: number; mesh: Mesh; rest: number; offY?: number }
-interface RigVisual { bones: Bone[]; head: Mesh; label: Mesh; roots: Mesh[] }
+interface RigVisual { bones: Bone[]; head: Mesh; roots: Mesh[] }
 
 const TYPE_COLORS: Record<string, string> = {
   rock_firm: "#8d99ae", rock_loose: "#b08968", ice: "#9ad1e8",
@@ -616,12 +616,13 @@ export class SherpaScene {
     head.material = body;
     const pack = MeshBuilder.CreateBox(`p${player}_pack`, { width: 0.3, height: 0.38, depth: 0.14 }, this.scene);
     pack.material = strap;
-    const label = MeshBuilder.CreateTorus(`p${player}_ring`, { diameter: 0.36, thickness: 0.03, tessellation: 16 }, this.scene);
-    label.material = strap;
+    // (el toro-etiqueta bajo la pelvis fue ELIMINADO — petición del jugador:
+    //  no tenía función, el color del cuerpo ya identifica al sherpa; ahorra
+    //  2 mallas + 2 casters de sombra + 2 matrices por frame).
     // LUZ Y SOMBRA: el sherpa casta sombra sobre la pared (profundidad).
     for (const b of bones) this.castShadow(b.mesh);
-    for (const m of [head, pack, label]) this.castShadow(m);
-    this.rigVisuals[player] = { bones, head, label, roots: [head, pack, label] };
+    for (const m of [head, pack]) this.castShadow(m);
+    this.rigVisuals[player] = { bones, head, roots: [head, pack] };
     (this.rigVisuals[player] as RigVisual & { pack?: Mesh }).pack = pack;
   }
 
@@ -654,7 +655,6 @@ export class SherpaScene {
       pack.position.set(chestP.x, (chestP.y + pelvisP.y) / 2, chestP.z - 0.13);
       pack.rotation.x = Math.atan2(pelvisP.x - chestP.x, pelvisP.y - chestP.y);
     }
-    vis.label.position.set(pelvisP.x, pelvisP.y - 0.45, pelvisP.z);
   }
 
   private readonly tmpDir = new Vector3();

@@ -58,6 +58,8 @@ export class SherpasMatch {
   private plank: PlankSystem;
   private plankState: PlankState | null = null;
   private richFellHandled = false;
+  /** impacto del ricachón contra el suelo tras su caída (thud+shake, UNA vez). */
+  private richFellImpactDone = true;
   private lastSlipWarnAt = -10;
   private plankLenM: number;
   private rich: RichManSim;
@@ -563,8 +565,17 @@ export class SherpasMatch {
     const ps = this.plankState;
     if (ps.fellOff && !this.richFellHandled) {
       this.richFellHandled = true;
+      this.richFellImpactDone = false; // el thud sonará al tocar suelo
       this.rich.launchFall(ps.fellDir);
       this.d.audio.play("fall");
+      // EL GRITO (petición del jugador): al caer suelta el improperio — se emite
+      // por InsultSaid para heredar TTS MP3 → speechSynthesis → gibberish +
+      // subtítulo + burbuja en pantalla. Fijo, no del banco: es SU grito.
+      this.d.bus.emit("InsultSaid", {
+        lineId: "rich_fell",
+        context: "fall",
+        text: this.d.hud.lang === "en" ? "YOU BASTAAAARDS!!!" : "¡¡CABRONEEEEESSSS!!!!",
+      });
       this.onTeamFell(true);
     }
     // CAJAS: caducidad (el ricachón las recoge) y CAÍDA por escora/vuelco
@@ -629,6 +640,12 @@ export class SherpasMatch {
     }
     const rmInfo = this.rich.step(dt);
     if (rmInfo.bumpWall > 1) this.d.bus.emit("RichBumpWall", { speed: rmInfo.bumpWall });
+    // IMPACTO de la caída del ricachón: golpe seco + sacudida de cámara (una vez).
+    if (rmInfo.floorHit && this.richFellHandled && !this.richFellImpactDone) {
+      this.richFellImpactDone = true;
+      this.d.scene.shake(this.d.hud.wantsReduceShake ? 0.02 : 0.07);
+      this.d.audio.play("thud");
+    }
 
     // aviso legible: "¡el ricachón resbala!" (una vez cada 2,5 s mientras resbala).
     if (!ps.fellOff && !ps.grounded && ps.slideFrac > (this.data.tuning.plank?.warnSlideFrac ?? 0.42)
@@ -819,6 +836,7 @@ export class SherpasMatch {
     // tabla re-colgada nivelada + ricachón sentado de nuevo (coordinación a cero).
     this.plankState = this.plank.reset(na, nb, this.wallFrontZ, this.sherpas[0].harness(), this.sherpas[1].harness());
     this.richFellHandled = false;
+    this.richFellImpactDone = true;
     this.lastSlipWarnAt = -10;
     this.rich.seated = true;
     this.rich.reset(this.plankState.center);
@@ -899,14 +917,20 @@ export class SherpasMatch {
   private onTeamFell(richFell = false): void {
     this.stats.teamFalls++;
     this.propina.add(richFell ? -12 : -15, richFell ? "rich_fell" : "team_fall", this.d.bus);
-    this.d.audio.play(richFell ? "wail" : "fall");
-    this.d.audio.play("wail");
+    if (richFell) {
+      // su grito "¡¡CABRONEEEEESSSS!!!!" YA es la voz de la caída (emitido al
+      // despegarse): sin wail del banco (lloriqueaba ENCIMA y ensuciaba el
+      // grito) y sin insulto del banco (dos voces solapadas = charco).
+    } else {
+      this.d.audio.play("fall");
+      this.d.audio.play("wail");
+      this.sayInsult("fall");
+    }
     this.d.hud.banner(
       richFell ? this.d.hud.t("hud.richFell") : this.d.hud.t("hud.teamFall"),
       richFell ? this.d.hud.t("hud.richFellSub") : this.d.hud.t("hud.teamFallSub"),
       2.4,
     );
-    this.sayInsult("fall");
     this.frozen = true;
     this.respawnTimer = 2.6;
   }
@@ -1382,8 +1406,13 @@ export class SherpasMatch {
 
   /** Sonda E2E (solo pruebas, como setAim): fuerza los eventos del Task 31
    *  para verificar su presentación sin esperar al azar del director. */
-  debugForce(what: "boxes" | "condor" | "storm" | "fart" | "drone" | "subir", player: 0 | 1 = 0): boolean {
+  debugForce(what: "boxes" | "condor" | "storm" | "fart" | "drone" | "subir" | "caida_rico", player: 0 | 1 = 0): boolean {
     switch (what) {
+      case "caida_rico":
+        // SONDA E2E Task 35: la caída corre por su pipeline natural completo
+        // (fellOff → launchFall contundente → GRITO → thud+shake → respawn).
+        if (this.plankState && !this.plankState.fellOff) this.plank.forceFall();
+        return true;
       case "boxes":
         this.directorCtx().spawnBoxes(3);
         return true;

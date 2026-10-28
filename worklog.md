@@ -782,3 +782,24 @@ Stage Summary:
 - El minimapa ya no repinta 500 arcos 10 veces por segundo: capa estática cacheada + estampado dinámico.
 - RESOLUCIÓN ADAPTATIVA garantiza fluidez en máquinas modestas: si el fps cae, el motor baja su resolución solo (hasta ×1/2,4) y la recupera cuando hay margen — data-driven en tuning.perf.
 - El overlay de debug dice la VERDAD: fps reales, coste de render en ms, draw calls y factor de resolución — se puede verificar los 60 FPS a simple vista.
+
+---
+Task ID: 35
+Agent: Z.ai (principal)
+Task: "¿El círculo debajo de los escaladores tiene alguna función? Si no la tiene, lo eliminamos. Cuando el Ricachón cae que lo haga con más contundencia y cayendo debe soltar un improperio: ¡¡CABRONEEEEESSSS!!!!"
+
+Work Log:
+- ANILLO ELIMINADO (petición: "si no tiene función, lo eliminamos"): el toro-etiqueta p{0,1}_ring bajo la pelvis (d 0,36, material del arnés) era un resto identificador de las primeras iteraciones — el CUERPO ya es naranja/azul. Fuera creación, caster de sombra, actualización por frame y campo label de RigVisual: -2 mallas, -2 draw calls, -2 casters y -2 matrices mundo por frame. Ahorro pequeño pero regalado.
+- CAÍDA CONTUNDENTE (petición: "que caiga con más contundencia"): launchFall con impulso ×2,4 (dir·2,2/60, −1,4/60 vertical, −0,4/60 alejándose de la pared) y TECHO DE VELOCIDAD LIBERADO: velCap pasa de 0,14/tick (≈8,4 m/s) a 0,27/tick (≈16 m/s) durante la caída — antes el cap lo frenaba a mitad de despeño y parecía un copo lento; ahora SE DESPEÑA. reset() restaura el techo normal (respawn limpio).
+- IMPACTO: primer floorHit tras richFellHandled → THUD grave + SACUDIDA de cámara 0,07 (0,02 con reduceShake) — el golpe se SIENTE una sola vez (richFellImpactDone).
+- EL GRITO (petición literal del jugador): al despegarse emite InsultSaid FIJO con "¡¡CABRONEEEEESSSS!!!!" (EN: "YOU BASTAAAARDS!!!") — hereda la escalera de voz completa: MP3 TTS pregenerado (voice.json ladder) → speechSynthesis → gibberish + subtítulo + burbuja. Limpieza de audio: en richFell ya NO suena el wail del banco ni insulto del banco (antes lloriqueaba ENCIMA del grito: dos voces solapadas); team_fall conserva fall+wail+insulto.
+- MP3 DEL GRITO GENERADO (scripts/gen_cabrones_tts.mjs): slug djb2 verificado idéntico al del juego (es cd0e9f33, en 3b901aa6); la API TTS ya no acepta response_format "mp3" (error 1214) → se genera WAV y se guarda con extensión .mp3 (decodeAudioData huele la cabecera RIFF, la extensión es cosmética). Truco de pronunciación: el FICHERO usa el slug del texto EXACTO en pantalla, pero la ENTRADA de la TTS es la variante limpia "¡Cabroneeeesss!" — la voz lo grita natural, la burbuja muestra el texto estirado cómico. Volumen 5,0 (grito de verdad).
+- SONDA E2E determinista: debugForce("caida_rico") → plank.forceFall() dispara la caída por su PIPELINE NATURAL completo (fellOff → launchFall → grito → thud+shake → respawn) — intento previo con caos aleatorio (cajas+tormenta+dron+cóndor 110 s) no cruzó fallAngleDeg 55°: la tabla es demasiado estable, el gancho directo es honesto y prueba TODO el recorrido.
+- CALIDAD: tsc 15 = baseline exacto (0 nuevos), eslint limpio, vitest sherpas 125/125, global 265/270 (5 = selfcollision preexistente).
+- E2E REAL (Playwright, scripts/e2e-t35.py, sobre BUILD DE PRODUCCIÓN): spawn sin anillo (captura t35-0) → PERF base fps 6-8 draws 98-106 res ×1/1,4 (SwiftShader; la resolución adaptativa ACTUÓ SOLA — el gobernador del Task 34 funcionando) → caida_rico → fell=True → subtítulo+burbuja "¡¡CABRONEEEEESSSS!!!!" EN DOM (captura t35-1, overlay "CAYENDO") → MP3 cd0e9f33.mp3 HTTP 200 (la escalera eligió TTS real; el 404 de f09eea90 es un insulto idle del banco sin MP3, cae a speechSynthesis como está diseñado) → impacto+thud (t35-2) → respawn limpia fell=False → 0 errores JS. Regresión e2e-t33.py COMPLETA en verde (dron entrega 7,1 kg, círculo 0,95, bailando, subida, minimapa 630 presas).
+- Infra: build standalone (BUILD_ID nuevo) + rsync static/public + bun server.js :3000 (200) + http.server :8899 (200) + MP3 del grito servido (200).
+
+Stage Summary:
+- La pared está más limpia: nada cuelga bajo los escaladores — el color ES la identidad.
+- El ricachón SE DESPEÑA de verdad (×2,4 impulso, 16 m/s), GOLPEA el suelo con thud+ sacudida, y al caer SUELTA el improperio "¡¡CABRONEEEEESSSS!!!!" con voz TTS real gritada (no charla de banco, SU grito).
+- debugForce("caida_rico"): la caída completa es reproducible en E2E de forma determinista.
