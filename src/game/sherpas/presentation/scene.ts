@@ -19,6 +19,7 @@ import "@babylonjs/core/Meshes/Builders/cylinderBuilder";
 import "@babylonjs/core/Meshes/Builders/discBuilder";
 import "@babylonjs/core/Meshes/Builders/linesBuilder"; // grietas/aristas + CÍRCULO DISCONTINUA (CreateDashedLines vive aquí)
 import "@babylonjs/core/Meshes/instancedMesh"; // side-effect requerido por createInstance (fix Task 21)
+import { InstancedMesh } from "@babylonjs/core/Meshes/instancedMesh";
 import "@babylonjs/core/Rendering/edgesRenderer"; // ARISTAS BLANCAS de pared rocosa (petición del jugador)
 import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator"; // LUZ Y SOMBRA (profundidad)
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
@@ -38,7 +39,7 @@ import { v3, vAdd, vScale, vSub, vLen, type V3 } from "../../physics/pbd/math";
 import type { HoldInstance } from "../physics/anchors";
 import type { DragReachInfo } from "../physics/sherpaRig";
 import { RichManSim, RM } from "../physics/richMan";
-import type { CameraData, HudData } from "../core/data";
+import type { CameraData, HudData, PerfTuning } from "../core/data";
 import type { WallLayout } from "../world/wallGenerator";
 
 interface Bone { a: number; b: number; mesh: Mesh; rest: number; offY?: number }
@@ -81,7 +82,10 @@ export class SherpaScene {
   } | null = null;
   // Cuerdas de porteo: cadenas de CILINDROS gruesos (las líneas de 1px no se
   // veían — petición del jugador: "no se ven las cuerdas desde las mochilas").
-  private ropeSegs: Mesh[][] = [[], []];
+  // PERF: INSTANCIAS hardware de un ÚNICO master — Babylon las lotea en 1 draw
+  // call por cuerda (antes ~20 cilindros sueltos = ~20 draw calls).
+  private ropeSegs: (Mesh | InstancedMesh)[][] = [[], []];
+  private ropeMaster: Mesh | null = null;
   private ropeMat: StandardMaterial | null = null;
   private static readonly ROPE_POOL = 24; // ≥ visualNodes (14) + cola (7) de tuning.rope
   private static readonly STREAK_POOL = 44; // rayas de viento simultáneas
@@ -133,14 +137,42 @@ export class SherpaScene {
   // giran, paquete colgante y luz de posición; + el paquete ya ENTREGADO.
   private droneMesh: { body: Mesh; rotors: Mesh[]; pkg: Mesh } | null = null;
   private dronePkgMesh: Mesh | null = null;
+  // PERF (petición: "unos 60 FPS en todo momento"): instrumentación + resolución
+  // adaptativa (si el fps medio cae, se renderiza a menor resolución y sube solo
+  // si sobra margen) + geometría estática FUNDIDA (menos draw calls) + cuerdas
+  // INSTANCIADAS (1 draw call por cuerda en vez de ~20).
+  private perfTuning: PerfTuning;
+  private scaleLevel = 1; // 1 = píxeles nativos (más alto = más barato)
+  private perfAcc = 0;
+  private perfFrames = 0;
+  private perfWarm = 0;
+  private lastRenderNow = 0;
+  private dtSmoothed = 16.7; // ms/frame suavizado (medición PROPIA: el engine
+  // no actualiza _fps/_deltaTime sin beginFrame, y scene.render() no lo llama)
+  private lastDrawTotal = 0;
+  private renderCostSmoothed = 0; // ms solo del scene.render() (sin vsync)
+  private perfStats = { fps: 0, frameTimeMs: 0, activeMeshes: 0, drawCalls: 0, meshes: 0, scale: 1 };
+  private tmpProj = new Vector3(0, 0, 0);
+  private idMatrix = Matrix.Identity();
 
-  private constructor(engine: AbstractEngine, backend: string, camData: CameraData, hudData: HudData) {
+  private constructor(engine: AbstractEngine, backend: string, camData: CameraData, hudData: HudData, perf?: PerfTuning) {
     this.engine = engine;
     this.backend = backend;
     this.camData = camData;
     this.hudData = hudData;
+    this.perfTuning = perf ?? { targetFps: 60, minScale: 1, maxScale: 2.4, step: 0.2, checkSeconds: 2, shadowQuality: "low" };
     this.scene = new Scene(engine);
     this.scene.clearColor = new Color4(0.055, 0.07, 0.09, 1);
+    // PERF: nada usa picking de Babylon (el arrastre va por coordenadas de
+    // pantalla) — cada pointermove con picking sobre 500+ instancias es CPU
+    // regalada.
+    this.scene.skipPointerMovePicking = true;
+    // PERF: cuando la escena esté lista los shaders ya compilaron — bloquear
+    // el mecanismo de dirty de materiales quita comprobaciones por frame.
+    this.scene.executeWhenReady(() => { this.scene.blockMaterialDirtyMechanism = true; });
+    // PERF: instrumentación PROPIA (fps, frame time, draw calls) — la del
+    // engine no se alimenta si nadie llama a beginFrame (el juego renderiza
+    // con su propio rAF llamando solo a scene.render()).
     this.camera = new UniversalCamera("cam", new Vector3(0, 2, -8), this.scene);
     this.camera.inputs.clear();
     this.camera.minZ = 0.1;
@@ -163,8 +195,16 @@ export class SherpaScene {
     dir.shadowMaxZ = 55;
     this.sunLight = dir;
     const sg = new ShadowGenerator(1024, dir);
-    sg.useBlurExponentialShadowMap = true;
-    sg.blurKernel = 16;
+    // PERF: PCF en vez de Blur Exponential (el ESM renderiza el mapa + pasadas
+    // de blur cada frame; con PCF el coste es 1 render del mapa + muestreo).
+    if (this.perfTuning.shadowQuality === "off") {
+      sg.usePercentageCloserFiltering = false;
+    } else {
+      sg.usePercentageCloserFiltering = true;
+      sg.filteringQuality = this.perfTuning.shadowQuality === "high" ? ShadowGenerator.QUALITY_HIGH
+        : this.perfTuning.shadowQuality === "medium" ? ShadowGenerator.QUALITY_MEDIUM
+        : ShadowGenerator.QUALITY_LOW;
+    }
     sg.setDarkness(0.45); // sombra legible, no brea
     sg.bias = 0.0012;
     this.shadowGen = sg;
@@ -202,7 +242,7 @@ export class SherpaScene {
     }
   }
 
-  static async create(canvas: HTMLCanvasElement, camData: CameraData, hudData: HudData): Promise<SherpaScene> {
+  static async create(canvas: HTMLCanvasElement, camData: CameraData, hudData: HudData, perf?: PerfTuning): Promise<SherpaScene> {
     // WebGL2 PRIMERO (fix Task 22, regresión del árbol roto): en iframes
     // cross-origin WebGPU cae a adaptador bloqueado → canvas negro a 6 fps.
     let engine: AbstractEngine;
@@ -215,7 +255,7 @@ export class SherpaScene {
       engine = gpu;
       backend = "WebGPU";
     }
-    return new SherpaScene(engine, backend, camData, hudData);
+    return new SherpaScene(engine, backend, camData, hudData, perf);
   }
 
   private makeDotTexture(): Texture {
@@ -291,17 +331,19 @@ export class SherpaScene {
     const wallTop = layout.totalHeightM + 4;
     const rock = mat(this.scene, "rock", "#3c4652");
     rock.diffuseTexture = null;
+    // PERF (60 FPS): la roca estática se FUNDE en un mesh por material — 1 draw
+    // call y 1 renderizador de aristas en vez de uno por bloque (con ~12
+    // entrantes eran 50+ mallas × 2 pasadas). El merge hornea las matrices y
+    // el resultado se congela: coste por frame ≈ cero.
+    const wallBlocks: Mesh[] = [];
     // helper: bloque de roca del muro (receptor de sombras + arista blanca)
-    const wallBlock = (name: string, w: number, h: number, x: number, y: number): Mesh => {
+    const wallBlock = (name: string, w: number, h: number, x: number, y: number): void => {
       const b = MeshBuilder.CreateBox(name, { width: w, height: h, depth: wallDepth }, this.scene);
       b.position.set(x, y, wallFaceZ + wallDepth / 2); // el cuerpo del muro se extiende hacia +z
       b.material = rock;
       b.receiveShadows = true;
       b.freezeWorldMatrix();
-      b.enableEdgesRendering();
-      b.edgesWidth = 4.5;
-      b.edgesColor = new Color4(0.92, 0.96, 1, 0.42);
-      return b;
+      wallBlocks.push(b);
     };
 
     // MURO ROCOSO CON HUECOS REALES (petición del jugador: "salientes y
@@ -332,9 +374,30 @@ export class SherpaScene {
     });
     slabFor(`wallSlabTop`, yCur, wallTop);
 
+    // FUSIÓN del muro (PERF): un mesh = 1 draw call + 1 arista blanca en vez de
+    // uno por bloque. Las juntas entre slabs coplanares desaparecen (más roca,
+    // menos rejilla); los contornos de los huecos se mantienen (aristas de 90°).
+    if (wallBlocks.length) {
+      const wallMesh = Mesh.MergeMeshes(wallBlocks, true, true, undefined, false, false)!;
+      wallMesh.name = "wallMerged";
+      wallMesh.receiveShadows = true;
+      wallMesh.freezeWorldMatrix();
+      wallMesh.enableEdgesRendering();
+      wallMesh.edgesWidth = 4.5;
+      wallMesh.edgesColor = new Color4(0.92, 0.96, 1, 0.42);
+    }
+
     // VOLUMEN HUNDIDO de cada entrante: caja oscura DENTRO del muro, visible
     // por el agujero. Su cara frontal queda a depthM de la cara del muro —
     // exactamente donde el generador dejó las presas RETRASADAS.
+    // PERF: materiales COMPARTIDOS (el color era idéntico por banda) + fusión.
+    const entranteMats = {
+      dark: mat(this.scene, "entranteM", "#232a33"),
+      lip: mat(this.scene, "entranteLipM", "#525d69"),
+    };
+    entranteMats.dark.specularColor = new Color3(0.01, 0.01, 0.01);
+    const entBacks: Mesh[] = [];
+    const entLips: Mesh[] = [];
     for (const h of holes) {
       const e = h.e;
       const w = h.xMax - h.xMin;
@@ -344,25 +407,37 @@ export class SherpaScene {
       // caja trasera: del fondo del hueco (face + d) hasta la cara trasera del muro
       const back = MeshBuilder.CreateBox(`entrante_${e.band}`, { width: w, height: hh, depth: wallDepth - d + 0.02 }, this.scene);
       back.position.set((h.xMin + h.xMax) / 2, (h.yMin + h.yMax) / 2, wallFaceZ + d + (wallDepth - d) / 2);
-      const dark = mat(this.scene, `entranteM_${e.band}`, "#232a33");
-      dark.specularColor = new Color3(0.01, 0.01, 0.01);
-      back.material = dark;
+      back.material = entranteMats.dark;
       back.receiveShadows = true;
       back.freezeWorldMatrix();
-      back.enableEdgesRendering();
-      back.edgesWidth = 6;
-      back.edgesColor = new Color4(0.9, 0.94, 1, 0.6);
+      entBacks.push(back);
       // LABIO superior: repisa de roca que se mete en el hueco (casta sombra
       // dentro — la profundidad se LEE por la luz, petición del jugador).
       const lip = MeshBuilder.CreateBox(`entranteLip_${e.band}`, { width: w + 0.08, height: 0.07, depth: 0.12 }, this.scene);
       lip.position.set((h.xMin + h.xMax) / 2, h.yMax + 0.035, wallFaceZ - 0.06);
-      lip.material = mat(this.scene, `entranteLipM_${e.band}`, "#525d69");
+      lip.material = entranteMats.lip;
       lip.receiveShadows = true;
       lip.freezeWorldMatrix();
-      lip.enableEdgesRendering();
-      lip.edgesWidth = 6;
-      lip.edgesColor = new Color4(0.95, 0.97, 1, 0.8);
-      if (this.shadowGen) this.shadowGen.addShadowCaster(lip, false);
+      entLips.push(lip);
+    }
+    if (entBacks.length) {
+      const merged = Mesh.MergeMeshes(entBacks, true, true, undefined, false, false)!;
+      merged.name = "entrantesMerged";
+      merged.receiveShadows = true;
+      merged.freezeWorldMatrix();
+      merged.enableEdgesRendering();
+      merged.edgesWidth = 6;
+      merged.edgesColor = new Color4(0.9, 0.94, 1, 0.6);
+    }
+    if (entLips.length) {
+      const merged = Mesh.MergeMeshes(entLips, true, true, undefined, false, false)!;
+      merged.name = "entranteLipsMerged";
+      merged.receiveShadows = true;
+      merged.freezeWorldMatrix();
+      merged.enableEdgesRendering();
+      merged.edgesWidth = 6;
+      merged.edgesColor = new Color4(0.95, 0.97, 1, 0.8);
+      this.shadowGen?.addShadowCaster(merged, false);
     }
 
     const floor = MeshBuilder.CreateGround("floor", { width: 40, height: 24 }, this.scene);
@@ -384,21 +459,22 @@ export class SherpaScene {
     // sobresalgan"): ya son cajas reales; ahora IRREGULARES — dos volúmenes
     // desalineados (cuerpo + capuchón más ancho y menos profundo) para que la
     // silueta no sea un rectángulo perfecto. Reciben y CASTAN sombra.
+    // PERF: material único compartido + fusión en UN mesh (1 draw, 1 arista,
+    // 1 caster) — antes eran 2 mallas + 2 aristas + 2 casters POR saliente.
+    const salientBoxes: Mesh[] = [];
+    const salRock = mat(this.scene, "salienteM", "#46525f");
+    salRock.specularColor = new Color3(0.03, 0.03, 0.03);
     for (const s of layout.salientes) {
       const w = s.xMax - s.xMin;
       const depth = wallFaceZ - s.z + 0.06; // del muro al frente del saliente
       if (w <= 0.05 || depth <= 0.05) continue;
-      const rockL = mat(this.scene, `salienteM_${s.band}`, "#46525f");
-      rockL.specularColor = new Color3(0.03, 0.03, 0.03);
       // cuerpo principal (donde viven las presas adelantadas)
       const box = MeshBuilder.CreateBox(`saliente_${s.band}`, { width: w, height: s.heightM, depth }, this.scene);
       box.position.set((s.xMin + s.xMax) / 2, s.yMid, wallFaceZ - depth / 2);
-      box.material = rockL;
+      box.material = salRock;
       box.receiveShadows = true;
       box.freezeWorldMatrix();
-      box.enableEdgesRendering();
-      box.edgesWidth = 7;
-      box.edgesColor = new Color4(0.95, 0.97, 1, 0.85);
+      salientBoxes.push(box);
       // capuchón irregular: más ancho, menos profundo, desplazado (semilla fija)
       const seedH = Math.abs(Math.sin(s.band * 12.9898) * 43758.5453) % 1;
       const capW = w * (1.1 + seedH * 0.25);
@@ -407,40 +483,40 @@ export class SherpaScene {
       const cap = MeshBuilder.CreateBox(`salienteCap_${s.band}`, { width: capW, height: capH, depth: capD }, this.scene);
       const capShift = (seedH - 0.5) * w * 0.3;
       cap.position.set((s.xMin + s.xMax) / 2 + capShift, s.yMid + s.heightM * 0.5 + capH * 0.4, wallFaceZ - capD / 2);
-      cap.material = rockL;
+      cap.material = salRock;
       cap.receiveShadows = true;
       cap.freezeWorldMatrix();
-      cap.enableEdgesRendering();
-      cap.edgesWidth = 6;
-      cap.edgesColor = new Color4(0.95, 0.97, 1, 0.7);
-      if (this.shadowGen) {
-        this.shadowGen.addShadowCaster(box, false);
-        this.shadowGen.addShadowCaster(cap, false);
-      }
+      salientBoxes.push(cap);
+    }
+    if (salientBoxes.length) {
+      const merged = Mesh.MergeMeshes(salientBoxes, true, true, undefined, false, false)!;
+      merged.name = "salientesMerged";
+      merged.receiveShadows = true;
+      merged.freezeWorldMatrix();
+      merged.enableEdgesRendering();
+      merged.edgesWidth = 7;
+      merged.edgesColor = new Color4(0.95, 0.97, 1, 0.85);
+      this.shadowGen?.addShadowCaster(merged, false);
     }
 
     // GRIETAS (pared rocosa): polilíneas blancas tenues sobre la cara del muro,
     // deterministas (LCG con semilla fija: la pared no cambia entre visitas).
     // Se RECORTAN en los huecos de los entrantes (nada flota en el aire).
+    // PERF: UN solo LineSystem (1 draw call) en vez de ~100 meshes de línea.
     const inHole = (x: number, y: number): boolean =>
       holes.some((h) => x >= h.xMin - 0.05 && x <= h.xMax + 0.05 && y >= h.yMin - 0.05 && y <= h.yMax + 0.05);
     let lcg = 0x9e3779b9 >>> 0;
     const rnd = (): number => { lcg = (Math.imul(lcg, 1664525) + 1013904223) >>> 0; return lcg / 4294967296; };
-    let crackIdx = 0;
+    const crackLines: Vector3[][] = [];
     for (let y = 4; y < layout.totalHeightM - 2; y += 6 + rnd() * 5) {
       const cracks = rnd() < 0.35 ? 2 : 1;
       for (let c = 0; c < cracks; c++) {
-        const pts: Vector3[] = [];
+        let pts: Vector3[] = [];
         let cx = (rnd() * 2 - 1) * (wallW / 2 - 0.4);
         let cy = y + rnd() * 3;
         const flush = (): void => {
-          if (pts.length >= 2) {
-            const line = MeshBuilder.CreateLines(`crack_${crackIdx++}`, { points: pts }, this.scene);
-            line.color = new Color3(0.88, 0.92, 0.98);
-            line.alpha = 0.32;
-            line.isPickable = false;
-          }
-          pts.length = 0;
+          if (pts.length >= 2) crackLines.push(pts);
+          pts = [];
         };
         if (!inHole(cx, cy)) pts.push(new Vector3(cx, cy, wallFaceZ + 0.01)); else flush();
         const segs = 6 + Math.floor(rnd() * 5);
@@ -453,6 +529,13 @@ export class SherpaScene {
         }
         flush();
       }
+    }
+    if (crackLines.length) {
+      const sys = MeshBuilder.CreateLineSystem("crackSystem", { lines: crackLines }, this.scene);
+      sys.color = new Color3(0.88, 0.92, 0.98);
+      sys.alpha = 0.32;
+      sys.isPickable = false;
+      sys.freezeWorldMatrix();
     }
   }
 
@@ -639,10 +722,15 @@ export class SherpaScene {
       this.ropeMat.emissiveColor = Color3.FromHexString("#3a2410");
       this.ropeMat.specularColor = new Color3(0.04, 0.04, 0.04);
     }
+    // PERF: UN cilindro master oculto + 2×ROPE_POOL instancias hardware —
+    // mismo patrón que las presas (el master invisible no impide renderizar
+    // instancias y Babylon las lotea en UN draw call por frame).
+    this.ropeMaster = MeshBuilder.CreateCylinder("ropeMaster", { height: 1, diameter: 0.045, tessellation: 6 }, this.scene);
+    this.ropeMaster.material = this.ropeMat;
+    this.ropeMaster.isVisible = false;
     for (let r = 0; r < 2; r++) {
       for (let i = 0; i < SherpaScene.ROPE_POOL; i++) {
-        const seg = MeshBuilder.CreateCylinder(`ropeSeg${r}_${i}`, { height: 1, diameter: 0.045, tessellation: 6 }, this.scene);
-        seg.material = this.ropeMat;
+        const seg = this.ropeMaster.createInstance(`ropeSeg${r}_${i}`);
         seg.isVisible = false;
         this.ropeSegs[r].push(seg);
       }
@@ -651,7 +739,7 @@ export class SherpaScene {
 
   syncRope(nodesA: V3[], nodesB: V3[]): void {
     this.ensureRopeLines();
-    const setChain = (segs: Mesh[], nodes: V3[]): void => {
+    const setChain = (segs: (Mesh | InstancedMesh)[], nodes: V3[]): void => {
       if (nodes.length < 2) { for (const s of segs) s.isVisible = false; return; }
       const nSeg = Math.min(segs.length, nodes.length - 1);
       for (let i = 0; i < segs.length; i++) segs[i].isVisible = i < nSeg;
@@ -663,7 +751,7 @@ export class SherpaScene {
 
   /** Coloca un segmento de cuerda ENTRE dos puntos (sin el mínimo de escala de
    *  orientCapsule: los tramos son cortos y deben medir exactamente su largo). */
-  private orientRopeSeg(mesh: Mesh, a: V3, b: V3): void {
+  private orientRopeSeg(mesh: Mesh | InstancedMesh, a: V3, b: V3): void {
     mesh.position.set((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
     const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
     const len = Math.hypot(dx, dy, dz) || 1e-6;
@@ -1235,11 +1323,70 @@ export class SherpaScene {
 
   // ---------- utilidades ----------
 
+  // PERF: projectToScreenCss se llama ~10-20 veces por frame (insignias,
+  // burbujas, sonda) — sin allocations (vector/viewport/matrix reutilizados).
+  private projViewport: { w: number; h: number; vp: ReturnType<UniversalCamera["viewport"]["toGlobal"]> } | null = null;
+  private projResult = new Vector3(0, 0, 0);
+
   projectToScreenCss(p: V3): { x: number; y: number } {
     const vp = this.engine.getRenderWidth();
     const vh = this.engine.getRenderHeight();
-    const v = Vector3.Project(new Vector3(p.x, p.y, p.z), Matrix.Identity(), this.scene.getTransformMatrix(), this.camera.viewport.toGlobal(vp, vh));
+    if (!this.projViewport || this.projViewport.w !== vp || this.projViewport.h !== vh) {
+      this.projViewport = { w: vp, h: vh, vp: this.camera.viewport.toGlobal(vp, vh) };
+    }
+    this.tmpProj.set(p.x, p.y, p.z);
+    const v = Vector3.ProjectToRef(this.tmpProj, this.idMatrix, this.scene.getTransformMatrix(), this.projViewport.vp, this.projResult);
     return { x: (v.x / vp) * 100, y: (v.y / vh) * 100 };
+  }
+
+  /** Métricas de rendimiento para la sonda E2E (se refrescan cada ventana de
+   *  checkSeconds; scale = nivel de hardware scaling, 1 = nativo). */
+  getPerf(): { fps: number; frameTimeMs: number; activeMeshes: number; drawCalls: number; meshes: number; scale: number } {
+    return this.perfStats;
+  }
+
+  /** PERF: resolución adaptativa con histéresis — si el fps medio queda por
+   *  debajo del objetivo−10 se renderiza más barato (escala +step); si sobra
+   *  margen (objetivo+3) se recupera hacia 1. Nunca sobremuestrea (min 1).
+   *  Se llama DESPUÉS de scene.render() para leer el estado de ESTE frame. */
+  private updatePerf(): void {
+    const now = performance.now();
+    if (this.lastRenderNow > 0) {
+      const dt = Math.min(250, Math.max(0.5, now - this.lastRenderNow));
+      this.dtSmoothed += (dt - this.dtSmoothed) * 0.15; // EMA del frame time
+    }
+    this.lastRenderNow = now;
+    this.perfFrames++;
+    this.perfAcc += this.dtSmoothed / 1000;
+    const windowS = Math.max(0.5, this.perfTuning.checkSeconds);
+    if (this.perfAcc < windowS) return;
+    this.perfAcc = 0;
+    const fps = 1000 / this.dtSmoothed;
+    const p = this.perfTuning;
+    // DECISIÓN: subir escala si el fps de vsync cae; BAJAR si el COSTE de
+    // render deja margen (el vsync disimula el sobrante — no basta con fps).
+    const budgetMs = 1000 / Math.max(30, p.targetFps);
+    if (this.perfWarm < 2) {
+      this.perfWarm++; // ignora el arranque (compilación de shaders, jank inicial)
+    } else if (fps < p.targetFps - 10 && this.scaleLevel < p.maxScale) {
+      this.scaleLevel = Math.min(p.maxScale, Math.round((this.scaleLevel + p.step) * 100) / 100);
+      this.engine.setHardwareScalingLevel(this.scaleLevel);
+    } else if (this.renderCostSmoothed > 0 && this.renderCostSmoothed < budgetMs * 0.55 && this.scaleLevel > p.minScale) {
+      this.scaleLevel = Math.max(p.minScale, Math.round((this.scaleLevel - p.step) * 100) / 100);
+      this.engine.setHardwareScalingLevel(this.scaleLevel);
+    }
+    // draw calls del frame = delta del contador del engine / nº de frames
+    // (addCount acumula en .current sin fetchNewFrame: crece monótono)
+    const engineAny = this.engine as unknown as { _drawCalls?: { current: number } };
+    const drawTotal = engineAny._drawCalls?.current ?? 0;
+    this.perfStats.drawCalls = Math.max(0, Math.round((drawTotal - this.lastDrawTotal) / Math.max(1, this.perfFrames)));
+    this.lastDrawTotal = drawTotal;
+    this.perfFrames = 0;
+    this.perfStats.fps = Math.round(fps);
+    this.perfStats.frameTimeMs = Math.round(this.dtSmoothed * 10) / 10;
+    this.perfStats.activeMeshes = this.scene.getActiveMeshes().length;
+    this.perfStats.meshes = this.scene.meshes.length;
+    this.perfStats.scale = Math.round(this.scaleLevel * 100) / 100;
   }
 
   render(): void {
@@ -1270,7 +1417,11 @@ export class SherpaScene {
       this.sunLight.position.set(this.camTarget.x + 3.5, this.camTarget.y + 9, this.camTarget.z - 6.5);
     }
     this.stepFallingBoxes(Math.max(0.001, this.engine.getDeltaTime() / 1000));
+    const t0 = performance.now();
     this.scene.render();
+    const cost = Math.min(250, Math.max(0.05, performance.now() - t0));
+    this.renderCostSmoothed = this.renderCostSmoothed === 0 ? cost : this.renderCostSmoothed + (cost - this.renderCostSmoothed) * 0.1;
+    this.updatePerf();
   }
 
   dispose(): void {

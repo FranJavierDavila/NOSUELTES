@@ -314,7 +314,14 @@ export class SherpaHud {
 
   /** MINIMAPA v2 (petición del jugador): réplica de la pared del tramo en
    *  canvas — presas por tipo (hielo, verdes de superpoder, salientes con borde
-   *  blanco, campamento), escaladores A/B, franja del campamento y metros. */
+   *  blanco, campamento), escaladores A/B, franja del campamento y metros.
+   *  PERF: la capa ESTÁTICA (roca, rejilla, franja, TODOS los puntos de presas)
+   *  se pinta UNA vez a un canvas fuera de pantalla y se cachea por tramo; cada
+   *  tick solo estampa drawImage + anillos de ocupación + escaladores. Antes
+   *  se redibujaban 500+ arcos 10 veces por segundo. */
+  private mmStatic: HTMLCanvasElement | null = null;
+  private mmStaticKey = "";
+
   updateMinimap(m: {
     fracA: number; fracB: number; campFrac: number; metersLeft: number; campId: string | null;
     holds?: MinimapHold[]; xA?: number; xB?: number;
@@ -328,59 +335,77 @@ export class SherpaHud {
     if (!ctx) return;
     const W = cv.width, H = cv.height;
     const clamp = (v: number): number => Math.min(1, Math.max(0, v));
-    // fondo roca + sutil veteado vertical
-    ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = "#232a33";
-    ctx.fillRect(0, 0, W, H);
-    ctx.fillStyle = "rgba(255,255,255,.03)";
-    for (let i = 0; i < 5; i++) ctx.fillRect((i + 0.5) * W / 5, 0, W / 14, H);
-    // franja del campamento (arriba) + línea verde
-    const campH = clamp(m.campFrac) * H;
-    ctx.fillStyle = "rgba(90,212,106,.4)";
-    ctx.fillRect(0, 0, W, campH);
-    ctx.strokeStyle = "#5ad46a";
-    ctx.lineWidth = 3;
-    ctx.setLineDash([10, 7]);
-    ctx.beginPath(); ctx.moveTo(0, campH); ctx.lineTo(W, campH); ctx.stroke();
-    ctx.setLineDash([]);
-    // rejilla horizontal tenue (cada 10% del tramo)
-    ctx.strokeStyle = "rgba(255,255,255,.06)";
-    ctx.lineWidth = 2;
-    for (let i = 1; i < 10; i++) {
-      const gy = (i / 10) * H;
-      ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
-    }
-    // presas (réplica de la pared)
     const px = (x: number): number => 14 + clamp(x) * (W - 28);
     const py = (y: number): number => H - 16 - clamp(y) * (H - 32);
     const COLORS: Record<MinimapHold["kind"], string> = {
       normal: "#8d99ae", salient: "#b08968", recess: "#5a6b7d", ice: "#9ad1e8", fart: "#3fd46a", camp: "#5ad46a",
     };
+    // capa estática: se repinta SOLO cuando cambia el tramo (nº de presas o
+    // posición del campamento) — el resto de ticks es un drawImage.
+    const key = `${m.holds.length}|${m.campFrac.toFixed(3)}|${m.campId ?? ""}`;
+    if (!this.mmStatic || this.mmStaticKey !== key) {
+      this.mmStaticKey = key;
+      const st = this.mmStatic ?? document.createElement("canvas");
+      this.mmStatic = st;
+      st.width = W; st.height = H;
+      const c = st.getContext("2d");
+      if (c) {
+        // fondo roca + sutil veteado vertical
+        c.clearRect(0, 0, W, H);
+        c.fillStyle = "#232a33";
+        c.fillRect(0, 0, W, H);
+        c.fillStyle = "rgba(255,255,255,.03)";
+        for (let i = 0; i < 5; i++) c.fillRect((i + 0.5) * W / 5, 0, W / 14, H);
+        // franja del campamento (arriba) + línea verde
+        const campH = clamp(m.campFrac) * H;
+        c.fillStyle = "rgba(90,212,106,.4)";
+        c.fillRect(0, 0, W, campH);
+        c.strokeStyle = "#5ad46a";
+        c.lineWidth = 3;
+        c.setLineDash([10, 7]);
+        c.beginPath(); c.moveTo(0, campH); c.lineTo(W, campH); c.stroke();
+        c.setLineDash([]);
+        // rejilla horizontal tenue (cada 10% del tramo)
+        c.strokeStyle = "rgba(255,255,255,.06)";
+        c.lineWidth = 2;
+        for (let i = 1; i < 10; i++) {
+          const gy = (i / 10) * H;
+          c.beginPath(); c.moveTo(0, gy); c.lineTo(W, gy); c.stroke();
+        }
+        // presas (réplica de la pared)
+        for (const h of m.holds) {
+          const cx = px(h.x), cy = py(h.y);
+          const r = h.kind === "fart" ? 8 : h.kind === "camp" ? 7 : 5.5;
+          if (h.kind === "fart") { c.shadowColor = "#3fd46a"; c.shadowBlur = 10; }
+          c.fillStyle = COLORS[h.kind];
+          c.beginPath(); c.arc(cx, cy, r, 0, Math.PI * 2); c.fill();
+          c.shadowBlur = 0;
+          if (h.kind === "salient") {
+            c.strokeStyle = "#ffffff"; // ARISTA blanca = saliente (petición del jugador)
+            c.lineWidth = 2.5;
+            c.stroke();
+          }
+          if (h.kind === "recess") {
+            // presa RETRASADA de entrante: anillo gris discontinuo (petición del jugador)
+            c.strokeStyle = "#cbd5e0";
+            c.lineWidth = 2;
+            c.setLineDash([4, 3]);
+            c.beginPath(); c.arc(cx, cy, r + 3, 0, Math.PI * 2); c.stroke();
+            c.setLineDash([]);
+          }
+        }
+      }
+    }
+    // capa dinámica (barata): estática + ocupación + escaladores + borde
+    ctx.clearRect(0, 0, W, H);
+    if (this.mmStatic) ctx.drawImage(this.mmStatic, 0, 0);
     for (const h of m.holds) {
+      if (!h.occupied) continue;
       const cx = px(h.x), cy = py(h.y);
       const r = h.kind === "fart" ? 8 : h.kind === "camp" ? 7 : 5.5;
-      if (h.kind === "fart") { ctx.shadowColor = "#3fd46a"; ctx.shadowBlur = 10; }
-      ctx.fillStyle = COLORS[h.kind];
-      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
-      ctx.shadowBlur = 0;
-      if (h.kind === "salient") {
-        ctx.strokeStyle = "#ffffff"; // ARISTA blanca = saliente (petición del jugador)
-        ctx.lineWidth = 2.5;
-        ctx.stroke();
-      }
-      if (h.kind === "recess") {
-        // presa RETRASADA de entrante: anillo gris discontinuo (petición del jugador)
-        ctx.strokeStyle = "#cbd5e0";
-        ctx.lineWidth = 2;
-        ctx.setLineDash([4, 3]);
-        ctx.beginPath(); ctx.arc(cx, cy, r + 3, 0, Math.PI * 2); ctx.stroke();
-        ctx.setLineDash([]);
-      }
-      if (h.occupied > 0) {
-        ctx.strokeStyle = h.occupied === 1 ? "#ffb066" : "#7cc4ff";
-        ctx.lineWidth = 2.5;
-        ctx.beginPath(); ctx.arc(cx, cy, r + 3.5, 0, Math.PI * 2); ctx.stroke();
-      }
+      ctx.strokeStyle = h.occupied === 1 ? "#ffb066" : "#7cc4ff";
+      ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(cx, cy, r + 3.5, 0, Math.PI * 2); ctx.stroke();
     }
     // escaladores A (naranja) y B (azul)
     const climber = (frac: number, x: number, color: string): void => {

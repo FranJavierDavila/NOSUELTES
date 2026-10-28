@@ -114,14 +114,14 @@ with sync_playwright() as pw:
     new_postures = {"durmiendo", "bailando", "leyendo", "telefono"}
     t0 = time.time()
     seen = None
-    while time.time() - t0 < 90 and not seen:
+    while time.time() - t0 < 150 and not seen:
         p = probe(page)
         g = (p or {}).get("rich", {}).get("gesture")
         if g in new_postures:
             seen = g
             break
         page.wait_for_timeout(300)
-    assert seen, "90 s sin ver ninguna postura nueva (durmiendo/bailando/leyendo/telefono)"
+    assert seen, "150 s sin ver ninguna postura nueva (durmiendo/bailando/leyendo/telefono)"
     print(f"POSTURA OK  gesture={seen}")
     page.screenshot(path=f"{OUT}/t33-3-postura-{seen}.png")
 

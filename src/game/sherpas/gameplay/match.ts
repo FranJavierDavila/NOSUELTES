@@ -84,6 +84,8 @@ export class SherpasMatch {
   private raf = 0;
   private lastFrame = 0;
   private hudAcc = 0;
+  // PERF: caché de la réplica del minimapa por tramo (evita 500+ objetos/tick).
+  private mmCache: { key: string; holds: MinimapHold[]; idx: Map<string, number> } | null = null;
   private hudFrameCount = 0;
   private paused = false;
   private frozen = false;
@@ -1248,26 +1250,42 @@ export class SherpasMatch {
     this.gen.ensureUpToY(yHigh);
     const wallHalf = this.wallWidthM / 2;
     const normX = (x: number): number => Math.min(1, Math.max(0, (x + wallHalf) / (wallHalf * 2)));
-    const holds: MinimapHold[] = [];
-    for (const h of this.gen.allGeneratedHolds()) {
-      if (h.pos.y < yLow - 0.4 || h.pos.y > yHigh + 0.4) continue;
-      const anchor = this.anchors.anchorAtHold(h.id);
-      holds.push({
-        x: normX(h.pos.x),
-        y: (h.pos.y - yLow) / span,
-        kind: h.camp
-          ? "camp"
-          : h.type === "surprise_fart"
-            ? "fart"
-            : h.type === "ice" || h.type === "ice_thin" || h.type === "ice_plate" || h.type === "snow"
-              ? "ice"
-              : h.recessed
-                ? "recess"   // presa RETRASADA de entrante (petición del jugador)
-                : h.proud
-                  ? "salient"
-                  : "normal",
-        occupied: anchor ? (anchor.playerId + 1) as 1 | 2 : 0,
-      });
+    // PERF: la lista de presas se CACHEA por tramo (yLow|yHigh) — antes se
+    // reconstruían 500+ objetos y 500 lookups de ancla CADA tick de HUD (10 Hz).
+    // La ocupación se marca al revés: 16 anclas → índice (no presa→ancla).
+    const mmKey = `${Math.round(yLow * 10) / 10}|${Math.round(yHigh * 10) / 10}`;
+    if (!this.mmCache || this.mmCache.key !== mmKey) {
+      const base: MinimapHold[] = [];
+      const idx = new Map<string, number>();
+      for (const h of this.gen.allGeneratedHolds()) {
+        if (h.pos.y < yLow - 0.4 || h.pos.y > yHigh + 0.4) continue;
+        idx.set(h.id, base.length);
+        base.push({
+          x: normX(h.pos.x),
+          y: (h.pos.y - yLow) / span,
+          kind: h.camp
+            ? "camp"
+            : h.type === "surprise_fart"
+              ? "fart"
+              : h.type === "ice" || h.type === "ice_thin" || h.type === "ice_plate" || h.type === "snow"
+                ? "ice"
+                : h.recessed
+                  ? "recess"   // presa RETRASADA de entrante (petición del jugador)
+                  : h.proud
+                    ? "salient"
+                    : "normal",
+          occupied: 0,
+        });
+      }
+      this.mmCache = { key: mmKey, holds: base, idx };
+    }
+    const holds = this.mmCache.holds;
+    for (const h of holds) if (h.occupied) h.occupied = 0;
+    for (const p of [0, 1] as const) {
+      for (const a of this.anchors.playerAnchors(p)) {
+        const i = this.mmCache.idx.get(a.hold.id);
+        if (i !== undefined) holds[i].occupied = (p + 1) as 1 | 2;
+      }
     }
     this.d.hud.updateMinimap({
       fracA: (this.sherpas[0].waist().y - yLow) / span,
@@ -1285,8 +1303,14 @@ export class SherpasMatch {
     const wbD = this.sherpas[1].waist();
     const rD = this.rich.pelvis();
     const pkD = this.plankState;
+    // PERF: fps REAL medido por la escena (el conteo de frames del HUD solo
+    // cuenta ventanas de 0,1 s y se queda corto); + coste de render y escala.
+    const pf = this.d.scene.getPerf();
+    const fpsTxt = pf.fps > 0
+      ? `${pf.fps} fps · render ${pf.frameTimeMs} ms · ${pf.drawCalls} draws${pf.scale > 1 ? ` · res ×1/${pf.scale}` : ""}`
+      : `${fps} fps`;
     this.d.hud.debug(
-      `${this.d.scene.backend} · ${fps} fps · tick ${this.tickMs.toFixed(1)} ms\n` +
+      `${this.d.scene.backend} · ${fpsTxt} · tick ${this.tickMs.toFixed(1)} ms\n` +
       `T A:${this.sherpas[0].maxTension().toFixed(2)} B:${this.sherpas[1].maxTension().toFixed(2)} · tabla ${pkD ? `${pkD.tiltDeg.toFixed(0)}° desliz ${(pkD.slideFrac * 100).toFixed(0)}%` : "—"}\n` +
       `ricachón: ${st.richState} · ${Math.round(this.rich.currentMass())} kg${this.rich.seated ? (this.rich.standing ? " (de pie)" : " (sentado)") : " (CAYENDO)"}\n` +
       `A(${waD.x.toFixed(2)},${waD.y.toFixed(2)}) B(${wbD.x.toFixed(2)},${wbD.y.toFixed(2)}) R(${rD.x.toFixed(2)},${rD.y.toFixed(2)}) anclas ${this.sherpas[0].anchorsCount()}+${this.sherpas[1].anchorsCount()}` +
@@ -1344,6 +1368,8 @@ export class SherpasMatch {
           })()
         : null,
       mmHolds: holds.length,
+      // PERF (sonda E2E): métricas de render para verificar los 60 FPS.
+      perf: this.d.scene.getPerf(),
     });
   }
 

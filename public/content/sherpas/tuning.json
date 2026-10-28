@@ -119,5 +119,13 @@
     "massKgMax": 11,
     "speedMs": 2.6,
     "hoverSeconds": 2.2
+  },
+  "perf": {
+    "targetFps": 60,
+    "minScale": 1.0,
+    "maxScale": 2.4,
+    "step": 0.2,
+    "checkSeconds": 2.0,
+    "shadowQuality": "low"
   }
 }

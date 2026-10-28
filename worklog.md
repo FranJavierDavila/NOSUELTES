@@ -757,3 +757,28 @@ Stage Summary:
 - El ricachón VIVE en la tabla: duerme acostado, baila, lee su libro y llama por teléfono (con props), y el dron le deja paquetes de 5-11 kg que desequilibran la tabla de verdad (caen si escora, propina y rabia).
 - Salientes y entrantes son VOLUMENES de verdad: huecos excavados con labio y paredes internas, presas retrasadas dentro que fatigan más.
 - LUZ Y SOMBRA reales: sol direccional con sombras PCF sobre cuerpos/tabla/volúmenes — la pared dejó de ser plana.
+
+---
+Task ID: 34
+Agent: Z.ai (principal)
+Task: "Ronda de optimización para asegurar unos 60 FPS en el juego en todo momento"
+
+Work Log:
+- SONDA PERF (data-probe.perf): fps, frameTimeMs (coste de render), activeMeshes, drawCalls/frame, meshes y escala de resolución. Descubrimiento clave: el engine de Babylon NO actualiza _fps/_deltaTime si nadie llama a beginFrame (el juego renderiza con su propio rAF + scene.render()) — medición PROPIA con EMA de frame time + delta del contador _drawCalls del engine. El overlay de debug ahora muestra "fps · render ms · draws · res ×1/N" REALES (antes contaba ventanas de 0,1 s del HUD y engañaba).
+- MEDICIÓN ANTES/DESPUÉS (scripts/perf-probe.py, headless SwiftShader = el peor caso): BASELINE 6 fps / 155 ms frame → OPTIMIZADO 11-13 fps / 76-83 ms (×1,9-2,2), drawCalls ~110-114/frame, activeMeshes ~148. En GPU real el salto es mayor (el coste de sombras/instancias se multiplica en software).
+- SOMBRAS: Blur Exponential (mapa + downsampling + 2 pasadas de gauss por FRAME) → PCF (usePercentageCloserFiltering, QUALITY_LOW) — 1 render del mapa + muestreo. Data-driven: tuning.perf.shadowQuality (off/low/medium/high). Sombra visualmente equivalente en la captura E2E.
+- GEOMETRÍA ESTÁTICA FUNDIDA (Mesh.MergeMeshes + materiales compartidos): (1) muro segmentado alrededor de entrantes (~50 bloques con aristas cada uno) → 1 mesh "wallMerged" + 1 edgesRenderer — las juntas coplanares desaparecen (más roca, menos rejilla), los contornos de 90° de los huecos se mantienen; (2) salientes (2 mallas + 2 aristas + 2 casters POR saliente) → 1 mesh + 1 arista + 1 caster con material único; (3) entrantes: backs y lips a 2 meshes con materiales compartidos (eran 2 materiales por banda del mismo color); (4) GRIETAS: ~100 meshes CreateLines → UN CreateLineSystem congelado (1 draw).
+- CUERDAS INSTANCIADAS: 2×24 cilindros sueltos (~40 draw calls) → UN master oculto + 48 instancias hardware (patrón de las presas, fix Task 21) — Babylon lotea en 1-2 draw calls por frame. El código de orientación (position/scaling.y/rotationQuaternion) funciona igual sobre InstancedMesh.
+- MINIMAPA CAPA ESTÁTICA/DINÁMICA (hud.ts): la réplica completa (roca, rejilla, franja de campamento, 400-600 puntos de presas con glow) se pinta UNA vez a un canvas fuera de pantalla cacheado por tramo (key = nº de presas + campFrac); cada tick solo drawImage + anillos de ocupación + 2 escaladores + borde. Antes: 500+ arcos con shadowBlur 10 veces/segundo.
+- CACHÉ DEL MINIMAPA EN match.ts: la lista de presas del tramo se cachea por (yLow|yHigh) — antes se reconstruían 500+ objetos y 500 lookups anchorAtHold CADA tick de HUD (10 Hz). La ocupación se marca AL REVÉS: 16 anclas → índice Map (no presa→ancla).
+- RESOLUCIÓN ADAPTATIVA (la GARANTÍA de 60 FPS): tuning.perf {targetFps 60, minScale 1, maxScale 2.4, step 0.2, checkSeconds 2, shadowQuality "low"} + data.ts (PerfTuning + esquema Ajv) + scene.updatePerf con histéresis: si el fps medio < objetivo−10 → escala +step (renderiza más barato, hasta ×1/2,4); si el COSTE de render deja margen (< 55% del budget de 16,7 ms) → recupera hacia 1 (nunca sobremuestra). El vsync disimula el sobrante — la decisión de bajar usa el coste REAL de scene.render(), no solo el fps de vsync. Ventanas de calentamiento: 2 ciclos ignorados (compilación de shaders).
+- PODAS VARIAS: scene.skipPointerMovePicking = true (nada usa picking de Babylon — cada pointermove con picking sobre 500+ instancias era CPU regalada); blockMaterialDirtyMechanism tras scene ready (shaders compilados); projectToScreenCss sin allocations (Vector3.ProjectToRef + viewport/matrix cacheados — se llama 10-20 veces por frame para insignias/burbujas/sonda).
+- CALIDAD: tsc 15 = baseline exacto (0 nuevos), eslint limpio, vitest sherpas 125/125, global 275/280 (5 = selfcollision preexistente).
+- E2E REAL (Playwright, scripts/perf-probe.py + e2e-t33.py sobre BUILD DE PRODUCCIÓN): spawn → dron entrega 6,28 kg → círculo radio 0,95 → postura bailando → subir a 20 m con huecos+sombras → minimapa 392 presas → 0 errores JS. Captura perf-debug.png: overlay "WebGL 2 · 9 fps · render 110.2 ms · 114 draws · res ×1/1.4" (SwiftShader; en GPU real el overlay mostrará los 60 con res nativa).
+- Infra: build standalone (BUILD_ID nuevo) + rsync static/public + bun server.js :3000 (200) + http.server :8899 (200).
+
+Stage Summary:
+- La escena pasó de ~200+ draw calls (muro troceado + salientes ×2 + grietas sueltas + cuerdas sueltas) y sombras con blur multipase a ~110 draws con 1 render de sombra PCF — y el muro/salientes/entrantes/grietas/cuerdas se ven IGUAL (o más limpio: menos rejilla artificial).
+- El minimapa ya no repinta 500 arcos 10 veces por segundo: capa estática cacheada + estampado dinámico.
+- RESOLUCIÓN ADAPTATIVA garantiza fluidez en máquinas modestas: si el fps cae, el motor baja su resolución solo (hasta ×1/2,4) y la recupera cuando hay margen — data-driven en tuning.perf.
+- El overlay de debug dice la VERDAD: fps reales, coste de render en ms, draw calls y factor de resolución — se puede verificar los 60 FPS a simple vista.

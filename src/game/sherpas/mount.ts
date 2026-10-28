@@ -63,7 +63,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
   input.attach(window);
 
   const makePreviewScene = async (): Promise<SherpaScene> => {
-    const scene = await SherpaScene.create(opts.canvas, data.camera, data.hud);
+    const scene = await SherpaScene.create(opts.canvas, data.camera, data.hud, data.tuning.perf);
     const gen = new WallGenerator(
       { phases: data.phases, wallGen: data.wallGen, safePathRockRatio: 0.4 },
       Math.floor(Math.random() * 1000000),
@@ -109,7 +109,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     // motor WebGL sobre el mismo canvas deja el nuevo contexto sin pantalla
     // (el visible conserva el último frame del motor anterior).
     if (!state.scene) {
-      state.scene = await SherpaScene.create(opts.canvas, data.camera, data.hud);
+      state.scene = await SherpaScene.create(opts.canvas, data.camera, data.hud, data.tuning.perf);
     }
     await audio.start();
     audio.setMuted(choice.mute);

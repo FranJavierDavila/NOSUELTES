@@ -120,6 +120,17 @@ export interface TuningData {
   boxes?: BoxesTuning;
   condor?: CondorTuning;
   drone?: DroneTuning;
+  /** RENDIMIENTO (petición del jugador: "unos 60 FPS en todo momento").
+   *  Ausente → constantes de respaldo en la escena (nativo, PCF low). */
+  perf?: PerfTuning;
+}
+export interface PerfTuning {
+  /** RESOLUCIÓN ADAPTATIVA: si el fps medio baja de targetFps−10 el motor
+   *  renderiza a menor resolución (escala +step, hasta maxScale); si sobra
+   *  margen vuelve hacia 1 (nativo). 1 = píxeles nativos. */
+  targetFps: number; minScale: number; maxScale: number; step: number; checkSeconds: number;
+  /** Calidad de sombras del sol: "off" | "low" | "medium" | "high" (PCF). */
+  shadowQuality: "off" | "low" | "medium" | "high";
 }
 export interface AnchorTypeData {
   label: string; gripQuality: number; durability: number | null;
@@ -321,6 +332,10 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
         } },
         condor: { type: "object", required: ["massKg"], properties: { massKg: posNum, perchSecondsMin: posNum, perchSecondsMax: posNum, offsetFrac: num } },
         drone: { type: "object", required: ["massKgMin", "massKgMax", "speedMs", "hoverSeconds"], properties: { massKgMin: posNum, massKgMax: posNum, speedMs: posNum, hoverSeconds: posNum } },
+        perf: { type: "object", required: ["targetFps", "minScale", "maxScale", "step", "checkSeconds", "shadowQuality"], properties: {
+          targetFps: posNum, minScale: posNum, maxScale: posNum, step: posNum, checkSeconds: posNum,
+          shadowQuality: { enum: ["off", "low", "medium", "high"] },
+        } },
       },
     },
     anchor_types: {
