@@ -120,6 +120,11 @@ export interface PlankStepParams {
   moveSherpa(p: 0 | 1, delta: V3): void;
   /** viento lateral para la cuerda visual (aceleración x, m/s²) — rachas. */
   ropeWindX?: number;
+  /** SEGURO DE CUERDA (Task 36): sherpa i SOSTENIDO por su cuerda de porteo
+   *  (cayendo/colgado/recuperándose). El EQUIPO AGUANTA LA TABLA: ese cabo se
+   *  CONGELA (la caída no lo arrastra al vacío), el ricachón SE AGARRA (no
+   *  desliza) y la captura péndulo del sherpa es suave. */
+  ropeHeld?: [boolean, boolean];
   /** racha de viento con signo (dir·nivel 0..1): sacude la tabla (oscilación
    *  visible) sin meterle deriva neta al deslizamiento del ricachón. */
   windShake?: number;
@@ -248,6 +253,9 @@ export class PlankSystem {
   /** sacudida de viento: amplitud 0..1 y fase del vaivén (oscilación visible). */
   private shakeAmp = 0;
   private shakePhase = 0;
+  /** SEGURO DE CUERDA (Task 36): alguien cuelga de la cuerda de porteo → el
+   *  ricachón SE AGARRA a la tabla (no desliza; recentrado fuerte). */
+  private cling = false;
 
   constructor(tuning?: Partial<PlankTuning>) {
     this.t = { ...PLANK_DEFAULTS, ...(tuning ?? {}) };
@@ -317,6 +325,7 @@ export class PlankSystem {
   step(dt: number, p: PlankStepParams): PlankState {
     const t = this.t;
     const zEnd = p.wallFrontZ - END_Z_OFF;
+    this.cling = !!(p.ropeHeld?.[0] || p.ropeHeld?.[1]);
 
     // 1. integración verlet de los cabos. El lado donde está el ricachón PESA
     //    MÁS (palanca): la tabla se escora hacia su posición cuando hay holgura
@@ -335,6 +344,12 @@ export class PlankSystem {
     }
     for (let i = 0; i < 2; i++) {
       const e = this.ends[i];
+      if (p.ropeHeld?.[i]) {
+        // Task 36: cabo CONGELADO — el compañero lo aguanta por la barra rígida
+        // y la cuerda del sherpa caído. La caída NO lo arrastra al vacío.
+        e.prev = vClone(e.pos);
+        continue;
+      }
       const share = i === 0 ? shareL : 1 - shareL;
       const cargoKg = i === 0 ? cargoExtraL : cargoExtraR;
       const gLoad = G * (1 + RICH_LOAD * 2 * share + cargoKg / CARGO_REF_KG);
@@ -376,37 +391,54 @@ export class PlankSystem {
     }
 
     // 2b. CAPTURA DE CAÍDA (doc 4.1/6.2 + petición del jugador: "si sueltan las
-    //     dos manos ese escalador cae"): si un sherpa ha caído POR DEBAJO de su
-    //     cabo (solo pasa en caída: en normal el cabo cuelga bajo la cintura),
-    //     la cuerda de porteo hace de seguro y lo cuelga de la tabla. El sherpa
-    //     queda pendular a ≤ ropeLen del cabo y puede RE-AGARRARSE (rescate);
-    //     el tirón baja ese lado de la tabla y el compañero nota la carga.
+    //     dos manos ese escalador cae"): SOLO con el seguro de cuerda activo
+    //     (ropeHeld). La parada fuerte ya la hizo el muelle del rig; aquí el
+    //     sherpa queda PENDULAR a ≤ ropeLen del cabo con corrección SUAVE — el
+    //     tirón baja ese lado de la tabla UN PELÍN (el ricachón se agarra).
     for (const [i, s] of [[0, p.a], [1, p.b]] as const) {
+      if (!p.ropeHeld?.[i]) continue;
       const e = this.ends[i];
       const dd = vSub(e.pos, s);
       const dist = vLen(dd);
       if (dist > t.ropeLen && e.pos.y > s.y + 0.05) {
         const n = vScale(dd, 1 / (dist || 1e-6));
         const over = dist - t.ropeLen;
-        const corr = vScale(n, Math.min(0.24, over)); // captura firme (≤ caída a 9 m/s por tick)
-        p.moveSherpa(i as 0 | 1, corr); // pos y prev juntos: sin velocidad fantasma, el péndulo sale solo
-        e.pos = vSub(e.pos, vScale(corr, 0.4)); // la cuerda tira también del cabo: la tabla se escora
+        const corr = vScale(n, Math.min(0.1, over)); // péndulo suave, sin latigazo
+        p.moveSherpa(i as 0 | 1, corr); // pos y prev juntos: sin velocidad fantasma
+        e.pos = vSub(e.pos, vScale(corr, 0.15)); // el cabo cede apenas (no vuelca)
       }
     }
 
     // 3. proyecciones: palo rígido + cuerdas unilaterales + suelo.
+    //    Task 36: con un cabo CONGELADO (seguro de cuerda), la corrección del
+    //    palo la absorbe EL EXTREMO LIBRE entera — si no, el extremo congelado
+    //    se arrastra y la tabla escora poco a poco durante la recuperación.
+    const h0 = !!p.ropeHeld?.[0];
+    const h1 = !!p.ropeHeld?.[1];
     for (let it = 0; it < t.iterations; it++) {
       const d = vSub(this.ends[1].pos, this.ends[0].pos);
       const len = vLen(d) || 1e-6;
-      const diff = ((len - t.plankLen) / len) * 0.5;
-      this.ends[0].pos = vAdd(this.ends[0].pos, vScale(d, diff));
-      this.ends[1].pos = vSub(this.ends[1].pos, vScale(d, diff));
+      const diff = (len - t.plankLen) / len;
+      if (h0 && h1) {
+        // ambos colgados del seguro: la tabla queda como esté (nadie la sujeta)
+      } else if (h0) {
+        this.ends[1].pos = vSub(this.ends[1].pos, vScale(d, diff));
+      } else if (h1) {
+        this.ends[0].pos = vAdd(this.ends[0].pos, vScale(d, diff));
+      } else {
+        this.ends[0].pos = vAdd(this.ends[0].pos, vScale(d, diff * 0.5));
+        this.ends[1].pos = vSub(this.ends[1].pos, vScale(d, diff * 0.5));
+      }
       for (const [i, s] of [[0, p.a], [1, p.b]] as const) {
         const e = this.ends[i];
-        const dd = vSub(e.pos, s);
-        const dist = vLen(dd);
-        // cuerda: solo TIRA del cabo hacia el sherpa si sobrepasa ropeLen.
-        if (dist > t.ropeLen) e.pos = vAdd(s, vScale(dd, t.ropeLen / dist));
+        if (!p.ropeHeld?.[i]) {
+          // cuerda unilateral: solo TIRA del cabo hacia el sherpa si sobrepasa
+          // ropeLen. CON EL SEGURO ACTIVO NO: el sherpa cuelga DEBAJO y esta
+          // proyección arrastraría el cabo (¡y la tabla!) tras la caída.
+          const dd = vSub(e.pos, s);
+          const dist = vLen(dd);
+          if (dist > t.ropeLen) e.pos = vAdd(s, vScale(dd, t.ropeLen / dist));
+        }
         if (e.pos.y < 0.12) e.pos.y = 0.12; // la tabla no se hunde en la nieve
       }
     }
@@ -453,7 +485,13 @@ export class PlankSystem {
     // suelo no resbala (apoyado/apoyándose: sin castigo en tierra).
     const grounded = center.y < 0.55;
     if (!this.fell && !grounded && dt > 0) {
-      if (tiltAbs > rest) {
+      if (this.cling) {
+        // SEGURO DE CUERDA (Task 36): el ricachón SE AGARRA — la sacudida de la
+        // captura se nota (los cabos brincan) pero NO desliza y se recentra
+        // fuerte: una caída individual no puede despacharlo de la tabla.
+        this.slideVel -= this.slideVel * Math.min(1, dt * 10);
+        this.slide -= Math.sign(this.slide) * Math.min(Math.abs(this.slide), t.recentreRate * 5 * dt);
+      } else if (tiltAbs > rest) {
         // pendiente: desliza hacia el lado BAJO (angle>0 = derecha arriba → izq).
         // DE PIE es más inestable (centro de gravedad alto): perdona menos.
         const accel = t.slideAccel * (this.richStanding ? 1.35 : 1);

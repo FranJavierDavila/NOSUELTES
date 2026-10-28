@@ -113,7 +113,15 @@ export interface TuningData {
   balance: { warnDeltaH: number; badDeltaH: number };
   /** Doc 4.1/6.2 + petición del jugador: soltar las DOS manos → el escalador cae
    *  (los pies resbalan tras una gracia; la cuerda de porteo hace de seguro). */
-  fall: { teamFallSeconds: number; teamFallMeters: number; twoHandsGraceSeconds?: number; slipReGripLock?: number };
+  fall: {
+    teamFallSeconds: number; teamFallMeters: number;
+    twoHandsGraceSeconds?: number; slipReGripLock?: number;
+    /** Task 36: seguro de cuerda — holgura antes del tirón, línea mínima de
+     *  captura sobre el suelo, chicote de fatiga y recuperación mano a mano. */
+    ropeSlackM?: number; catchFloorM?: number; catchFatiguePct?: number;
+    haulDelaySeconds?: number; haulPerSecondM?: number; haulTopOffsetM?: number;
+    ropeCatchPropina?: number;
+  };
   anchors: { attachSeconds: number; defaultMaxForceHand: number; defaultMaxForceFoot: number; loadSpikeWindow: number };
   weather: WeatherTuning;
   fart?: FartTuning;
@@ -317,7 +325,7 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
         } },
         richMan: { type: "object", required: ["mass", "foodBonus"], properties: { mass: posNum, foodBonus: num, massTransitionSeconds: posNum, harnessOffsetY: num, bumpWallSpeed: posNum, bumpImpulseToRope: num } },
         balance: { type: "object", required: ["warnDeltaH", "badDeltaH"], properties: { warnDeltaH: posNum, badDeltaH: posNum } },
-        fall: { type: "object", required: ["teamFallSeconds", "teamFallMeters"], properties: { teamFallSeconds: posNum, teamFallMeters: posNum, twoHandsGraceSeconds: posNum, slipReGripLock: posNum } },
+        fall: { type: "object", required: ["teamFallSeconds", "teamFallMeters"], properties: { teamFallSeconds: posNum, teamFallMeters: posNum, twoHandsGraceSeconds: posNum, slipReGripLock: posNum, ropeSlackM: posNum, catchFloorM: posNum, catchFatiguePct: posNum, haulDelaySeconds: posNum, haulPerSecondM: posNum, haulTopOffsetM: posNum, ropeCatchPropina: num } },
         anchors: { type: "object", required: ["attachSeconds", "defaultMaxForceHand", "defaultMaxForceFoot"], properties: { attachSeconds: posNum, defaultMaxForceHand: posNum, defaultMaxForceFoot: posNum, loadSpikeWindow: posNum } },
         weather: { type: "object", required: ["minGapSeconds", "maxGapSeconds", "warningSeconds", "gustSeconds", "minAltitudeM", "pushPerSecondM", "ropeWindAccel", "wobble"], properties: {
           minGapSeconds: posNum, maxGapSeconds: posNum, warningSeconds: posNum, gustSeconds: posNum,

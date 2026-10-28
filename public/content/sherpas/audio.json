@@ -105,6 +105,17 @@
    "dur": 1.4,
    "gain": 0.35
   },
+  "thud": {
+   "kind": "thud",
+   "dur": 0.3,
+   "gain": 0.5
+  },
+  "rope_snap": {
+   "kind": "crackle",
+   "dur": 0.24,
+   "gain": 0.34,
+   "pitchDown": true
+  },
   "shoo": {
    "kind": "noise",
    "dur": 0.2,

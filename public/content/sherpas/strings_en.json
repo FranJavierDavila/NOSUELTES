@@ -34,6 +34,8 @@
     "teamFall": "TEAM FALL!",
     "teamFallSub": "The rope did its job… back to the last camp.",
     "twoHandsFall": "{name} lets go with both hands and FALLS!",
+    "ropeCatch": "THE ROPE CATCHES {name}!",
+    "ropeHaul": "{name} hauls back up the rope…",
     "summit": "EVEREST SUMMIT!",
     "summitSub": "The rich man wants a selfie. You want your pay.",
     "voiceOff": "Voice not available in this version",

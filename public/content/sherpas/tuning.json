@@ -69,7 +69,14 @@
     "teamFallSeconds": 1.5,
     "teamFallMeters": 12,
     "twoHandsGraceSeconds": 0.5,
-    "slipReGripLock": 0.35
+    "slipReGripLock": 0.35,
+    "ropeSlackM": 2.9,
+    "catchFloorM": 0.6,
+    "catchFatiguePct": 0.16,
+    "haulDelaySeconds": 0.9,
+    "haulPerSecondM": 1.05,
+    "haulTopOffsetM": 0.35,
+    "ropeCatchPropina": -3
   },
   "anchors": {
     "attachSeconds": 0.16,

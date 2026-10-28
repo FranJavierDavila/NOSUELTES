@@ -123,8 +123,25 @@ export interface SherpaGripTuning {
   reachMarginM: number;
   /** Regla de dos manos (petición del jugador; doc 4.1/6.2): sin ninguna mano
    *  comprometida durante la gracia, los pies RESBALAN y el escalador cae.
-   *  Opcional en los tests: faltan valores → 0,5 s / 0,35 s. */
-  fall?: { twoHandsGraceSeconds: number; slipReGripLock: number };
+   *  Task 36 — la CAÍDA la atrapa la cuerda de porteo (holgura + muelle) y la
+   *  recuperación es MANO A MANO: pierde altura/tiempo/fatiga, jamás respawn.
+   *  Opcional en los tests: faltan valores → defaults de juego. */
+  fall?: {
+    twoHandsGraceSeconds: number;
+    slipReGripLock: number;
+    /** cuerda pagada antes del tirón (m): caída libre honesta y luego CHICOTE. */
+    ropeSlackM?: number;
+    /** la línea de captura nunca baja de floorY + catchFloorM (m). */
+    catchFloorM?: number;
+    /** fatiga INSTANTÁNEA de manos al tensarse la cuerda (0..1): el chicotazo. */
+    catchFatiguePct?: number;
+    /** reposo colgado antes de empezar a recuperar cuerda (s). */
+    haulDelaySeconds?: number;
+    /** velocidad de recobrado mano a mano (m/s). */
+    haulPerSecondM?: number;
+    /** el recobrado termina justo DEBAJO del punto de despegue (m). */
+    haulTopOffsetM?: number;
+  };
   /** SUPER FLATULENCIA (opcional en tests: ausente → sin superpoder). */
   fart?: FartTuning;
 }
@@ -163,6 +180,11 @@ export interface DragReachInfo {
   deadZone: boolean;
 }
 
+/** Seguro de CUERDA del escalador (Task 36): la cuerda de porteo atrapa la
+ *  caída individual y la recuperación es mano a mano — pierde altura y tiempo,
+ *  pero la partida JAMÁS se reinicia por una caída de uno solo. */
+export type RopeHoldState = "climbing" | "falling" | "caught" | "hauling";
+
 export interface SherpaStepInfo {
   result: StepResult;
   released: { limb: Limb; cause: ReleaseCause }[];
@@ -171,6 +193,8 @@ export interface SherpaStepInfo {
   slippedByTwoHands: boolean;
   /** true SOLO en el tick en que se gana la carga de Super Flatulencia. */
   fartGained: boolean;
+  /** SEGURO DE CUERDA (Task 36): estado + eventos de borde del tick. */
+  rope: { state: RopeHoldState; tautNow: boolean; haulStart: boolean; dropM: number };
 }
 
 interface GameParticle { pos: V3; prev: V3; mass: number; invMass: number; radius: number }
@@ -217,6 +241,14 @@ export class SherpaRig {
   private noHandsTimer = 0;
   /** true SOLO el tick en que el resbalón por dos manos suelta los pies. */
   slippedByTwoHands = false;
+  /** SEGURO DE CUERDA (Task 36): estado del porteo y memoria de la caída. */
+  ropeState: RopeHoldState = "climbing";
+  private ropeFallStartY: number | null = null;
+  private ropeTautDone = false;
+  private ropeTautNow = false;
+  private ropeHaulStartNow = false;
+  private dangleSettleT = 0;
+  private haulDone = false;
   /** SUPER FLATULENCIA: carga lista (presa verde agarrada) y vuelo en curso. */
   fartCharge = false;
   private fartLaunchT = 0;
@@ -299,6 +331,17 @@ export class SherpaRig {
   holdIdOf(limb: Limb): string | null { return this.states.get(limb)?.holdId ?? null; }
   anchorsCount(): number { return LIMBS.reduce((n, l) => n + (this.states.get(l)!.anchored ? 1 : 0), 0); }
   maxTension(): number { return Math.max(...LIMBS.map((l) => this.states.get(l)!.tension)); }
+
+  /** Task 36: la cuerda SOSTIENE a este escalador (caída/captura/recobrado):
+   *  su altura no cuenta para la caída de equipo — ya está castigado de sobra
+   *  (altura + tiempo + fatiga + propina). */
+  ropeHeld(): boolean { return this.ropeState !== "climbing"; }
+
+  /** metros por DEBAJO del punto de despegue (0 si no hay caída en curso). */
+  ropeDropM(): number {
+    if (this.ropeState === "climbing" || this.ropeFallStartY === null) return 0;
+    return Math.max(0, this.ropeFallStartY - this.waist().y);
+  }
   freeFallDropM(): number { return this.lastDropM; }
   /** segundos llevados sin NINGUNA mano comprometida (regla de dos manos). */
   noHandsSeconds(): number { return this.noHandsTimer; }
@@ -569,6 +612,8 @@ export class SherpaRig {
     //     a una presa, el escalador se despega: tras la gracia los pies
     //     RESBALAN y el cuerpo cae — la cuerda de porteo hace de seguro.
     this.slippedByTwoHands = false;
+    this.ropeTautNow = false; // eventos de borde del tick (Task 36)
+    this.ropeHaulStartNow = false;
     const handBusy = (l: Limb): boolean => {
       const st = this.states.get(l)!;
       return st.anchored || st.traveling;
@@ -595,6 +640,7 @@ export class SherpaRig {
     const body = this.rig.particles[P.pelvisC];
     const nAnchored = this.anchorsCount();
     const result = this.lastResult;
+    const fT = this.deps.tuning.fall;
     let vAbs: number;
     if (this.fartLaunchT > 0) {
       // 2a. SUPER FLATULENCIA en vuelo: traslación vertical cinemática (pos y
@@ -609,7 +655,28 @@ export class SherpaRig {
       // el gas verde sale por atrás (el trail lo dispara el match vía fartFlying)
       this.fartTrailAcc += dt;
       if (this.fartLaunchT <= 0) this.autoGripAfterFart();
+    } else if (nAnchored === 0 && this.ropeState === "hauling") {
+      // 2a-bis. RECUPERACIÓN MANO A MANO (Task 36): el escalador tira de la
+      //    cuerda y asciende hasta justo debajo de su punto de despegue.
+      //    Cinemática pura (como el vuelo de pedo): sin gravedad y sin energía
+      //    fantasma (pos y prev suben juntos). El jugador puede ADELANTAR la
+      //    recuperación arrastrando una mano a una presa (entonces hay anclas
+      //    y esta rama ni se entra).
+      const start = this.ropeFallStartY ?? body.pos.y;
+      const top = start - (fT?.haulTopOffsetM ?? 0.35);
+      const rise = Math.min((fT?.haulPerSecondM ?? 1.05) * dt, Math.max(0, top - body.pos.y));
+      body.pos = vAdd(body.pos, v3(0, rise, 0));
+      body.prev = v3(body.pos.x, body.pos.y - rise * 0.55, body.pos.z);
+      this.clampBody(body);
+      if (rise <= 0) { this.ropeState = "caught"; this.haulDone = true; }
+      vAbs = rise / Math.max(1e-4, dt);
     } else {
+      // RE-AGARRE: cualquier ancla viva devuelve la cuerda a holgura (Task 36).
+      if (nAnchored > 0 && this.ropeState !== "climbing") {
+        this.ropeState = "climbing";
+        this.ropeFallStartY = null;
+        this.dangleSettleT = 0;
+      }
       let vel = vSub(body.pos, body.prev);
       vel = vScale(vel, nAnchored > 0 ? DAMP_HANG : DAMP_FALL);
       const vmax = (nAnchored > 0 ? MAX_SPEED_HANG : MAX_SPEED_FALL) * dt;
@@ -622,6 +689,57 @@ export class SherpaRig {
         acc = vAdd(acc, vAdd(vScale(vSub(target, body.pos), SPRING_K), vScale(velPerSec, -SPRING_C)));
         const aAbs = vLen(acc);
         if (aAbs > MAX_ACC) acc = vScale(acc, MAX_ACC / aAbs);
+      } else {
+        // SIN ANCLAS: caída libre honesta y CAPTURA por la cuerda de porteo
+        // (Task 36, petición: "cae, la cuerda lo agarra, pierde altura y
+        // tiempo pero no vuelve a cero"). El tirón usa el MISMO muelle
+        // estable del colgado: frena, rebota una vez y queda colgado.
+        if (this.ropeState !== "falling" && this.ropeState !== "caught") {
+          this.ropeState = "falling";
+          this.ropeFallStartY = body.pos.y;
+          this.dangleSettleT = 0;
+        }
+        const catchY = Math.max(
+          this.deps.floorY + (fT?.catchFloorM ?? 0.6),
+          (this.ropeFallStartY ?? body.pos.y) - (fT?.ropeSlackM ?? 2.9),
+        );
+        if (this.ropeState === "falling" && body.pos.y <= catchY) {
+          this.ropeState = "caught";
+          this.ropeTautNow = true; // evento de borde: el match suena/avisa
+          this.dangleSettleT = 0;
+          // EL CHICOTE absorbe energía EN el tirón (parada seca, lectura de
+          // juego: la cuerda AGARRA, no se estira un metro de más). Queda un
+          // 35% de la velocidad para el muelle: un rebote corto y cuelga.
+          vel = v3(vel.x * 0.6, vel.y * 0.35, vel.z * 0.6);
+          if (!this.ropeTautDone) {
+            // EL CHICOTAZO: la parada se paga en las manos (re-agarrar cuesta).
+            const shock = fT?.catchFatiguePct ?? 0.16;
+            for (const h of ["hand_l", "hand_r"] as const) {
+              const st = this.states.get(h)!;
+              st.fatigue = Math.min(1, st.fatigue + shock);
+            }
+            this.ropeTautDone = true;
+          }
+        }
+        if (this.ropeState === "caught") {
+          const pen = catchY - body.pos.y;
+          if (pen > 0) {
+            acc.y += Math.min(MAX_ACC, pen * SPRING_K * 1.1);
+            // amortiguación vertical extra: el rebote muere en ~0,6 s
+            vel = v3(vel.x, vel.y * Math.max(0, 1 - 6 * dt), vel.z);
+          } else if (this.haulDone) {
+            // Recobrado terminado: el escalador SE MANTIENE de la cuerda con
+            // las manos — no vuelve a caer (está bajo su punto de despegue,
+            // con presas a un arrastre). Sin gravedad, sin vaivén.
+            acc.y += G;
+            vel = vScale(vel, Math.max(0, 1 - 10 * dt));
+          }
+          this.dangleSettleT += dt;
+          if (!this.haulDone && this.dangleSettleT >= (fT?.haulDelaySeconds ?? 0.9)) {
+            this.ropeState = "hauling";
+            this.ropeHaulStartNow = true;
+          }
+        }
       }
       body.prev = vClone(body.pos);
       body.pos = vAdd(body.pos, vAdd(vel, vScale(acc, dt * dt)));
@@ -727,11 +845,18 @@ export class SherpaRig {
     } else if (this.anchorsCount() > 0) {
       this.fallStartY = null;
       this.lastDropM = 0;
+      // la cuerda vuelve a estar en reserva: el próximo chicote vuelve a doler.
+      this.ropeTautDone = false;
+      this.haulDone = false;
     }
 
     result.maxSpeed = vAbs / dt;
     result.com = this.com();
-    return { result, released, gripped, slippedByTwoHands: this.slippedByTwoHands, fartGained };
+    return {
+      result, released, gripped,
+      slippedByTwoHands: this.slippedByTwoHands, fartGained,
+      rope: { state: this.ropeState, tautNow: this.ropeTautNow, haulStart: this.ropeHaulStartNow, dropM: this.ropeDropM() },
+    };
   }
 
   // ---------- cargas (falseadas, suaves, con techo) ----------
@@ -1003,6 +1128,12 @@ export class SherpaRig {
     this.lastDropM = 0;
     this.noHandsTimer = 0;
     this.slippedByTwoHands = false;
+    // Task 36: nacer/respawnar con la cuerda en reserva.
+    this.ropeState = "climbing";
+    this.ropeFallStartY = null;
+    this.ropeTautDone = false;
+    this.dangleSettleT = 0;
+    this.haulDone = false;
     this.aim = v3(
       (startHolds.hand_l.pos.x + startHolds.hand_r.pos.x) / 2,
       startHolds.hand_r.pos.y,

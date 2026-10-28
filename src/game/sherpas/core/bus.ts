@@ -45,6 +45,9 @@ export interface SherpasEvents {
   // Progresión
   PlayerFell: { playerId: 0 | 1; cause?: "two_hands" | "no_grips" };
   TeamFell: { record: unknown };
+  // SEGURO DE CUERDA (Task 36): la cuerda de porteo atrapa la caída individual
+  RopeCaught: { playerId: 0 | 1; dropM: number };
+  RopeHaulStart: { playerId: 0 | 1 };
   CampReached: { campId: string; phase: number };
   SummitReached: { record: unknown };
   PhaseChanged: { phase: number };

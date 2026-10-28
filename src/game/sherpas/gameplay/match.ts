@@ -148,6 +148,14 @@ export class SherpasMatch {
       fall: {
         twoHandsGraceSeconds: this.data.tuning.fall.twoHandsGraceSeconds ?? 0.5,
         slipReGripLock: this.data.tuning.fall.slipReGripLock ?? 0.35,
+        // Task 36: la cuerda de porteo ATRAPA la caída (holgura ≈ 2 cabos + comba)
+        // y la recuperación es mano a mano — pierde altura/tiempo, no respawn.
+        ropeSlackM: this.data.tuning.fall.ropeSlackM ?? 2 * (this.data.tuning.plank?.ropeLen ?? 1.4) + 0.1,
+        catchFloorM: this.data.tuning.fall.catchFloorM,
+        catchFatiguePct: this.data.tuning.fall.catchFatiguePct,
+        haulDelaySeconds: this.data.tuning.fall.haulDelaySeconds,
+        haulPerSecondM: this.data.tuning.fall.haulPerSecondM,
+        haulTopOffsetM: this.data.tuning.fall.haulTopOffsetM,
       },
       // SUPER FLATULENCIA (petición del jugador): presas verdes → pedo-propulsor.
       fart: this.data.tuning.fart,
@@ -416,6 +424,21 @@ export class SherpasMatch {
         this.d.scene.shake(this.d.hud.wantsReduceShake ? 0.015 : 0.05);
         this.brain.panic();
       }
+      // SEGURO DE CUERDA (Task 36): la cuerda de porteo ATRAPA la caída —
+      // chicote sonoro + aviso legible + propina + susto del ricachón. La caída
+      // individual JAMÁS respawnea: el castigo es altura+tiempo+fatiga+propina.
+      if (info.rope.tautNow) {
+        this.d.audio.play("rope_snap");
+        this.d.hud.subtitle(this.d.hud.fmt("hud.ropeCatch", { name: `P${p + 1}` }), 2.6);
+        this.d.scene.shake(this.d.hud.wantsReduceShake ? 0.02 : 0.055);
+        this.propina.add(this.data.tuning.fall.ropeCatchPropina ?? -3, "rope_catch", this.d.bus);
+        this.brain.panic(); // el tirón lo despierta/soresalta
+        this.d.bus.emit("RopeCaught", { playerId: p, dropM: Math.round(info.rope.dropM * 100) / 100 });
+      }
+      if (info.rope.haulStart) {
+        this.d.hud.subtitle(this.d.hud.fmt("hud.ropeHaul", { name: `P${p + 1}` }), 2.6);
+        this.d.bus.emit("RopeHaulStart", { playerId: p });
+      }
       // SUPER FLATULENCIA GANADA: presa verde agarrada → carga lista (una vez
       // por agarre: el propio info.fartGained solo es true el tick de llegada).
       if (info.fartGained) {
@@ -539,6 +562,10 @@ export class SherpasMatch {
     if (this.dronePkg) cargo.push({ offsetFrac: this.dronePkg.frac, kg: this.dronePkg.kg });
     for (const c of this.birds.condorCargo()) cargo.push(c);
     this.plank.setCargo(cargo);
+    // SEGURO DE CUERDA (Task 36): quien cuelga de la cuerda hace que EL EQUIPO
+    // aguante la tabla (cabo congelado + ricachón agarrado en PlankSystem).
+    const heldA = this.sherpas[0].ropeHeld();
+    const heldB = this.sherpas[1].ropeHeld();
     this.plankState = this.plank.step(dt, {
       a: this.sherpas[0].waist(),
       b: this.sherpas[1].waist(),
@@ -550,6 +577,7 @@ export class SherpasMatch {
       wobble,
       ropeWindX,
       windShake,
+      ropeHeld: [heldA, heldB],
       moveSherpa: (p, delta) => {
         const w = this.sherpas[p].rig.particles[P.pelvisC];
         w.pos = vAdd(w.pos, delta);
@@ -669,7 +697,13 @@ export class SherpasMatch {
     }
     const totalAnchors = this.sherpas[0].anchorsCount() + this.sherpas[1].anchorsCount();
     const allAnchored = totalAnchors === 8;
-    this.teamFall.tick(dt, Math.min(wa.y, wb.y), totalAnchors, false);
+    // Task 36: el sherpa SOSTENIDO por su cuerda no arrastra al equipo al
+    // respawn — su caída ya está castigada (altura+tiempo+fatiga+propina) y
+    // se recupera mano a mano. Solo si los DOS cuelgan (nadie sostiene la
+    // tabla) sigue valiendo la caída de equipo. heldA/heldB calculados antes
+    // para la tabla (el equipo aguanta la tabla mientras alguien cuelga).
+    const guardedMinY = heldA && heldB ? Math.min(wa.y, wb.y) : heldA ? wb.y : heldB ? wa.y : Math.min(wa.y, wb.y);
+    this.teamFall.tick(dt, guardedMinY, totalAnchors, false);
     this.camps.tick(Math.min(wa.y, wb.y), allAnchored, dt);
 
     const minY = Math.min(wa.y, wb.y);
@@ -1338,6 +1372,7 @@ export class SherpasMatch {
       `T A:${this.sherpas[0].maxTension().toFixed(2)} B:${this.sherpas[1].maxTension().toFixed(2)} · tabla ${pkD ? `${pkD.tiltDeg.toFixed(0)}° desliz ${(pkD.slideFrac * 100).toFixed(0)}%` : "—"}\n` +
       `ricachón: ${st.richState} · ${Math.round(this.rich.currentMass())} kg${this.rich.seated ? (this.rich.standing ? " (de pie)" : " (sentado)") : " (CAYENDO)"}\n` +
       `A(${waD.x.toFixed(2)},${waD.y.toFixed(2)}) B(${wbD.x.toFixed(2)},${wbD.y.toFixed(2)}) R(${rD.x.toFixed(2)},${rD.y.toFixed(2)}) anclas ${this.sherpas[0].anchorsCount()}+${this.sherpas[1].anchorsCount()}` +
+      ` · cuerda A:${this.sherpas[0].ropeState} B:${this.sherpas[1].ropeState}` +
       (this.dragLimb ? ` · arrastre ${this.dragLimb}` : ""),
     );
     // sonda E2E (DOM compartido: los eval del agente no ven globals de la página).
@@ -1371,6 +1406,8 @@ export class SherpasMatch {
         freeS: Math.round(this.sherpas[p].noHandsSeconds() * 100) / 100,
         grips: this.sherpas[p].anchorsCount(),
       })),
+      // Task 36 (sonda E2E): seguro de cuerda por escalador (estado + metros caídos)
+      rope: ([0, 1] as const).map((p) => ({ s: this.sherpas[p].ropeState, drop: Math.round(this.sherpas[p].ropeDropM() * 100) / 100 })),
       route: { band: this.gen.bandIndexOf((waD.y + wbD.y) / 2), pattern: this.gen.patternIdOfBand(this.gen.bandIndexOf((waD.y + wbD.y) / 2)) },
       // rachas de viento (sonda E2E)
       weather: { phase: this.weather.state, dir: this.weather.dir, level: Math.round(this.weather.windLevel * 100) / 100, storm: this.weather.storm },
@@ -1406,8 +1443,16 @@ export class SherpasMatch {
 
   /** Sonda E2E (solo pruebas, como setAim): fuerza los eventos del Task 31
    *  para verificar su presentación sin esperar al azar del director. */
-  debugForce(what: "boxes" | "condor" | "storm" | "fart" | "drone" | "subir" | "caida_rico", player: 0 | 1 = 0): boolean {
+  debugForce(what: "boxes" | "condor" | "storm" | "fart" | "drone" | "subir" | "caida_rico" | "caida", player: 0 | 1 = 0): boolean {
     switch (what) {
+      case "caida": {
+        // SONDA E2E Task 36: suelta las 4 extremidades por el pipeline natural
+        // (forceRelease con lock) → el estado de cuerda hace el resto: caída
+        // libre → chicote de captura → subtítulo → recuperación mano a mano.
+        const rig = this.sherpas[player];
+        for (const limb of LIMBS) rig.forceRelease(limb, 1.2, "player");
+        return true;
+      }
       case "caida_rico":
         // SONDA E2E Task 35: la caída corre por su pipeline natural completo
         // (fellOff → launchFall contundente → GRITO → thud+shake → respawn).
