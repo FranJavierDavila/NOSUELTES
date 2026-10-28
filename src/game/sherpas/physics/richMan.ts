@@ -15,10 +15,14 @@ import { v3, vAdd, vSub, vScale, vLen, vClone, type V3 } from "../../physics/pbd
 export const RM = { head: 0, chest: 1, pelvis: 2, elbowL: 3, elbowR: 4, handL: 5, handR: 6, kneeL: 7, kneeR: 8, footL: 9, footR: 10 } as const;
 export const RM_PARTICLES = 11;
 
-/** Gesto visible mientras está sentado (cinemática; el FSM del cerebro lo manda). */
+/** Gesto visible mientras está sentado (cinemática; el FSM del cerebro lo manda).
+ *  POSTURAS CÓMICAS (petición del jugador: "ponerse a dormir acostado en la
+ *  tabla, realizar un bailecito, ponerse a leer, a llamar por teléfono"):
+ *  durmiendo (TUMBADO con sombrero en la cara), bailando, leyendo, telefono. */
 export type RichGesture =
   | "ninguno" | "dormitando" | "insultando" | "comiendo" | "tirando_basura"
-  | "aplaudiendo" | "brindando" | "mirando" | "pataleando";
+  | "aplaudiendo" | "brindando" | "mirando" | "pataleando"
+  | "durmiendo" | "bailando" | "leyendo" | "telefono";
 
 interface Body { pos: V3; prev: V3; mass: number; invMass: number; radius: number; share: number }
 interface RMStick { a: number; b: number; rest: number; min: number }
@@ -294,6 +298,61 @@ export class RichManSim {
         set(RM.kneeR, 0, 0.18 * kR, 0.02 * kR);
         set(RM.handL, 0, 0.16 * kR, 0);
         set(RM.handR, 0, 0.16 * kL, 0);
+        break;
+      }
+      case "durmiendo": {
+        // TUMBADO SOBRE LA TABLA (petición del jugador): cuerpo estirado a lo
+        // largo de la tabla (cabeza hacia el cabo derecho), manos bajo la
+        // cabeza, rodillas flexionadas, respiración lenta. El sombrero cae a
+        // la cara (lo mueve la escena) y las gafas se quitan.
+        const breath = Math.sin(ph * 1.15);
+        set(RM.pelvis, 0.02, -0.02, 0);
+        set(RM.chest, 0.3, -0.34 + breath * 0.012, 0.03);
+        set(RM.head, 0.58, -0.56 + breath * 0.02, 0.02);
+        set(RM.elbowL, 0.4, -0.1, 0.02);
+        set(RM.handL, 0.52, -0.04, 0.03);
+        set(RM.elbowR, 0.44, -0.08, 0.02);
+        set(RM.handR, 0.58, -0.02, 0.03);
+        set(RM.kneeL, -0.06, 0.06, 0.04);
+        set(RM.kneeR, 0.04, 0.06, 0.04);
+        set(RM.footL, -0.22, 0.16, 0.04);
+        set(RM.footR, -0.1, 0.16, 0.04);
+        break;
+      }
+      case "bailando": {
+        // BAILARÁN (petición del jugador): caderas que marcan el ritmo, brazos
+        // arriba alternando, cabeceo — todo con la tabla de base.
+        const beat = ph * 5.2;
+        const wig = Math.sin(beat);
+        set(RM.pelvis, wig * 0.06, Math.abs(Math.sin(beat)) * 0.045, 0);
+        set(RM.head, wig * 0.04, Math.sin(beat + 1) * 0.05, 0);
+        set(RM.handL, -0.02, 0.34 + Math.sin(beat) * 0.14, -0.06);
+        set(RM.handR, 0.02, 0.34 + Math.sin(beat + Math.PI) * 0.14, -0.06);
+        set(RM.elbowL, -0.05, 0.18, 0);
+        set(RM.elbowR, 0.05, 0.18, 0);
+        set(RM.kneeL, 0, Math.max(0, Math.sin(beat)) * 0.06, 0);
+        set(RM.kneeR, 0, Math.max(0, Math.sin(beat + Math.PI)) * 0.06, 0);
+        break;
+      }
+      case "leyendo": {
+        // LEYENDO (petición del jugador): libro delante (lo pone la escena),
+        // dos manos al frente, cabeza inclinada hacia abajo, escanea líneas.
+        const scan = Math.sin(ph * 1.4) * 0.02;
+        set(RM.handL, 0.16, 0.14, -0.1);
+        set(RM.handR, -0.16, 0.14, -0.1);
+        set(RM.elbowL, 0.06, 0.06, -0.02);
+        set(RM.elbowR, -0.06, 0.06, -0.02);
+        set(RM.head, scan, -0.12, 0.05);
+        break;
+      }
+      case "telefono": {
+        // LLAMANDO (petición del jugador): teléfono a la oreja (prop de la
+        // escena), codo arriba, cabeza ladeada, la otra mano descansa.
+        const chat = Math.sin(ph * 2.6) * 0.02;
+        set(RM.handR, -0.26 + chat, 0.44, -0.04);
+        set(RM.elbowR, -0.12, 0.26, 0);
+        set(RM.head, 0.05, -0.02, 0);
+        set(RM.handL, 0, -0.04, 0);
         break;
       }
       default:

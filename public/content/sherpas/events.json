@@ -1,262 +1,287 @@
 {
- "events": [
-  {
-   "id": "insult",
-   "kind": "soft",
-   "weightByPhase": {
-    "1": 1.0,
-    "2": 1.0,
-    "3": 1.0,
-    "4": 1.0,
-    "5": 1.0,
-    "6": 1.0
-   },
-   "cooldownSeconds": 12,
-   "telegraph": {
-    "seconds": 0.3,
-    "vfx": "speech_bubble",
-    "sfx": "gibberish"
-   },
-   "onRun": [
+  "events": [
     {
-     "type": "insultLine",
-     "context": "auto"
-    }
-   ]
-  },
-  {
-   "id": "eat",
-   "kind": "soft",
-   "weightByPhase": {
-    "3": 0.5,
-    "4": 0.5,
-    "5": 0.6,
-    "6": 0.6
-   },
-   "cooldownSeconds": 55,
-   "telegraph": {
-    "seconds": 3.0,
-    "vfx": "unwrap_food",
-    "sfx": "unwrap"
-   },
-   "onRun": [
-    {
-     "type": "richMassDelta",
-     "deltaKg": 6
+      "id": "insult",
+      "kind": "soft",
+      "weightByPhase": {
+        "1": 1.0,
+        "2": 1.0,
+        "3": 1.0,
+        "4": 1.0,
+        "5": 1.0,
+        "6": 1.0
+      },
+      "cooldownSeconds": 12,
+      "telegraph": {
+        "seconds": 0.3,
+        "vfx": "speech_bubble",
+        "sfx": "gibberish"
+      },
+      "onRun": [
+        {
+          "type": "insultLine",
+          "context": "auto"
+        }
+      ]
     },
     {
-     "type": "insultLine",
-     "context": "eating"
-    }
-   ],
-   "onFinish": [
-    {
-     "type": "enableTrash"
-    }
-   ]
-  },
-  {
-   "id": "trash",
-   "kind": "hard",
-   "weightByPhase": {
-    "3": 0.5,
-    "4": 0.5,
-    "5": 0.6,
-    "6": 0.6
-   },
-   "requiresEventDone": "eat",
-   "cooldownSeconds": 50,
-   "telegraph": {
-    "seconds": 1.0,
-    "vfx": "windup",
-    "sfx": "rustle"
-   },
-   "onRun": [
-    {
-     "type": "spawnTrashProjectile"
+      "id": "eat",
+      "kind": "soft",
+      "weightByPhase": {
+        "3": 0.5,
+        "4": 0.5,
+        "5": 0.6,
+        "6": 0.6
+      },
+      "cooldownSeconds": 55,
+      "telegraph": {
+        "seconds": 3.0,
+        "vfx": "unwrap_food",
+        "sfx": "unwrap"
+      },
+      "onRun": [
+        {
+          "type": "richMassDelta",
+          "deltaKg": 6
+        },
+        {
+          "type": "insultLine",
+          "context": "eating"
+        }
+      ],
+      "onFinish": [
+        {
+          "type": "enableTrash"
+        }
+      ]
     },
     {
-     "type": "richMassDelta",
-     "deltaKg": -6
-    }
-   ]
-  },
-  {
-   "id": "pee",
-   "kind": "hard",
-   "weightByPhase": {
-    "4": 0.8,
-    "5": 1.0,
-    "6": 1.0
-   },
-   "cooldownSeconds": 70,
-   "conditions": [
-    {
-     "type": "richManState.is",
-     "state": "colgando"
-    }
-   ],
-   "telegraph": {
-    "seconds": 1.0,
-    "vfx": "zip_warning",
-    "sfx": "zip"
-   },
-   "onRun": [
-    {
-     "type": "urineStream",
-     "seconds": 1.5
-    }
-   ]
-  },
-  {
-   "id": "kick",
-   "kind": "hard",
-   "weightByPhase": {
-    "5": 0.7,
-    "6": 0.9
-   },
-   "conditions": [
-    {
-     "type": "secondsSince",
-     "event": "BirdHit",
-     "gt": 2
-    }
-   ],
-   "cooldownSeconds": 40,
-   "telegraph": {
-    "seconds": 0.8,
-    "vfx": "shake_harness",
-    "sfx": "wail"
-   },
-   "onRun": [
-    {
-     "type": "richKick",
-     "seconds": 4
-    }
-   ]
-  },
-  {
-   "id": "bird_pecker",
-   "kind": "hard",
-   "weightByPhase": {
-    "2": 0.8,
-    "3": 0.8,
-    "4": 1.0,
-    "5": 1.2,
-    "6": 1.2
-   },
-   "cooldownSeconds": 12,
-   "conditions": [
-    {
-     "type": "maxLimbTension.lt",
-     "value": 0.85
+      "id": "trash",
+      "kind": "hard",
+      "weightByPhase": {
+        "3": 0.5,
+        "4": 0.5,
+        "5": 0.6,
+        "6": 0.6
+      },
+      "requiresEventDone": "eat",
+      "cooldownSeconds": 50,
+      "telegraph": {
+        "seconds": 1.0,
+        "vfx": "windup",
+        "sfx": "rustle"
+      },
+      "onRun": [
+        {
+          "type": "spawnTrashProjectile"
+        },
+        {
+          "type": "richMassDelta",
+          "deltaKg": -6
+        }
+      ]
     },
     {
-     "type": "secondsSince",
-     "event": "LimbReleased",
-     "gt": 5
-    }
-   ],
-   "machine": "bird_pecker_fsm",
-   "telegraph": {
-    "seconds": 1.2,
-    "vfx": "bird_shadow",
-    "sfx": "bird_screech"
-   },
-   "onHit": [
-    {
-     "type": "forceRelease",
-     "target": "hitLimb",
-     "lockSeconds": 0.8,
-     "cause": "Bird"
-    }
-   ]
-  },
-  {
-   "id": "bird_thief",
-   "kind": "hard",
-   "weightByPhase": {
-    "4": 0.6,
-    "5": 0.8,
-    "6": 0.8
-   },
-   "cooldownSeconds": 18,
-   "conditions": [
-    {
-     "type": "maxLimbTension.lt",
-     "value": 0.85
+      "id": "pee",
+      "kind": "hard",
+      "weightByPhase": {
+        "4": 0.8,
+        "5": 1.0,
+        "6": 1.0
+      },
+      "cooldownSeconds": 70,
+      "conditions": [
+        {
+          "type": "richManState.is",
+          "state": "colgando"
+        }
+      ],
+      "telegraph": {
+        "seconds": 1.0,
+        "vfx": "zip_warning",
+        "sfx": "zip"
+      },
+      "onRun": [
+        {
+          "type": "urineStream",
+          "seconds": 1.5
+        }
+      ]
     },
     {
-     "type": "secondsSince",
-     "event": "LimbReleased",
-     "gt": 5
-    }
-   ],
-   "machine": "bird_thief_fsm",
-   "telegraph": {
-    "seconds": 1.2,
-    "vfx": "bird_shadow",
-    "sfx": "bird_screech"
-   },
-   "onHit": [
-    {
-     "type": "stealFood"
-    }
-   ]
-  },
-  {
-   "id": "condor",
-   "kind": "soft",
-   "weightByPhase": {
-    "1": 0,
-    "2": 0.5,
-    "3": 0.7,
-    "4": 0.8,
-    "5": 0.8,
-    "6": 0.8
-   },
-   "cooldownSeconds": 45,
-   "conditions": [
-    {
-     "type": "secondsSince",
-     "event": "LimbReleased",
-     "gt": 4
-    }
-   ],
-   "telegraph": {
-    "seconds": 1.6,
-    "vfx": "bird_shadow",
-    "sfx": "bird_screech"
-   }
-  },
-  {
-   "id": "cajas",
-   "kind": "hard",
-   "weightByPhase": {
-    "1": 0,
-    "2": 0,
-    "3": 0.6,
-    "4": 0.7,
-    "5": 0.8,
-    "6": 0.8
-   },
-   "cooldownSeconds": 60,
-   "conditions": [
-    {
-     "type": "richManState.is",
-     "state": "colgando"
+      "id": "kick",
+      "kind": "hard",
+      "weightByPhase": {
+        "5": 0.7,
+        "6": 0.9
+      },
+      "conditions": [
+        {
+          "type": "secondsSince",
+          "event": "BirdHit",
+          "gt": 2
+        }
+      ],
+      "cooldownSeconds": 40,
+      "telegraph": {
+        "seconds": 0.8,
+        "vfx": "shake_harness",
+        "sfx": "wail"
+      },
+      "onRun": [
+        {
+          "type": "richKick",
+          "seconds": 4
+        }
+      ]
     },
     {
-     "type": "secondsSince",
-     "event": "LimbReleased",
-     "gt": 4
+      "id": "bird_pecker",
+      "kind": "hard",
+      "weightByPhase": {
+        "2": 0.8,
+        "3": 0.8,
+        "4": 1.0,
+        "5": 1.2,
+        "6": 1.2
+      },
+      "cooldownSeconds": 12,
+      "conditions": [
+        {
+          "type": "maxLimbTension.lt",
+          "value": 0.85
+        },
+        {
+          "type": "secondsSince",
+          "event": "LimbReleased",
+          "gt": 5
+        }
+      ],
+      "machine": "bird_pecker_fsm",
+      "telegraph": {
+        "seconds": 1.2,
+        "vfx": "bird_shadow",
+        "sfx": "bird_screech"
+      },
+      "onHit": [
+        {
+          "type": "forceRelease",
+          "target": "hitLimb",
+          "lockSeconds": 0.8,
+          "cause": "Bird"
+        }
+      ]
+    },
+    {
+      "id": "bird_thief",
+      "kind": "hard",
+      "weightByPhase": {
+        "4": 0.6,
+        "5": 0.8,
+        "6": 0.8
+      },
+      "cooldownSeconds": 18,
+      "conditions": [
+        {
+          "type": "maxLimbTension.lt",
+          "value": 0.85
+        },
+        {
+          "type": "secondsSince",
+          "event": "LimbReleased",
+          "gt": 5
+        }
+      ],
+      "machine": "bird_thief_fsm",
+      "telegraph": {
+        "seconds": 1.2,
+        "vfx": "bird_shadow",
+        "sfx": "bird_screech"
+      },
+      "onHit": [
+        {
+          "type": "stealFood"
+        }
+      ]
+    },
+    {
+      "id": "condor",
+      "kind": "soft",
+      "weightByPhase": {
+        "1": 0,
+        "2": 0.5,
+        "3": 0.7,
+        "4": 0.8,
+        "5": 0.8,
+        "6": 0.8
+      },
+      "cooldownSeconds": 45,
+      "conditions": [
+        {
+          "type": "secondsSince",
+          "event": "LimbReleased",
+          "gt": 4
+        }
+      ],
+      "telegraph": {
+        "seconds": 1.6,
+        "vfx": "bird_shadow",
+        "sfx": "bird_screech"
+      }
+    },
+    {
+      "id": "cajas",
+      "kind": "hard",
+      "weightByPhase": {
+        "1": 0,
+        "2": 0,
+        "3": 0.6,
+        "4": 0.7,
+        "5": 0.8,
+        "6": 0.8
+      },
+      "cooldownSeconds": 60,
+      "conditions": [
+        {
+          "type": "richManState.is",
+          "state": "colgando"
+        },
+        {
+          "type": "secondsSince",
+          "event": "LimbReleased",
+          "gt": 4
+        }
+      ],
+      "telegraph": {
+        "seconds": 2.0,
+        "vfx": "unwrap_food",
+        "sfx": "rustle"
+      }
+    },
+    {
+      "id": "drone",
+      "kind": "soft",
+      "weightByPhase": {
+        "1": 0,
+        "2": 0,
+        "3": 0.5,
+        "4": 0.6,
+        "5": 0.7,
+        "6": 0.7
+      },
+      "cooldownSeconds": 75,
+      "conditions": [
+        {
+          "type": "secondsSince",
+          "event": "LimbReleased",
+          "gt": 4
+        }
+      ],
+      "telegraph": {
+        "seconds": 1.8,
+        "vfx": "drone_shadow",
+        "sfx": "zip"
+      }
     }
-   ],
-   "telegraph": {
-    "seconds": 2.0,
-    "vfx": "unwrap_food",
-    "sfx": "rustle"
-   }
-  }
- ]
+  ]
 }

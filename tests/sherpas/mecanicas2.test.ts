@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadSherpasData, type SherpasData } from "../../src/game/sherpas/core/data";
 import { ContentRepository } from "../../src/game/content/repository";
-import { SherpaRig } from "../../src/game/sherpas/physics/sherpaRig";
+import { SherpaRig, recessedFatigueMult } from "../../src/game/sherpas/physics/sherpaRig";
 import { AnchorSystem, type HoldInstance } from "../../src/game/sherpas/physics/anchors";
 import { PlankSystem, PLANK_DEFAULTS } from "../../src/game/sherpas/physics/plank";
 import { WeatherSystem } from "../../src/game/sherpas/gameplay/weather";
@@ -347,5 +347,221 @@ describe("cóndor (petición: 'cóndores que posan y pesan')", () => {
     const pos = birds.birdsForRender()[0].pos;
     const expectedX = center.x + side * 0.85 * 0.85;
     expect(Math.abs(pos.x - expectedX)).toBeLessThan(0.02);
+  });
+});
+
+// ==================== TASK 32 (petición del jugador) ====================
+
+describe("pies sin apoyo → la fatiga de las MANOS crece (petición: 'si tienen uno o dos pies sin apoyo la fatiga de las manos se incrementa')", () => {
+  /** rig con baseGripHand bajo (roca firme estable, sin derrapes): la tensión
+   *  de las manos supera el umbral de fatiga (0,6) y crece SIN ruido de
+   *  mecánicas ajenas (nieve que derrapa, hielo que se rompe). */
+  const buildFatigueRig = (seed = 2024): RigBundle => {
+    const b = buildRig(seed);
+    (b.rig as unknown as { deps: { tuning: { limb: Record<string, number> } } }).deps.tuning.limb = {
+      ...data.tuning.limb, baseGripHand: 200, overloadTension: 6, fatigueReleaseAt: 5,
+    } as typeof data.tuning.limb;
+    return b;
+  };
+  const handFatigue = (b: RigBundle): number =>
+    Math.max(b.rig.states.get("hand_l")!.fatigue, b.rig.states.get("hand_r")!.fatigue);
+  /** f tras 2,5 s desde la suelta de pies: ventana corta para no saturar el
+   *  cap de fatiga (1.0) — incluye el transitorio de caída (frenar cuesta). */
+  const measure = (b: RigBundle): number => {
+    const dt = 1 / 60;
+    for (let i = 0; i < 150; i++) b.rig.step(dt, 1);
+    return handFatigue(b);
+  };
+
+  it("los DOS pies sin apoyo fatigan las manos MÁS que uno, y uno más que ninguno", () => {
+    const bBase = buildFatigueRig(3);
+    const dBase = measure(bBase);
+    expect(bBase.rig.states.get("foot_l")!.anchored).toBe(true);
+    const bOne = buildFatigueRig(3);
+    bOne.rig.setGrip("foot_l", false);
+    const dOne = measure(bOne);
+    const bTwo = buildFatigueRig(3);
+    bTwo.rig.setGrip("foot_l", false);
+    bTwo.rig.setGrip("foot_r", false);
+    const dTwo = measure(bTwo);
+    expect(bTwo.rig.states.get("foot_l")!.anchored).toBe(false);
+    expect(dBase).toBeGreaterThan(0.01);
+    expect(dOne).toBeGreaterThan(dBase);
+    expect(dTwo).toBeGreaterThan(dOne);
+    expect(dTwo).toBeGreaterThan(dBase * 2);
+  });
+});
+
+describe("círculo de alcance + zona muerta (petición: 'circulo verde de alcance, rojo si no; soltar en zona muerta suelta la extremidad')", () => {
+  it("moveDrag cerca de presa alcanzable → imán, sin zona muerta; lejos y sin presas → zona muerta + no alcanzable", () => {
+    const { rig, anchors } = buildRig(3141);
+    const magnetHold: HoldInstance = { id: "reach_magnet", pos: v3(0.85, 4.05, Z()), radius: 0.12, type: "rock_firm", bandIndex: 0 };
+    anchors.registerHolds([magnetHold]);
+    expect(rig.beginDrag("hand_r")).toBe(true);
+    // punto A: sobre la presa alcanzable
+    rig.moveDrag(v3(magnetHold.pos.x, magnetHold.pos.y, Z()));
+    let info = rig.dragReachInfo();
+    expect(info).not.toBeNull();
+    expect(info!.magnet).toBe(true);
+    expect(info!.deadZone).toBe(false);
+    expect(info!.reachable).toBe(true);
+    // punto B: roca vacía lejos de toda presa Y fuera del alcance del hombro
+    let best: { x: number; y: number } | null = null;
+    for (let x = -2.6; x <= 2.6 && !best; x += 0.2) {
+      for (let y = 6.4; y <= 8.4 && !best; y += 0.2) {
+        let dMin = Infinity;
+        for (const h of anchors.holds.values()) dMin = Math.min(dMin, Math.hypot(h.pos.x - x, h.pos.y - y));
+        if (dMin > 0.9) best = { x, y };
+      }
+    }
+    expect(best).not.toBeNull();
+    rig.moveDrag(v3(best!.x, best!.y, Z()));
+    info = rig.dragReachInfo();
+    expect(info!.magnet).toBe(false);
+    expect(info!.deadZone).toBe(true);
+    expect(info!.reachable).toBe(false);
+    // endDrag en zona muerta: la extremidad NO agarra nada → gravedad (cuelga)
+    rig.endDrag();
+    expect(rig.holdIdOf("hand_r")).toBeNull();
+    const y0 = rig.limbPos("hand_r").y;
+    for (let i = 0; i < 30; i++) rig.step(1 / 60, 1);
+    expect(rig.limbPos("hand_r").y).toBeLessThan(y0); // la gravedad la cuelga
+  });
+
+  it("el radio del círculo es el alcance óseo (huesos × margen, anti-goma)", () => {
+    const { rig } = buildRig(3141);
+    rig.beginDrag("hand_l");
+    const info = rig.dragReachInfo();
+    expect(info).not.toBeNull();
+    expect(info!.reachM).toBeCloseTo(0.88 * 1.08, 5); // brazo completo × STRETCH_SOFT
+  });
+});
+
+describe("ENTRANTES de pared rocosa (petición: 'salientes, entrantes, irregularidad... aristas blancas')", () => {
+  it("el generador crea zonas de entrante (visual) sin chocar con salientes ni campamentos", () => {
+    let found: number | null = null;
+    for (let seed = 1; seed <= 60 && found === null; seed++) {
+      const gen = mkGen(seed);
+      if (gen.layout.entrantes.length > 0) found = seed;
+    }
+    expect(found).not.toBeNull();
+    const gen = mkGen(found!);
+    const salBands = new Set(gen.layout.salientes.map((s) => s.band));
+    for (const e of gen.layout.entrantes) {
+      expect(salBands.has(e.band)).toBe(false); // nunca en la banda de un saliente
+      const yMin = e.band * data.wallGen.bandHeightM;
+      const yMax = yMin + data.wallGen.bandHeightM;
+      for (const c of gen.layout.campZones) expect(yMin < c.yTop && yMax > c.yBase).toBe(false);
+      expect(e.depthM).toBeGreaterThan(0);
+      expect(e.xMax).toBeGreaterThan(e.xMin);
+    }
+  });
+
+  it("los entrantes NO tocan la física: ninguna presa queda desplazada por ellos", () => {
+    const gen = mkGen(7);
+    gen.ensureUpToY(60);
+    // toda presa adelantada (proud) pertenece a un SALIENTE, nunca a un entrante
+    for (const h of gen.allGeneratedHolds()) {
+      if (!h.proud) continue;
+      const inSaliente = gen.layout.salientes.some(
+        (s) => h.pos.x >= s.xMin && h.pos.x <= s.xMax && Math.abs(h.pos.y - s.yMid) <= s.heightM * 0.5 + 0.3,
+      );
+      expect(inSaliente).toBe(true);
+    }
+  });
+
+  it("datos: wall_gen.entrantes y strings de la leyenda del minimapa existen", () => {
+    expect(data.wallGen.entrantes).toBeDefined();
+    const s = data.strings.es as unknown as Record<string, Record<string, string>>;
+    expect(s.hud.mmPower).toBe("poder");
+    expect(s.hud.mmIce).toBe("hielo");
+    expect(s.hud.mmSalient).toBe("saliente");
+    const e = data.strings.en as unknown as Record<string, Record<string, string>>;
+    expect(e.hud.mmPower).toBe("power");
+  });
+});
+
+// ==================== TASK 33 (petición del jugador) ====================
+
+describe("la FATIGA reduce el alcance (petición: 'las zonas de influencia se reducen por la fatiga reduciendo el alcance')", () => {
+  it("el radio del círculo ENCOGE con la fatiga (fatiga 0 → radio óseo completo)", () => {
+    const { rig } = buildRig(3141);
+    rig.beginDrag("hand_l");
+    const r0 = rig.dragReachInfo()!;
+    expect(r0.reachM).toBeCloseTo(0.88 * 1.08, 5); // sin fatiga: huesos × margen
+    // fatigamos la mano a mano (el estado es la fuente de verdad del círculo)
+    rig.states.get("hand_l")!.fatigue = 0.5;
+    const r50 = rig.dragReachInfo()!;
+    expect(r50.reachM).toBeCloseTo(0.88 * 1.08 * (1 - 0.22 * 0.5), 5);
+    // al 100% de fatiga se pierde reachFatigueLoss (0,22) del alcance
+    rig.states.get("hand_l")!.fatigue = 1;
+    expect(rig.dragReachInfo()!.reachM).toBeCloseTo(0.88 * 1.08 * 0.78, 5);
+    expect(rig.dragReachInfo()!.reachM).toBeLessThan(r0.reachM);
+  });
+
+  it("una presa alcanzable SIN fatiga deja de serlo con la extremidad agotada (imán y agarre)", () => {
+    const { rig, anchors } = buildRig(3141);
+    // presa al límite exacto del alcance desde la raíz del hombro
+    const root = (rig as unknown as { rig: { particles: { pos: { x: number; y: number; z: number } }[] } }).rig.particles;
+    const shoulder = root[2]; // CHAIN_ROOT hand_l = P.shL (hombro izq del prototipo)
+    const hold: HoldInstance = {
+      id: "edge_reach", pos: v3(shoulder.pos.x, shoulder.pos.y + 0.88 * 1.08 * 0.99, shoulder.pos.z),
+      radius: 0.12, type: "rock_firm", bandIndex: 0,
+    };
+    anchors.registerHolds([hold]);
+    expect(rig.canReach("hand_l", hold.pos)).toBe(true); // sin fatiga: llega
+    rig.states.get("hand_l")!.fatigue = 1;               // agotado: el círculo se encoge
+    expect(rig.canReach("hand_l", hold.pos)).toBe(false);
+    // y el arrastre ya NO la imanta
+    rig.beginDrag("hand_l");
+    rig.moveDrag(v3(hold.pos.x, hold.pos.y, Z()));
+    expect(rig.dragMagnetId()).toBeNull();
+  });
+
+  it("datos: tuning.limb.reachFatigueLoss existe (0,22)", () => {
+    expect(data.tuning.limb.reachFatigueLoss).toBeCloseTo(0.22, 5);
+  });
+});
+
+describe("ENTRANTES jugables: presas RETRASADAS (petición: 'los entrantes con efecto jugable, presas retrasadas')", () => {
+  it("las presas de la franja del entrante quedan METIDAS en el hueco (z + setback, flag recessed)", () => {
+    let found: WallGenerator | null = null;
+    for (let seed = 1; seed <= 80 && !found; seed++) {
+      const gen = mkGen(seed);
+      if (gen.layout.entrantes.length > 0) found = gen;
+    }
+    expect(found).not.toBeNull();
+    const gen = found!;
+    gen.ensureUpToY(80);
+    const baseZ = data.wallGen.wall.zFront - data.wallGen.wall.holdProudM;
+    let recessed = 0;
+    for (const h of gen.allGeneratedHolds()) {
+      if (!h.recessed) continue;
+      recessed++;
+      const zone = gen.layout.entrantes.find(
+        (e) => h.pos.x >= e.xMin && h.pos.x <= e.xMax && Math.abs(h.pos.y - e.yMid) <= e.heightM * 0.5 + 0.25,
+      );
+      expect(zone).toBeDefined();            // la presa retrasada vive en un entrante
+      expect(h.pos.z).toBeCloseTo(baseZ + zone!.holdSetbackM, 5); // metida en el muro
+      expect(h.proud ?? 0).toBe(0);          // nunca mezclada con salientes
+    }
+    expect(recessed).toBeGreaterThan(0);
+  });
+
+  it("el multiplicador de fatiga por presa retrasada es 1 + recessed×0,5 (0,3 m → ×1,15)", () => {
+    // Pura (sin ruido del colgado): el wiring la aplica en el paso de carga.
+    expect(recessedFatigueMult(undefined)).toBe(1);
+    expect(recessedFatigueMult(0)).toBe(1);
+    expect(recessedFatigueMult(0.3)).toBeCloseTo(1.15, 5);
+    expect(recessedFatigueMult(0.42)).toBeCloseTo(1.21, 5);
+  });
+
+  it("datos: entrantes con holdSetbackM y strings de leyenda mmRecess", () => {
+    expect(data.wallGen.entrantes?.holdSetbackM).toBeCloseTo(0.3, 5);
+    expect(data.wallGen.entrantes?.fatigueMult).toBeCloseTo(1.15, 5);
+    const s = data.strings.es as unknown as Record<string, Record<string, string>>;
+    const e = data.strings.en as unknown as Record<string, Record<string, string>>;
+    expect(s.hud.mmRecess).toBe("entrante");
+    expect(e.hud.mmRecess).toBe("recess");
   });
 });

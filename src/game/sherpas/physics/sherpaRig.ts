@@ -88,7 +88,17 @@ const DRAG_FOLLOW = 26;         // ganancia de seguimiento del puntero (1/s)
 const DRAG_MAGNET_PULL = 20;    // ganancia de succión hacia la presa imantada (1/s)
 const DRAG_Z_OFF = 0.16;        // separación de la pared mientras arrastra (m)
 const SALIENTE_FATIGUE_PER_M = 1.45; // fatiga extra por metro de saliente (0,42 m → ×1,6)
+const RECESSED_FATIGUE_PER_M = 0.5;  // fatiga extra por metro de presa RETRASADA (0,3 m → ×1,15)
+/** Multiplicador de fatiga por presa RETRASADA (entrante jugable): aplicar al
+ *  paso de carga. Pura para poder verificarla sin el ruido del colgado. */
+export const recessedFatigueMult = (recessed?: number): number => 1 + (recessed ?? 0) * RECESSED_FATIGUE_PER_M;
+const REACH_LOSS_AT_FULL_FATIGUE = 0.22; // alcance perdido al 100% de fatiga (petición: círculos que se reducen)
 const FART_PELVIS_TRAIL_HZ = 9; // nubes de gas verde por segundo durante el vuelo
+// PIES SIN APOYO (petición del jugador: "si tienen uno o dos pies sin apoyo la
+// fatiga de las manos se incrementa"): colgando de los brazos se sufre MÁS.
+const HAND_FATIGUE_ONE_FOOT_FREE = 1.3;  // un pie suelto → fatiga de manos ×1,3
+const HAND_FATIGUE_TWO_FEET_FREE = 1.75; // los dos sueltos (solo brazos) → ×1,75
+const MAGNET_R_DEAD = 0.55;              // radio de "hay apoyos cerca" (zona muerta)
 
 export interface LimbGripState {
   limb: Limb;
@@ -129,6 +139,28 @@ export interface SherpaDeps {
   floorY: number;
   wallFrontZ: number;
   rope: RopeTuning;
+}
+
+/** Estado de la zona de alcance mientras se arrastra una extremidad
+ *  (petición del jugador: círculo VERDE = alcanzable, ROJO = fuera de alcance;
+ *  zona muerta = no hay NINGÚN apoyo con imán cerca → al soltar, la extremidad
+ *  queda libre y la gravedad la cuelga). */
+export interface DragReachInfo {
+  limb: Limb;
+  /** raíz de la extremidad (hombro/cadera): CENTRO del círculo de alcance. */
+  root: V3;
+  /** radio del círculo de alcance (huesos × margen). */
+  reachM: number;
+  /** puntero en el plano de pared (null si aún no se movió). */
+  pointer: V3 | null;
+  /** punta actual de la extremidad (acotada al alcance). */
+  tip: V3;
+  /** hay presa imantada (el aro verde existente la marca). */
+  magnet: boolean;
+  /** el puntero está DENTRO del círculo de alcance (verde) o fuera (rojo). */
+  reachable: boolean;
+  /** zona muerta: sin NINGÚN apoyo libre en radio de imán cerca del puntero. */
+  deadZone: boolean;
 }
 
 export interface SherpaStepInfo {
@@ -178,6 +210,9 @@ export class SherpaRig {
   dragging: Limb | null = null;
   private dragPos: V3 | null = null;
   private dragHold: HoldInstance | null = null;
+  /** ZONA MUERTA del arrastre: el puntero vuela sobre roca vacía (sin apoyos
+   *  con imán cerca) — soltar aquí deja la extremidad colgando de la gravedad. */
+  private dragDeadZone = false;
   /** regla de dos manos: tiempo sin NINGUNA mano comprometida (s). */
   private noHandsTimer = 0;
   /** true SOLO el tick en que el resbalón por dos manos suelta los pies. */
@@ -247,6 +282,18 @@ export class SherpaRig {
   /** Alcance máximo de juego = huesos × margen pequeño. Lo que se alcanza es
    *  lo que el cuerpo dibujado llega a (credibilidad antes que simulación). */
   boneReach(limb: Limb): number { return this.boneLen(limb) * STRETCH_SOFT; }
+
+  /** ALCANCE REDUCIDO POR FATIGA (petición del jugador: "estas zonas de
+   *  influencia se reducen por la fatiga reduciendo el alcance"): el círculo
+   *  de juego de la extremidad encoge según su fatiga — al 100% se pierde
+   *  reachFatigueLoss (tuning.limb.reachFatigueLoss, 0,22 por defecto).
+   *  Los HUESOS no cambian (el clamp duro del esqueleto sigue en boneReach):
+   *  lo que se acorta es el alcance de JUEGO (imán/agarre/círculo). */
+  fatiguedReach(limb: Limb): number {
+    const loss = this.deps.tuning.limb.reachFatigueLoss ?? REACH_LOSS_AT_FULL_FATIGUE;
+    const f = Math.min(1, Math.max(0, this.states.get(limb)!.fatigue));
+    return this.boneReach(limb) * (1 - loss * f);
+  }
   com(): V3 { return this.solver.centerOfMass(); }
   limbPos(limb: Limb): V3 { return vClone(this.limbPt[limb]); }
   holdIdOf(limb: Limb): string | null { return this.states.get(limb)?.holdId ?? null; }
@@ -321,14 +368,14 @@ export class SherpaRig {
    *  y al agarrar en alto el CUERPO sube a la presa (servo anti-goma), la
    *  extremidad no se estira hasta el infinito. */
   canReach(limb: Limb, pos: V3): boolean {
-    const maxLen = this.boneReach(limb);
+    const maxLen = this.fatiguedReach(limb);
     if (vLen(vSub(pos, this.rig.particles[CHAIN_ROOT[limb]].pos)) <= maxLen) return true;
     return vLen(vSub(pos, this.limbPt[limb])) <= maxLen;
   }
 
-  /** Alcance visual máximo de la extremidad desde su raíz: lo que se estira el
-   *  brazo/pierna mientras arrastra (fix "escaladores de goma"). */
-  dragMaxReach(limb: Limb): number { return this.boneReach(limb); }
+  /** Alcance visual máximo de la extremidad desde su raíz MIENTRAS ARRASTRA:
+   *  reducido por la fatiga (coherente con el círculo que se dibuja). */
+  dragMaxReach(limb: Limb): number { return this.fatiguedReach(limb); }
 
   /** Busca el mejor hold libre para la extremidad cerca del apuntado y dentro del alcance. */
   private findHoldFor(limb: Limb): HoldInstance | null {
@@ -383,12 +430,40 @@ export class SherpaRig {
     );
     let best: HoldInstance | null = null;
     let bestD = MAGNET_R;
+    let anyNear = false; // hay apoyo libre cerca aunque no se alcance (NO es zona muerta)
     for (const hold of this.deps.anchorSystem.holds.values()) {
       if (this.deps.anchorSystem.anchorAtHold(hold.id)) continue;
       const d = Math.hypot(hold.pos.x - p.x, hold.pos.y - p.y);
+      if (d < MAGNET_R_DEAD) anyNear = true;
       if (d < bestD && this.canReach(limb, hold.pos)) { best = hold; bestD = d; }
     }
     this.dragHold = best;
+    this.dragDeadZone = !anyNear;
+  }
+
+  /** Info del círculo de alcance del arrastre (verde/rojo + zona muerta).
+   *  El radio se dibuja DESDE LA RAÍZ (hombro/cadera): lo que el brazo/pierna
+   *  dibujado alcanza de verdad. "Alcanzable" = dentro del círculo O con imán
+   *  (la cadena desde la punta llegará: el viaje determinista completa la presa)
+   *  — rojo SOLO si fuera del círculo Y sin imán: soltar ahí = no agarras nada. */
+  dragReachInfo(): DragReachInfo | null {
+    const limb = this.dragging;
+    if (!limb) return null;
+    const root = this.rig.particles[CHAIN_ROOT[limb]].pos;
+    const pointer = this.dragPos;
+    const reachM = this.fatiguedReach(limb); // el círculo ENCOGE con la fatiga
+    const dRoot = pointer ? vLen(vSub(pointer, root)) : Infinity;
+    const magnet = this.dragHold !== null;
+    return {
+      limb,
+      root: vClone(root),
+      reachM,
+      pointer: pointer ? vClone(pointer) : null,
+      tip: vClone(this.limbPt[limb]),
+      magnet,
+      reachable: (dRoot <= reachM) || magnet,
+      deadZone: this.dragDeadZone,
+    };
   }
 
   /** Suelta el botón: si hay imán, la extremidad vuela a esa presa (viaje
@@ -674,6 +749,15 @@ export class SherpaRig {
     this.loadDyn += (dynRaw - this.loadDyn) * (1 - Math.exp(-dt / LOAD_SMOOTH_TAU));
     const totalN = weightN + this.loadDyn;
 
+    // PIES SIN APOYO (petición del jugador): la fatiga de las MANOS crece cuando
+    // los pies no tienen apoyo — colgar de brazos es agotador (×1,3 / ×1,75).
+    const feetAnchored = (this.states.get("foot_l")!.anchored ? 1 : 0) + (this.states.get("foot_r")!.anchored ? 1 : 0);
+    const handFatigueMult = feetAnchored === 2
+      ? 1
+      : feetAnchored === 1
+        ? limbT.handFatigueOneFootFree ?? HAND_FATIGUE_ONE_FOOT_FREE
+        : limbT.handFatigueTwoFeetFree ?? HAND_FATIGUE_TWO_FEET_FREE;
+
     // reparto por configuración: cuelga quien está por encima de la cintura.
     const anchored = LIMBS.filter((l) => this.states.get(l)!.anchored && this.states.get(l)!.holdId);
     const weights = new Map<Limb, number>();
@@ -715,7 +799,11 @@ export class SherpaRig {
       // SALIENTES (pared irregular): agarrarse a una presa adelantada (pequeño
       // techo) fatiga MÁS — proporcional a la profundidad adelantada.
       const proudMult = 1 + (anchor.hold.proud ?? 0) * SALIENTE_FATIGUE_PER_M;
-      st.fatigue = Math.min(1, st.fatigue + Math.max(0, T - 0.6) * limbT.fatigueRate * t.fatigueRateMultiplier * proudMult * dt);
+      // ENTRANTES jugables: presa RETRASADA (metida en el hueco) = agarre incómodo.
+      const recessMult = recessedFatigueMult(anchor.hold.recessed);
+      // manos: multiplicador por PIES SIN APOYO (ver arriba; pies ×1).
+      const supportMult = isHand(limb) ? handFatigueMult : 1;
+      st.fatigue = Math.min(1, st.fatigue + Math.max(0, T - 0.6) * limbT.fatigueRate * t.fatigueRateMultiplier * proudMult * recessMult * supportMult * dt);
       if (st.fatigue >= limbT.fatigueReleaseAt) {
         this.forceRelease(limb, limbT.reGripLock, "exhaustion");
         released.push({ limb, cause: "exhaustion" });

@@ -12,6 +12,16 @@ export interface HudStartChoice { difficulty: string; seed: number; lang: Lang; 
 
 export interface HudLimbsState { tension: number; fatigue: number; anchored: boolean }
 
+/** Punto de la réplica de pared del minimapa (petición del jugador: "réplica
+ *  de la pared que estamos subiendo, identificando agarres especiales").
+ *  x/y normalizados 0..1 (abajo-izquierda = origen), kind = rotulación. */
+export interface MinimapHold {
+  x: number; y: number;
+  kind: "normal" | "salient" | "recess" | "ice" | "fart" | "camp";
+  /** 0 = libre, 1 = ocupada por A (naranja), 2 = ocupada por B (azul). */
+  occupied: 0 | 1 | 2;
+}
+
 /** Estado legible del chip de una extremidad — el PAPEL CLARO de los
  *  indicadores (petición del jugador): libre / firme / cansada / ¡se suelta!. */
 export type ChipState = "free" | "ok" | "warn" | "crit";
@@ -104,15 +114,16 @@ const CSS = `
 .sphud .lbadge.warn { border-color:#e8c34a; }
 .sphud .lbadge.crit { border-color:#ff5a5a; animation:limbcrit .5s steps(2,end) infinite; }
 .sphud .lbadge.free { opacity:.4; }
-/* MINIMAPA (petición del jugador: "en una esquina, la zona de escalada hasta
- * la próxima base y los metros que faltan"): franja vertical a la derecha. */
-.sphud .minimap { position:absolute; right:14px; top:50%; transform:translateY(-50%); width:70px; padding:9px 6px 7px; text-align:center; }
-.sphud .mm-track { position:relative; width:10px; height:168px; margin:0 auto 6px; background:rgba(255,255,255,.1); border-radius:5px; overflow:hidden; }
-.sphud .mm-camp { position:absolute; left:0; right:0; top:0; background:rgba(90,212,106,.45); border-bottom:1.5px solid #5ad46a; }
-.sphud .mm-dot { position:absolute; width:9px; height:9px; border-radius:50%; transform:translate(-50%,50%); box-shadow:0 0 4px rgba(0,0,0,.6); }
-.sphud .mm-dot.a { left:26%; background:#d97b2f; }
-.sphud .mm-dot.b { left:74%; background:#2f9bd9; }
-.sphud .mm-label { font-size:10px; line-height:1.25; opacity:.9; white-space:pre-line; }
+/* MINIMAPA v2 (petición del jugador: "más grande y detallado, mostrando una
+ * réplica de la pared que estamos subiendo e identificando agarres especiales"):
+ * panel con CANVAS que dibuja la pared del tramo (presas por tipo, salientes
+ * con borde blanco, hielo, verdes de superpoder, campamento) + metros restantes. */
+.sphud .minimap { position:absolute; right:14px; top:50%; transform:translateY(-50%); width:184px; padding:10px 8px 8px; text-align:center; }
+.sphud .mm-canvas { width:100%; height:46vh; min-height:300px; max-height:500px; border-radius:8px; display:block; background:#171d24; }
+.sphud .mm-legend { display:flex; gap:8px; justify-content:center; align-items:center; margin-top:6px; font-size:9.5px; opacity:.85; white-space:nowrap; }
+.sphud .mm-legend i { width:7px; height:7px; border-radius:50%; display:inline-block; margin-right:3px; vertical-align:-1px; }
+.sphud .mm-legend .lgt { background:#b08968; box-shadow:0 0 0 1.5px #fff; width:6px; height:6px; }
+.sphud .mm-label { font-size:10.5px; line-height:1.25; opacity:.9; white-space:pre-line; margin-top:2px; }
 .sphud .fart-ico { display:none; margin-left:6px; }
 .sphud .fart-ico.on { display:inline-block; animation:sphblink .5s linear infinite alternate; }
 .sphud .overlay { position:absolute; inset:0; background:rgba(6,9,12,.86); display:flex; align-items:center; justify-content:center; pointer-events:auto; }
@@ -180,10 +191,12 @@ export class SherpaHud {
         </div>
       </div>
       <div class="chip minimap" data-e="minimap">
-        <div class="mm-track">
-          <div class="mm-camp" data-e="mmCamp" style="height:12%"></div>
-          <i class="mm-dot a" data-e="mmA" style="bottom:0"></i>
-          <i class="mm-dot b" data-e="mmB" style="bottom:0"></i>
+        <canvas class="mm-canvas" data-e="mmCanvas" width="336" height="880"></canvas>
+        <div class="mm-legend">
+          <span><i style="background:#3fd46a"></i><span data-e="mmLgPower"></span></span>
+          <span><i style="background:#9ad1e8"></i><span data-e="mmLgIce"></span></span>
+          <span><i class="lgt"></i><span data-e="mmLgSalient"></span></span>
+          <span><i style="background:#5a6b7d;outline:1px dashed #cbd5e0"></i><span data-e="mmLgRecess"></span></span>
         </div>
         <div class="mm-label" data-e="mmLabel">—</div>
       </div>
@@ -206,6 +219,10 @@ export class SherpaHud {
       this.el[n.dataset.e!] = n;
     }
     this.el.propinaLabel!.textContent = this.t("hud.propina");
+    this.el.mmLgPower!.textContent = this.t("hud.mmPower");
+    this.el.mmLgIce!.textContent = this.t("hud.mmIce");
+    this.el.mmLgSalient!.textContent = this.t("hud.mmSalient");
+    this.el.mmLgRecess!.textContent = this.t("hud.mmRecess");
   }
 
   t(path: string): string {
@@ -295,17 +312,90 @@ export class SherpaHud {
     }
   }
 
-  /** MINIMAPA (petición del jugador): franja vertical = tramo hasta la próxima
-   *  base, puntos = escaladores, verde = zona del campamento, etiqueta = metros. */
-  updateMinimap(m: { fracA: number; fracB: number; campFrac: number; metersLeft: number; campId: string | null }): void {
-    const campH = `${Math.round(Math.min(1, Math.max(0.04, m.campFrac)) * 100)}%`;
-    this.el.mmCamp!.style.height = campH;
-    const clamp = (v: number): number => Math.min(1, Math.max(0, v));
-    this.el.mmA!.style.bottom = `${clamp(m.fracA) * 100}%`;
-    this.el.mmB!.style.bottom = `${clamp(m.fracB) * 100}%`;
+  /** MINIMAPA v2 (petición del jugador): réplica de la pared del tramo en
+   *  canvas — presas por tipo (hielo, verdes de superpoder, salientes con borde
+   *  blanco, campamento), escaladores A/B, franja del campamento y metros. */
+  updateMinimap(m: {
+    fracA: number; fracB: number; campFrac: number; metersLeft: number; campId: string | null;
+    holds?: MinimapHold[]; xA?: number; xB?: number;
+  }): void {
     this.el.mmLabel!.textContent = m.campId
       ? this.fmt("hud.minimapTo", { m: Math.max(0, Math.round(m.metersLeft)), camp: m.campId })
       : this.t("hud.summit");
+    const cv = this.el.mmCanvas as HTMLCanvasElement | undefined;
+    if (!cv || !m.holds) return;
+    const ctx = cv.getContext("2d");
+    if (!ctx) return;
+    const W = cv.width, H = cv.height;
+    const clamp = (v: number): number => Math.min(1, Math.max(0, v));
+    // fondo roca + sutil veteado vertical
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "#232a33";
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "rgba(255,255,255,.03)";
+    for (let i = 0; i < 5; i++) ctx.fillRect((i + 0.5) * W / 5, 0, W / 14, H);
+    // franja del campamento (arriba) + línea verde
+    const campH = clamp(m.campFrac) * H;
+    ctx.fillStyle = "rgba(90,212,106,.4)";
+    ctx.fillRect(0, 0, W, campH);
+    ctx.strokeStyle = "#5ad46a";
+    ctx.lineWidth = 3;
+    ctx.setLineDash([10, 7]);
+    ctx.beginPath(); ctx.moveTo(0, campH); ctx.lineTo(W, campH); ctx.stroke();
+    ctx.setLineDash([]);
+    // rejilla horizontal tenue (cada 10% del tramo)
+    ctx.strokeStyle = "rgba(255,255,255,.06)";
+    ctx.lineWidth = 2;
+    for (let i = 1; i < 10; i++) {
+      const gy = (i / 10) * H;
+      ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
+    }
+    // presas (réplica de la pared)
+    const px = (x: number): number => 14 + clamp(x) * (W - 28);
+    const py = (y: number): number => H - 16 - clamp(y) * (H - 32);
+    const COLORS: Record<MinimapHold["kind"], string> = {
+      normal: "#8d99ae", salient: "#b08968", recess: "#5a6b7d", ice: "#9ad1e8", fart: "#3fd46a", camp: "#5ad46a",
+    };
+    for (const h of m.holds) {
+      const cx = px(h.x), cy = py(h.y);
+      const r = h.kind === "fart" ? 8 : h.kind === "camp" ? 7 : 5.5;
+      if (h.kind === "fart") { ctx.shadowColor = "#3fd46a"; ctx.shadowBlur = 10; }
+      ctx.fillStyle = COLORS[h.kind];
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+      ctx.shadowBlur = 0;
+      if (h.kind === "salient") {
+        ctx.strokeStyle = "#ffffff"; // ARISTA blanca = saliente (petición del jugador)
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+      }
+      if (h.kind === "recess") {
+        // presa RETRASADA de entrante: anillo gris discontinuo (petición del jugador)
+        ctx.strokeStyle = "#cbd5e0";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath(); ctx.arc(cx, cy, r + 3, 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      if (h.occupied > 0) {
+        ctx.strokeStyle = h.occupied === 1 ? "#ffb066" : "#7cc4ff";
+        ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.arc(cx, cy, r + 3.5, 0, Math.PI * 2); ctx.stroke();
+      }
+    }
+    // escaladores A (naranja) y B (azul)
+    const climber = (frac: number, x: number, color: string): void => {
+      const cx = px(x ?? 0.5), cy = py(clamp(frac));
+      ctx.fillStyle = color;
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(cx, cy, 9, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    };
+    climber(m.fracA, m.xA ?? 0.5, "#d97b2f");
+    climber(m.fracB, m.xB ?? 0.5, "#2f9bd9");
+    // borde del panel
+    ctx.strokeStyle = "rgba(255,255,255,.14)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(1, 1, W - 2, H - 2);
   }
 
   /** Carga de SUPER FLATULENCIA lista (💨 parpadeante en el panel del jugador). */

@@ -142,6 +142,38 @@
             3.6
           ],
           "next": "de_pie"
+        },
+        "durmiendo": {
+          "durationRange": [
+            7,
+            12
+          ],
+          "next": "colgando",
+          "abortOn": [
+            "anyHardEvent"
+          ],
+          "abortTo": "colgando"
+        },
+        "bailando": {
+          "durationRange": [
+            3,
+            5
+          ],
+          "next": "colgando"
+        },
+        "leyendo": {
+          "durationRange": [
+            4,
+            7
+          ],
+          "next": "colgando"
+        },
+        "telefono": {
+          "durationRange": [
+            3,
+            6
+          ],
+          "next": "colgando"
         }
       }
     }

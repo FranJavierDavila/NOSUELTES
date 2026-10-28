@@ -15,6 +15,7 @@ import type { CharacterDefinition, BodyProfileDefinition } from "../../types";
 import { v3, vAdd, vLen, vSub, type V3 } from "../../physics/pbd/math";
 import { RichManBrain } from "../events/richManBrain";
 import { BirdSystem } from "../events/birds";
+import { DroneSystem, DRONE_DEFAULTS } from "../events/drone";
 import { InsultSystem } from "../events/insults";
 import { EventDirector, type DirectorContext } from "../events/director";
 import { spawnTrash, stepTrash, spawnUrine, stepUrine, type TrashProjectile, type UrineEffect } from "../events/effects";
@@ -25,7 +26,7 @@ import { CampSystem, saveAscent, type AscentStats, type SavedAscent } from "../w
 import { PointerDrag } from "../input/drag";
 import { Matrix } from "@babylonjs/core/Maths/math.vector";
 import type { SherpaScene } from "../presentation/scene";
-import type { SherpaHud, HudStartChoice, HudTickState } from "../presentation/hud";
+import type { SherpaHud, HudStartChoice, HudTickState, MinimapHold } from "../presentation/hud";
 import type { SherpaAudio } from "../presentation/audio";
 import type { InputManager } from "../input/input";
 
@@ -99,6 +100,10 @@ export class SherpasMatch {
   // CAJAS DEL RICACHÓN (petición del jugador): apiladas sobre la tabla, PESAN,
   // pueden CAER (escora/vuelco) y ENOJAN MUCHO al ricachón.
   private boxes: { count: number; side: -1 | 1; until: number } | null = null;
+  // DRON REPARTIDOR (petición del jugador): deja una sorpresa PESADA al lado
+  // del ricachón — peso persistente que DESECOMPENSA hasta que caduca/cae.
+  private drone: DroneSystem;
+  private dronePkg: { frac: number; kg: number; until: number } | null = null;
   private icePlateWarned = false;
   private fartFxNext: [number, number] = [0, 0];
   // arrastre de extremidades con puntero (esquema del desarrollo anterior)
@@ -201,6 +206,18 @@ export class SherpasMatch {
         halfLen: this.plankLenM / 2,
         z: (this.plankState?.center.z ?? 0),
       }),
+    }, deps.bus, seed);
+    // DRON REPARTIDOR (petición del jugador): comparte la pose de la tabla con
+    // el cóndor — el paquete cae SIEMPRE sobre la tabla real.
+    this.drone = new DroneSystem(this.data.tuning.drone ?? DRONE_DEFAULTS, {
+      plankPose: () => ({
+        center: this.plankState?.center ?? v3(0, 1, 0),
+        angle: this.plankState?.angle ?? 0,
+        halfLen: this.plankLenM / 2,
+        z: (this.plankState?.center.z ?? 0),
+      }),
+      richSlideM: () => this.plankState?.slide ?? 0,
+      plankOk: () => !!this.plankState && !this.plankState.grounded && !this.plankState.fellOff,
     }, deps.bus, seed);
     this.insults = new InsultSystem(this.data.insults[deps.hud.lang], seed);
     this.balance = new BalanceMonitor(this.data.tuning, deps.bus);
@@ -508,12 +525,14 @@ export class SherpasMatch {
     this.plank.setRichStanding(richStanding);
     this.plank.setRichMass(this.rich.currentMass());
     if (walkDir !== 0) this.plank.walkSlide(walkDir, dt);
-    // CARGA sobre la tabla (cajas del ricachón + cóndor posado): PESA DE VERDAD.
+    // CARGA sobre la tabla (cajas del ricachón + cóndor posado + PAQUETE DEL
+    // DRON): PESA DE VERDAD — la descompensación que pidió el jugador.
     const cargo: { offsetFrac: number; kg: number }[] = [];
     if (this.boxes) {
       const bt = this.data.tuning.boxes;
       cargo.push({ offsetFrac: this.boxes.side * (bt?.offsetFrac ?? 0.55), kg: this.boxes.count * (bt?.massPerBoxKg ?? 9) });
     }
+    if (this.dronePkg) cargo.push({ offsetFrac: this.dronePkg.frac, kg: this.dronePkg.kg });
     for (const c of this.birds.condorCargo()) cargo.push(c);
     this.plank.setCargo(cargo);
     this.plankState = this.plank.step(dt, {
@@ -578,6 +597,30 @@ export class SherpasMatch {
         this.boxes = null;
       }
     }
+    // PAQUETE DEL DRON: caducidad (el ricachón lo guarda) y CAÍDA por
+    // escora/vuelco — misma física de descompensación que las cajas.
+    if (this.dronePkg) {
+      const bt = this.data.tuning.boxes;
+      const fallSlide = bt?.fallSlideFrac ?? 0.5;
+      const fallTilt = bt?.fallTiltDeg ?? 18;
+      if (this.simTime > this.dronePkg.until) {
+        this.d.hud.subtitle(this.d.hud.t("hud.droneGone"), 2.2);
+        this.dronePkg = null;
+      } else if (ps.slideFrac > fallSlide || Math.abs(ps.tiltDeg) > fallTilt || ps.fellOff) {
+        const cosA = Math.cos(ps.angle), sinA = Math.sin(ps.angle);
+        const lx = this.dronePkg.frac * (this.plankLenM / 2);
+        this.d.scene.dropBoxes(
+          [{ x: ps.center.x + cosA * lx, y: ps.center.y + sinA * lx + 0.12, z: ps.center.z }],
+          this.dronePkg.frac >= 0 ? 0.8 : -0.8,
+        );
+        this.d.audio.play("thud");
+        this.propina.add(-3, "drone_pkg_fell", this.d.bus);
+        this.brain.panic();
+        this.d.bus.emit("DroneLost", { kg: this.dronePkg.kg });
+        this.sayInsult("boxes_fell");
+        this.dronePkg = null;
+      }
+    }
     if (this.rich.seated) {
       // pose de juego (sentado/gestos ⇄ de pie/paseo; también durante el congelado de cima).
       this.rich.pose(ps.center, ps.angle, ps.slide, this.simTime);
@@ -616,9 +659,23 @@ export class SherpasMatch {
     }
     this.lastMinY = minY;
 
-    // 10. director de caos + pájaros + proyectiles.
+    // 10. director de caos + pájaros + DRON + proyectiles.
     this.director.tick(dt, this.currentPhase());
     this.birds.tick(dt, this.simTime, (p, l, lock) => this.sherpas[p].forceRelease(l, lock, "bird"));
+    // DRON REPARTIDOR (petición del jugador): suelta el paquete JUNTO AL
+    // RICACHÓN — peso persistente que descompensa la tabla (lo sobresalta).
+    this.drone.tick(dt, this.simTime, (frac, kg) => {
+      const bt = this.data.tuning.boxes;
+      this.dronePkg = {
+        frac, kg,
+        until: this.simTime + (bt ? 14 + Math.random() * Math.max(4, bt.secondsMax - 14) : 22),
+      };
+      this.d.audio.play("chime");
+      this.d.hud.subtitle(this.d.hud.t("hud.droneDrop"), 2.8);
+      this.d.bus.emit("DroneDelivered", { kg, offsetFrac: frac });
+      this.sayInsult("drone");
+      this.brain.panic(); // ¡el dron lo despierta/soresalta!
+    });
     this.stepProjectiles(dt);
 
     // descanso en campamento (doc 8.3): recuperación acelerada.
@@ -736,11 +793,15 @@ export class SherpasMatch {
 
   // ---------- respawn / campamentos / cima ----------
 
-  private doRespawn(forcedZone: CampZone | null): void {
+  private doRespawn(forcedZone: CampZone | null, override?: { a: { hand_l: HoldInstance; hand_r: HoldInstance }; b: { hand_l: HoldInstance; hand_r: HoldInstance } }): void {
     const zone = forcedZone;
     let holdsA: { hand_l: HoldInstance; hand_r: HoldInstance };
     let holdsB: { hand_l: HoldInstance; hand_r: HoldInstance };
-    if (zone) {
+    if (override) {
+      // sonda E2E: re-cuelga en presas concretas (sin tocar estadísticas)
+      holdsA = override.a;
+      holdsB = override.b;
+    } else if (zone) {
       const hs = this.campRespawnHolds(zone);
       holdsA = { hand_l: hs[0], hand_r: hs[1] };
       holdsB = { hand_l: hs[2] ?? hs[0], hand_r: hs[3] ?? hs[1] };
@@ -769,6 +830,8 @@ export class SherpasMatch {
     this.urine = null;
     this.urineWetIds.clear();
     this.boxes = null;
+    this.dronePkg = null;
+    this.drone.reset();
     this.d.scene.syncBoxes(0, 0, v3(0, -10, 0), 0);
     this.lastMinY = Math.min(na.y, nb.y);
     this.frozen = false;
@@ -916,6 +979,10 @@ export class SherpasMatch {
         this.d.hud.subtitle(this.d.hud.t("hud.boxesOn"), 2.8);
         this.d.bus.emit("BoxesPlaced", { count: this.boxes.count, side });
       },
+      // DRON REPARTIDOR (petición del jugador): vuela hasta la tabla.
+      spawnDrone: () => {
+        this.drone.spawn();
+      },
     };
   }
 
@@ -987,6 +1054,7 @@ export class SherpasMatch {
         : p.eventId === "trash" ? "hud.trashTelegraph"
         : p.eventId === "cajas" ? "hud.boxesTelegraph"
         : p.eventId === "condor" ? "hud.condorTelegraph"
+        : p.eventId === "drone" ? "hud.droneTelegraph"
         : p.eventId.startsWith("bird") ? "hud.birdTelegraph"
         : p.eventId === "kick" ? "hud.kickTelegraph" : null;
       if (key) this.d.hud.telegraph(this.d.hud.t(key), Math.max(0.8, p.seconds));
@@ -1055,6 +1123,9 @@ export class SherpasMatch {
     const dragging = this.dragLimb !== null && this.dragPlayer !== null;
     const magnetPos = dragging && this.dragPlayer !== null ? this.sherpas[this.dragPlayer].dragMagnetPos() : null;
     s.syncDrag(dragging ? this.dragPlayer : null, this.dragCursor, magnetPos);
+    // CÍRCULO DE ALCANCE (petición del jugador): verde = alcanzable, rojo = no;
+    // zona muerta (roca vacía sin imán) → al soltar la extremidad cuelga.
+    s.syncDragReach(dragging && this.dragPlayer !== null ? this.sherpas[this.dragPlayer].dragReachInfo() : null, this.wallFrontZ);
     // …y anillos de apuntado de teclado solo si alguien usó las teclas hace poco.
     s.syncAim(0, !dragging && this.simTime < this.kbAimUntil[0] ? this.sherpas[0].aim : null, this.wallFrontZ);
     s.syncAim(1, !dragging && this.simTime < this.kbAimUntil[1] ? this.sherpas[1].aim : null, this.wallFrontZ);
@@ -1068,6 +1139,17 @@ export class SherpasMatch {
     s.syncTrash(t0 && t0.alive ? t0.pos : null, this.simTime * 6);
     s.syncUrine(this.urine ? this.urine.particles.map((p) => ({ pos: p.pos, life: p.life })) : null);
     s.syncBirds(this.birds.birdsForRender());
+    // DRON REPARTIDOR: quadcóptero en vuelo + paquete ya entregado sobre la tabla
+    s.syncDrone(this.drone.renderPos(), this.simTime, this.drone.pkgCarried());
+    if (this.plankState) {
+      const dp = this.dronePkg;
+      const cosA = Math.cos(this.plankState.angle), sinA = Math.sin(this.plankState.angle);
+      const lx = (dp?.frac ?? 0) * (this.plankLenM / 2);
+      s.syncDronePkg(
+        dp ? { x: this.plankState.center.x + cosA * lx, y: this.plankState.center.y + sinA * lx + 0.11, z: this.plankState.center.z + 0.05 } : null,
+        this.plankState.angle,
+      );
+    }
     // ráfagas visibles: rayas cruzando EN la dirección del viento (rachas)
     s.setWind(this.weather.dir, this.weather.windLevel, frameDt);
     // MODO TORMENTA: cielo oscuro mientras dura el ciclo (los relámpagos
@@ -1151,19 +1233,51 @@ export class SherpasMatch {
     };
     this.d.hud.update(st);
     this.d.audio.setAltitude(st.narrativeY, st.maxNarrativeY);
-    // MINIMAPA (petición del jugador): tramo hasta la próxima base + metros.
+    // MINIMAPA v2 (petición del jugador: "más grande y detallado, réplica de
+    // la pared que estamos subiendo e identificando agarres especiales"):
+    // presas del tramo por tipo + ocupación + posición A/B del tramo hasta la
+    // próxima base + metros que faltan.
     const minYm = Math.min(this.sherpas[0].waist().y, this.sherpas[1].waist().y);
     const nextCamp = this.gen.nextCampAbove(minYm);
     const below = this.gen.campAtOrBelow(minYm);
     const yLow = below ? below.yBase : 0;
     const yHigh = nextCamp ? nextCamp.yTop : this.gen.layout.totalHeightM;
     const span = Math.max(0.5, yHigh - yLow);
+    // generar (memoizado, determinista) las bandas del tramo completo: la
+    // réplica muestra la pared ENTERA hasta la base, no solo lo pisado.
+    this.gen.ensureUpToY(yHigh);
+    const wallHalf = this.wallWidthM / 2;
+    const normX = (x: number): number => Math.min(1, Math.max(0, (x + wallHalf) / (wallHalf * 2)));
+    const holds: MinimapHold[] = [];
+    for (const h of this.gen.allGeneratedHolds()) {
+      if (h.pos.y < yLow - 0.4 || h.pos.y > yHigh + 0.4) continue;
+      const anchor = this.anchors.anchorAtHold(h.id);
+      holds.push({
+        x: normX(h.pos.x),
+        y: (h.pos.y - yLow) / span,
+        kind: h.camp
+          ? "camp"
+          : h.type === "surprise_fart"
+            ? "fart"
+            : h.type === "ice" || h.type === "ice_thin" || h.type === "ice_plate" || h.type === "snow"
+              ? "ice"
+              : h.recessed
+                ? "recess"   // presa RETRASADA de entrante (petición del jugador)
+                : h.proud
+                  ? "salient"
+                  : "normal",
+        occupied: anchor ? (anchor.playerId + 1) as 1 | 2 : 0,
+      });
+    }
     this.d.hud.updateMinimap({
       fracA: (this.sherpas[0].waist().y - yLow) / span,
       fracB: (this.sherpas[1].waist().y - yLow) / span,
       campFrac: nextCamp ? (yHigh - nextCamp.yBase) / span : 0.06,
       metersLeft: this.gen.narrativeHeightOf(yHigh) - st.narrativeY,
       campId: st.nextCampId,
+      holds,
+      xA: normX(this.sherpas[0].waist().x),
+      xB: normX(this.sherpas[1].waist().x),
     });
     const fps = this.hudFrameCount;
     this.hudFrameCount = 0;
@@ -1215,9 +1329,21 @@ export class SherpasMatch {
       // Task 31 (sonda E2E): cajas, flatulencia, salientes, hielo resbaladizo
       boxes: this.boxes ? { count: this.boxes.count, side: this.boxes.side, massKg: this.boxes.count * (this.data.tuning.boxes?.massPerBoxKg ?? 9) } : null,
       condor: this.birds.condorCargo().length ? { kg: this.birds.condorCargo()[0].kg } : null,
+      // Task 33 (sonda E2E): dron repartidor y su paquete
+      drone: this.dronePkg ? { phase: "delivered", kg: this.dronePkg.kg, frac: Math.round(this.dronePkg.frac * 100) / 100 }
+        : this.drone.phase !== "idle" ? { phase: this.drone.phase, kg: Math.round(this.drone.kg), frac: Math.round(this.drone.dropFrac * 100) / 100 } : null,
       cargoKg: Math.round(this.plank.cargoMassKg()),
       fart: [0, 1].map((p) => ({ charge: this.sherpas[p].hasFartCharge, flying: this.sherpas[p].fartFlying })),
       salientes: this.gen.layout.salientes.length,
+      // Task 32 (sonda E2E): entrantes, círculo de alcance, zona muerta, minimapa
+      entrantes: this.gen.layout.entrantes.length,
+      dragReach: this.dragPlayer !== null && this.dragLimb !== null
+        ? (() => {
+            const i = this.sherpas[this.dragPlayer].dragReachInfo();
+            return i ? { reachable: i.reachable, deadZone: i.deadZone, magnet: i.magnet, reachM: Math.round(i.reachM * 100) / 100 } : null;
+          })()
+        : null,
+      mmHolds: holds.length,
     });
   }
 
@@ -1230,7 +1356,7 @@ export class SherpasMatch {
 
   /** Sonda E2E (solo pruebas, como setAim): fuerza los eventos del Task 31
    *  para verificar su presentación sin esperar al azar del director. */
-  debugForce(what: "boxes" | "condor" | "storm" | "fart", player: 0 | 1 = 0): boolean {
+  debugForce(what: "boxes" | "condor" | "storm" | "fart" | "drone" | "subir", player: 0 | 1 = 0): boolean {
     switch (what) {
       case "boxes":
         this.directorCtx().spawnBoxes(3);
@@ -1243,6 +1369,43 @@ export class SherpasMatch {
       case "fart":
         this.sherpas[player ?? 0].fartCharge = true; // el disparo lo hace la tecla F/P
         return true;
+      case "drone":
+        return this.drone.spawn();
+      case "subir": {
+        // SONDA E2E (patrón setAim): re-cuelga al equipo ~12 m más arriba en
+        // presas FIRMES reales de una banda generada. Si hay ENTRANTE por
+        // encima, el re-colgado se ancla JUSTO DEBAJO del hueco (la captura
+        // E2E muestra el volumen hundido de verdad). Parejas izq/der a altura
+        // similar (si no, la tabla nace escorada y el ricachón resbala).
+        const base = Math.max(this.sherpas[0].waist().y, this.sherpas[1].waist().y);
+        const entAbove = this.gen.layout.entrantes
+          .filter((e) => e.yMid > base + 4)
+          .sort((a, b) => a.yMid - b.yMid)[0];
+        const yTarget = entAbove
+          ? entAbove.yMid - entAbove.heightM * 0.5 - 1.6 // colgados bajo el labio del hueco
+          : Math.min(base + 12, this.gen.layout.totalHeightM - 10);
+        this.gen.ensureUpToY(yTarget + 8);
+        const band = this.gen.bandIndexOf(yTarget);
+        const pool = this.gen.ensureBand(band).filter((h) => !h.camp && h.type === "rock_firm");
+        const left = pool.filter((h) => h.pos.x < -0.3).sort((a, b) => Math.abs(a.pos.y - yTarget) - Math.abs(b.pos.y - yTarget));
+        const right = pool.filter((h) => h.pos.x > 0.3).sort((a, b) => Math.abs(a.pos.y - yTarget) - Math.abs(b.pos.y - yTarget));
+        if (left.length < 1 || right.length < 1) return false;
+        // pareja A: la más cercana a yTarget por cada lado (|Δy| entre cabos < 1,2 m)
+        let la = left[0], ra = right[0], lb: HoldInstance | null = null, rb: HoldInstance | null = null;
+        for (const l of left) {
+          const r = right.find((q) => Math.abs(q.pos.y - l.pos.y) < 1.2);
+          if (r) { la = l; ra = r; break; }
+        }
+        for (const l of left) {
+          if (l.id === la.id) continue;
+          const r = right.find((q) => q.id !== ra.id && Math.abs(q.pos.y - l.pos.y) < 1.2 && Math.abs(l.pos.y - la.pos.y) < 2.5);
+          if (r) { lb = l; rb = r; break; }
+        }
+        const ha = { hand_l: la, hand_r: ra };
+        const hb = { hand_l: lb ?? la, hand_r: rb ?? ra };
+        this.doRespawn(null, { a: ha, b: hb });
+        return true;
+      }
       default:
         return false;
     }

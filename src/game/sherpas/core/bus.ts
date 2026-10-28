@@ -36,6 +36,9 @@ export interface SherpasEvents {
   // CAJAS DEL RICACHÓN (petición: cajas sobre la tabla que pueden caer y ENOJAN)
   BoxesPlaced: { count: number; side: -1 | 1 };
   BoxesFell: { count: number; side: -1 | 1 };
+  // DRON REPARTIDOR (petición: deja una sorpresa PESADA junto al ricachón)
+  DroneDelivered: { kg: number; offsetFrac: number };
+  DroneLost: { kg: number };
   // SUPER FLATULENCIA (presa verde → pedo-propulsor)
   FartGained: { playerId: 0 | 1 };
   FartLaunched: { playerId: 0 | 1; fromY: number };

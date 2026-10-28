@@ -15,6 +15,9 @@ export interface HoldInstance {
   /** SALIENTES (pared irregular): profundidad adelantada respecto al plano de
    *  pared (m). >0 → el agarre cuesta MÁS fatiga (pequeño techo). */
   proud?: number;
+  /** ENTRANTES jugables (petición: "presas retrasadas"): profundidad METIDA
+   *  respecto al plano de pared (m). >0 → agarre más incómodo (fatiga extra). */
+  recessed?: number;
 }
 
 export interface WearTuning {

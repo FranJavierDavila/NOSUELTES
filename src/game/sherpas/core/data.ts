@@ -8,6 +8,14 @@ export interface LimbTuning {
   graceTime: number; reGripLock: number; fatigueRate: number; recoverRate: number;
   baseGripHand: number; baseGripFoot: number; armReach: number; legReach: number; mass: number;
   overloadTension: number; fatigueReleaseAt: number; highTension: number;
+  /** PIES SIN APOYO (petición del jugador): multiplicador de fatiga de MANOS
+   *  cuando hay pies sin apoyo. Ausentes → 1,3 / 1,75 (constantes del rig). */
+  handFatigueOneFootFree?: number;
+  handFatigueTwoFeetFree?: number;
+  /** FATIGA QUE ACORTA (petición del jugador: "las zonas de influencia se
+   *  reducen por la fatiga"): fracción de alcance que se pierde con la
+   *  extremidad al 100% de fatiga. Ausente → 0,22 (constante del rig). */
+  reachFatigueLoss?: number;
 }
 export interface RopeTuning { segmentMax: number; totalMax: number; overstretchAt: number; visualNodes: number; nodeRadius: number; slackGravity: number; iterations: number; nodeMass: number; nodeDamping: number; slackFactor: number; maxCatchSpeed: number; maxCorrectionPerTick: number; waistEffectiveMass: number; /** COLA libre de la cuerda visual: tramos que cuelgan del cabo de la tabla (petición: "un metro hacia abajo en ambos lados"). */ tailNodes?: number; tailLen?: number; /** cuerda de MÁS del dibujo (m): sin holgura la cadena verlet queda tensa y parece un palo. */ visualSlackM?: number }
 export interface RichManTuning { mass: number; foodBonus: number; massTransitionSeconds: number; harnessOffsetY: number; bumpWallSpeed: number; bumpImpulseToRope: number }
@@ -77,6 +85,16 @@ export interface BoxesTuning {
   offsetFrac: number;
 }
 
+/** DRON REPARTIDOR (petición del jugador): de vez en cuando un dron vuela
+ *  hasta la tabla y le deja una sorpresa AL LADO del ricachón — un peso que
+ *  DESEQUILIBRA (elementos de descompensación sobre la tabla). */
+export interface DroneTuning {
+  /** rango del peso del paquete entregado (kg). */
+  massKgMin: number; massKgMax: number;
+  /** velocidad de vuelo del dron (m/s) y segundos ronda antes de soltar. */
+  speedMs: number; hoverSeconds: number;
+}
+
 /** CÓNDOR (petición del jugador): ave gigante que POSA en un extremo de la
  *  tabla y PESA: ese lado se hunde hasta que se va. */
 export interface CondorTuning {
@@ -101,6 +119,7 @@ export interface TuningData {
   fart?: FartTuning;
   boxes?: BoxesTuning;
   condor?: CondorTuning;
+  drone?: DroneTuning;
 }
 export interface AnchorTypeData {
   label: string; gripQuality: number; durability: number | null;
@@ -139,6 +158,23 @@ export interface WallGenData {
     fatigueMult: number;
     /** banda mínima: arranque y primeros metros siempre limpios. */
     minBand: number;
+  };
+  /** ENTRANTE (pared rocosa, petición del jugador: "salientes, entrantes como
+   *  VERDADEROS volúmenes 3D que se meten en la pared" + "entrantes con efecto
+   *  jugable: presas retrasadas"): franja RETRANQUEADA con HUECO real en el
+   *  muro; las presas de su franja quedan METIDAS (z + holdSetbackM) y agarrar
+   *  a una presa retrasada fatiga MÁS (fatigueMult). Opcional. */
+  entrantes?: {
+    chancePerBand: number;
+    minWidthM: number; maxWidthM: number;
+    depthM: number; heightM: number;
+    minBand: number;
+    /** retraso de las presas del entrante (m hacia dentro del muro).
+     *  Ausente → depthM (apoyadas en el fondo del hueco). */
+    holdSetbackM?: number;
+    /** multiplicador de fatiga al agarrarse a una presa retrasada. Documental:
+     *  el rig aplica 1 + recessed × 0,5 (0,3 m → ×1,15). */
+    fatigueMult?: number;
   };
   /** Presas sorpresa (SUPER FLATULENCIA): probabilidad por banda de convertir
    *  UNA presa en apoyo verde de superpoder (nunca en banda 0/campamento). */
@@ -261,6 +297,7 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
           graceTime: posNum, reGripLock: posNum, fatigueRate: posNum, recoverRate: posNum,
           baseGripHand: posNum, baseGripFoot: posNum, armReach: posNum, legReach: posNum, mass: posNum,
           overloadTension: posNum, fatigueReleaseAt: posNum, highTension: { type: "number", exclusiveMinimum: 0, maximum: 1 },
+          handFatigueOneFootFree: posNum, handFatigueTwoFeetFree: posNum, reachFatigueLoss: posNum,
         } },
         rope: { type: "object", required: ["segmentMax", "totalMax", "overstretchAt", "visualNodes"], properties: {
           segmentMax: posNum, totalMax: posNum, overstretchAt: { type: "number", exclusiveMinimum: 0, maximum: 1 },
@@ -283,6 +320,7 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
           fallSlideFrac: { type: "number", exclusiveMinimum: 0, maximum: 1 }, fallTiltDeg: posNum, offsetFrac: num,
         } },
         condor: { type: "object", required: ["massKg"], properties: { massKg: posNum, perchSecondsMin: posNum, perchSecondsMax: posNum, offsetFrac: num } },
+        drone: { type: "object", required: ["massKgMin", "massKgMax", "speedMs", "hoverSeconds"], properties: { massKgMin: posNum, massKgMax: posNum, speedMs: posNum, hoverSeconds: posNum } },
       },
     },
     anchor_types: {
@@ -322,6 +360,11 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
           depthM: posNum, heightM: posNum, fatigueMult: posNum, minBand: { type: "integer", minimum: 0 },
         } },
         surprise: { type: "object", required: ["minBand", "chancePerBand"], properties: { minBand: { type: "integer", minimum: 0 }, chancePerBand: { type: "number", exclusiveMinimum: 0, maximum: 1 } } },
+        entrantes: { type: "object", required: ["chancePerBand", "minWidthM", "maxWidthM", "depthM", "heightM", "minBand"], properties: {
+          chancePerBand: { type: "number", exclusiveMinimum: 0, maximum: 1 }, minWidthM: posNum, maxWidthM: posNum,
+          depthM: posNum, heightM: posNum, minBand: { type: "integer", minimum: 0 },
+          holdSetbackM: posNum, fatigueMult: posNum,
+        } },
       },
     },
     events: {

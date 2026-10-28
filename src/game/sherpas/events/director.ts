@@ -30,6 +30,10 @@ export interface DirectorContext {
   condorOptions(): CondorOptions;
   /** CAJAS DEL RICACHÓN: apila n cajas sobre la tabla (pesan y pueden caer). */
   spawnBoxes(count: number): void;
+  /** DRON REPARTIDOR (petición del jugador): vuela y deja un paquete PESADO
+   *  al lado del ricachón — descompensación aérea. Opcional: los tests
+   *  construyen contextos parciales. */
+  spawnDrone?: () => void;
 }
 
 const HARD_EVENT_SAFETY_WINDOW_S = 5;
@@ -194,6 +198,13 @@ export class EventDirector {
         // y las apila sobre la tabla. Si luego escora… CAEN y ESTALLA.
         const n = 2 + (this.rng.next() < 0.4 ? 1 : 0);
         this.ctx.spawnBoxes(n);
+        this.finish(def);
+        break;
+      }
+      case "drone": {
+        // DRON REPARTIDOR (petición del jugador): deja una sorpresa PESADA
+        // junto al ricachón — los pesos en la tabla descompensan.
+        this.ctx.spawnDrone?.();
         this.finish(def);
         break;
       }

@@ -19,11 +19,25 @@ export interface SalienteZone {
   /** z del frente del saliente (donde quedan las presas). */
   z: number;
 }
+/** ENTRANTE de pared rocosa (petición del jugador: "verdaderos volúmenes 3D
+ *  que se metan en la pared" + "entrantes con efecto jugable: presas
+ *  retrasadas"): franja RETRANQUEADA con HUECO real en el muro (la escena
+ *  segmenta el muro alrededor) y SUS PRESAS quedan METIDAS (z hacia dentro:
+ *  retrasadas — agarrarlas fatiga MÁS, el rig lo aplica vía hold.recessed). */
+export interface EntranteZone {
+  band: number;
+  xMin: number; xMax: number;
+  yMid: number; heightM: number;
+  depthM: number;
+  /** retraso de las presas (m hacia dentro); = depthM por defecto. */
+  holdSetbackM: number;
+}
 export interface WallLayout {
   totalHeightM: number;
   campZones: CampZone[];
   phaseSpans: { phase: number; yMin: number; yMax: number; narrativeBase: number }[];
   salientes: SalienteZone[];
+  entrantes: EntranteZone[];
 }
 
 /** Patrón de ruta de un tramo de bandas (petición del jugador: "las rutas deben
@@ -132,7 +146,37 @@ export class WallGenerator {
         });
       }
     }
-    return { totalHeightM: y, campZones, phaseSpans, salientes };
+    // ENTRANTES (pared rocosa): franjas RETRANQUEADAS elegidas por semilla —
+    // solo VISUAL (la escena las dibuja hundidas con aristas blancas; no tocan
+    // presas ni física). En bandas distintas a las de salientes y sin campamentos.
+    const entDeps = this.deps.wallGen.entrantes;
+    const entrantes: EntranteZone[] = [];
+    if (entDeps) {
+      const bh = this.deps.wallGen.bandHeightM;
+      const bandCount = Math.ceil(y / bh);
+      for (let i = 0; i < bandCount; i++) {
+        if (i < entDeps.minBand) continue;
+        if (salientes.some((s) => s.band === i)) continue; // no chocar con salientes
+        const yMin = i * bh;
+        const yMax = yMin + bh;
+        if (campZones.some((c) => yMin < c.yTop && yMax > c.yBase)) continue;
+        const rng = makeRng(bandRngSeed(this.seed, 0x3A17E000 + i));
+        if (rng.next() >= entDeps.chancePerBand) continue;
+        const w = rng.range(entDeps.minWidthM, Math.max(entDeps.minWidthM, entDeps.maxWidthM));
+        const margin = this.deps.wallGen.sample.marginXM;
+        const lo = -this.widthM / 2 + margin + w / 2;
+        const hi = this.widthM / 2 - margin - w / 2;
+        if (hi <= lo) continue;
+        const xc = rng.range(lo, hi);
+        const yMid = rng.range(yMin + bh * 0.3, yMax - bh * 0.3);
+        entrantes.push({
+          band: i, xMin: xc - w / 2, xMax: xc + w / 2,
+          yMid, heightM: entDeps.heightM, depthM: entDeps.depthM,
+          holdSetbackM: entDeps.holdSetbackM ?? entDeps.depthM,
+        });
+      }
+    }
+    return { totalHeightM: y, campZones, phaseSpans, salientes, entrantes };
   }
 
   phaseOfHeight(y: number): PhaseData {
@@ -374,6 +418,23 @@ export class WallGenerator {
         if (h.pos.x >= sal.xMin && h.pos.x <= sal.xMax && Math.abs(h.pos.y - sal.yMid) <= sal.heightM * 0.5 + 0.3) {
           h.pos = v3(h.pos.x, h.pos.y, sal.z);
           h.proud = sal.depthM;
+        }
+      }
+    }
+
+    // 3c. ENTRANTE de la banda (presas RETRASADAS, petición del jugador:
+    //     "entrantes con efecto jugable"): las presas de su franja quedan
+    //     METIDAS en el hueco (z hacia dentro del muro + holdSetbackM) y el
+    //     rig las hace más incómodas (fatiga × hold.recessed). ANTES del
+    //     validador: el grafo de alcanzabilidad trabaja en 3D y sigue
+    //     garantizando rutas resolubles.
+    const ent = this.layout.entrantes.find((e) => e.band === index);
+    if (ent) {
+      for (const h of holds) {
+        if (h.camp || h.id.startsWith("start")) continue;
+        if (h.pos.x >= ent.xMin && h.pos.x <= ent.xMax && Math.abs(h.pos.y - ent.yMid) <= ent.heightM * 0.5 + 0.25) {
+          h.pos = v3(h.pos.x, h.pos.y, this.zHold + ent.holdSetbackM);
+          h.recessed = ent.holdSetbackM;
         }
       }
     }

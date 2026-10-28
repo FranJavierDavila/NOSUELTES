@@ -11,12 +11,16 @@ export type RichManState =
   | "colgando" | "dormitando" | "insultando" | "comiendo" | "tirando_basura"
   | "meandome" | "pataleando"
   // nuevos (petición del jugador: gestos graciosos sentado + de pie + pasear):
-  | "de_pie" | "caminando" | "aplaudiendo" | "brindando" | "mirando";
+  | "de_pie" | "caminando" | "aplaudiendo" | "brindando" | "mirando"
+  // POSTURAS CÓMICAS (petición del jugador: dormir acostado, bailecito,
+  // leer, llamar por teléfono):
+  | "durmiendo" | "bailando" | "leyendo" | "telefono";
 
 /** estados que se dibujan como GESTO cinemático sobre la pose sentada. */
 const GESTURE_STATES: RichManState[] = [
   "dormitando", "insultando", "comiendo", "tirando_basura",
   "aplaudiendo", "brindando", "mirando", "pataleando",
+  "durmiendo", "bailando", "leyendo", "telefono",
 ];
 
 export interface RichManDeps {
@@ -119,21 +123,28 @@ export class RichManBrain {
     if (this.state === "colgando" && this.stateTime >= this.boredAt) {
       this.boredAt = Infinity; // una sola vez por ciclo sentado
       const r = this.deps.rng.next();
-      if (r < 0.3) this.enter("de_pie");
-      else if (r < 0.44) this.enter("aplaudiendo");
-      else if (r < 0.58) this.enter("brindando");
-      else if (r < 0.72) this.enter("mirando");
-      else if (r < 0.88) this.enter("dormitando");
+      if (r < 0.2) this.enter("de_pie");
+      else if (r < 0.31) this.enter("aplaudiendo");
+      else if (r < 0.42) this.enter("brindando");
+      else if (r < 0.51) this.enter("mirando");
+      else if (r < 0.65) this.enter("durmiendo");      // siesta TUMBADO (favorita)
+      else if (r < 0.75) this.enter("bailando");       // bailecito
+      else if (r < 0.85) this.enter("leyendo");        // libro
+      else if (r < 0.94) this.enter("telefono");       // llamada
       // el resto: se queda tan ancho, sigue mirando el paisaje
     }
     if (this.stateTime >= this.stateDuration) {
       if (this.state === "colgando") {
         // del rollo sentado sale VARIADO (respaldo del aburrimiento)
         const r = this.deps.rng.next();
-        if (r < 0.2) this.enter("de_pie");
-        else if (r < 0.32) this.enter("aplaudiendo");
-        else if (r < 0.44) this.enter("brindando");
-        else if (r < 0.56) this.enter("mirando");
+        if (r < 0.16) this.enter("de_pie");
+        else if (r < 0.28) this.enter("aplaudiendo");
+        else if (r < 0.4) this.enter("brindando");
+        else if (r < 0.5) this.enter("mirando");
+        else if (r < 0.62) this.enter("durmiendo");
+        else if (r < 0.72) this.enter("bailando");
+        else if (r < 0.82) this.enter("leyendo");
+        else if (r < 0.92) this.enter("telefono");
         else if (st.next) this.enter(st.next as RichManState);
       } else if (this.state === "de_pie") {
         // de pie: si aún no paseó, le pica caminar; si ya paseó, se sienta
@@ -180,6 +191,12 @@ export class RichManBrain {
       case "dormitando": {
         const bob = Math.sin(time * (acts.sleep.breathHz ?? 0.4) * Math.PI * 2) * (acts.sleep.headBobM ?? 0.03);
         this.sim.impulse(RM.head, v3(0, bob * 0.1, 0));
+        break;
+      }
+      case "durmiendo": {
+        // ronquido cosmético: la cabeza sube y baja MUY lento (cinemática)
+        const snore = Math.sin(time * (acts.sleep.breathHz ?? 0.4) * Math.PI * 2) * (acts.sleep.headBobM ?? 0.03);
+        this.sim.impulse(RM.head, v3(0, snore * 0.06, 0));
         break;
       }
       default: break;

@@ -16,7 +16,11 @@ import "@babylonjs/core/Meshes/Builders/sphereBuilder";
 import "@babylonjs/core/Meshes/Builders/capsuleBuilder";
 import "@babylonjs/core/Meshes/Builders/torusBuilder";
 import "@babylonjs/core/Meshes/Builders/cylinderBuilder";
+import "@babylonjs/core/Meshes/Builders/discBuilder";
+import "@babylonjs/core/Meshes/Builders/linesBuilder"; // grietas/aristas + CÍRCULO DISCONTINUA (CreateDashedLines vive aquí)
 import "@babylonjs/core/Meshes/instancedMesh"; // side-effect requerido por createInstance (fix Task 21)
+import "@babylonjs/core/Rendering/edgesRenderer"; // ARISTAS BLANCAS de pared rocosa (petición del jugador)
+import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator"; // LUZ Y SOMBRA (profundidad)
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
 import { ParticleSystem } from "@babylonjs/core/Particles/particleSystem";
@@ -32,6 +36,7 @@ export interface SherpaSpawnRig { particles: readonly { pos: { x: number; y: num
 export interface SherpaSyncSolver { getParticle(i: number): { pos: { x: number; y: number; z: number }; prev: { x: number; y: number; z: number } } }
 import { v3, vAdd, vScale, vSub, vLen, type V3 } from "../../physics/pbd/math";
 import type { HoldInstance } from "../physics/anchors";
+import type { DragReachInfo } from "../physics/sherpaRig";
 import { RichManSim, RM } from "../physics/richMan";
 import type { CameraData, HudData } from "../core/data";
 import type { WallLayout } from "../world/wallGenerator";
@@ -72,6 +77,7 @@ export class SherpaScene {
     bones: Bone[]; head: Mesh;
     hat: Mesh; brim: Mesh; glasses: Mesh; // personalidad fija
     snack: Mesh; cup: Mesh;               // props de gesto (comiendo/brindando)
+    book: Mesh; phone: Mesh;              // props de postura (leyendo/teléfono)
   } | null = null;
   // Cuerdas de porteo: cadenas de CILINDROS gruesos (las líneas de 1px no se
   // veían — petición del jugador: "no se ven las cuerdas desde las mochilas").
@@ -85,6 +91,15 @@ export class SherpaScene {
   private aimMarkers: (Mesh | null)[] = [null, null];
   private dragRing: Mesh | null = null;
   private magnetRing: Mesh | null = null;
+  // CÍRCULO DE ALCANCE (petición del jugador: verde = alcanzable, rojo = no;
+  // zona muerta = roca vacía sin imán → la extremidad queda colgando).
+  // v2 (petición: "más sutiles, líneas discontinuas pero no tan evidente"):
+  // DOBLE línea discontinua concéntrica (finta de trazo grueso sin toro ni
+  // disco) — se lee como cota sobre la pared, no como muro de color.
+  private reachDash: Mesh | null = null;
+  private reachDash2: Mesh | null = null;
+  private deadRing: Mesh | null = null;
+  private deadDisc: Mesh | null = null;
   private fxTexture: Texture;
   private snowSystem: ParticleSystem;
   private snowBaseRate = 0;      // emitRate base por fase (el viento añade el suyo)
@@ -98,13 +113,26 @@ export class SherpaScene {
   private streakMat: StandardMaterial | null = null;
   private disposed = false;
   private worldBuilt = false;
-  // MODO TORMENTA: cielo oscuro + RELÁMPAGOS (flash del clearColor+hemi).
+  // MODO TORMENTA: cielo oscuro + RELÁMPAGOS (flash del clearColor+luz).
   private hemiLight: HemisphericLight | null = null;
+  // LUZ Y SOMBRA (petición del jugador: "sistema de luces y sombras para
+  // incrementar la sensación de profundidad, está todo muy plano"): sol
+  // direccional cálido que CASTA sombras reales de sherpas/tabla/ricachón/
+  // rocas sobre la pared. El frustum de sombra sigue a la cámara.
+  private sunLight: DirectionalLight | null = null;
+  private sunBase = 1.15;
+  private hemiBase = 0.62;
   private stormMode = false;
   private flashT = 0;
+  private shadowGen: ShadowGenerator | null = null;
   // CAJAS DEL RICACHÓN sobre la tabla + cajas CAYENDO (balístico simple).
   private boxMeshes: Mesh[] = [];
   private fallingBoxes: { mesh: Mesh; vel: V3; rot: V3; rotV: V3 }[] = [];
+  // DRON REPARTIDOR (petición: "de vez en cuando aparece un dron volando y le
+  // deja una sorpresa al lado en la tabla"): quadcóptero con hélices que
+  // giran, paquete colgante y luz de posición; + el paquete ya ENTREGADO.
+  private droneMesh: { body: Mesh; rotors: Mesh[]; pkg: Mesh } | null = null;
+  private dronePkgMesh: Mesh | null = null;
 
   private constructor(engine: AbstractEngine, backend: string, camData: CameraData, hudData: HudData) {
     this.engine = engine;
@@ -116,11 +144,30 @@ export class SherpaScene {
     this.camera = new UniversalCamera("cam", new Vector3(0, 2, -8), this.scene);
     this.camera.inputs.clear();
     this.camera.minZ = 0.1;
+    // LUZ Y SOMBRA (petición: "sistema de luces y sombras para incrementar la
+    // sensación de profundidad"): hemisferio frío de relleno BAJO + sol
+    // direccional cálido que casta sombras REALES sobre la pared. El hueco
+    // entre ambas es lo que da volumen a salientes/entrantes y a los cuerpos.
     const hemi = new HemisphericLight("hemi", new Vector3(0.2, 1, 0.4), this.scene);
-    hemi.intensity = 0.85;
+    hemi.intensity = this.hemiBase;
+    hemi.diffuse = new Color3(0.82, 0.88, 1); // relleno frío (cielo)
+    hemi.groundColor = new Color3(0.18, 0.17, 0.2);
     this.hemiLight = hemi;
-    const dir = new DirectionalLight("dir", new Vector3(-0.3, -1, 0.55), this.scene);
-    dir.intensity = 0.55;
+    const dir = new DirectionalLight("dir", new Vector3(-0.35, -1, 0.6).normalize(), this.scene);
+    dir.intensity = this.sunBase;
+    dir.diffuse = new Color3(1.0, 0.95, 0.85); // sol cálido de altura
+    dir.specular = new Color3(0.25, 0.24, 0.22);
+    dir.position = new Vector3(4, 10, -6.5); // el frustum sigue a la cámara (render)
+    dir.shadowFrustumSize = 26; // orto fijo ~ lo que ve la cámara
+    dir.shadowMinZ = 1;
+    dir.shadowMaxZ = 55;
+    this.sunLight = dir;
+    const sg = new ShadowGenerator(1024, dir);
+    sg.useBlurExponentialShadowMap = true;
+    sg.blurKernel = 16;
+    sg.setDarkness(0.45); // sombra legible, no brea
+    sg.bias = 0.0012;
+    this.shadowGen = sg;
     this.fxTexture = this.makeDotTexture();
     this.snowSystem = new ParticleSystem("snow", 600, this.scene);
     this.snowSystem.particleTexture = this.fxTexture.clone();
@@ -184,6 +231,12 @@ export class SherpaScene {
     return dt as unknown as Texture;
   }
 
+  /** Suma una malla a los CASTERS de sombra del sol (luces y sombras). */
+  private castShadow(m: Mesh): void {
+    m.receiveShadows = false;
+    this.shadowGen?.addShadowCaster(m, false);
+  }
+
   /** Textura de ráfaga: eliminada — el material de partículas de Babylon se
    *  quedaba tenue/invisible con texturas de canvas (banco de pruebas
    *  t30-particle-test.png); las ráfagas son mallas del pool `streaks`. */
@@ -233,16 +286,89 @@ export class SherpaScene {
     if (this.worldBuilt) return; // la escena del menú se reutiliza como escena de partida
     this.worldBuilt = true;
     const wallW = 5.4;
-    const wall = MeshBuilder.CreateBox("wall", { width: wallW, height: layout.totalHeightM + 8, depth: 0.6 }, this.scene);
-    wall.position.set(0, (layout.totalHeightM + 8) / 2 - 4, -0.18 + 0.3);
+    const wallFaceZ = -0.18; // cara frontal de la caja de pared (zFront)
+    const wallDepth = 0.6;
+    const wallTop = layout.totalHeightM + 4;
     const rock = mat(this.scene, "rock", "#3c4652");
     rock.diffuseTexture = null;
-    wall.material = rock;
-    wall.freezeWorldMatrix();
+    // helper: bloque de roca del muro (receptor de sombras + arista blanca)
+    const wallBlock = (name: string, w: number, h: number, x: number, y: number): Mesh => {
+      const b = MeshBuilder.CreateBox(name, { width: w, height: h, depth: wallDepth }, this.scene);
+      b.position.set(x, y, wallFaceZ + wallDepth / 2); // el cuerpo del muro se extiende hacia +z
+      b.material = rock;
+      b.receiveShadows = true;
+      b.freezeWorldMatrix();
+      b.enableEdgesRendering();
+      b.edgesWidth = 4.5;
+      b.edgesColor = new Color4(0.92, 0.96, 1, 0.42);
+      return b;
+    };
+
+    // MURO ROCOSO CON HUECOS REALES (petición del jugador: "salientes y
+    // entrantes que sean VERDADEROS volúmenes 3D que sobresalgan o se metan
+    // en la pared"): en vez de un único plano, el muro se SEGMENTA alrededor
+    // de cada entrante — los entrantes son AGUJEROS de verdad con su volumen
+    // hundido dentro del muro (luz y sombra venden la profundidad).
+    const holes = (layout.entrantes ?? []).map((e) => ({
+      xMin: e.xMin, xMax: e.xMax, yMin: e.yMid - e.heightM / 2, yMax: e.yMid + e.heightM / 2, e,
+    })).filter((h) => h.yMax > h.yMin && h.xMax > h.xMin).sort((a, b) => a.yMin - b.yMin);
+    // los huecos son disjuntos en y (máx 1 por banda): slabs horizontales completos
+    // entre hueco y hueco + tirantes laterales y tapas alrededor de cada hueco.
+    let yCur = -4;
+    const slabFor = (name: string, yA: number, yB: number): void => {
+      if (yB - yA < 0.05) return;
+      wallBlock(name, wallW, yB - yA, 0, (yA + yB) / 2);
+    };
+    holes.forEach((h, i) => {
+      slabFor(`wallSlab${i}`, yCur, h.yMin);
+      // tirantes laterales del hueco (toda la altura del hueco)
+      const lw = h.xMin - (-wallW / 2);
+      const rw = wallW / 2 - h.xMax;
+      if (lw > 0.05) wallBlock(`wallHL${i}`, lw, h.yMax - h.yMin, -wallW / 2 + lw / 2, (h.yMin + h.yMax) / 2);
+      if (rw > 0.05) wallBlock(`wallHR${i}`, rw, h.yMax - h.yMin, wallW / 2 - rw / 2, (h.yMin + h.yMax) / 2);
+      // tapas inferior y superior (el trozo de muro sobre/bajo el hueco)
+      wallBlock(`wallHB${i}`, h.xMax - h.xMin, h.yMin - yCur, (h.xMin + h.xMax) / 2, (yCur + h.yMin) / 2);
+      yCur = h.yMax;
+    });
+    slabFor(`wallSlabTop`, yCur, wallTop);
+
+    // VOLUMEN HUNDIDO de cada entrante: caja oscura DENTRO del muro, visible
+    // por el agujero. Su cara frontal queda a depthM de la cara del muro —
+    // exactamente donde el generador dejó las presas RETRASADAS.
+    for (const h of holes) {
+      const e = h.e;
+      const w = h.xMax - h.xMin;
+      const hh = h.yMax - h.yMin;
+      if (w <= 0.05 || hh <= 0.05) continue;
+      const d = Math.max(0.08, e.depthM);
+      // caja trasera: del fondo del hueco (face + d) hasta la cara trasera del muro
+      const back = MeshBuilder.CreateBox(`entrante_${e.band}`, { width: w, height: hh, depth: wallDepth - d + 0.02 }, this.scene);
+      back.position.set((h.xMin + h.xMax) / 2, (h.yMin + h.yMax) / 2, wallFaceZ + d + (wallDepth - d) / 2);
+      const dark = mat(this.scene, `entranteM_${e.band}`, "#232a33");
+      dark.specularColor = new Color3(0.01, 0.01, 0.01);
+      back.material = dark;
+      back.receiveShadows = true;
+      back.freezeWorldMatrix();
+      back.enableEdgesRendering();
+      back.edgesWidth = 6;
+      back.edgesColor = new Color4(0.9, 0.94, 1, 0.6);
+      // LABIO superior: repisa de roca que se mete en el hueco (casta sombra
+      // dentro — la profundidad se LEE por la luz, petición del jugador).
+      const lip = MeshBuilder.CreateBox(`entranteLip_${e.band}`, { width: w + 0.08, height: 0.07, depth: 0.12 }, this.scene);
+      lip.position.set((h.xMin + h.xMax) / 2, h.yMax + 0.035, wallFaceZ - 0.06);
+      lip.material = mat(this.scene, `entranteLipM_${e.band}`, "#525d69");
+      lip.receiveShadows = true;
+      lip.freezeWorldMatrix();
+      lip.enableEdgesRendering();
+      lip.edgesWidth = 6;
+      lip.edgesColor = new Color4(0.95, 0.97, 1, 0.8);
+      if (this.shadowGen) this.shadowGen.addShadowCaster(lip, false);
+    }
 
     const floor = MeshBuilder.CreateGround("floor", { width: 40, height: 24 }, this.scene);
     floor.position.y = -0.02;
     floor.material = mat(this.scene, "snowFloor", "#dfe8ee");
+    floor.receiveShadows = true;
     floor.freezeWorldMatrix();
 
     // cornisas de campamento (visibles de lejos).
@@ -250,23 +376,83 @@ export class SherpaScene {
       const ledge = MeshBuilder.CreateBox(`ledge_${zone.campId}`, { width: 4.6, height: 0.24, depth: 1.1 }, this.scene);
       ledge.position.set(0, zone.yBase + 0.12, 0.28);
       ledge.material = mat(this.scene, `ledgeM_${zone.campId}`, "#e8edf2");
+      ledge.receiveShadows = true;
       ledge.freezeWorldMatrix();
     }
 
-    // SALIENTES (pared irregular, petición del jugador: "zonas de salientes
-    // para complicar la escalada"): cajas de roca que ADELANTAN la pared —
-    // las presas de su franja viven en su frente (z más cercano a cámara).
-    const wallFaceZ = -0.18; // cara frontal de la caja de pared (zFront)
+    // SALIENTES (petición: "que se noten... VERDADEROS volúmenes 3D que
+    // sobresalgan"): ya son cajas reales; ahora IRREGULARES — dos volúmenes
+    // desalineados (cuerpo + capuchón más ancho y menos profundo) para que la
+    // silueta no sea un rectángulo perfecto. Reciben y CASTAN sombra.
     for (const s of layout.salientes) {
       const w = s.xMax - s.xMin;
       const depth = wallFaceZ - s.z + 0.06; // del muro al frente del saliente
       if (w <= 0.05 || depth <= 0.05) continue;
-      const box = MeshBuilder.CreateBox(`saliente_${s.band}`, { width: w, height: s.heightM, depth }, this.scene);
-      box.position.set((s.xMin + s.xMax) / 2, s.yMid, wallFaceZ - depth / 2);
       const rockL = mat(this.scene, `salienteM_${s.band}`, "#46525f");
       rockL.specularColor = new Color3(0.03, 0.03, 0.03);
+      // cuerpo principal (donde viven las presas adelantadas)
+      const box = MeshBuilder.CreateBox(`saliente_${s.band}`, { width: w, height: s.heightM, depth }, this.scene);
+      box.position.set((s.xMin + s.xMax) / 2, s.yMid, wallFaceZ - depth / 2);
       box.material = rockL;
+      box.receiveShadows = true;
       box.freezeWorldMatrix();
+      box.enableEdgesRendering();
+      box.edgesWidth = 7;
+      box.edgesColor = new Color4(0.95, 0.97, 1, 0.85);
+      // capuchón irregular: más ancho, menos profundo, desplazado (semilla fija)
+      const seedH = Math.abs(Math.sin(s.band * 12.9898) * 43758.5453) % 1;
+      const capW = w * (1.1 + seedH * 0.25);
+      const capH = s.heightM * (0.5 + seedH * 0.3);
+      const capD = depth * 0.45;
+      const cap = MeshBuilder.CreateBox(`salienteCap_${s.band}`, { width: capW, height: capH, depth: capD }, this.scene);
+      const capShift = (seedH - 0.5) * w * 0.3;
+      cap.position.set((s.xMin + s.xMax) / 2 + capShift, s.yMid + s.heightM * 0.5 + capH * 0.4, wallFaceZ - capD / 2);
+      cap.material = rockL;
+      cap.receiveShadows = true;
+      cap.freezeWorldMatrix();
+      cap.enableEdgesRendering();
+      cap.edgesWidth = 6;
+      cap.edgesColor = new Color4(0.95, 0.97, 1, 0.7);
+      if (this.shadowGen) {
+        this.shadowGen.addShadowCaster(box, false);
+        this.shadowGen.addShadowCaster(cap, false);
+      }
+    }
+
+    // GRIETAS (pared rocosa): polilíneas blancas tenues sobre la cara del muro,
+    // deterministas (LCG con semilla fija: la pared no cambia entre visitas).
+    // Se RECORTAN en los huecos de los entrantes (nada flota en el aire).
+    const inHole = (x: number, y: number): boolean =>
+      holes.some((h) => x >= h.xMin - 0.05 && x <= h.xMax + 0.05 && y >= h.yMin - 0.05 && y <= h.yMax + 0.05);
+    let lcg = 0x9e3779b9 >>> 0;
+    const rnd = (): number => { lcg = (Math.imul(lcg, 1664525) + 1013904223) >>> 0; return lcg / 4294967296; };
+    let crackIdx = 0;
+    for (let y = 4; y < layout.totalHeightM - 2; y += 6 + rnd() * 5) {
+      const cracks = rnd() < 0.35 ? 2 : 1;
+      for (let c = 0; c < cracks; c++) {
+        const pts: Vector3[] = [];
+        let cx = (rnd() * 2 - 1) * (wallW / 2 - 0.4);
+        let cy = y + rnd() * 3;
+        const flush = (): void => {
+          if (pts.length >= 2) {
+            const line = MeshBuilder.CreateLines(`crack_${crackIdx++}`, { points: pts }, this.scene);
+            line.color = new Color3(0.88, 0.92, 0.98);
+            line.alpha = 0.32;
+            line.isPickable = false;
+          }
+          pts.length = 0;
+        };
+        if (!inHole(cx, cy)) pts.push(new Vector3(cx, cy, wallFaceZ + 0.01)); else flush();
+        const segs = 6 + Math.floor(rnd() * 5);
+        for (let i = 0; i < segs; i++) {
+          cx += (rnd() * 2 - 1) * 0.34;
+          cx = Math.max(-wallW / 2 + 0.25, Math.min(wallW / 2 - 0.25, cx));
+          cy += 0.3 + rnd() * 0.5;
+          if (inHole(cx, cy)) flush();
+          else pts.push(new Vector3(cx, cy, wallFaceZ + 0.01));
+        }
+        flush();
+      }
     }
   }
 
@@ -284,6 +470,7 @@ export class SherpaScene {
         master = MeshBuilder.CreateSphere(`holdMaster_${h.type}`, { diameter: 0.22, segments: 8 }, this.scene);
         master.material = mat(this.scene, `holdM_${h.type}`, hex);
         master.isVisible = false;
+        master.receiveShadows = true; // las presas reciben la sombra de los cuerpos
         this.holdMasters.set(h.type, master);
       }
       const inst = master.createInstance(`hold_${h.id}`);
@@ -348,6 +535,9 @@ export class SherpaScene {
     pack.material = strap;
     const label = MeshBuilder.CreateTorus(`p${player}_ring`, { diameter: 0.36, thickness: 0.03, tessellation: 16 }, this.scene);
     label.material = strap;
+    // LUZ Y SOMBRA: el sherpa casta sombra sobre la pared (profundidad).
+    for (const b of bones) this.castShadow(b.mesh);
+    for (const m of [head, pack, label]) this.castShadow(m);
     this.rigVisuals[player] = { bones, head, label, roots: [head, pack, label] };
     (this.rigVisuals[player] as RigVisual & { pack?: Mesh }).pack = pack;
   }
@@ -419,6 +609,10 @@ export class SherpaScene {
       knot.position.x = sx;
     }
     board.scaling.x = lenM / 1.7;
+    board.receiveShadows = true; // el ricachón y las cajas proyectan sobre la tabla
+    // LUZ Y SOMBRA: la tabla casta sombra sobre la pared.
+    for (const child of board.getChildMeshes()) this.castShadow(child as Mesh);
+    this.castShadow(board);
     this.plankMesh = board;
   }
 
@@ -510,12 +704,23 @@ export class SherpaScene {
     brim.material = dark;
     const glasses = MeshBuilder.CreateBox("rm_glasses", { width: 0.2, height: 0.045, depth: 0.028 }, this.scene);
     glasses.material = mat(this.scene, "richGlass", "#15151d");
-    // props de gesto: bocadillo (comiendo) y copita de vino (brindando)
+    // props de gesto: bocadillo (comiendo), copita (brindando), LIBRO (leyendo)
+    // y TELÉFONO (petición del jugador: "ponerse a leer, a llamar por teléfono")
     const snack = MeshBuilder.CreateBox("rm_snack", { width: 0.11, height: 0.05, depth: 0.055 }, this.scene);
     snack.material = mat(this.scene, "richSnack", "#d9a066");
     const cup = MeshBuilder.CreateCylinder("rm_cup", { diameterTop: 0.055, diameterBottom: 0.04, height: 0.085, tessellation: 8 }, this.scene);
     cup.material = mat(this.scene, "richCup", "#8e2f3c");
-    this.richVisual = { bones, head, hat, brim, glasses, snack, cup };
+    const book = MeshBuilder.CreateBox("rm_book", { width: 0.16, height: 0.02, depth: 0.22 }, this.scene);
+    book.material = mat(this.scene, "richBook", "#7a3b2e");
+    const bookPage = MeshBuilder.CreateBox("rm_bookPage", { width: 0.13, height: 0.012, depth: 0.19 }, this.scene);
+    bookPage.material = mat(this.scene, "richBookPage", "#efe8d8");
+    bookPage.parent = book;
+    bookPage.position.y = 0.012;
+    const phone = MeshBuilder.CreateBox("rm_phone", { width: 0.06, height: 0.11, depth: 0.015 }, this.scene);
+    phone.material = mat(this.scene, "richPhone", "#15151d");
+    for (const b of bones) this.castShadow(b.mesh);
+    for (const m of [head, hat, brim]) this.castShadow(m);
+    this.richVisual = { bones, head, hat, brim, glasses, snack, cup, book, phone };
   }
 
   despawnRichMan(): void {
@@ -527,6 +732,8 @@ export class SherpaScene {
     this.richVisual.glasses.dispose();
     this.richVisual.snack.dispose();
     this.richVisual.cup.dispose();
+    this.richVisual.book.dispose();
+    this.richVisual.phone.dispose();
     this.richVisual = null;
   }
 
@@ -542,18 +749,30 @@ export class SherpaScene {
     }
     const headP = lerp(RM.head);
     vis.head.position.set(headP.x, headP.y, headP.z);
-    // tocado y gafas siguen a la cabeza (la cara mira a −z)
-    vis.hat.position.set(headP.x, headP.y + 0.18, headP.z);
-    vis.brim.position.set(headP.x, headP.y + 0.135, headP.z);
+    // tocado y gafas siguen a la cabeza (la cara mira a −z). DURMIENDO (petición
+    // del jugador: "ponerse a dormir acostado en la tabla"): el sombrero cae
+    // SOBRE LA CARA — el clásico siesta de Siesta.
+    const sleeping = sim.gesture === "durmiendo";
+    vis.hat.position.set(headP.x, headP.y + (sleeping ? 0.02 : 0.18), headP.z + (sleeping ? -0.1 : 0));
+    vis.brim.position.set(headP.x, headP.y + (sleeping ? 0.075 : 0.135), headP.z + (sleeping ? -0.105 : 0));
     vis.glasses.position.set(headP.x, headP.y + 0.035, headP.z - 0.115);
+    vis.glasses.setEnabled(!sleeping); // a dormir, gafas fuera
     // props de gesto: visibles SOLO en su estado (el gesto se lee mejor con
-    // objeto en mano: bocadillo al comer, copita al brindar)
+    // objeto en mano: bocadillo al comer, copita al brindar, libro al leer,
+    // teléfono pegado a la oreja)
     const handL = lerp(RM.handL);
     const handR = lerp(RM.handR);
     vis.snack.position.set(handR.x, handR.y + 0.035, handR.z - 0.02);
     vis.snack.setEnabled(sim.gesture === "comiendo");
     vis.cup.position.set(handL.x, handL.y + 0.055, handL.z - 0.01);
     vis.cup.setEnabled(sim.gesture === "brindando");
+    // LIBRO: flotando entre las dos manos (leyendo)
+    vis.book.position.set((handL.x + handR.x) / 2, (handL.y + handR.y) / 2 + 0.03, (handL.z + handR.z) / 2 - 0.05);
+    vis.book.rotation.set(0.5, 0, 0); // inclinado hacia la cara
+    vis.book.setEnabled(sim.gesture === "leyendo");
+    // TELÉFONO: pegado a la oreja derecha (llamando)
+    vis.phone.position.set(handR.x + 0.01, handR.y + 0.05, handR.z - 0.03);
+    vis.phone.setEnabled(sim.gesture === "telefono");
   }
 
   // ---------- cámara compartida (doc 9) ----------
@@ -729,16 +948,19 @@ export class SherpaScene {
 
   // ---------- tormenta / relámpagos / cajas ----------
 
-  /** MODO TORMENTA: cielo más oscuro (azul noche) mientras dura el ciclo. */
+  /** MODO TORMENTA: cielo más oscuro (azul noche) + sol APAGADO mientras dura
+   *  el ciclo (luces y sombras también obedecen a la tormenta). */
   setStorm(storm: boolean): void {
     if (this.stormMode === storm) return;
     this.stormMode = storm;
     if (!storm && this.flashT <= 0) {
       this.scene.clearColor = new Color4(0.055, 0.07, 0.09, 1);
-      if (this.hemiLight) this.hemiLight.intensity = 0.85;
+      if (this.hemiLight) this.hemiLight.intensity = this.hemiBase;
+      if (this.sunLight) this.sunLight.intensity = this.sunBase;
     } else if (storm) {
       this.scene.clearColor = new Color4(0.028, 0.032, 0.048, 1);
-      if (this.hemiLight) this.hemiLight.intensity = 0.62;
+      if (this.hemiLight) this.hemiLight.intensity = this.hemiBase * 0.72;
+      if (this.sunLight) this.sunLight.intensity = this.sunBase * 0.28;
     }
   }
 
@@ -752,6 +974,7 @@ export class SherpaScene {
       const i = this.boxMeshes.length;
       const b = MeshBuilder.CreateBox(`cargoBox${i}`, { width: 0.3, height: 0.2, depth: 0.26 }, this.scene);
       b.material = mat(this.scene, `cargoBoxM${i}`, i % 2 === 0 ? "#8a5a33" : "#a06a3d");
+      this.castShadow(b);
       this.boxMeshes.push(b);
     }
     const cos = Math.cos(angle), sin = Math.sin(angle);
@@ -853,6 +1076,163 @@ export class SherpaScene {
     }
   }
 
+  /** CÍRCULO DE ALCANCE v2 (petición del jugador: "más SUTILES, líneas
+   *  DISCONTINUAS pero no tan evidente"): mientras se arrastra una extremidad
+   *  se marca la zona de alcance con una línea discontinua — VERDE cuando el
+   *  puntero sigue alcanzable, ROJO al pasarse; el RADIO lo manda el rig ya
+   *  REDUCIDO por la fatiga de esa extremidad (zonas de influencia que se
+   *  encogen). Sin disco ni toro: se lee como cota, no como muro de color.
+   *  ZONA MUERTA (roca vacía sin imán cerca) marcada con un halo gris
+   *  discreto bajo el puntero: soltar ahí deja la extremidad colgando. */
+  syncDragReach(info: DragReachInfo | null, wallFrontZ: number): void {
+    if (!info) {
+      if (this.reachDash) this.reachDash.isVisible = false;
+      if (this.reachDash2) this.reachDash2.isVisible = false;
+      if (this.deadRing) this.deadRing.isVisible = false;
+      if (this.deadDisc) this.deadDisc.isVisible = false;
+      return;
+    }
+    if (!this.reachDash) {
+      const circle = (r: number): Vector3[] => {
+        const pts: Vector3[] = [];
+        for (let i = 0; i <= 64; i++) {
+          const a = (i / 64) * Math.PI * 2;
+          pts.push(new Vector3(Math.cos(a) * r, Math.sin(a) * r, 0));
+        }
+        return pts;
+      };
+      const mk = (name: string, pts: Vector3[], alpha: number): Mesh => {
+        const d = MeshBuilder.CreateDashedLines(name, { points: pts, dashSize: 0.11, gapSize: 0.09, dashNb: 42 }, this.scene);
+        d.color = new Color3(0.35, 0.83, 0.42);
+        d.alpha = alpha;
+        d.isPickable = false;
+        return d as unknown as Mesh;
+      };
+      this.reachDash = mk("reachDash", circle(1), 0.55);
+      this.reachDash2 = mk("reachDash2", circle(1.05), 0.3); // trazo acompañante más tenue
+    }
+    const dash1 = this.reachDash;
+    const dash2 = this.reachDash2;
+    if (!dash1 || !dash2) return;
+    const setBoth = (mesh: Mesh, prop: "color" | "alpha", v: Color3 | number): void => {
+      const m = mesh as unknown as { color?: Color3; alpha?: number };
+      if (prop === "color") m.color = v as Color3; else m.alpha = v as number;
+    };
+    const col = info.reachable ? new Color3(0.35, 0.83, 0.42) : new Color3(0.95, 0.36, 0.34);
+    const al = info.reachable ? 0.62 : 0.72; // sutil pero legible; rojo apenas más presente
+    setBoth(dash1, "color", col);
+    setBoth(dash1, "alpha", al);
+    setBoth(dash2, "color", col);
+    setBoth(dash2, "alpha", al * 0.55);
+    dash1.isVisible = true;
+    dash2.isVisible = true;
+    const z = wallFrontZ - 0.12;
+    dash1.position.set(info.root.x, info.root.y, z);
+    dash1.scaling.setAll(Math.max(0.05, info.reachM)); // radio = alcance (ya reducido por fatiga)
+    dash2.position.set(info.root.x, info.root.y, z - 0.005);
+    dash2.scaling.setAll(Math.max(0.05, info.reachM));
+    // ZONA MUERTA: halo gris DISCRETO bajo el puntero (roca vacía, nada que imantar).
+    if (info.deadZone && !info.magnet && info.pointer) {
+      if (!this.deadRing) {
+        const gray = mat(this.scene, "deadZoneM", "#aeb7c0");
+        gray.emissiveColor = Color3.FromHexString("#aeb7c0");
+        gray.disableLighting = true;
+        gray.alpha = 0.4;
+        const grayFill = mat(this.scene, "deadZoneFill", "#aeb7c0");
+        grayFill.emissiveColor = Color3.FromHexString("#aeb7c0");
+        grayFill.disableLighting = true;
+        grayFill.alpha = 0.08;
+        grayFill.backFaceCulling = false;
+        this.deadRing = MeshBuilder.CreateTorus("deadRing", { diameter: 0.5, thickness: 0.02, tessellation: 32 }, this.scene);
+        this.deadRing.material = gray;
+        this.deadRing.isPickable = false;
+        this.deadDisc = MeshBuilder.CreateDisc("deadDisc", { radius: 0.25, tessellation: 32 }, this.scene);
+        this.deadDisc.material = grayFill;
+        this.deadDisc.isPickable = false;
+      }
+      this.deadRing.isVisible = true;
+      this.deadDisc!.isVisible = true;
+      this.deadRing.position.set(info.pointer.x, info.pointer.y, z + 0.02);
+      this.deadDisc!.position.set(info.pointer.x, info.pointer.y, z + 0.008);
+      this.deadRing.rotation.x = Math.PI / 2;
+      this.deadRing.scaling.setAll(1 + Math.sin(performance.now() / 300) * 0.06);
+    } else {
+      if (this.deadRing) this.deadRing.isVisible = false;
+      if (this.deadDisc) this.deadDisc.isVisible = false;
+    }
+  }
+
+  // ---------- dron repartidor (petición del jugador) ----------
+
+  /** Quadcóptero de reparto: cuerpo + 4 brazos con hélices que GIRAN + paquete
+   *  colgante + luz de posición roja. Se crea la primera vez que aparece. */
+  syncDrone(pos: V3 | null, time: number, pkgCarried = true): void {
+    if (!pos) {
+      if (this.droneMesh) this.droneMesh.body.isVisible = false;
+      return;
+    }
+    if (!this.droneMesh) {
+      const body = MeshBuilder.CreateBox("droneBody", { width: 0.5, height: 0.14, depth: 0.5 }, this.scene);
+      body.material = mat(this.scene, "droneBodyM", "#6b7684");
+      const dark = mat(this.scene, "droneDarkM", "#333c46");
+      const rotors: Mesh[] = [];
+      for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
+        const arm = MeshBuilder.CreateBox(`droneArm${sx}${sz}`, { width: 0.26, height: 0.03, depth: 0.04 }, this.scene);
+        arm.material = dark;
+        arm.parent = body;
+        arm.position.set(sx * 0.2, 0, sz * 0.2);
+        arm.rotation.y = sx * sz > 0 ? -Math.PI / 4 : Math.PI / 4;
+        const rotor = MeshBuilder.CreateCylinder(`droneRotor${sx}${sz}`, { diameter: 0.3, height: 0.014, tessellation: 10 }, this.scene);
+        rotor.material = mat(this.scene, `droneRotorM${sx}${sz}`, "#232b34");
+        rotor.parent = body;
+        rotor.position.set(sx * 0.3, 0.05, sz * 0.3);
+        rotors.push(rotor);
+      }
+      const led = MeshBuilder.CreateSphere("droneLed", { diameter: 0.07, segments: 6 }, this.scene);
+      const ledM = mat(this.scene, "droneLedM", "#ff3b30");
+      ledM.emissiveColor = Color3.FromHexString("#ff3b30");
+      ledM.disableLighting = true;
+      led.material = ledM;
+      led.parent = body;
+      led.position.set(0, -0.08, 0.22);
+      const pkg = MeshBuilder.CreateBox("dronePkg", { width: 0.3, height: 0.22, depth: 0.26 }, this.scene);
+      pkg.material = mat(this.scene, "dronePkgM", "#c98a4b");
+      pkg.parent = body;
+      this.castShadow(body);
+      this.droneMesh = { body, rotors, pkg };
+    }
+    const dm = this.droneMesh!;
+    dm.body.isVisible = true;
+    dm.body.position.set(pos.x, pos.y, pos.z);
+    dm.body.rotation.y = Math.sin(time * 0.9) * 0.25; // deriva de orientación
+    for (let i = 0; i < dm.rotors.length; i++) dm.rotors[i].rotation.y = time * (42 + i * 3);
+    // el paquete cuelga y se BALANCEA debajo del dron hasta soltarlo
+    const swing = Math.sin(time * 2.3) * 0.05;
+    dm.pkg.position.set(swing, -0.2, 0);
+    dm.pkg.rotation.z = swing * 2;
+    dm.pkg.isVisible = pkgCarried;
+  }
+
+  /** Paquete YA ENTREGADO: caja apoyada en la tabla (sigue center/angle). */
+  syncDronePkg(pos: V3 | null, angle: number): void {
+    if (!pos) {
+      if (this.dronePkgMesh) this.dronePkgMesh.isVisible = false;
+      return;
+    }
+    if (!this.dronePkgMesh) {
+      const b = MeshBuilder.CreateBox("droneDeliveredPkg", { width: 0.3, height: 0.2, depth: 0.26 }, this.scene);
+      b.material = mat(this.scene, "droneDeliveredM", "#a06a3d");
+      const tape = MeshBuilder.CreateBox("dronePkgTape", { width: 0.31, height: 0.205, depth: 0.06 }, this.scene);
+      tape.material = mat(this.scene, "droneTapeM", "#d9c07a");
+      tape.parent = b;
+      this.castShadow(b);
+      this.dronePkgMesh = b;
+    }
+    this.dronePkgMesh!.isVisible = true;
+    this.dronePkgMesh!.position.set(pos.x, pos.y, pos.z);
+    this.dronePkgMesh!.rotation.set(0, 0, angle);
+  }
+
   // ---------- utilidades ----------
 
   projectToScreenCss(p: V3): { x: number; y: number } {
@@ -876,11 +1256,18 @@ export class SherpaScene {
       this.flashT -= Math.max(0.001, this.engine.getDeltaTime() / 1000);
       const k = Math.max(0, Math.min(1, this.flashT / 0.14));
       this.scene.clearColor = new Color4(0.028 + 0.72 * k, 0.032 + 0.72 * k, 0.048 + 0.72 * k, 1);
-      if (this.hemiLight) this.hemiLight.intensity = 0.62 + 2.2 * k;
+      if (this.hemiLight) this.hemiLight.intensity = this.hemiBase * 0.72 + 2.2 * k;
+      if (this.sunLight) this.sunLight.intensity = this.sunBase * 0.28 + 2.0 * k;
       if (this.flashT <= 0 && this.stormMode) {
         this.scene.clearColor = new Color4(0.028, 0.032, 0.048, 1);
-        if (this.hemiLight) this.hemiLight.intensity = 0.62;
+        if (this.hemiLight) this.hemiLight.intensity = this.hemiBase * 0.72;
+        if (this.sunLight) this.sunLight.intensity = this.sunBase * 0.28;
       }
+    }
+    // LUZ Y SOMBRA: el sol (su frustum de sombra) SIGUE a la cámara — las
+    // sombras nítidas caen siempre cerca de lo que se está mirando.
+    if (this.sunLight && this.worldBuilt) {
+      this.sunLight.position.set(this.camTarget.x + 3.5, this.camTarget.y + 9, this.camTarget.z - 6.5);
     }
     this.stepFallingBoxes(Math.max(0.001, this.engine.getDeltaTime() / 1000));
     this.scene.render();
