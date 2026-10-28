@@ -18,6 +18,7 @@ import "@babylonjs/core/Meshes/Builders/torusBuilder";
 import "@babylonjs/core/Meshes/Builders/cylinderBuilder";
 import "@babylonjs/core/Meshes/Builders/discBuilder";
 import "@babylonjs/core/Meshes/Builders/linesBuilder"; // grietas/aristas + CÍRCULO DISCONTINUA (CreateDashedLines vive aquí)
+import type { LinesMesh } from "@babylonjs/core/Meshes/linesMesh";
 import "@babylonjs/core/Meshes/instancedMesh"; // side-effect requerido por createInstance (fix Task 21)
 import { InstancedMesh } from "@babylonjs/core/Meshes/instancedMesh";
 import "@babylonjs/core/Rendering/edgesRenderer"; // ARISTAS BLANCAS de pared rocosa (petición del jugador)
@@ -137,6 +138,13 @@ export class SherpaScene {
   // giran, paquete colgante y luz de posición; + el paquete ya ENTREGADO.
   private droneMesh: { body: Mesh; rotors: Mesh[]; pkg: Mesh } | null = null;
   private dronePkgMesh: Mesh | null = null;
+  // CHECKPOINTS cada 10 m (petición del jugador): línea verde discontinua que
+  // atraviesa la pared + BANDERITAS en los extremos al fijarla. Todo estático:
+  // 1 LinesMesh por cota (creado una vez, sin coste por frame) y banderitas
+  // (mástil+banda FUNDIDOS por extremo) ocultas hasta alcanzar la cota.
+  private cpLines: LinesMesh[] = [];
+  private cpFlags: [Mesh, Mesh][] = [];
+  private cpFlagMat: StandardMaterial | null = null;
   // PERF (petición: "unos 60 FPS en todo momento"): instrumentación + resolución
   // adaptativa (si el fps medio cae, se renderiza a menor resolución y sube solo
   // si sobra margen) + geometría estática FUNDIDA (menos draw calls) + cuerdas
@@ -1250,6 +1258,75 @@ export class SherpaScene {
     }
   }
 
+  // ---------- CHECKPOINTS cada 10 m (petición del jugador) ----------
+
+  /** Línea discontinua VERDE que atraviesa la pared en cada cota de seguro +
+   *  banderitas (ocultas) en los extremos, que se muestran al fijarla. Todo se
+   *  crea UNA vez: las líneas son geometría estática sin coste por frame y las
+   *  banderitas invisibles no entran en el render. */
+  setCheckpoints(ys: number[], wallFrontZ: number, wallW: number): void {
+    this.clearCheckpoints();
+    const green = "#5ad46a";
+    const z = wallFrontZ - 0.1;
+    const half = wallW / 2 - 0.22;
+    if (!this.cpFlagMat) {
+      this.cpFlagMat = mat(this.scene, "cpFlagM", green);
+      this.cpFlagMat.emissiveColor = Color3.FromHexString(green);
+      this.cpFlagMat.disableLighting = true;
+      this.cpFlagMat.specularColor = new Color3(0, 0, 0);
+    }
+    for (const y of ys) {
+      // COTA: línea discontinua horizontal (más sutil que el campamento: 1 trazo)
+      const line = MeshBuilder.CreateDashedLines(
+        `cpLine_${y}`,
+        { points: [new Vector3(-half, y, z), new Vector3(half, y, z)], dashSize: 0.16, gapSize: 0.13, dashNb: Math.round((half * 2) / 0.29) },
+        this.scene,
+      ) as LinesMesh;
+      line.color = Color3.FromHexString(green);
+      line.alpha = 0.55;
+      line.isPickable = false;
+      this.cpLines.push(line);
+      // BANDERITAS: mástil + paño FUNDIDOS por extremo (1 mesh = 1 draw cada una)
+      const flag = (side: -1 | 1, name: string): Mesh => {
+        const fx = side * (wallW / 2 - 0.3);
+        const pole = MeshBuilder.CreateBox(`${name}_pole`, { width: 0.035, height: 0.34, depth: 0.035 }, this.scene);
+        pole.position.set(fx, y + 0.17, z - 0.02);
+        const cloth = MeshBuilder.CreateBox(`${name}_cloth`, { width: 0.16, height: 0.1, depth: 0.02 }, this.scene);
+        cloth.position.set(fx - side * 0.08, y + 0.28, z - 0.02);
+        const merged = Mesh.MergeMeshes([pole, cloth], true, true, undefined, false, false)!;
+        merged.name = name;
+        merged.material = this.cpFlagMat;
+        merged.isPickable = false;
+        merged.isVisible = false;
+        merged.freezeWorldMatrix();
+        return merged;
+      };
+      const left = flag(-1, `cpFlagL_${y}`);
+      const right = flag(1, `cpFlagR_${y}`);
+      this.cpFlags.push([left, right]);
+    }
+  }
+
+  /** Banderitas visibles en la cota fijada (pequeño brinco de escala al salir). */
+  setCheckpointReached(index: number): void {
+    const pair = this.cpFlags[index];
+    if (!pair) return;
+    for (const f of pair) {
+      f.isVisible = true;
+      f.scaling.setAll(0.01);
+    }
+    this.cpFlagPop = 0.45; // segundos de brinco (animado en tickFx)
+  }
+
+  private cpFlagPop = 0;
+
+  private clearCheckpoints(): void {
+    for (const l of this.cpLines) this.scene.removeMesh(l);
+    for (const [l, r] of this.cpFlags) { this.scene.removeMesh(l); this.scene.removeMesh(r); }
+    this.cpLines = [];
+    this.cpFlags = [];
+  }
+
   // ---------- dron repartidor (petición del jugador) ----------
 
   /** Quadcóptero de reparto: cuerpo + 4 brazos con hélices que GIRAN + paquete
@@ -1417,6 +1494,19 @@ export class SherpaScene {
       this.sunLight.position.set(this.camTarget.x + 3.5, this.camTarget.y + 9, this.camTarget.z - 6.5);
     }
     this.stepFallingBoxes(Math.max(0.001, this.engine.getDeltaTime() / 1000));
+    // BRINCO de las banderitas al fijar la cota (overshoot elástico breve).
+    if (this.cpFlagPop > 0) {
+      this.cpFlagPop = Math.max(0, this.cpFlagPop - Math.max(0.001, this.engine.getDeltaTime() / 1000));
+      const t = 1 - this.cpFlagPop / 0.45; // 0→1
+      const s = t < 0.7 ? 0.01 + (t / 0.7) * 1.22 : 1.22 - ((t - 0.7) / 0.3) * 0.22;
+      for (const [l, r] of this.cpFlags) {
+        if (!l.isVisible) continue;
+        const sc = Math.max(0.01, s);
+        l.scaling.setAll(sc);
+        r.scaling.setAll(sc);
+      }
+      if (this.cpFlagPop <= 0) for (const [l, r] of this.cpFlags) { l.scaling.setAll(1); r.scaling.setAll(1); }
+    }
     const t0 = performance.now();
     this.scene.render();
     const cost = Math.min(250, Math.max(0.05, performance.now() - t0));

@@ -1,138 +1,153 @@
 {
-  "schemaVersion": 1,
-  "tick": {
-    "fixedDeltaSeconds": 0.0166667,
-    "maxStepsPerFrame": 6
-  },
-  "limb": {
-    "graceTime": 0.35,
-    "reGripLock": 0.2,
-    "fatigueRate": 0.18,
-    "recoverRate": 0.12,
-    "baseGripHand": 650,
-    "baseGripFoot": 900,
-    "armReach": 0.75,
-    "legReach": 0.9,
-    "mass": 70,
-    "overloadTension": 1.3,
-    "fatigueReleaseAt": 1.0,
-    "highTension": 0.85,
-    "handFatigueOneFootFree": 1.3,
-    "handFatigueTwoFeetFree": 1.75,
-    "reachFatigueLoss": 0.22
-  },
-  "rope": {
-    "segmentMax": 1.5,
-    "totalMax": 6.0,
-    "overstretchAt": 0.92,
-    "visualNodes": 14,
-    "nodeRadius": 0.03,
-    "slackGravity": 9.81,
-    "iterations": 24,
-    "nodeMass": 0.5,
-    "nodeDamping": 0.975,
-    "slackFactor": 0.9,
-    "maxCatchSpeed": 6.0,
-    "maxCorrectionPerTick": 0.05,
-    "waistEffectiveMass": 38.0,
-    "tailNodes": 7,
-    "tailLen": 1.0,
-    "visualSlackM": 0.25
-  },
-  "richMan": {
-    "mass": 85,
-    "foodBonus": 6,
-    "massTransitionSeconds": 1.0,
-    "harnessOffsetY": 0.12,
-    "bumpWallSpeed": 1.6,
-    "bumpImpulseToRope": 0.25
-  },
-  "plank": {
-    "ropeLen": 1.4,
-    "plankLen": 1.7,
-    "ropeSag": 0.45,
-    "slideAccel": 2.4,
-    "restAngleDeg": 16,
-    "recentreRate": 0.3,
-    "fallSlideFrac": 0.74,
-    "fallAngleDeg": 55,
-    "warnSlideFrac": 0.42,
-    "swingDamping": 0.9,
-    "iterations": 10,
-    "maxSpanSlackM": 0.25
-  },
-  "balance": {
-    "warnDeltaH": 0.6,
-    "badDeltaH": 1.2
-  },
-  "fall": {
-    "teamFallSeconds": 1.5,
-    "teamFallMeters": 12,
-    "twoHandsGraceSeconds": 0.5,
-    "slipReGripLock": 0.35,
-    "ropeSlackM": 2.9,
-    "catchFloorM": 0.6,
-    "catchFatiguePct": 0.16,
-    "haulDelaySeconds": 0.9,
-    "haulPerSecondM": 1.05,
-    "haulTopOffsetM": 0.35,
-    "ropeCatchPropina": -3
-  },
-  "anchors": {
-    "attachSeconds": 0.16,
-    "defaultMaxForceHand": 420,
-    "defaultMaxForceFoot": 560,
-    "loadSpikeWindow": 0.12
-  },
-  "weather": {
-    "minGapSeconds": 14,
-    "maxGapSeconds": 24,
-    "warningSeconds": 2.2,
-    "gustSeconds": 3.4,
-    "minAltitudeM": 2.2,
-    "pushPerSecondM": 0.9,
-    "ropeWindAccel": 2.4,
-    "wobble": 0.35,
-    "gustPulseHz": 1.6,
-    "stormChance": 0.25,
-    "stormAltitudeM": 28,
-    "stormGustMult": 2.3,
-    "stormLevelBoost": 0.25,
-    "stormWarningSeconds": 3.5,
-    "stormLightningHz": 0.9
-  },
-  "fart": {
-    "risePerSecondM": 5.2,
-    "launchSeconds": 0.9,
-    "autoGripRadiusM": 1.5
-  },
-  "boxes": {
-    "massPerBoxKg": 9,
-    "maxBoxes": 3,
-    "secondsMin": 16,
-    "secondsMax": 30,
-    "fallSlideFrac": 0.5,
-    "fallTiltDeg": 18,
-    "offsetFrac": 0.55
-  },
-  "condor": {
-    "massKg": 16,
-    "perchSecondsMin": 5,
-    "perchSecondsMax": 9,
-    "offsetFrac": 0.85
-  },
-  "drone": {
-    "massKgMin": 5,
-    "massKgMax": 11,
-    "speedMs": 2.6,
-    "hoverSeconds": 2.2
-  },
-  "perf": {
-    "targetFps": 60,
-    "minScale": 1.0,
-    "maxScale": 2.4,
-    "step": 0.2,
-    "checkSeconds": 2.0,
-    "shadowQuality": "low"
-  }
+ "schemaVersion": 1,
+ "tick": {
+  "fixedDeltaSeconds": 0.0166667,
+  "maxStepsPerFrame": 6
+ },
+ "limb": {
+  "graceTime": 0.35,
+  "reGripLock": 0.2,
+  "fatigueRate": 0.18,
+  "recoverRate": 0.12,
+  "baseGripHand": 650,
+  "baseGripFoot": 900,
+  "armReach": 0.75,
+  "legReach": 0.9,
+  "mass": 70,
+  "overloadTension": 1.3,
+  "fatigueReleaseAt": 1.0,
+  "highTension": 0.85,
+  "handFatigueOneFootFree": 1.3,
+  "handFatigueTwoFeetFree": 1.75,
+  "reachFatigueLoss": 0.22
+ },
+ "rope": {
+  "segmentMax": 1.5,
+  "totalMax": 6.0,
+  "overstretchAt": 0.92,
+  "visualNodes": 14,
+  "nodeRadius": 0.03,
+  "slackGravity": 9.81,
+  "iterations": 24,
+  "nodeMass": 0.5,
+  "nodeDamping": 0.975,
+  "slackFactor": 0.9,
+  "maxCatchSpeed": 6.0,
+  "maxCorrectionPerTick": 0.05,
+  "waistEffectiveMass": 38.0,
+  "tailNodes": 7,
+  "tailLen": 1.0,
+  "visualSlackM": 0.25
+ },
+ "richMan": {
+  "mass": 85,
+  "foodBonus": 6,
+  "massTransitionSeconds": 1.0,
+  "harnessOffsetY": 0.12,
+  "bumpWallSpeed": 1.6,
+  "bumpImpulseToRope": 0.25
+ },
+ "plank": {
+  "ropeLen": 1.4,
+  "plankLen": 1.7,
+  "ropeSag": 0.45,
+  "slideAccel": 2.4,
+  "restAngleDeg": 16,
+  "recentreRate": 0.3,
+  "fallSlideFrac": 0.74,
+  "fallAngleDeg": 55,
+  "warnSlideFrac": 0.42,
+  "swingDamping": 0.9,
+  "iterations": 10,
+  "maxSpanSlackM": 0.25
+ },
+ "balance": {
+  "warnDeltaH": 0.6,
+  "badDeltaH": 1.2
+ },
+ "fall": {
+  "teamFallSeconds": 1.5,
+  "teamFallMeters": 12,
+  "twoHandsGraceSeconds": 0.5,
+  "slipReGripLock": 0.35,
+  "ropeSlackM": 2.9,
+  "catchFloorM": 0.6,
+  "catchFatiguePct": 0.16,
+  "haulDelaySeconds": 0.9,
+  "haulPerSecondM": 1.05,
+  "haulTopOffsetM": 0.35,
+  "ropeCatchPropina": -3
+ },
+ "anchors": {
+  "attachSeconds": 0.16,
+  "defaultMaxForceHand": 420,
+  "defaultMaxForceFoot": 560,
+  "loadSpikeWindow": 0.12
+ },
+ "weather": {
+  "minGapSeconds": 14,
+  "maxGapSeconds": 24,
+  "warningSeconds": 2.2,
+  "gustSeconds": 3.4,
+  "minAltitudeM": 2.2,
+  "pushPerSecondM": 0.9,
+  "ropeWindAccel": 2.4,
+  "wobble": 0.35,
+  "gustPulseHz": 1.6,
+  "stormChance": 0.25,
+  "stormAltitudeM": 28,
+  "stormGustMult": 2.3,
+  "stormLevelBoost": 0.25,
+  "stormWarningSeconds": 3.5,
+  "stormLightningHz": 0.9
+ },
+ "fart": {
+  "risePerSecondM": 5.2,
+  "launchSeconds": 0.9,
+  "autoGripRadiusM": 1.5
+ },
+ "boxes": {
+  "massPerBoxKg": 9,
+  "maxBoxes": 3,
+  "secondsMin": 16,
+  "secondsMax": 30,
+  "fallSlideFrac": 0.5,
+  "fallTiltDeg": 18,
+  "offsetFrac": 0.55
+ },
+ "condor": {
+  "massKg": 16,
+  "perchSecondsMin": 5,
+  "perchSecondsMax": 9,
+  "offsetFrac": 0.85
+ },
+ "drone": {
+  "massKgMin": 5,
+  "massKgMax": 11,
+  "speedMs": 2.6,
+  "hoverSeconds": 2.2
+ },
+ "perf": {
+  "targetFps": 60,
+  "minScale": 1.0,
+  "maxScale": 2.4,
+  "step": 0.2,
+  "checkSeconds": 2.0,
+  "shadowQuality": "low"
+ },
+ "checkpoint": {
+  "stepM": 10,
+  "reachedPropina": 2
+ },
+ "coop": {
+  "anchorMinGrips": 2,
+  "belayCatchDropM": 1.2,
+  "belayCatchFatigue": 0.08,
+  "impulseRisePerSecondM": 2.4,
+  "impulseReachBonusM": 0.4,
+  "impulseSeconds": 0.45,
+  "impulseCooldownS": 4.0,
+  "impulseCostFatigue": 0.05,
+  "impulseGripPropina": 1
+ }
 }

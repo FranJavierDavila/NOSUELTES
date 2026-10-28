@@ -325,6 +325,8 @@ export class SherpaHud {
   updateMinimap(m: {
     fracA: number; fracB: number; campFrac: number; metersLeft: number; campId: string | null;
     holds?: MinimapHold[]; xA?: number; xB?: number;
+    /** COTAS de seguro (Task 37): línea verde discontinua + banderitas al fijar. */
+    checkpoints?: { frac: number; reached: boolean }[];
   }): void {
     this.el.mmLabel!.textContent = m.campId
       ? this.fmt("hud.minimapTo", { m: Math.max(0, Math.round(m.metersLeft)), camp: m.campId })
@@ -396,9 +398,27 @@ export class SherpaHud {
         }
       }
     }
-    // capa dinámica (barata): estática + ocupación + escaladores + borde
+    // capa dinámica (barata): estática + COTAS + ocupación + escaladores + borde
     ctx.clearRect(0, 0, W, H);
     if (this.mmStatic) ctx.drawImage(this.mmStatic, 0, 0);
+    // CHECKPOINTS (petición del jugador: "también visible en el minimapa"):
+    // línea discontinua verde; al fijarla, SOLIDA + banderitas en los extremos.
+    if (m.checkpoints) {
+      for (const cp of m.checkpoints) {
+        const fy = clamp(cp.frac);
+        if (fy <= 0.001 || fy >= 0.999) continue;
+        const y = py(fy);
+        ctx.strokeStyle = "#5ad46a";
+        ctx.lineWidth = cp.reached ? 3 : 2;
+        if (!cp.reached) ctx.setLineDash([6, 5]);
+        ctx.beginPath(); ctx.moveTo(12, y); ctx.lineTo(W - 12, y); ctx.stroke();
+        ctx.setLineDash([]);
+        if (cp.reached) {
+          ctx.fillStyle = "#a4f7b6";
+          for (const ex of [12, W - 12]) { ctx.beginPath(); ctx.arc(ex, y, 3.4, 0, Math.PI * 2); ctx.fill(); }
+        }
+      }
+    }
     for (const h of m.holds) {
       if (!h.occupied) continue;
       const cx = px(h.x), cy = py(h.y);

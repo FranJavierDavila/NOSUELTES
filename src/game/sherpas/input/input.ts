@@ -16,6 +16,10 @@ export interface InputIntent {
   shoo: boolean;
   /** SUPER FLATULENCIA: activar el superpoder (flanco). */
   fart: boolean;
+  /** CUERDA COOPERATIVA: alternar el ancla de seguro (flanco). */
+  anchor: boolean;
+  /** CUERDA COOPERATIVA: dar un impulso al compañero (flanco). */
+  impulse: boolean;
 }
 
 export interface SharedKeysHandlers {
@@ -40,6 +44,8 @@ export class InputManager {
   private pendingToggles = new Map<0 | 1, Limb[]>();
   private pendingShoo = new Map<0 | 1, boolean>();
   private pendingFart = new Map<0 | 1, boolean>();
+  private pendingAnchor = new Map<0 | 1, boolean>();
+  private pendingImpulse = new Map<0 | 1, boolean>();
   private gamepadPrev = new Map<number, boolean[]>();
   private handlers: SharedKeysHandlers;
   private onKeyDown: (e: KeyboardEvent) => void;
@@ -72,6 +78,9 @@ export class InputManager {
         }
         if (k.shoo === code && !e.repeat) { this.pendingShoo.set(b.playerId, true); e.preventDefault(); }
         if (k.fart && code === k.fart && !e.repeat) { this.pendingFart.set(b.playerId, true); e.preventDefault(); }
+        // CUERDA COOPERATIVA (opcional en el mapa: sin tecla → nunca dispara)
+        if (k.anchor && code === k.anchor && !e.repeat) { this.pendingAnchor.set(b.playerId, true); e.preventDefault(); }
+        if (k.impulse && code === k.impulse && !e.repeat) { this.pendingImpulse.set(b.playerId, true); e.preventDefault(); }
       }
       this.held.add(code);
     };
@@ -113,9 +122,13 @@ export class InputManager {
       let toggles = this.pendingToggles.get(b.playerId) ?? [];
       let shoo = this.pendingShoo.get(b.playerId) ?? false;
       let fart = this.pendingFart.get(b.playerId) ?? false;
+      let anchor = this.pendingAnchor.get(b.playerId) ?? false;
+      let impulse = this.pendingImpulse.get(b.playerId) ?? false;
       this.pendingToggles.set(b.playerId, []);
       this.pendingShoo.set(b.playerId, false);
       this.pendingFart.set(b.playerId, false);
+      this.pendingAnchor.set(b.playerId, false);
+      this.pendingImpulse.set(b.playerId, false);
 
       // gamepad (opcional, solo P2 por defecto): el stick suma al apuntado.
       if (b.gamepad) {
@@ -138,6 +151,15 @@ export class InputManager {
             const fartNow = !!pad.buttons[b.gamepad.fart]?.pressed;
             if (fartNow && !prev[b.gamepad.fart]) fart = true;
           }
+          // CUERDA COOPERATIVA por mando (botones opcionales del mapa)
+          if (b.gamepad.anchor !== undefined) {
+            const now = !!pad.buttons[b.gamepad.anchor]?.pressed;
+            if (now && !prev[b.gamepad.anchor]) anchor = true;
+          }
+          if (b.gamepad.impulse !== undefined) {
+            const now = !!pad.buttons[b.gamepad.impulse]?.pressed;
+            if (now && !prev[b.gamepad.impulse]) impulse = true;
+          }
           this.gamepadPrev.set(b.gamepad.index, pad.buttons.map((btn) => btn.pressed));
         }
       }
@@ -148,6 +170,8 @@ export class InputManager {
         gripToggles: toggles,
         shoo,
         fart,
+        anchor,
+        impulse,
       });
     }
     return intents;

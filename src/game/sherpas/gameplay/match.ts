@@ -22,6 +22,7 @@ import { spawnTrash, stepTrash, spawnUrine, stepUrine, type TrashProjectile, typ
 import { BalanceMonitor, TeamFallWatcher, PropinaMeter, newStats } from "./coop";
 import { WeatherSystem } from "./weather";
 import { WallGenerator, type CampZone } from "../world/wallGenerator";
+import { CheckpointSystem, type Checkpoint } from "../world/checkpoints";
 import { CampSystem, saveAscent, type AscentStats, type SavedAscent } from "../world/camps";
 import { PointerDrag } from "../input/drag";
 import { Matrix } from "@babylonjs/core/Maths/math.vector";
@@ -74,6 +75,15 @@ export class SherpasMatch {
   private critAnnounced = new Set<string>();
   private propina: PropinaMeter;
   private camps: CampSystem;
+  /** CHECKPOINTS cada 10 m (Task 37): cotas de seguro con respawn propio. */
+  private cps: CheckpointSystem;
+  /** CUERDA COOPERATIVA: cooldown del impulso por jugador (simTime). */
+  private impulseReadyAt: [number, number] = [0, 0];
+  /** Último respawn (sonda E2E): desde dónde continuó la ascensión. */
+  private lastRespawn: { kind: "camp" | "checkpoint" | "start"; y: number } | null = null;
+  /** Última altura del equipo CON agarres (referencia PRE-caída para elegir la
+   *  cota de respawn: cuenta dónde escalabais, no dónde quedasteis colgados). */
+  private lastProgressY = 0;
   private stats: AscentStats = newStats();
   private trash: TrashProjectile[] = [];
   private urine: UrineEffect | null = null;
@@ -129,6 +139,13 @@ export class SherpasMatch {
     this.gen = new WallGenerator(
       { phases: this.data.phases, wallGen: this.data.wallGen, safePathRockRatio: preset.safePathRockRatio ?? 0.4 },
       seed,
+    );
+    // COTAS DE SEGURO cada 10 m (petición del jugador): con banderitas al fijar
+    // y RESPAWN en la última fijada — perder altura, nunca la ascensión.
+    this.cps = new CheckpointSystem(
+      this.data.tuning.checkpoint?.stepM ?? 10,
+      this.gen.layout.totalHeightM,
+      this.gen.layout.campZones,
     );
     this.anchors = new AnchorSystem(
       this.data.anchorTypes,
@@ -245,6 +262,7 @@ export class SherpasMatch {
 
     // escena: mundo + visuales
     deps.scene.buildWorld(this.gen.layout);
+    deps.scene.setCheckpoints(this.cps.list.map((c) => c.y), this.wallFrontZ, this.wallWidthM);
     deps.scene.addHolds(this.gen.allGeneratedHolds(), this.holdColors());
     deps.scene.spawnSherpa(0, this.sherpas[0].rig);
     deps.scene.spawnSherpa(1, this.sherpas[1].rig);
@@ -252,7 +270,7 @@ export class SherpasMatch {
     deps.scene.spawnPlank(this.plankLenM);
 
     this.d.hud.bindPlayers(
-      { p1: "ratón: pulsa y arrastra", p2: "teclado opcional" },
+      { p1: "ratón: pulsa y arrastra · Q ancla · E impulso", p2: "teclado opcional · J ancla · M impulso" },
       ["hand_l", "hand_r", "foot_l", "foot_r"],
     );
     this.wireEvents();
@@ -331,7 +349,62 @@ export class SherpasMatch {
       } else if (intent.fart) {
         this.d.hud.subtitle(this.d.hud.t("hud.fartNeed"), 1.6);
       }
+      // CUERDA COOPERATIVA (petición del jugador): anclarse / dar impulso.
+      if (intent.anchor) this.doToggleAnchor(intent.playerId);
+      if (intent.impulse) this.doGiveImpulse(intent.playerId);
     }
+  }
+
+  // ---------- cuerda cooperativa (Task 37, petición del jugador) ----------
+
+  /** ANCLARSE: el escalador se convierte en SEGURO del compañero — su ancla
+   *  acorta la caída posible del otro (belayCatchDropM vs ropeSlackM). Exige
+   *  agarres firmes y estar escalando (nunca anclado al vacío). */
+  private doToggleAnchor(p: 0 | 1): void {
+    const rig = this.sherpas[p];
+    const coop = this.data.tuning.coop;
+    if (rig.belaying) {
+      rig.setBelayAnchor(false);
+      this.d.audio.play("release");
+      this.d.hud.subtitle(this.d.hud.fmt("hud.coopAnchorOff", { name: `P${p + 1}` }), 2.2);
+      return;
+    }
+    if (rig.anchorsCount() < (coop?.anchorMinGrips ?? 2) || rig.ropeState !== "climbing" || rig.dragging !== null) {
+      this.d.hud.subtitle(this.d.hud.fmt("hud.coopAnchorNeed", { name: `P${p + 1}` }), 2.2);
+      return;
+    }
+    rig.setBelayAnchor(true);
+    this.d.audio.play("grab");
+    this.d.hud.subtitle(this.d.hud.fmt("hud.coopAnchorOn", { name: `P${p + 1}` }), 2.6);
+  }
+
+  /** IMPULSO: el ANCLA da un tirón al compañero — subida cinemática corta que
+   *  acerca las presas de arriba SIN estirar goma (el cuerpo sube de verdad).
+   *  Si el compañero graba gracias al empujón, propina para el equipo. */
+  private doGiveImpulse(p: 0 | 1): boolean {
+    const giver = this.sherpas[p];
+    const receiver = this.sherpas[1 - p];
+    const coop = this.data.tuning.coop;
+    if (!giver.belaying) {
+      this.d.hud.subtitle(this.d.hud.t("hud.coopImpulseNeed"), 2.2);
+      return false;
+    }
+    if (this.simTime < this.impulseReadyAt[p]) return false;
+    const ok = receiver.receiveImpulse(
+      coop?.impulseRisePerSecondM ?? 2.4,
+      coop?.impulseSeconds ?? 0.45,
+    );
+    if (!ok) return false;
+    this.impulseReadyAt[p] = this.simTime + (coop?.impulseCooldownS ?? 4);
+    // el tirón se paga en las manos del ancla (fatiga honesta).
+    const cost = coop?.impulseCostFatigue ?? 0.05;
+    for (const h of ["hand_l", "hand_r"] as const) {
+      const st = giver.states.get(h)!;
+      st.fatigue = Math.min(1, st.fatigue + cost);
+    }
+    this.d.audio.play("zip");
+    this.d.hud.subtitle(this.d.hud.fmt("hud.coopImpulse", { from: `P${p + 1}`, to: `P${2 - p}` }), 2.2);
+    return true;
   }
 
   private doShoo(player: 0 | 1): void {
@@ -412,6 +485,13 @@ export class SherpasMatch {
     if (!this.frozen) this.applyIntents(intents, dt);
 
     // 1-5. sherpas: viaje, anclaje y física (dentro de SherpaRig.step).
+    // CUERDA COOPERATIVA: la ancla del COMPAÑERO acorta la caída posible de
+    // cada escalador (seguro corto vs holgura de porteo) — se fija ANTES del
+    // step para que la captura de este tick ya use el drop correcto.
+    const coopT = this.data.tuning.coop;
+    const slackM = this.data.tuning.fall.ropeSlackM ?? 2.9;
+    this.sherpas[0].setBelayCatch(this.sherpas[1].belaying ? (coopT?.belayCatchDropM ?? 1.2) : slackM);
+    this.sherpas[1].setBelayCatch(this.sherpas[0].belaying ? (coopT?.belayCatchDropM ?? 1.2) : slackM);
     const prevAnchors: [number, number] = [this.sherpas[0].anchorsCount(), this.sherpas[1].anchorsCount()];
     for (const p of [0, 1] as const) {
       const info = this.sherpas[p].step(dt, 1);
@@ -428,8 +508,20 @@ export class SherpasMatch {
       // chicote sonoro + aviso legible + propina + susto del ricachón. La caída
       // individual JAMÁS respawnea: el castigo es altura+tiempo+fatiga+propina.
       if (info.rope.tautNow) {
+        const partner = this.sherpas[1 - p];
         this.d.audio.play("rope_snap");
-        this.d.hud.subtitle(this.d.hud.fmt("hud.ropeCatch", { name: `P${p + 1}` }), 2.6);
+        if (partner.belaying) {
+          // CUERDA COOPERATIVA: el seguro CORTO del compañero anclado detuvo la
+          // caída — el ancla TAMBIÉN paga el tirón (fatiga en sus manos).
+          this.d.hud.subtitle(this.d.hud.fmt("hud.belayCatch", { name: `P${2 - p}` }), 2.6);
+          const bf = coopT?.belayCatchFatigue ?? 0.08;
+          for (const h of ["hand_l", "hand_r"] as const) {
+            const st = partner.states.get(h)!;
+            st.fatigue = Math.min(1, st.fatigue + bf);
+          }
+        } else {
+          this.d.hud.subtitle(this.d.hud.fmt("hud.ropeCatch", { name: `P${p + 1}` }), 2.6);
+        }
         this.d.scene.shake(this.d.hud.wantsReduceShake ? 0.02 : 0.055);
         this.propina.add(this.data.tuning.fall.ropeCatchPropina ?? -3, "rope_catch", this.d.bus);
         this.brain.panic(); // el tirón lo despierta/soresalta
@@ -446,6 +538,19 @@ export class SherpasMatch {
         const hint = this.d.hud.fmt("hud.fartReady", { key: p === 0 ? "F" : "P" });
         this.d.hud.subtitle(hint, 3.2);
         this.d.bus.emit("FartGained", { playerId: p });
+      }
+      // EL IMPULSO SIRVIÓ (Task 37): el compañero grabó una presa gracias al
+      // empujón del ancla — propina para el equipo (una vez por impulso).
+      if (info.gripped.length && this.sherpas[p].takeImpulseGrip()) {
+        const n = coopT?.impulseGripPropina ?? 1;
+        this.propina.add(n, "coop_impulse", this.d.bus);
+        this.d.audio.play("chime");
+        this.d.hud.subtitle(this.d.hud.fmt("hud.coopImpulseScore", { n }), 2.2);
+      }
+      // el ANCLA se cae sola: sin agarres o colgado no sostiene el seguro.
+      if (this.sherpas[p].belaying && (this.sherpas[p].anchorsCount() === 0 || this.sherpas[p].ropeState !== "climbing")) {
+        this.sherpas[p].setBelayAnchor(false);
+        this.d.hud.subtitle(this.d.hud.fmt("hud.coopAnchorLost", { name: `P${p + 1}` }), 2.2);
       }
       // PLACAS DE HIELO: aviso UNA vez por partida (luego lo aprende el cuerpo).
       if (!this.icePlateWarned) {
@@ -500,9 +605,12 @@ export class SherpasMatch {
       const pulse = 0.72 + 0.28 * Math.sin(this.simTime * Math.PI * 2 * pulseHz);
       const dx = wdir * this.data.tuning.weather.pushPerSecondM * wl * pulse * dt;
       for (const s of this.sherpas) {
+        // ANCLA DE SEGURO (Task 37): tirado de la cuerda y braces contra la roca
+        // — el viento empuja mucho menos al anclado.
+        const mult = s.belaying ? 0.25 : 1;
         for (const pt of s.rig.particles) {
-          pt.pos = vAdd(pt.pos, v3(dx, 0, 0));
-          pt.prev = vAdd(pt.prev, v3(dx * 0.62, 0, 0));
+          pt.pos = vAdd(pt.pos, v3(dx * mult, 0, 0));
+          pt.prev = vAdd(pt.prev, v3(dx * 0.62 * mult, 0, 0));
         }
       }
       ropeWindX = wdir * this.data.tuning.weather.ropeWindAccel * wl;
@@ -705,12 +813,18 @@ export class SherpasMatch {
     const guardedMinY = heldA && heldB ? Math.min(wa.y, wb.y) : heldA ? wb.y : heldB ? wa.y : Math.min(wa.y, wb.y);
     this.teamFall.tick(dt, guardedMinY, totalAnchors, false);
     this.camps.tick(Math.min(wa.y, wb.y), allAnchored, dt);
+    // CHECKPOINTS (Task 37): basta que UN escalador cruce la cota para fijarla
+    // (son de equipo): banderitas + confeti + propina.
+    for (const cp of this.cps.tick(wa.y, wb.y)) this.onCheckpointReached(cp);
 
     const minY = Math.min(wa.y, wb.y);
     if (allAnchored && this.lastMinY !== null && minY > this.lastMinY) {
       this.propina.climb(minY - this.lastMinY, this.d.bus);
     }
     this.lastMinY = minY;
+    // referencia PRE-caída para el respawn por cotas: mientras ALGUIEN agarra,
+    // la altura del equipo es "progreso" (Task 37).
+    if (totalAnchors > 0) this.lastProgressY = Math.min(wa.y, wb.y);
 
     // 10. director de caos + pájaros + DRON + proyectiles.
     this.director.tick(dt, this.currentPhase());
@@ -745,10 +859,27 @@ export class SherpasMatch {
       this.d.scene.setSnowDensity(Number(this.data.vfx.snow.densityByPhase[String(phase.id)] ?? 0));
     }
 
-    // respawn diferido tras TeamFell.
+    // respawn diferido tras TeamFell: campamento O ÚLTIMA COTA FIJADA (Task 37,
+    // petición del jugador: "continuar la ascensión sin volver al principio").
+    // La referencia es la altura PRE-caída (lastProgressY): si escalabas a 11 m
+    // con la cota 10 fijada y quedas colgado a 8,5 m, continúas DESDE LA COTA 10
+    // — no desde el principio solo porque el chicote te dejó por debajo de ella.
     if (this.respawnTimer > 0) {
       this.respawnTimer -= dt;
-      if (this.respawnTimer <= 0) this.doRespawn(this.gen.campAtOrBelow(minY));
+      if (this.respawnTimer <= 0) {
+        const refY = this.lastProgressY;
+        const camp = this.gen.campAtOrBelow(refY);
+        const cp = this.cps.highestAtOrBelow(refY);
+        const target: CampZone | Checkpoint | null = cp && cp.y > (camp ? camp.yBase : -1) ? cp : camp;
+        this.doRespawn(target);
+        if (target && !("campId" in target)) {
+          this.d.hud.banner(
+            this.d.hud.fmt("hud.checkpointRespawn", { m: Math.round(target.y) }),
+            "",
+            3,
+          );
+        }
+      }
     }
 
     this.d.audio.creakIfTense(Math.max(this.sherpas[0].maxTension(), this.sherpas[1].maxTension()), this.simTime);
@@ -846,8 +977,11 @@ export class SherpasMatch {
 
   // ---------- respawn / campamentos / cima ----------
 
-  private doRespawn(forcedZone: CampZone | null, override?: { a: { hand_l: HoldInstance; hand_r: HoldInstance }; b: { hand_l: HoldInstance; hand_r: HoldInstance } }): void {
-    const zone = forcedZone;
+  private doRespawn(forced: CampZone | Checkpoint | null, override?: { a: { hand_l: HoldInstance; hand_r: HoldInstance }; b: { hand_l: HoldInstance; hand_r: HoldInstance } }): void {
+    const zone = forced && "campId" in forced ? forced : null;
+    const cp = forced && !("campId" in forced) ? forced : null;
+    // sonda E2E: origen del respawn (cota de seguro / campamento / inicio)
+    this.lastRespawn = zone ? { kind: "camp", y: zone.yBase } : cp ? { kind: "checkpoint", y: cp.y } : { kind: "start", y: 0 };
     let holdsA: { hand_l: HoldInstance; hand_r: HoldInstance };
     let holdsB: { hand_l: HoldInstance; hand_r: HoldInstance };
     if (override) {
@@ -856,6 +990,12 @@ export class SherpasMatch {
       holdsB = override.b;
     } else if (zone) {
       const hs = this.campRespawnHolds(zone);
+      holdsA = { hand_l: hs[0], hand_r: hs[1] };
+      holdsB = { hand_l: hs[2] ?? hs[0], hand_r: hs[3] ?? hs[1] };
+    } else if (cp) {
+      // COTA DE SEGURO (Task 37): re-cuelga en presas firmes junto a la línea
+      // verde — la ascensión continúa desde aquí, no desde el principio.
+      const hs = this.checkpointRespawnHolds(cp);
       holdsA = { hand_l: hs[0], hand_r: hs[1] };
       holdsB = { hand_l: hs[2] ?? hs[0], hand_r: hs[3] ?? hs[1] };
     } else {
@@ -888,6 +1028,7 @@ export class SherpasMatch {
     this.drone.reset();
     this.d.scene.syncBoxes(0, 0, v3(0, -10, 0), 0);
     this.lastMinY = Math.min(na.y, nb.y);
+    this.lastProgressY = Math.min(na.y, nb.y);
     this.frozen = false;
     this.d.scene.spawnSherpa(0, this.sherpas[0].rig);
     this.d.scene.spawnSherpa(1, this.sherpas[1].rig);
@@ -906,6 +1047,55 @@ export class SherpasMatch {
     const left = pool.slice(0, 2);
     const right = pool.length >= 4 ? pool.slice(pool.length - 2) : [pool[pool.length - 1], pool[0]];
     return [left[0], left[1], right[0], right[1]];
+  }
+
+  /** 4 presas firmes junto a la COTA (Task 37): las más cercanas a la línea en
+   *  cada lado, a alturas pareadas (tabla nace casi nivelada). Ventana creciente
+   *  → nunca falla; y sin presas ni hielo traicionero ni presa sorpresa. */
+  private checkpointRespawnHolds(cp: Checkpoint): [HoldInstance, HoldInstance, HoldInstance?, HoldInstance?] {
+    this.gen.ensureUpToY(cp.y + 6);
+    for (const win of [1.2, 2.0, 3.0]) {
+      const near = [...this.anchors.holds.values()].filter((h) =>
+        !h.camp && h.type === "rock_firm" && Math.abs(h.pos.y - cp.y) <= win);
+      const left = near.filter((h) => h.pos.x < -0.3).sort((a, b) => Math.abs(a.pos.y - cp.y) - Math.abs(b.pos.y - cp.y));
+      const right = near.filter((h) => h.pos.x > 0.3).sort((a, b) => Math.abs(a.pos.y - cp.y) - Math.abs(b.pos.y - cp.y));
+      if (left.length >= 2 && right.length >= 2) {
+        const la = left[0];
+        const lb = left.find((h) => h.id !== la.id && Math.abs(h.pos.y - la.pos.y) < 1.6) ?? left[1];
+        const ra = right[0];
+        const rb = right.find((h) => h.id !== ra.id && Math.abs(h.pos.y - ra.pos.y) < 1.6) ?? right[1];
+        return [la, lb, ra, rb];
+      }
+    }
+    // ampliamos a cualquier presa no traicionera (hielo sí, sorpresa no)
+    for (const win of [1.6, 2.4, 3.2]) {
+      const near = [...this.anchors.holds.values()].filter((h) =>
+        !h.camp && h.type !== "surprise_fart" && h.type !== "ice_plate" && Math.abs(h.pos.y - cp.y) <= win);
+      const left = near.filter((h) => h.pos.x < -0.3).sort((a, b) => Math.abs(a.pos.y - cp.y) - Math.abs(b.pos.y - cp.y));
+      const right = near.filter((h) => h.pos.x > 0.3).sort((a, b) => Math.abs(a.pos.y - cp.y) - Math.abs(b.pos.y - cp.y));
+      if (left.length >= 2 && right.length >= 2) {
+        return [left[0], left[1], right[0], right[1]];
+      }
+    }
+    // respaldo honesto: el campamento por debajo (el validador lo garantiza).
+    const camp = this.gen.campAtOrBelow(cp.y);
+    if (camp) return this.campRespawnHolds(camp);
+    throw new Error(`checkpoint ${cp.y} sin presas de respawn`);
+  }
+
+  /** COTA FIJADA (Task 37): banderitas en los extremos de la línea verde +
+   *  confeti + chime + propina — el punto de seguro queda marcado (pared,
+   *  minimapa y memoria). */
+  private onCheckpointReached(cp: Checkpoint): void {
+    this.d.scene.setCheckpointReached(cp.index);
+    this.d.scene.fxConfetti(v3(0, cp.y + 0.4, this.wallFrontZ - 0.6));
+    this.d.audio.play("chime");
+    this.propina.add(this.data.tuning.checkpoint?.reachedPropina ?? 2, "checkpoint", this.d.bus);
+    this.d.hud.banner(
+      this.d.hud.fmt("hud.checkpointReached", { m: Math.round(cp.y) }),
+      this.d.hud.t("hud.checkpointSub"),
+      2.6,
+    );
   }
 
   private onCampReached(campId: string): void {
@@ -1354,6 +1544,8 @@ export class SherpasMatch {
       holds,
       xA: normX(this.sherpas[0].waist().x),
       xB: normX(this.sherpas[1].waist().x),
+      // COTAS DE SEGURO (Task 37): línea discontinua verde; sólida + banderitas al fijar
+      checkpoints: this.cps.list.map((c) => ({ frac: (c.y - yLow) / span, reached: c.reached })),
     });
     const fps = this.hudFrameCount;
     this.hudFrameCount = 0;
@@ -1373,6 +1565,7 @@ export class SherpasMatch {
       `ricachón: ${st.richState} · ${Math.round(this.rich.currentMass())} kg${this.rich.seated ? (this.rich.standing ? " (de pie)" : " (sentado)") : " (CAYENDO)"}\n` +
       `A(${waD.x.toFixed(2)},${waD.y.toFixed(2)}) B(${wbD.x.toFixed(2)},${wbD.y.toFixed(2)}) R(${rD.x.toFixed(2)},${rD.y.toFixed(2)}) anclas ${this.sherpas[0].anchorsCount()}+${this.sherpas[1].anchorsCount()}` +
       ` · cuerda A:${this.sherpas[0].ropeState} B:${this.sherpas[1].ropeState}` +
+      ` · cota ${this.cps.reachedCount()}/${this.cps.list.length} · ancla A:${this.sherpas[0].belaying ? "SÍ" : "no"} B:${this.sherpas[1].belaying ? "SÍ" : "no"}` +
       (this.dragLimb ? ` · arrastre ${this.dragLimb}` : ""),
     );
     // sonda E2E (DOM compartido: los eval del agente no ven globals de la página).
@@ -1408,6 +1601,10 @@ export class SherpasMatch {
       })),
       // Task 36 (sonda E2E): seguro de cuerda por escalador (estado + metros caídos)
       rope: ([0, 1] as const).map((p) => ({ s: this.sherpas[p].ropeState, drop: Math.round(this.sherpas[p].ropeDropM() * 100) / 100 })),
+      // Task 37 (sonda E2E): checkpoints + cuerda cooperativa + origen del respawn
+      checkpoints: { total: this.cps.list.length, reached: this.cps.reachedCount(), lastY: this.cps.highestReachedY() },
+      coop: ([0, 1] as const).map((p) => ({ anchored: this.sherpas[p].belaying, impulse: this.sherpas[p].impulseActive() })),
+      respawn: this.lastRespawn,
       route: { band: this.gen.bandIndexOf((waD.y + wbD.y) / 2), pattern: this.gen.patternIdOfBand(this.gen.bandIndexOf((waD.y + wbD.y) / 2)) },
       // rachas de viento (sonda E2E)
       weather: { phase: this.weather.state, dir: this.weather.dir, level: Math.round(this.weather.windLevel * 100) / 100, storm: this.weather.storm },
@@ -1443,8 +1640,14 @@ export class SherpasMatch {
 
   /** Sonda E2E (solo pruebas, como setAim): fuerza los eventos del Task 31
    *  para verificar su presentación sin esperar al azar del director. */
-  debugForce(what: "boxes" | "condor" | "storm" | "fart" | "drone" | "subir" | "caida_rico" | "caida", player: 0 | 1 = 0): boolean {
+  debugForce(what: "boxes" | "condor" | "storm" | "fart" | "drone" | "subir" | "subir2" | "caida_rico" | "caida" | "ancla" | "impulso", player: 0 | 1 = 0): boolean {
     switch (what) {
+      case "subir2": {
+        // SONDA E2E Task 37: como "subir" pero SIN redirigir al entrante —
+        // garantiza PROGRESO (+12 m) para fijar cotas aunque haya huecos encima
+        // (el redireccional puede re-colgar a la MISMA altura y atascar el E2E).
+        return this.forceSubirProgress();
+      }
       case "caida": {
         // SONDA E2E Task 36: suelta las 4 extremidades por el pipeline natural
         // (forceRelease con lock) → el estado de cuerda hace el resto: caída
@@ -1453,6 +1656,13 @@ export class SherpasMatch {
         for (const limb of LIMBS) rig.forceRelease(limb, 1.2, "player");
         return true;
       }
+      case "ancla":
+        // SONDA E2E Task 37: alterna el ancla de seguro (validaciones reales).
+        this.doToggleAnchor(player);
+        return true;
+      case "impulso":
+        // SONDA E2E Task 37: el ancla da el impulso al compañero (pipeline real).
+        return this.doGiveImpulse(player);
       case "caida_rico":
         // SONDA E2E Task 35: la caída corre por su pipeline natural completo
         // (fellOff → launchFall contundente → GRITO → thud+shake → respawn).
@@ -1513,6 +1723,33 @@ export class SherpasMatch {
       default:
         return false;
     }
+  }
+
+  /** Re-cuelga al equipo ~12 m más arriba en presas FIRMES reales (pareja
+   *  izq/der a altura similar). Sin redirección de entrantes: progreso puro. */
+  private forceSubirProgress(): boolean {
+    const base = Math.max(this.sherpas[0].waist().y, this.sherpas[1].waist().y);
+    const yTarget = Math.min(base + 12, this.gen.layout.totalHeightM - 10);
+    this.gen.ensureUpToY(yTarget + 8);
+    const band = this.gen.bandIndexOf(yTarget);
+    const pool = this.gen.ensureBand(band).filter((h) => !h.camp && h.type === "rock_firm");
+    const left = pool.filter((h) => h.pos.x < -0.3).sort((a, b) => Math.abs(a.pos.y - yTarget) - Math.abs(b.pos.y - yTarget));
+    const right = pool.filter((h) => h.pos.x > 0.3).sort((a, b) => Math.abs(a.pos.y - yTarget) - Math.abs(b.pos.y - yTarget));
+    if (left.length < 1 || right.length < 1) return false;
+    let la = left[0], ra = right[0], lb: HoldInstance | null = null, rb: HoldInstance | null = null;
+    for (const l of left) {
+      const r = right.find((q) => Math.abs(q.pos.y - l.pos.y) < 1.2);
+      if (r) { la = l; ra = r; break; }
+    }
+    for (const l of left) {
+      if (l.id === la.id) continue;
+      const r = right.find((q) => q.id !== ra.id && Math.abs(q.pos.y - l.pos.y) < 1.2 && Math.abs(l.pos.y - la.pos.y) < 2.5);
+      if (r) { lb = l; rb = r; break; }
+    }
+    const ha = { hand_l: la, hand_r: ra };
+    const hb = { hand_l: lb ?? la, hand_r: rb ?? ra };
+    this.doRespawn(null, { a: ha, b: hb });
+    return true;
   }
 
   // ---------- control ----------

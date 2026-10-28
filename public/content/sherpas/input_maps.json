@@ -15,7 +15,9 @@
      "foot_r": "Digit4"
     },
     "shoo": "KeyR",
-    "fart": "KeyF"
+    "fart": "KeyF",
+    "anchor": "KeyQ",
+    "impulse": "KeyE"
    }
   },
   "p2": {
@@ -33,7 +35,9 @@
      "foot_r": "KeyL"
     },
     "shoo": "KeyU",
-    "fart": "KeyP"
+    "fart": "KeyP",
+    "anchor": "KeyJ",
+    "impulse": "KeyM"
    },
    "gamepad": {
     "index": 1,
@@ -56,7 +60,9 @@
      "3": "Y",
      "5": "RB"
     },
-    "fart": 4
+    "fart": 4,
+    "anchor": 6,
+    "impulse": 7
    }
   }
  },

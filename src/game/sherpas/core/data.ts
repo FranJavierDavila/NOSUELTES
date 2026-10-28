@@ -128,9 +128,33 @@ export interface TuningData {
   boxes?: BoxesTuning;
   condor?: CondorTuning;
   drone?: DroneTuning;
+  /** CHECKPOINTS (petición del jugador): cota de seguro cada stepM metros.
+   *  Ausente → stepM 10 y sin propina por fijarla. */
+  checkpoint?: { stepM: number; reachedPropina: number };
+  /** CUERDA COOPERATIVA (petición del jugador: "anclarse y dar impulsos al
+   *  compañero"). Ausente → constantes de respaldo en match/rig. */
+  coop?: CoopTuning;
   /** RENDIMIENTO (petición del jugador: "unos 60 FPS en todo momento").
    *  Ausente → constantes de respaldo en la escena (nativo, PCF low). */
   perf?: PerfTuning;
+}
+/** CUERDA COOPERATIVA: el compañero ANCLADO acorta la caída posible (seguro
+ *  corto) y da IMPULSOS (mini-ascensión cinemática estilo pedo, sin carga). */
+export interface CoopTuning {
+  /** anclarse exige al menos estos agarres firmes (manos/pies anclados). */
+  anchorMinGrips: number;
+  /** con el compañero anclado, la caída se detiene tras estos metros (vs ropeSlackM). */
+  belayCatchDropM: number;
+  /** fatiga extra que paga el ANCLA cuando su seguro detiene una caída. */
+  belayCatchFatigue: number;
+  /** IMPULSO: ascensión cinemática del compañero (m/s × s) + bono de alcance
+   *  durante la ventana + cooldown + coste. */
+  impulseReachBonusM: number;
+  impulseRisePerSecondM: number; impulseSeconds: number; impulseCooldownS: number;
+  /** fatiga en las manos del que da el impulso (el tirón se paga). */
+  impulseCostFatigue: number;
+  /** propina cuando el compañero GRABA una presa gracias al impulso. */
+  impulseGripPropina: number;
 }
 export interface PerfTuning {
   /** RESOLUCIÓN ADAPTATIVA: si el fps medio baja de targetFps−10 el motor
@@ -227,8 +251,8 @@ export interface DifficultyData { presets: Record<string, DifficultyPresetData>;
 export interface InputMapData {
   players: Record<string, {
     label: string;
-    keyboard: { aimUp: string; aimDown: string; aimLeft: string; aimRight: string; aimSpeed: number; grip: Record<string, string>; shoo: string; fart?: string };
-    gamepad?: { index: number; aim: { stick: number; deadzone: number; aimSpeed: number }; grip: Record<string, number>; shoo: number; fart?: number; gripNames: Record<string, string> };
+    keyboard: { aimUp: string; aimDown: string; aimLeft: string; aimRight: string; aimSpeed: number; grip: Record<string, string>; shoo: string; fart?: string; anchor?: string; impulse?: string };
+    gamepad?: { index: number; aim: { stick: number; deadzone: number; aimSpeed: number }; grip: Record<string, number>; shoo: number; fart?: number; anchor?: number; impulse?: number; gripNames: Record<string, string> };
   }>;
   shared: { pause: string; help: string; cameraRecenter: string };
 }
@@ -340,6 +364,12 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
         } },
         condor: { type: "object", required: ["massKg"], properties: { massKg: posNum, perchSecondsMin: posNum, perchSecondsMax: posNum, offsetFrac: num } },
         drone: { type: "object", required: ["massKgMin", "massKgMax", "speedMs", "hoverSeconds"], properties: { massKgMin: posNum, massKgMax: posNum, speedMs: posNum, hoverSeconds: posNum } },
+        checkpoint: { type: "object", required: ["stepM", "reachedPropina"], properties: { stepM: posNum, reachedPropina: num } },
+        coop: { type: "object", required: ["anchorMinGrips", "belayCatchDropM", "impulseRisePerSecondM", "impulseSeconds", "impulseCooldownS"], properties: {
+          anchorMinGrips: { type: "integer", minimum: 1, maximum: 8 }, belayCatchDropM: posNum, belayCatchFatigue: posNum,
+          impulseRisePerSecondM: posNum, impulseReachBonusM: posNum, impulseSeconds: posNum, impulseCooldownS: posNum,
+          impulseCostFatigue: posNum, impulseGripPropina: num,
+        } },
         perf: { type: "object", required: ["targetFps", "minScale", "maxScale", "step", "checkSeconds", "shadowQuality"], properties: {
           targetFps: posNum, minScale: posNum, maxScale: posNum, step: posNum, checkSeconds: posNum,
           shadowQuality: { enum: ["off", "low", "medium", "high"] },

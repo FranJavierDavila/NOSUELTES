@@ -21,7 +21,7 @@ import { P } from "../../physics/pbd/ragdoll";
 import type { StepResult } from "../../physics/pbd/solver";
 import type { CharacterDefinition, BodyProfileDefinition, LimbId } from "../../types";
 import type { Limb, ReleaseCause } from "../core/bus";
-import type { LimbTuning, RopeTuning, FartTuning } from "../core/data";
+import type { LimbTuning, RopeTuning, FartTuning, CoopTuning } from "../core/data";
 import { AnchorSystem, AnchorInstance, type HoldInstance } from "./anchors";
 
 export const LIMBS: Limb[] = ["hand_l", "hand_r", "foot_l", "foot_r"];
@@ -144,6 +144,10 @@ export interface SherpaGripTuning {
   };
   /** SUPER FLATULENCIA (opcional en tests: ausente → sin superpoder). */
   fart?: FartTuning;
+  /** CUERDA COOPERATIVA (Task 37, opcional en tests: ausente → respaldo).
+   *  El rig lee impulseRisePerSecondM (subida) e impulseReachBonusM (alcance
+   *  extra durante la ventana); el resto lo gobierna el match. */
+  coop?: Pick<CoopTuning, "impulseRisePerSecondM" | "impulseReachBonusM">;
 }
 
 export interface SherpaDeps {
@@ -249,6 +253,15 @@ export class SherpaRig {
   private ropeHaulStartNow = false;
   private dangleSettleT = 0;
   private haulDone = false;
+  /** CUERDA COOPERATIVA (Task 37): este escalador está ANCLADO como seguro del
+   *  compañero — su ancla acorta la caída posible del otro (belayCatchDropM).
+   *  El match valida requisitos y lo desactiva si se pierden los agarres. */
+  belaying = false;
+  private belayCatchDropM = 2.9;
+  /** IMPULSO del compañero (mini-ascensión cinemática): ventana activa (reloj
+   *  INTERNO del rig, decrece en step) para el bono de alcance + propina. */
+  private impulseWindowT = 0;
+  private impulseRiseT = 0;
   /** SUPER FLATULENCIA: carga lista (presa verde agarrada) y vuelo en curso. */
   fartCharge = false;
   private fartLaunchT = 0;
@@ -324,7 +337,11 @@ export class SherpaRig {
   fatiguedReach(limb: Limb): number {
     const loss = this.deps.tuning.limb.reachFatigueLoss ?? REACH_LOSS_AT_FULL_FATIGUE;
     const f = Math.min(1, Math.max(0, this.states.get(limb)!.fatigue));
-    return this.boneReach(limb) * (1 - loss * f);
+    // IMPULSO DEL COMPAÑERO (Task 37): durante la ventana, el tirón del ancla
+    // AÑADE alcance de juego (el cuerpo sube Y estira) — el compañero cobra
+    // presas que antes quedaban fuera. Los huesos siguen mandando el dibujo.
+    const bonus = this.impulseWindowT > 0 ? (this.deps.tuning.coop?.impulseReachBonusM ?? 0) : 0;
+    return this.boneReach(limb) * (1 - loss * f) + bonus;
   }
   com(): V3 { return this.solver.centerOfMass(); }
   limbPos(limb: Limb): V3 { return vClone(this.limbPt[limb]); }
@@ -334,8 +351,51 @@ export class SherpaRig {
 
   /** Task 36: la cuerda SOSTIENE a este escalador (caída/captura/recobrado):
    *  su altura no cuenta para la caída de equipo — ya está castigado de sobra
-   *  (altura + tiempo + fatiga + propina). */
-  ropeHeld(): boolean { return this.ropeState !== "climbing"; }
+   *  (altura + tiempo + fatiga + propina). Task 37: TAMBIÉN durante la ventana
+   *  del IMPULSO del compañero — si no, el cabo de porteo (cargado con el
+   *  ricachón) lo devuelve a su sitio tick a tick y el empujón no se nota
+   *  (cazado en E2E: pico +0,00 m). Al acabarse la ventana, el cabo se
+   *  re-asienta con un tirón visible: el peso vuelve a la cuerda. */
+  ropeHeld(): boolean { return this.ropeState !== "climbing" || this.impulseWindowT > 0; }
+
+  /** ¿Está SUBIENDO el impulso del compañero (cabo de porteo congelado)? */
+  impulseRising(): boolean { return this.impulseRiseT > 0; }
+
+  // ---------- CUERDA COOPERATIVA (Task 37, petición del jugador) ----------
+
+  /** La caída de ESTE escalador se detiene a dropM metros del despegue: la
+   *  holgura normal (ropeSlackM) o el seguro CORTO si el compañero está
+   *  anclado (el match lo fija cada tick antes de step). */
+  setBelayCatch(dropM: number): void { this.belayCatchDropM = Math.max(0.4, dropM); }
+
+  /** Alternar el ANCLA de seguro (el match valida agarres/estado y avisa). */
+  setBelayAnchor(active: boolean): void { this.belaying = active; }
+
+  /** ¿El impulso del compañero sigue "en vigor" (bono de alcance + propina)? */
+  impulseActive(): boolean { return this.impulseWindowT > 0; }
+
+  /** GRABÓ gracias al impulso (una sola vez por impulso, para la propina). */
+  takeImpulseGrip(): boolean {
+    if (this.impulseWindowT <= 0 || this.impulseScored) return false;
+    this.impulseScored = true;
+    return true;
+  }
+  private impulseScored = false;
+
+  /** IMPULSO del compañero: subida cinemática corta (estilo vuelo de pedo,
+   *  sin carga ni despegue violento) + BONO DE ALCANCE durante la ventana —
+   *  el cuerpo sube de verdad Y las presas que antes no llegaban quedan al
+   *  alcance del tirón. Al acabar re-agarra prefiriendo presas arriba. */
+  receiveImpulse(risePerSecondM: number, seconds: number): boolean {
+    if (this.ropeState !== "climbing" || this.fartLaunchT > 0 || this.impulseRiseT > 0) return false;
+    // suelta TODO por el pipeline natural (como el pedo): el cuerpo entero sube.
+    for (const limb of LIMBS) this.forceRelease(limb, 0, "player");
+    this.noHandsTimer = 0;
+    this.impulseRiseT = seconds;
+    this.impulseWindowT = seconds + 1.4; // ventana para grabar con ayuda
+    this.impulseScored = false;
+    return true;
+  }
 
   /** metros por DEBAJO del punto de despegue (0 si no hay caída en curso). */
   ropeDropM(): number {
@@ -367,9 +427,11 @@ export class SherpaRig {
     return true;
   }
 
-  /** Re-agarre automático al terminar el vuelo: la extremidad más cercana a
-   *  cada presa libre dentro del radio gana el viaje (determinista). */
-  private autoGripAfterFart(): void {
+  /** Re-agarre automático al terminar el vuelo (o el impulso): la extremidad
+   *  más cercana a cada presa libre dentro del radio gana el viaje (determi-
+   *  nista). upBiasM > 0 (impulso del compañero) PREFIERE presas por encima:
+   *  el empujón deja al escalador MÁS ARRIBA, no vuelve a la misma presa. */
+  private autoGripAfterFart(upBiasM = 0): void {
     const r = this.deps.tuning.fart?.autoGripRadiusM ?? 1.5;
     for (const limb of LIMBS) {
       if (this.states.get(limb)!.anchored) continue;
@@ -378,7 +440,8 @@ export class SherpaRig {
       for (const hold of this.deps.anchorSystem.holds.values()) {
         if (this.deps.anchorSystem.anchorAtHold(hold.id)) continue;
         const d = vLen(vSub(hold.pos, this.limbPt[limb]));
-        if (d < bd) { bd = d; best = hold; }
+        const score = upBiasM > 0 && hold.pos.y > this.limbPt[limb].y + 0.1 ? d - upBiasM : d;
+        if (score < bd) { bd = score; best = hold; }
       }
       if (best) { this.gripWanted[limb] = true; this.startTravel(limb, best); }
     }
@@ -595,6 +658,8 @@ export class SherpaRig {
     const t = this.deps.tuning;
     let fartGained = false;
     this.simTime += dt;
+    // ventana del IMPULSO (reloj interno): bono de alcance + propina vigentes
+    if (this.impulseWindowT > 0) this.impulseWindowT -= dt;
 
     // 1. Intenciones → viajes (deterministas). La extremidad arrastrada no
     //    participa: la lleva el puntero.
@@ -642,7 +707,18 @@ export class SherpaRig {
     const result = this.lastResult;
     const fT = this.deps.tuning.fall;
     let vAbs: number;
-    if (this.fartLaunchT > 0) {
+    if (this.impulseRiseT > 0) {
+      // 2a-ter. IMPULSO DEL COMPAÑERO (Task 37): subida cinemática corta y
+      //    estable (pos y prev juntos → sin energía fantasma); al acabar,
+      //    re-agarre automático al radio (el mismo del vuelo de pedo).
+      this.impulseRiseT -= dt;
+      const rise = (this.deps.tuning.coop?.impulseRisePerSecondM ?? 2.4) * dt;
+      body.pos = vAdd(body.pos, v3(0, rise, 0));
+      body.prev = v3(body.pos.x, body.pos.y - rise * 0.8, body.pos.z);
+      this.clampBody(body);
+      vAbs = rise / Math.max(1e-4, dt);
+      if (this.impulseRiseT <= 0) this.autoGripAfterFart(0.5); // el empujón BUSCA presas arriba
+    } else if (this.fartLaunchT > 0) {
       // 2a. SUPER FLATULENCIA en vuelo: traslación vertical cinemática (pos y
       //     prev casi juntos → sin velocidad fantasma al acabarse el gas; los
       //     agarres ya se soltaron en launchFart y al final re-agarra solo).
@@ -701,7 +777,7 @@ export class SherpaRig {
         }
         const catchY = Math.max(
           this.deps.floorY + (fT?.catchFloorM ?? 0.6),
-          (this.ropeFallStartY ?? body.pos.y) - (fT?.ropeSlackM ?? 2.9),
+          (this.ropeFallStartY ?? body.pos.y) - this.belayCatchDropM,
         );
         if (this.ropeState === "falling" && body.pos.y <= catchY) {
           this.ropeState = "caught";
@@ -1134,6 +1210,13 @@ export class SherpaRig {
     this.ropeTautDone = false;
     this.dangleSettleT = 0;
     this.haulDone = false;
+    // Task 37 (cuerda cooperativa): el respawn deshace ancla e impulso, y la
+    // holgura de captura vuelve a la de la cuerda de porteo.
+    this.belaying = false;
+    this.belayCatchDropM = this.deps.tuning.fall?.ropeSlackM ?? 2.9;
+    this.impulseRiseT = 0;
+    this.impulseWindowT = 0;
+    this.impulseScored = false;
     this.aim = v3(
       (startHolds.hand_l.pos.x + startHolds.hand_r.pos.x) / 2,
       startHolds.hand_r.pos.y,
