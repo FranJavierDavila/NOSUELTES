@@ -253,9 +253,11 @@ export class SherpaAudio {
   }
 
   /** T44 — configuración del banco de voz real con defaults (match la lee
-   *  para los disparadores); null si el banco no tiene ficheros. */
+   *  para los disparadores); null si el banco no tiene ficheros. `lines` son
+   *  las transcripciones castellanas (subtítulo mientras suena la grabación). */
   get realVoiceCfg(): {
     cooldownS: number; scareSpeedMs: number; slideSpeedMs: number; tiltDeg: number; tiltRearmFrac: number;
+    lines: Record<string, string>;
   } | null {
     const rv = this.data.realVoice;
     if (!rv || !Array.isArray(rv.files) || rv.files.length === 0) return null;
@@ -263,8 +265,9 @@ export class SherpaAudio {
       cooldownS: rv.cooldownS ?? 8,
       scareSpeedMs: rv.scareSpeedMs ?? 0.1,
       slideSpeedMs: rv.slideSpeedMs ?? 0.1,
-      tiltDeg: rv.tiltDeg ?? 14,
+      tiltDeg: rv.tiltDeg ?? 11,
       tiltRearmFrac: rv.tiltRearmFrac ?? 0.7,
+      lines: rv.lines ?? {},
     };
   }
 

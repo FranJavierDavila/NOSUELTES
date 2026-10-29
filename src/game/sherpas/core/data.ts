@@ -313,6 +313,8 @@ export interface AudioData {
     slideSpeedMs: number;
     tiltDeg: number;
     tiltRearmFrac: number;
+    /** transcripción castellana por fichero (subtítulo mientras suena). */
+    lines?: Record<string, string>;
   };
 }
 export interface VfxData {

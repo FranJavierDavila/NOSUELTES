@@ -141,7 +141,15 @@ with sync_playwright() as pw:
         page.evaluate("__SHERPAS_DEBUG.force('subir2')")
         page.wait_for_timeout(900)
     wait_for(page, lambda q: (q.get("relief") or {}).get("viewBand", -1) >= 2, 40, "subida")
-    wm2 = page.evaluate("__SHERPAS_DEBUG.wallMat && __SHERPAS_DEBUG.wallMat()")
+    # el streaming reconstruye los chunks al cambiar de banda: wallMat puede ser
+    # null UN instante (reliefMeshes vacío entre builds) — sondear hasta asentar.
+    wm2 = None
+    t0 = time.time()
+    while time.time() - t0 < 25:
+        wm2 = page.evaluate("__SHERPAS_DEBUG.wallMat && __SHERPAS_DEBUG.wallMat()")
+        if wm2 and wm2.get("pbrChunks", 0) >= 3:
+            break
+        page.wait_for_timeout(500)
     assert wm2 and wm2["material"] == "PBRMaterial" and wm2["strata"], f"material en altura: {wm2}"
     page.screenshot(path=f"{OUT}/t44-3-subida-estratos.png")
     print(f"CAPTURA t44-3-subida-estratos.png (chunks PBR: {wm2['pbrChunks']})")

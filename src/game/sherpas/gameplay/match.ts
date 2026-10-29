@@ -575,9 +575,9 @@ export class SherpasMatch {
       }
       if (prevAnchors[p] > 0 && this.sherpas[p].anchorsCount() === 0) {
         this.d.bus.emit("PlayerFell", { playerId: p, cause: info.slippedByTwoHands ? "two_hands" : "no_grips" });
-        this.sayInsult("fall");
         this.brain.panic();
-        this.richScareVoice();
+        // la grabación real del susto SUSTITUYE al insulto TTS (una sola voz)
+        if (!this.richScareVoice()) this.sayInsult("fall");
       }
     }
 
@@ -764,15 +764,19 @@ export class SherpasMatch {
         this.d.hud.subtitle(this.d.hud.t("hud.boxesFell"), 3);
         this.propina.add(-4, "boxes_fell", this.d.bus);
         this.brain.panic();
-        this.richScareVoice();
         this.d.bus.emit("BoxesFell", { count: this.boxes.count, side });
-        // ESTALLA: dos insultos seguidos (contexto boxes_fell — muy enojado).
-        this.sayInsult("boxes_fell");
-        const line2 = this.insults.pick("boxes_fell");
-        // T44: el segundo improperio era SOLO bocadillo (ya sin bocadillos) →
-        // pasa al subtítulo: sigue leyéndose el estallido, sin burbuja.
-        if (line2) this.d.hud.subtitle(line2, 3.2);
-        this.boxes = null;
+        // ESTALLA con SU voz real si el banco la suelta (sin TTS encima);
+        // si no, el estallido clásico del banco de insultos (dos seguidos).
+        if (this.richScareVoice()) {
+          this.boxes = null;
+        } else {
+          this.sayInsult("boxes_fell");
+          const line2 = this.insults.pick("boxes_fell");
+          // T44: el segundo improperio era SOLO bocadillo (ya sin bocadillos) →
+          // pasa al subtítulo: sigue leyéndose el estallido, sin burbuja.
+          if (line2) this.d.hud.subtitle(line2, 3.2);
+          this.boxes = null;
+        }
       }
     }
     // PAQUETE DEL DRON: caducidad (el ricachón lo guarda) y CAÍDA por
@@ -794,9 +798,8 @@ export class SherpasMatch {
         this.d.audio.play("thud");
         this.propina.add(-3, "drone_pkg_fell", this.d.bus);
         this.brain.panic();
-        this.richScareVoice();
         this.d.bus.emit("DroneLost", { kg: this.dronePkg.kg });
-        this.sayInsult("boxes_fell");
+        if (!this.richScareVoice()) this.sayInsult("boxes_fell");
         this.dronePkg = null;
       }
     }
@@ -870,9 +873,9 @@ export class SherpasMatch {
       this.d.audio.play("chime");
       this.d.hud.subtitle(this.d.hud.t("hud.droneDrop"), 2.8);
       this.d.bus.emit("DroneDelivered", { kg, offsetFrac: frac });
-      this.sayInsult("drone");
       this.brain.panic(); // ¡el dron lo despierta/soresalta!
-      this.richScareVoice();
+      // la voz real del susto SUSTITUYE al insulto TTS del dron (una sola voz)
+      if (!this.richScareVoice()) this.sayInsult("drone");
     });
     this.stepProjectiles(dt);
 
@@ -1243,6 +1246,11 @@ export class SherpasMatch {
         this.richScareVoice();
       },
       insultContext: () => {
+        // CINE DE CAÍDA (congelado/respawn): sin insultos de relleno — pisarían
+        // el subtítulo del GRITO de la caída ("¡¡CABRONEEEEESSSS!!") en el
+        // único slot de subtítulo (visto en E2E t35). "silencio" no tiene
+        // líneas en el banco → pick() devuelve undefined → no se emite nada.
+        if (this.frozen) return "silencio";
         if (this.directorCtxMaxTension() > 0.8) return "high_tension";
         if (this.balance.snapshot.state === "desequilibrado") return "unbalanced_rope";
         return "idle_too_long";
@@ -1293,9 +1301,13 @@ export class SherpasMatch {
   // ---------------- T44: voz real del jugador (susto+desplazamiento / escora)
 
   /** Deslizamiento del ricachón sobre la tabla ("se desplaza"): caminando,
-   *  deslizando por escora o con la tabla ya notablemente inclinada. */
+   *  PATALEANDO tras un susto (el susto LO MUEVE — literal de la petición: el
+   *  tick del susto la tabla aún no ha reaccionado, el pataleo ES el
+   *  desplazamiento del susto), deslizando por escora o con la tabla ya
+   *  notablemente inclinada. */
   private richDisplaced(): boolean {
     if (this.brain.state === "caminando") return true;
+    if (this.brain.state === "pataleando") return true;
     const ps = this.plankState;
     if (!ps || ps.grounded || ps.fellOff) return false;
     if (Math.abs(ps.tiltDeg) >= 8) return true;
@@ -1308,26 +1320,36 @@ export class SherpasMatch {
     this.richSlidePrev = ps.slide;
   }
 
-  /** SUELTA una voz real del banco (con cooldown global y sin pisar otra voz). */
-  private fireRealVoice(force = false): void {
+  /** SUELTA una voz real del banco (con cooldown global y sin pisar otra voz).
+   *  Devuelve true si la ACEPTA (sonará la grabación del jugador) — los sitios
+   *  de susto la usan para NO soltar encima el insulto TTS (dos voces solapadas
+   *  = charco). Muestra la transcripción + bocanadas de furia mientras suena. */
+  private fireRealVoice(force = false): boolean {
     const rvCfg = this.d.audio.realVoiceCfg;
-    if (!rvCfg) return;
-    if (!force && this.simTime - this.realVoiceLast < rvCfg.cooldownS) return;
-    if (this.d.audio.realBusy()) return;
+    if (!rvCfg) return false;
+    if (!force && this.simTime - this.realVoiceLast < rvCfg.cooldownS) return false;
+    if (this.d.audio.realBusy()) return false;
     this.realVoiceLast = this.simTime;
     void this.d.audio.shoutReal().then((dur) => {
       if (dur <= 0) return;
       // BRAZOS EN ALTO mientras suena SU voz (se le ve hablar: petición)
       this.rich.ostentate(this.simTime, dur + 0.4);
+      this.d.scene.fxRage(this.rich.bodies[RM.head].pos);
+      const line = rvCfg.lines[this.d.audio.realLastFile() ?? ""];
+      if (line) this.d.hud.subtitle(line, dur + 0.8);
     });
+    return true;
   }
 
   /** SUSTO + DESPLAZAMIENTO: el ricachón se soresalta (panic) mientras se
-   *  mueve — petición: "los audios solo cuando lleva un susto y se desplaza". */
-  private richScareVoice(): void {
+   *  mueve — petición: "los audios solo cuando lleva un susto y se desplaza".
+   *  Devuelve true si soltó voz real (el sitio NO dice entonces el insulto TTS:
+   *  la grabación del jugador lo SUSTITUYE — una sola voz por susto). */
+  private richScareVoice(): boolean {
     const rvCfg = this.d.audio.realVoiceCfg;
-    if (!rvCfg) return;
-    if (this.richDisplaced()) this.fireRealVoice();
+    if (!rvCfg) return false;
+    if (this.richDisplaced()) return this.fireRealVoice();
+    return false;
   }
 
   // ---------- eventos del bus → presentación ----------
