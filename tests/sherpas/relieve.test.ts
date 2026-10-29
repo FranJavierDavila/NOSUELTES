@@ -19,7 +19,7 @@ import {
 } from "../../src/game/sherpas/world/wallRelief";
 import {
   ROCK_DEFAULTS, buildRockChunk, fbm, hash2i, makeRockField, ridgedFbm, rockFromData,
-  rockSample, rockTextureRGBA, rockZAt, strataHardness, valueNoise,
+  rockBumpHeight, rockNormalRGBA, rockSample, rockTextureRGBA, rockZAt, strataHardness, valueNoise,
   type RockField, type RockFeature,
 } from "../../src/game/sherpas/world/wallRock";
 import { makeRng } from "../../src/game/sherpas/core/rng";
@@ -437,6 +437,73 @@ describe("wallRock — campo de altura estratificado", () => {
     }
   });
 
+  // T41 — DESPEJE DE PIERNAS: el terreno NATURAL nunca cruza naturalMaxM.
+  it("TECHO NATURAL (T41): sin anclajes ni features, d ≤ naturalMaxM — las piernas respiran", () => {
+    const f = rockField();
+    const rng = makeRng(777);
+    for (let i = 0; i < 500; i++) {
+      const { d } = rockSample(f, rng.range(-2.7, 2.7), rng.range(0, 60));
+      expect(d).toBeLessThanOrEqual(rockCfg.naturalMaxM + 1e-9);
+    }
+  });
+
+  it("SALIENTE ROMPE el techo natural: su propia cota manda (bombo jugable)", () => {
+    const dz = 0.7; // > naturalMaxM (0,24): los salientes viven FUERA del techo
+    const f = rockField({ features: [{ xMin: -0.5, xMax: 0.5, yMin: 11, yMax: 12, dz, featherM: 0.3 }] });
+    const { d } = rockSample(f, 0, 11.5);
+    expect(d).toBeGreaterThan(rockCfg.naturalMaxM);
+    expect(d).toBeGreaterThan(dz * 0.8);
+  });
+
+  it("ANCLA ROMPE el techo natural: la roca se aplana a la cota de la presa", () => {
+    const dz = 0.4; // > naturalMaxM: alrededor de la presa la roca sube a su cota
+    const f = rockField({ anchors: [{ x: 0.2, y: 11.4, dz }] });
+    const { d } = rockSample(f, 0.2, 11.4);
+    expect(Math.abs(d - dz)).toBeLessThan(0.02);
+  });
+
+  // T41 — MAPA NORMAL: relieve por píxel (definición sin coste de malla).
+  it("rockNormalRGBA: determinista, plano con strength 0 y normales plausibles", () => {
+    const flat = rockNormalRGBA(16, 7, 0);
+    expect(flat[0]).toBe(128); expect(flat[1]).toBe(128); expect(flat[2]).toBe(255);
+    const a = rockNormalRGBA(32, 99, 1);
+    const b = rockNormalRGBA(32, 99, 1);
+    expect(Array.from(a)).toEqual(Array.from(b)); // determinista
+    const c = rockNormalRGBA(32, 100, 1);
+    expect(Array.from(a)).not.toEqual(Array.from(c)); // depende de la semilla
+    // B (z de la normal) mayoritario: la piedra es suave con PENDIENTES, no ruido
+    let bHi = 0;
+    for (let k = 0; k < 32 * 32; k++) if (a[k * 4 + 2]! > 140) bHi++;
+    expect(bHi).toBeGreaterThan(32 * 32 * 0.6);
+    // R/G con variación real (relieve visible)
+    const rs = new Set<number>();
+    for (let k = 0; k < 32 * 32; k++) rs.add(a[k * 4]!);
+    expect(rs.size).toBeGreaterThan(8);
+  });
+
+  it("rockNormalRGBA es TILEABLE: el campo de altura ENVUELVE exactamente (u=0 ≡ u=1, v=0 ≡ v=1)", () => {
+    // (T41) la periodicidad EXACTA del campo de altura es LA garantía de
+    // tileado; los derivadas del normal map aliasan en miniaturas (a 512² de
+    // producción son suaves), así que la costura se prueba sobre la altura.
+    for (const [u, v] of [[0, 0.37], [0.63, 0]] as const) {
+      // (tolerancia 1e-12: el wrap es EXACTO en retícula; el float redondea ~1e-14)
+      expect(rockBumpHeight(u + 1, v, 41)).toBeCloseTo(rockBumpHeight(u, v, 41), 12);
+      expect(rockBumpHeight(u, v + 1, 41)).toBeCloseTo(rockBumpHeight(u, v, 41), 12);
+      expect(rockBumpHeight(u - 1, v + 2, 41)).toBeCloseTo(rockBumpHeight(u, v, 41), 12);
+    }
+  });
+
+  it("rockTextureRGBA: grain varía el grano y el mapa sigue determinista", () => {
+    const a = rockTextureRGBA(48, 9, 0.8, 0.1);
+    const b = rockTextureRGBA(48, 9, 0.8, 0.1);
+    expect(Array.from(a)).toEqual(Array.from(b));
+    const c = rockTextureRGBA(48, 9, 0.8, 0.3);
+    expect(Array.from(a)).not.toEqual(Array.from(c));
+    // opaco y luminoso (multiplica vertex colors)
+    expect(a[3]).toBe(255);
+    expect(a[0]).toBeGreaterThan(120);
+  });
+
   it("EROSIÓN DIFERENCIAL: dureza CONSTANTE por capa, variada ENTRE capas", () => {
     const f = rockField();
     const hs = new Set<number>();
@@ -545,12 +612,14 @@ describe("wallRock — textura procedural de roca", () => {
   });
 
   it("TILEABLE: la primera columna es tonalmente continua con la última (u=0 ≡ u=1)", () => {
-    const size = 32;
+    // (T41) el grano fino ALIASA a resoluciones mínimas → comparamos BLOQUES
+    // de 2 columnas promediadas: detecta costuras reales sin castear el alias.
+    const size = 64;
     const tex = rockTextureRGBA(size, 7, 0.5);
-    for (let j = 0; j < size; j++) {
-      const izq = (j * size + 0) * 4;
-      const der = (j * size + (size - 1)) * 4;
-      expect(Math.abs(tex[izq]! - tex[der]!)).toBeLessThan(60);
+    for (let j = 1; j < size - 1; j += 3) {
+      const avg = (i0: number, i1: number): number =>
+        (tex[(j * size + i0) * 4]! + tex[(j * size + i1) * 4]!) / 2;
+      expect(Math.abs(avg(0, 1) - avg(size - 2, size - 1))).toBeLessThan(60);
     }
   });
 
@@ -602,6 +671,16 @@ describe("wallRock — datos (wall_gen.relief algorithm estratificada)", () => {
     const fsLoader = async (path: string): Promise<unknown> => JSON.parse(readFileSync(join(process.cwd(), path), "utf8"));
     const data = await loadSherpasData(fsLoader, "public/content/sherpas");
     expect(data.wallGen.relief?.algorithm).toBe("estratificada");
+    // T41 — DESPEJE DE PIERNAS con los datos REALES del pack:
+    // piernas ≈ (zFront − holdProudM) − 0,22 (offset de colgado HANG_OFFSET_Z);
+    // la roca natural como mucho zFront − naturalMaxM →
+    // holgura = (holdProudM + 0,22) − naturalMaxM.
+    const wall = raw.wall as { zFront: number; holdProudM: number };
+    const hangOffset = 0.34; // HANG_OFFSET_Z (sherpaRig.ts, T41: colgado despejado)
+    const clearance = wall.holdProudM + hangOffset - resolved.naturalMaxM;
+    expect(clearance).toBeGreaterThanOrEqual(0.25); // piernas despejadas con margen
+    // la tabla y el arrastre también despejan (constantes espejo de plank/sherpaRig)
+    expect(0.77).toBeGreaterThanOrEqual(resolved.naturalMaxM + 0.45); // END_Z_OFF vs saliente+presas
   });
 
   it("defaults del módulo intactos", () => {

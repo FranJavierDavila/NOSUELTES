@@ -1,157 +1,157 @@
 {
-  "masterVolume": 0.8,
-  "wind": {
-    "baseGain": 0.05,
-    "gainPerNarrativeMeter": 9e-05,
-    "noiseFilterHz": 420,
-    "gainAtTop": 0.22
+ "masterVolume": 0.8,
+ "wind": {
+  "baseGain": 0.05,
+  "gainPerNarrativeMeter": 9e-05,
+  "noiseFilterHz": 420,
+  "gainAtTop": 0.22
+ },
+ "ducking": {
+  "db": -6,
+  "attackSeconds": 0.3,
+  "releaseSeconds": 0.5,
+  "applyTo": [
+   "ambient",
+   "music"
+  ]
+ },
+ "creak": {
+  "tensionThreshold": 0.55,
+  "hzRange": [
+   180,
+   420
+  ],
+  "gain": 0.12,
+  "minIntervalSeconds": 0.35
+ },
+ "sfx": {
+  "grab": {
+   "kind": "noise",
+   "dur": 0.09,
+   "gain": 0.2,
+   "hz": 900
   },
-  "ducking": {
-    "db": -6,
-    "attackSeconds": 0.3,
-    "releaseSeconds": 0.5,
-    "applyTo": [
-      "ambient",
-      "music"
-    ]
+  "release": {
+   "kind": "noise",
+   "dur": 0.12,
+   "gain": 0.16,
+   "hz": 500
   },
-  "creak": {
-    "tensionThreshold": 0.55,
-    "hzRange": [
-      180,
-      420
-    ],
-    "gain": 0.12,
-    "minIntervalSeconds": 0.35
+  "anchor_cracked": {
+   "kind": "crackle",
+   "dur": 0.5,
+   "gain": 0.3
   },
-  "sfx": {
-    "grab": {
-      "kind": "noise",
-      "dur": 0.09,
-      "gain": 0.2,
-      "hz": 900
-    },
-    "release": {
-      "kind": "noise",
-      "dur": 0.12,
-      "gain": 0.16,
-      "hz": 500
-    },
-    "anchor_cracked": {
-      "kind": "crackle",
-      "dur": 0.5,
-      "gain": 0.3
-    },
-    "anchor_broken": {
-      "kind": "crackle",
-      "dur": 0.8,
-      "gain": 0.4,
-      "pitchDown": true
-    },
-    "bird_screech": {
-      "kind": "chirp",
-      "dur": 0.5,
-      "gain": 0.3,
-      "hzStart": 2400,
-      "hzEnd": 900
-    },
-    "gibberish": {
-      "kind": "gibberish",
-      "dur": 1.6,
-      "gain": 0.22
-    },
-    "zip": {
-      "kind": "noise",
-      "dur": 0.25,
-      "gain": 0.25,
-      "hz": 1800
-    },
-    "pee": {
-      "kind": "noise",
-      "dur": 1.5,
-      "gain": 0.14,
-      "hz": 2600
-    },
-    "unwrap": {
-      "kind": "noise",
-      "dur": 0.4,
-      "gain": 0.18,
-      "hz": 1200
-    },
-    "rustle": {
-      "kind": "noise",
-      "dur": 0.3,
-      "gain": 0.15,
-      "hz": 700
-    },
-    "wail": {
-      "kind": "gibberish",
-      "dur": 1.2,
-      "gain": 0.3,
-      "pitchUp": true
-    },
-    "bump": {
-      "kind": "thud",
-      "dur": 0.18,
-      "gain": 0.35
-    },
-    "camp": {
-      "kind": "chime",
-      "dur": 1.2,
-      "gain": 0.3
-    },
-    "fall": {
-      "kind": "whoosh",
-      "dur": 1.4,
-      "gain": 0.35
-    },
-    "thud": {
-      "kind": "thud",
-      "dur": 0.3,
-      "gain": 0.5
-    },
-    "rope_snap": {
-      "kind": "crackle",
-      "dur": 0.24,
-      "gain": 0.34,
-      "pitchDown": true
-    },
-    "shoo": {
-      "kind": "noise",
-      "dur": 0.2,
-      "gain": 0.22,
-      "hz": 1500
-    },
-    "save": {
-      "kind": "chime",
-      "dur": 0.8,
-      "gain": 0.25
-    },
-    "propina_up": {
-      "kind": "chime",
-      "dur": 0.4,
-      "gain": 0.15
-    },
-    "wind_warn": {
-      "kind": "whoosh",
-      "dur": 1.4,
-      "gain": 0.5
-    },
-    "thunder": {
-      "kind": "thunder",
-      "dur": 1.5,
-      "gain": 0.5
-    },
-    "fart": {
-      "kind": "fart",
-      "dur": 0.75,
-      "gain": 0.42
-    }
+  "anchor_broken": {
+   "kind": "crackle",
+   "dur": 0.8,
+   "gain": 0.4,
+   "pitchDown": true
   },
-  "voice": {
-    "rateMin": 1.04,
-    "rateMax": 1.16,
-    "gain": 0.95,
-    "note": "GRITO REAL del ricachon (grabacion del jugador): rango de playbackRate por repeticion y ganancia - nunca suena dos veces igual"
+  "bird_screech": {
+   "kind": "chirp",
+   "dur": 0.5,
+   "gain": 0.3,
+   "hzStart": 2400,
+   "hzEnd": 900
+  },
+  "gibberish": {
+   "kind": "gibberish",
+   "dur": 1.6,
+   "gain": 0.22
+  },
+  "zip": {
+   "kind": "noise",
+   "dur": 0.25,
+   "gain": 0.25,
+   "hz": 1800
+  },
+  "pee": {
+   "kind": "noise",
+   "dur": 1.5,
+   "gain": 0.14,
+   "hz": 2600
+  },
+  "unwrap": {
+   "kind": "noise",
+   "dur": 0.4,
+   "gain": 0.18,
+   "hz": 1200
+  },
+  "rustle": {
+   "kind": "noise",
+   "dur": 0.3,
+   "gain": 0.15,
+   "hz": 700
+  },
+  "wail": {
+   "kind": "gibberish",
+   "dur": 1.2,
+   "gain": 0.3,
+   "pitchUp": true
+  },
+  "bump": {
+   "kind": "thud",
+   "dur": 0.18,
+   "gain": 0.35
+  },
+  "camp": {
+   "kind": "chime",
+   "dur": 1.2,
+   "gain": 0.3
+  },
+  "fall": {
+   "kind": "whoosh",
+   "dur": 1.4,
+   "gain": 0.35
+  },
+  "thud": {
+   "kind": "thud",
+   "dur": 0.3,
+   "gain": 0.5
+  },
+  "rope_snap": {
+   "kind": "crackle",
+   "dur": 0.24,
+   "gain": 0.34,
+   "pitchDown": true
+  },
+  "shoo": {
+   "kind": "noise",
+   "dur": 0.2,
+   "gain": 0.22,
+   "hz": 1500
+  },
+  "save": {
+   "kind": "chime",
+   "dur": 0.8,
+   "gain": 0.25
+  },
+  "propina_up": {
+   "kind": "chime",
+   "dur": 0.4,
+   "gain": 0.15
+  },
+  "wind_warn": {
+   "kind": "whoosh",
+   "dur": 1.4,
+   "gain": 0.5
+  },
+  "thunder": {
+   "kind": "thunder",
+   "dur": 1.5,
+   "gain": 0.5
+  },
+  "fart": {
+   "kind": "fart",
+   "dur": 0.75,
+   "gain": 0.42
   }
+ },
+ "voice": {
+  "rateMin": 0.95,
+  "rateMax": 1.05,
+  "gain": 1.0,
+  "note": "T41 voz GRAVE y despota del ricachon (TTS castellano re-pitchado + grito real del jugador): rango de playbackRate por repeticion y ganancia - nunca suena dos veces igual"
+ }
 }

@@ -69,16 +69,23 @@ export interface RockData {
   /** anclajes: radio de aplanado y cuánto queda la roca DETRÁS de la presa. */
   flattenRadiusM: number;
   anchorBackM: number;
-  /** color: base piedra uniforme + variaciones LIGERAS de tono y grano. */
+  /** TECHO del relieve NATURAL (entre anclajes): la roca jamás cruza el plano
+   *  del cuerpo — las piernas de los escaladores respiran (T41). Los
+   *  salientes/entrantes y el aplanado de anclajes viven FUERA de este techo. */
+  naturalMaxM: number;
+  /** color: base piedra uniforme + variaciones de tono y grano. */
   baseColor: string;
   toneVar: number;
   grainVar: number;
   /** oscurecido de hondonadas/entrantes (AO por altura). */
   aoStrength: number;
-  /** textura procedural de roca (mapa tileable). */
+  /** textura procedural de roca (mapa tileable) + NORMAL map (relieve por
+   *  píxel: la definición fina vive aquí, no en la malla — T41). */
   textureSizePx: number;
   textureTileM: number;
   textureContrast: number;
+  /** intensidad del mapa normal (0 = sin bump). */
+  bumpStrength: number;
 }
 
 export interface RockResolved {
@@ -104,6 +111,7 @@ export interface RockResolved {
   crackPerStratum: number;
   flattenRadiusM: number;
   anchorBackM: number;
+  naturalMaxM: number;
   baseColor: string;
   toneVar: number;
   grainVar: number;
@@ -111,10 +119,13 @@ export interface RockResolved {
   textureSizePx: number;
   textureTileM: number;
   textureContrast: number;
+  bumpStrength: number;
 }
 
-/** Config por defecto: granito gris cálido, estratos ~0,6 m, grietas finas.
- *  Cualquier dato roto cae aquí — el juego nunca se rompe por datos. */
+/** Config por defecto (T41 — definición ALTA y despeje de piernas):
+ *  granito gris cálido, estratos ~0,6 m, cantos y grietas MARCADOS, textura
+ *  512² con normal map, y el relieve natural acotado a naturalMaxM para que
+ *  la roca nunca se coma al escalador. Cualquier dato roto cae aquí. */
 export const ROCK_DEFAULTS: RockResolved = {
   enabled: true,
   algorithm: "estratificada",
@@ -122,29 +133,31 @@ export const ROCK_DEFAULTS: RockResolved = {
   viewRadiusM: 9.5,
   maxChunks: 9,
   gridStepM: 0.075,
-  dispMaxM: 0.55,
-  macroAmpM: 0.17,
+  dispMaxM: 0.95,
+  macroAmpM: 0.2,
   macroFreqM: 0.22,
   strataThicknessM: 0.62,
-  strataAmpM: 0.12,
+  strataAmpM: 0.16,
   strataTiltX: 0.12,
-  ridgeAmpM: 0.05,
+  ridgeAmpM: 0.075,
   ridgeFreqM: 0.45,
-  ridgeOctaves: 3,
-  warpAmpM: 0.75,
+  ridgeOctaves: 4,
+  warpAmpM: 0.95,
   warpFreqM: 0.11,
-  crackAmpM: 0.045,
+  crackAmpM: 0.07,
   crackWidthM: 0.14,
   crackPerStratum: 3,
   flattenRadiusM: 0.26,
   anchorBackM: 0.012,
+  naturalMaxM: 0.18,
   baseColor: "#a39a8a",
-  toneVar: 0.12,
-  grainVar: 0.05,
-  aoStrength: 0.18,
-  textureSizePx: 256,
-  textureTileM: 1.4,
-  textureContrast: 0.5,
+  toneVar: 0.22,
+  grainVar: 0.1,
+  aoStrength: 0.32,
+  textureSizePx: 512,
+  textureTileM: 1.0,
+  textureContrast: 0.95,
+  bumpStrength: 1.0,
 };
 
 const num = (v: unknown, def: number, min: number, max: number): number =>
@@ -180,6 +193,7 @@ export function rockFromData(d?: Partial<RockData> | null): RockResolved {
     crackPerStratum: Math.round(num(d.crackPerStratum, def.crackPerStratum, 0, 8)),
     flattenRadiusM: num(d.flattenRadiusM, def.flattenRadiusM, 0.08, 0.8),
     anchorBackM: num(d.anchorBackM, def.anchorBackM, 0, 0.1),
+    naturalMaxM: num(d.naturalMaxM, def.naturalMaxM, 0.05, 0.8),
     baseColor: typeof d.baseColor === "string" && d.baseColor.length >= 4 ? d.baseColor : def.baseColor,
     toneVar: num(d.toneVar, def.toneVar, 0, 0.4),
     grainVar: num(d.grainVar, def.grainVar, 0, 0.3),
@@ -187,6 +201,7 @@ export function rockFromData(d?: Partial<RockData> | null): RockResolved {
     textureSizePx: Math.round(num(d.textureSizePx, def.textureSizePx, 64, 1024)),
     textureTileM: num(d.textureTileM, def.textureTileM, 0.3, 8),
     textureContrast: num(d.textureContrast, def.textureContrast, 0, 1),
+    bumpStrength: num(d.bumpStrength, def.bumpStrength, 0, 2),
   };
 }
 
@@ -334,10 +349,12 @@ export function rockSample(f: RockField, x: number, y: number): { d: number; col
     }
     d -= c.crackAmpM * crack;
   }
-  // 5b) CLAMP BASE: el terreno natural SIEMPRE flota un pelín delante del
-  // plano base (sin z-fight con el muro trasero). Solo los ENTRANTES (paso 6)
-  // pueden hundirse, porque el muro base tiene HUECOS reales en sus nichos.
-  d = Math.max(0.02, d);
+  // 5b) CLAMP NATURAL (T41): el terreno entre anclajes flota 2 cm delante del
+  // plano base (sin z-fight) y NUNCA pasa del TECHO naturalMaxM — los bombos
+  // naturales viven DETRÁS del plano del cuerpo y las piernas respiran. Los
+  // salientes/entrantes (paso 6) y el aplanado de anclajes (paso 7) actúan
+  // DESPUÉS y pueden pasar del techo (su propia cota manda).
+  d = Math.min(Math.max(0.02, d), c.naturalMaxM);
   // 6) SALIENTES/ENTRANTES jugables: mezcla suave hacia su cota (con un
   //    jitter propio para que su silueta no sea un rectángulo perfecto).
   const dRock = d; // relieve natural (macro+estratos+ridged+grietas)
@@ -497,29 +514,96 @@ function wrapFbm(u: number, v: number, cells: number, seed: number, octaves: num
   return sum / tot;
 }
 
-/** Mapa de roca TILEABLE (RGBA 0..255): grano + manchas + vetas oscuras
- *  finas (microgrietas). Determinista por semilla. Sin canvas/DOM: la escena
- *  lo sube como RawTexture. */
-export function rockTextureRGBA(sizePx: number, seed: number, contrast: number): Uint8Array {
+/** Mapa de roca TILEABLE (RGBA 0..255) — T41 DEFINICIÓN ALTA: manchas de
+ *  tono multicapa + moteado medio + grano fino + vetas oscuras (microgrietas)
+ *  + POROS (picado de piedra). El parámetro grain (grainVar de datos) controla
+ *  el grano. Determinista por semilla. Sin canvas/DOM: RawTexture directa. */
+export function rockTextureRGBA(sizePx: number, seed: number, contrast: number, grain = 0.1): Uint8Array {
   const data = new Uint8Array(sizePx * sizePx * 4);
   for (let j = 0; j < sizePx; j++) {
     const v = j / sizePx;
     for (let i = 0; i < sizePx; i++) {
       const u = i / sizePx;
-      const base = wrapFbm(u, v, 6, seed, 4);          // manchas de tono
-      const fine = wrapFbm(u, v, 24, seed + 9, 2);     // grano fino
-      const vein = wrapFbm(u * 1.7, v, 14, seed + 31, 3); // vetas (estiradas en y)
+      const base = wrapFbm(u, v, 5, seed, 5);            // manchas grandes de tono
+      const mid = wrapFbm(u, v, 13, seed + 17, 3);       // moteado medio
+      const fine = wrapFbm(u, v, 42, seed + 9, 2);       // grano fino
+      const vein = wrapFbm(u * 2, v, 14, seed + 31, 3); // vetas (estiradas en y, factor ENTERO: tileable)
       const crack = smoothstep01((vein - 0.72) / 0.16);   // líneas oscuras finas
-      // piedra LUMINOSA: el mapa aporta grano por píxel alrededor de 0,85
-      // (multiplica a los vertex colors: si fuese oscuro, la pared se apaga)
-      let val = 0.93 + (base - 0.5) * 0.18 * contrast + (fine - 0.5) * 0.13 * contrast - crack * 0.16;
+      const pore = wrapFbm(u, v, 96, seed + 47, 1);       // porosidad de la piedra
+      const pit = smoothstep01((pore - 0.74) / 0.12);     // picado: poros oscuros
+      // piedra LUMINOSA (multiplica a los vertex colors): centro ~0,9, rango
+      // AMPLIO (contrast alto = tonalidades muy marcadas, petición T41)
+      let val = 0.9
+        + (base - 0.5) * 0.3 * contrast
+        + (mid - 0.5) * 0.18 * contrast
+        + (fine - 0.5) * (0.1 + 0.24 * grain) * contrast
+        - crack * 0.22 - pit * 0.14;
       val = Math.min(1, Math.max(0, val));
       // piedra cálida: rojo ligeramente por encima, azul por debajo
-      const r = Math.min(255, Math.max(0, Math.round(val * 258)));
-      const g = Math.min(255, Math.max(0, Math.round(val * 249)));
-      const b = Math.min(255, Math.max(0, Math.round(val * 234)));
+      const r = Math.min(255, Math.max(0, Math.round(val * 260)));
+      const g = Math.min(255, Math.max(0, Math.round(val * 248)));
+      const b = Math.min(255, Math.max(0, Math.round(val * 230)));
       const o = (j * sizePx + i) * 4;
       data[o] = r; data[o + 1] = g; data[o + 2] = b; data[o + 3] = 255;
+    }
+  }
+  return data;
+}
+
+// ---------- mapa NORMAL de roca (relieve por píxel, T41) ----------
+
+/** Ridged TILEABLE (cantos para el mapa normal): (1−|2n−1|)² por octava. */
+function wrapRidged(u: number, v: number, cells: number, seed: number, octaves: number): number {
+  let amp = 1, tot = 0, sum = 0, cu = u, cv = v, cc = cells;
+  for (let o = 0; o < octaves; o++) {
+    let n = 1 - Math.abs(2 * wrapNoise(cu, cv, cc, seed + o * 197) - 1);
+    n *= n;
+    sum += amp * n;
+    tot += amp;
+    cu *= 2; cv *= 2; cc *= 2; amp *= 0.5;
+  }
+  return sum / tot;
+}
+
+/** CAMPO DE ALTURA tileable del grano pétreo: estratos finos + cantos ridged
+ *  + vetas + grano. [0,1] aprox. Única fuente de verdad del normal map. */
+export function rockBumpHeight(u: number, v: number, seed: number): number {
+  // (T41) SOLO factores ENTEROS: mantienen la periodicidad u ≡ u+1 del wrap
+  // (1,1/1,9/3,2 rompían el tileado exacto — cazado por el test).
+  const strata = wrapFbm(u * 2, v * 3, 4, seed + 3, 2);       // bandas horizontales finas
+  const ridg = wrapRidged(u, v, 9, seed + 13, 3);             // cantos angulares
+  const grain = wrapFbm(u, v, 56, seed + 21, 2);              // grano fino
+  const vein = wrapFbm(u * 2, v, 12, seed + 31, 2);           // vetas estiradas
+  return 0.5 + (strata - 0.5) * 0.34 + (ridg - 0.5) * 0.38 + (grain - 0.5) * 0.5 - Math.max(0, vein - 0.72) * 0.9;
+}
+
+/** Mapa NORMAL TILEABLE (RGB = normal*0.5+0.5, espacio tangente, +z hacia la
+ *  cámara): derivadas por SOBEL con wrap → relieve por PÍXEL sin coste de
+ *  malla (la definición fina que pedía el jugador). strength ~1 = piedrina
+ *  visible; 0 = plano. Determinista. */
+export function rockNormalRGBA(sizePx: number, seed: number, strength: number): Uint8Array {
+  const data = new Uint8Array(sizePx * sizePx * 4);
+  if (strength <= 0.001) {
+    for (let k = 0; k < sizePx * sizePx; k++) { data[k * 4] = 128; data[k * 4 + 1] = 128; data[k * 4 + 2] = 255; data[k * 4 + 3] = 255; }
+    return data;
+  }
+  const K = 10 * strength;         // escala de pendiente (alturas 0..1 sobre uv 0..1)
+  const e = 1 / sizePx;            // paso de muestreo (1 texel)
+  const hAt = (u: number, v: number): number => rockBumpHeight(u - Math.floor(u), v - Math.floor(v), seed);
+  for (let j = 0; j < sizePx; j++) {
+    const v = j / sizePx;
+    for (let i = 0; i < sizePx; i++) {
+      const u = i / sizePx;
+      const hl = hAt(u - e, v), hr = hAt(u + e, v);
+      const hd = hAt(u, v - e), hu = hAt(u, v + e);
+      const nx = -(hr - hl) / (2 * e) * 0.01 * K;   // dh/du ~ O(1..30) → factor 0.01
+      const ny = -(hu - hd) / (2 * e) * 0.01 * K;
+      const len = Math.hypot(nx, ny, 1);
+      const o = (j * sizePx + i) * 4;
+      data[o] = Math.round(((nx / len) * 0.5 + 0.5) * 255);
+      data[o + 1] = Math.round(((ny / len) * 0.5 + 0.5) * 255);
+      data[o + 2] = Math.round((1 / len * 0.5 + 0.5) * 255);
+      data[o + 3] = 255;
     }
   }
   return data;

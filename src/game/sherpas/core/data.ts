@@ -463,9 +463,9 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
           ridgeAmpM: num, ridgeFreqM: posNum, ridgeOctaves: { type: "integer", minimum: 1 },
           warpAmpM: num, warpFreqM: posNum,
           crackAmpM: num, crackWidthM: posNum, crackPerStratum: { type: "integer", minimum: 0 },
-          flattenRadiusM: posNum, anchorBackM: num,
+          flattenRadiusM: posNum, anchorBackM: num, naturalMaxM: posNum,
           baseColor: { type: "string", minLength: 4 }, toneVar: num, grainVar: num, aoStrength: num,
-          textureSizePx: { type: "integer", minimum: 64 }, textureTileM: posNum, textureContrast: num,
+          textureSizePx: { type: "integer", minimum: 64 }, textureTileM: posNum, textureContrast: num, bumpStrength: num,
         } },
         entrantes: { type: "object", required: ["chancePerBand", "minWidthM", "maxWidthM", "depthM", "heightM", "minBand"], properties: {
           chancePerBand: { type: "number", exclusiveMinimum: 0, maximum: 1 }, minWidthM: posNum, maxWidthM: posNum,

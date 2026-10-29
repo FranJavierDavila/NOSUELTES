@@ -48,7 +48,7 @@ import {
   type ReliefCell, type ReliefData, type ReliefResolved, type Rect,
 } from "../world/wallRelief";
 import {
-  buildRockChunk, makeRockField, rockFromData, rockTextureRGBA, ROCK_SEED,
+  buildRockChunk, makeRockField, rockFromData, rockNormalRGBA, rockTextureRGBA, ROCK_SEED,
   type RockData, type RockField, type RockResolved,
 } from "../world/wallRock";
 import { makeRng } from "../core/rng";
@@ -375,7 +375,10 @@ export class SherpaScene {
     if (this.worldBuilt) return; // la escena del menú se reutiliza como escena de partida
     this.worldBuilt = true;
     const wallW = 5.4;
-    const wallFaceZ = -0.18; // cara frontal de la caja de pared (zFront)
+    // T41: la cara del muro se RETRASA (petición del jugador: "retrasar la
+    // pared para que las piernas no toquen") — debe COINCIDIR con
+    // wall_gen.json wall.zFront (la física lee el dato; la escena lo espeja).
+    const wallFaceZ = -0.3; // cara frontal de la caja de pared (zFront)
     const wallDepth = 0.6;
     const wallTop = layout.totalHeightM + 4;
     // RELIEVE (T39): contexto para el generador de teselación — la pared base
@@ -542,7 +545,7 @@ export class SherpaScene {
     // cornisas de campamento (visibles de lejos).
     for (const zone of layout.campZones) {
       const ledge = MeshBuilder.CreateBox(`ledge_${zone.campId}`, { width: 4.6, height: 0.24, depth: 1.1 }, this.scene);
-      ledge.position.set(0, zone.yBase + 0.12, 0.28);
+      ledge.position.set(0, zone.yBase + 0.12, 0.16); // (T41) frente a la cara retrasada
       ledge.material = mat(this.scene, `ledgeM_${zone.campId}`, "#e8edf2");
       ledge.receiveShadows = true;
       ledge.freezeWorldMatrix();
@@ -656,13 +659,23 @@ export class SherpaScene {
       if (!this.rockMat) {
         const m = new StandardMaterial("rockM", this.scene);
         const size = this.rockField.cfg.textureSizePx;
-        const data = rockTextureRGBA(size, ROCK_SEED ^ 0x7a3f11, this.rockField.cfg.textureContrast);
+        const grain = this.rockField.cfg.grainVar;
+        const data = rockTextureRGBA(size, ROCK_SEED ^ 0x7a3f11, this.rockField.cfg.textureContrast, grain);
         const tex = RawTexture.CreateRGBATexture(data, size, size, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
         tex.wrapU = Texture.WRAP_ADDRESSMODE;
         tex.wrapV = Texture.WRAP_ADDRESSMODE;
-        m.diffuseTexture = tex; // mapa de roca (grano + manchas + vetas)
+        m.diffuseTexture = tex; // mapa de roca (grano + manchas + vetas + poros)
+        // MAPA NORMAL (T41, "más definición"): relieve POR PÍXEL — cantos,
+        // estratos finos, vetas y grano captan la luz direccional sin un solo
+        // triángulo más. Con anisotropía la piedrina se ve nítida en ángulo.
+        const nrm = rockNormalRGBA(size, ROCK_SEED ^ 0x2c9f5e, this.rockField.cfg.bumpStrength);
+        const nTex = RawTexture.CreateRGBATexture(nrm, size, size, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
+        nTex.wrapU = Texture.WRAP_ADDRESSMODE;
+        nTex.wrapV = Texture.WRAP_ADDRESSMODE;
+        m.bumpTexture = nTex;
+        m.bumpTexture.level = 1.35; // intensidad del relieve por píxel
         m.diffuseColor = new Color3(1, 1, 1); // el tono final = textura × vertex colors
-        m.specularColor = new Color3(0.02, 0.02, 0.02);
+        m.specularColor = new Color3(0.035, 0.034, 0.03); // micro-brillo en cantos (rugosidad viva)
         m.backFaceCulling = true; // cara frontal con winding consistente
         this.rockMat = m;
       }
@@ -787,6 +800,10 @@ export class SherpaScene {
       }
       const inst = master.createInstance(`hold_${h.id}`);
       inst.position.set(h.pos.x, h.pos.y, h.pos.z);
+      // PRESAS PROFUNDAS (T41, petición del jugador: "hacer los puntos de
+      // agarre más profundos"): el knob se ESTIRA en z hasta morder la pared —
+      // la presa se ve encajada en la roca, no flotando pegada a ella.
+      inst.scaling.z = 1.5;
       // (fix Task 21: la línea setDirection(undefined) crasheaba — eliminada)
       // PRESA SORPRESA (Super Flatulencia): MÁS GRANDE y brillante — se ve
       // desde lejos que "esa presa es distinta" (petición del jugador).

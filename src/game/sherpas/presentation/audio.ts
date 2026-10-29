@@ -60,13 +60,14 @@ export class SherpaAudio {
     this.master = this.ctx.createGain();
     this.master.gain.value = this.data.masterVolume;
     this.master.connect(this.ctx.destination);
-    // canal de voz: realce de agudos para que el grito SEA burlón ("¡ja!")
+    // canal de voz: VOZ GRAVE Y CURTIDA (T41, petición del jugador: "hombre
+    // curtido, voz fuerte y grave, déspota") — realce de GRAVES de pecho.
     this.voiceGain = this.ctx.createGain();
     this.voiceGain.gain.value = 1;
     const shelf = this.ctx.createBiquadFilter();
-    shelf.type = "highshelf";
-    shelf.frequency.value = 2600;
-    shelf.gain.value = 4.5;
+    shelf.type = "lowshelf";
+    shelf.frequency.value = 170;
+    shelf.gain.value = 3.5;
     this.voiceGain.connect(shelf).connect(this.master);
     // buffer de ruido blanco reutilizable (viento + sfx noise)
     const len = Math.floor(this.ctx.sampleRate * NOISE_SECONDS);
@@ -121,11 +122,12 @@ export class SherpaAudio {
     this.windGain.gain.setTargetAtTime(g, this.ctx.currentTime, 0.4);
   }
 
-  /** VOZ DEL RICACHÓN (petición del jugador: "escucharse gritando con tono
-   *  burlesco"). Escalera de resiliencia:
-   *  1. MP3 TTS pregenerado (scripts/gen_rico_tts.mjs) con pitch/velocidad
+  /** VOZ DEL RICACHÓN (T41: "hombre curtido, voz fuerte y grave, ruda,
+   *  déspota, abusona e insultona que dice muchos tacos"). Escalera de
+   *  resiliencia:
+   *  1. MP3 TTS pregenerado (scripts/regen_rico_es_t41.mjs) con pitch/velocidad
    *     aleatorios por reproducción → nunca suena dos veces igual.
-   *  2. speechSynthesis del navegador con pitch alto (voz aguda burlona).
+   *  2. speechSynthesis del navegador con pitch GRAVE (voz despótica).
    *  3. Charla sintética cómica (gibberish) — nunca silencio total. */
   shout(text: string, lang: string): void {
     if (this.muted || this.disposed || !text) return;
@@ -175,9 +177,9 @@ export class SherpaAudio {
       s.cancel();
       const u = new SpeechSynthesisUtterance(text);
       u.lang = lang === "en" ? "en-US" : "es-ES";
-      // tono agudo y rápido = burlón (petición del jugador)
-      u.pitch = 1.55 + Math.random() * 0.25;
-      u.rate = 1.1 + Math.random() * 0.2;
+      // voz GRAVE Y DESPÓTICA (T41): pitch grave, ritmo de patrón que manda
+      u.pitch = 0.55 + Math.random() * 0.15;
+      u.rate = 1.0 + Math.random() * 0.1;
       u.volume = 1;
       const want = u.lang.slice(0, 2).toLowerCase();
       const voice = s.getVoices().find((v) => (v.lang ?? "").toLowerCase().startsWith(want));

@@ -37,10 +37,12 @@ const SAG = G / 55;             // cedida del muelle de colgado en equilibrio (g
                                 // offsets deben compensarla o el brazo cuelga estirado (goma).
 const HANG_OFFSET_Y = -0.97;    // cintura bajo la mano colgada EN EL OBJETIVO; asentado:
                                 // -0,97-0,178 = -1,148 → hombro a 0,868 de la presa ≈ hueso (0,88)
-const HANG_OFFSET_Z = -0.22;    // y ligeramente separada de la pared
+const HANG_OFFSET_Z = -0.34;    // (T41) colgado MÁS SEPARADO de la pared: con presas
+                                // profundas (0,34) y techo de roca natural 0,18, las
+                                // rodillas doblan hacia la pared SIN meterse en los bombos
 const HANG_WEIGHT = 1.2;        // peso del objetivo de una mano en la mezcla
 const STAND_OFFSET_Y = 0.95;    // cintura sobre el pie apoyado (piernas flexionadas)
-const STAND_OFFSET_Z = -0.16;
+const STAND_OFFSET_Z = -0.30;   // (T41) de pie también despejado de la roca
 const STAND_WEIGHT = 1.0;
 const SPRING_K = 55;            // muelle hacia el objetivo (1/s²)
 const SPRING_C = 13;            // amortiguación (1/s) — ζ≈0.88: swing muere en ~0.6 s
@@ -86,7 +88,8 @@ const ANTI_GOMA_RATE = 14;      // servo del cuerpo hacia presa alta recién aga
 const GOMA_SERVO_MAX = 0.09;    // corrección posicional máxima por tick (m)
 const DRAG_FOLLOW = 26;         // ganancia de seguimiento del puntero (1/s)
 const DRAG_MAGNET_PULL = 20;    // ganancia de succión hacia la presa imantada (1/s)
-const DRAG_Z_OFF = 0.16;        // separación de la pared mientras arrastra (m)
+const DRAG_Z_OFF = 0.46;        // (T41) separación al arrastrar: despeja el techo de roca
+                                // natural (0,18) con las rodillas dobladas hacia la pared
 const SALIENTE_FATIGUE_PER_M = 1.45; // fatiga extra por metro de saliente (0,42 m → ×1,6)
 const RECESSED_FATIGUE_PER_M = 0.5;  // fatiga extra por metro de presa RETRASADA (0,3 m → ×1,15)
 /** Multiplicador de fatiga por presa RETRASADA (entrante jugable): aplicar al

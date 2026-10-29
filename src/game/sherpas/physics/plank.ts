@@ -133,7 +133,7 @@ export interface PlankStepParams {
   loadTug?: (p: 0 | 1, dy: number) => void;
 }
 
-const END_Z_OFF = 0.45;   // la tabla cuelga algo separada de la pared
+const END_Z_OFF = 0.77;   // (T41) la tabla cuelga delante de TODO el relieve: presas profundas 0,34 + saliente 0,42 + holgura
 const G = 9.81;
 const MAX_END_SPEED = 0.06; // por tick (verlet): ≤ 3.6 m/s, nada puede vuele
 const ROPE_ITERS = 16;      // restricciones de la cuerda VISUAL (decorativa)
