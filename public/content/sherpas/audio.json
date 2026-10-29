@@ -179,6 +179,62 @@
       "andayacabron": "¡Anda ya, cabrón!",
       "miabuelasubemasrapido": "¡Mi abuela sube más rápido!",
       "hostiatehasdormido": "¡Hostia, te has dormido!"
+    },
+    "screamPath": "/audio/rico/es/cd0e9f33.mp3",
+    "linesEn": {
+      "eltiempoesdineroyesmio": "Time is money, and it's MINE!",
+      "conomaslentoyteentierro": "Any slower and I'll bury you!",
+      "cabronessss": "YOU BASTAAARDS!!",
+      "andayacabron": "Come ON, you bastard!",
+      "miabuelasubemasrapido": "My grandma climbs faster!",
+      "hostiatehasdormido": "Damn it, did you fall asleep?!"
+    },
+    "contexts": {
+      "fall": [
+        "andayacabron"
+      ],
+      "boxes_fell": [
+        "andayacabron",
+        "hostiatehasdormido"
+      ],
+      "drone": [
+        "andayacabron",
+        "eltiempoesdineroyesmio"
+      ],
+      "camp_arrival": [
+        "eltiempoesdineroyesmio",
+        "miabuelasubemasrapido"
+      ],
+      "condor_angry": [
+        "andayacabron",
+        "cabronessss"
+      ],
+      "eating": [
+        "eltiempoesdineroyesmio"
+      ],
+      "pee": [
+        "miabuelasubemasrapido"
+      ],
+      "high_tension": [
+        "conomaslentoyteentierro",
+        "cabronessss"
+      ],
+      "unbalanced_rope": [
+        "hostiatehasdormido",
+        "cabronessss"
+      ],
+      "idle_too_long": [
+        "hostiatehasdormido",
+        "miabuelasubemasrapido",
+        "conomaslentoyteentierro",
+        "eltiempoesdineroyesmio"
+      ],
+      "auto": [
+        "andayacabron",
+        "hostiatehasdormido",
+        "eltiempoesdineroyesmio",
+        "conomaslentoyteentierro"
+      ]
     }
   }
 }

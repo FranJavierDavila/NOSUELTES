@@ -47,7 +47,11 @@ describe("pickNonRepeating (banco de voz real)", () => {
 describe("banco realVoice en el pack (audio.json + disco)", () => {
   const root = resolve(__dirname, "../..");
   const pack = JSON.parse(readFileSync(resolve(root, "public/content/sherpas/audio.json"), "utf8")) as {
-    realVoice?: { dir: string; files: string[]; tiltDeg: number; lines?: Record<string, string> };
+    realVoice?: {
+      dir: string; files: string[]; tiltDeg: number;
+      lines?: Record<string, string>; linesEn?: Record<string, string>;
+      contexts?: Record<string, string[]>; screamPath?: string;
+    };
   };
   const rv = pack.realVoice;
 
@@ -66,10 +70,28 @@ describe("banco realVoice en el pack (audio.json + disco)", () => {
     }
   });
 
-  it("cada fichero tiene transcripción castellana para el subtítulo", () => {
+  it("cada fichero tiene transcripción castellana e inglesa para el subtítulo", () => {
     for (const f of rv!.files) {
-      expect(rv!.lines?.[f], `sin transcripción: ${f}`).toBeTruthy();
+      expect(rv!.lines?.[f], `sin transcripción es: ${f}`).toBeTruthy();
+      expect(rv!.linesEn?.[f], `sin transcripción en: ${f}`).toBeTruthy();
     }
+  });
+
+  it("todos los pools de contexto usan SOLO ficheros del banco", () => {
+    expect(rv!.contexts).toBeDefined();
+    for (const [ctx, pool] of Object.entries(rv!.contexts!)) {
+      expect(pool.length, `contexto ${ctx} vacío`).toBeGreaterThan(0);
+      for (const f of pool) {
+        expect(rv!.files).toContain(f);
+      }
+    }
+  });
+
+  it("el GRITO DE CAÍDA protegido existe intacto (62 829 B, grabación del jugador)", () => {
+    const p = resolve(root, `public${rv!.screamPath}`);
+    expect(existsSync(p), `falta ${p}`).toBe(true);
+    // la grabación original del jugador — NUNCA regenerar ni re-codificar
+    expect(readFileSync(p).length).toBe(62829);
   });
 
   it("disparador de escora ALCANZABLE: tiltDeg < 14 y > aparcamiento en calma (9°)", () => {

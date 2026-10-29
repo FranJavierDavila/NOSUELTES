@@ -1,5 +1,8 @@
-// Audio (doc 10): Web Audio API con mezclador por capas dirigido 100 % por
-// audio.json — viento por altura, crujido por tensión y sfx sintetizados.
+// Audio (doc 10): Web Audio API con mezclador por capas — viento por altura,
+// crujido por tensión y sfx sintetizados. LA VOZ DEL RICACHÓN es SIEMPRE una
+// de las 6 grabaciones castellanas DEL JUGADOR (banco realVoice): cero voces
+// generadas (sin TTS, sin speechSynthesis, sin gibberish — petición literal:
+// "Solo usar las audios que he subido yo, no uses los que generas tú").
 // Arranca tras gesto del usuario (política autoplay del navegador, doc 2.1).
 import type { AudioData } from "../core/data";
 
@@ -7,7 +10,9 @@ type SfxDef = AudioData["sfx"][string];
 
 const NOISE_SECONDS = 2;
 
-/** Slug determinista texto→fichero (djb2): igual que scripts/gen_rico_tts.mjs. */
+/** Slug determinista texto→fichero (djb2): igual que scripts/gen_rico_tts.mjs.
+ *  @deprecated el banco TTS está RETIRADO — solo se conserva porque el grito
+ *  de caída protegido del jugador vive en /audio/rico/es/cd0e9f33.mp3. */
 export function ricoSlug(text: string): string {
   let h = 5381;
   for (let i = 0; i < text.length; i++) h = ((h * 33) ^ text.charCodeAt(i)) >>> 0;
@@ -35,14 +40,14 @@ export class SherpaAudio {
   private lastCreak = 0;
   private disposed = false;
   private muted = false;
-  /** canal de VOZ del ricachón (TTS + realce "grito burlón"). */
+  /** canal de VOZ REAL del jugador (realce de graves de pecho). */
   private voiceGain: GainNode | null = null;
-  private voiceCache = new Map<string, AudioBuffer | null>();
   private gustBoost = 0;
   private altT = 0;
-  // T44 — BANCO DE VOZ REAL DEL JUGADOR (6 grabaciones en castellano): solo
-  // con SUSTO + DESPLAZAMIENTO o ESCORA fuerte (match). Sin repetición
-  // inmediata; decodificación perezosa con caché; busy hasta terminar.
+  // Banco de voz 100 % REAL del jugador (6 grabaciones en castellano):
+  // susto+desplazamiento, escora fuerte e INSULTOS por contexto (data-driven
+  // en audio.json → realVoice.contexts). Sin repetición inmediata; caché de
+  // decodificación perezosa; busy hasta terminar.
   private realCache = new Map<string, AudioBuffer>();
   private realLastIdx = -1;
   private realBusyUntil = 0;
@@ -67,20 +72,10 @@ export class SherpaAudio {
     }
     const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     this.ctx = new Ctor();
-    // primado de voces del navegador: getVoices() llega vacío hasta que el
-    // evento dispara — sin esto, el PRIMER grito del ricachón saldría sin voz.
-    try {
-      const synth = window.speechSynthesis;
-      if (synth) {
-        synth.getVoices();
-        synth.onvoiceschanged = () => { synth.getVoices(); };
-      }
-    } catch { /* sin síntesis de voz: la escalera cae al gibberish */ }
     this.master = this.ctx.createGain();
     this.master.gain.value = this.data.masterVolume;
     this.master.connect(this.ctx.destination);
-    // canal de voz: VOZ GRAVE Y CURTIDA (T41, petición del jugador: "hombre
-    // curtido, voz fuerte y grave, déspota") — realce de GRAVES de pecho.
+    // canal de VOZ REAL del jugador: realce de GRAVES de pecho (voz curtida).
     this.voiceGain = this.ctx.createGain();
     this.voiceGain.gain.value = 1;
     const shelf = this.ctx.createBiquadFilter();
@@ -116,9 +111,6 @@ export class SherpaAudio {
   /** Silencio en vivo (ajustes): ganancia maestra a 0 sin tirar el contexto. */
   setMuted(muted: boolean): void {
     this.muted = muted;
-    if (muted) {
-      try { window.speechSynthesis?.cancel(); } catch { /* sin voz */ }
-    }
     if (this.master && this.ctx) this.master.gain.value = muted ? 0 : this.data.masterVolume;
   }
 
@@ -141,92 +133,29 @@ export class SherpaAudio {
     this.windGain.gain.setTargetAtTime(g, this.ctx.currentTime, 0.4);
   }
 
-  /** VOZ DEL RICACHÓN (T41: "hombre curtido, voz fuerte y grave, ruda,
-   *  déspota, abusona e insultona que dice muchos tacos"). Escalera de
-   *  resiliencia:
-   *  1. MP3 TTS pregenerado (scripts/regen_rico_es_t41.mjs) con pitch/velocidad
-   *     aleatorios por reproducción → nunca suena dos veces igual.
-   *  2. speechSynthesis del navegador con pitch GRAVE (voz despótica).
-   *  3. Charla sintética cómica (gibberish) — nunca silencio total.
-   *  T44: devuelve la duración EFECTIVA del clip (s/playbackRate) para que el
-   *  cuerpo mueva los brazos en alto MIENTRAS suena. */
-  shout(text: string, lang: string): Promise<number> {
-    if (this.muted || this.disposed || !text) return Promise.resolve(0);
-    const path = `/audio/rico/${lang === "en" ? "en" : "es"}/${ricoSlug(text)}.mp3`;
-    const cached = this.voiceCache.get(path);
-    if (cached) return Promise.resolve(this.playVoice(cached));
-    if (cached === null) { return Promise.resolve(this.speak(text, lang)); }
-    return this.loadVoice(path).then((buf) => {
-      if (buf) return this.playVoice(buf);
-      return this.speak(text, lang);
-    });
-  }
-
-  private async loadVoice(path: string): Promise<AudioBuffer | null> {
-    if (!this.ctx) return null;
-    this.voiceCache.set(path, null); // evita tormenta de fetch paralelos
-    try {
-      const res = await fetch(path);
-      if (!res.ok) return null;
-      const raw = await res.arrayBuffer();
-      const buf = await this.ctx.decodeAudioData(raw);
-      this.voiceCache.set(path, buf);
-      return buf;
-    } catch { return null; }
-  }
-
-  private playVoice(buf: AudioBuffer): number {
-    if (!this.ctx || !this.voiceGain) return 0;
-    const src = this.ctx.createBufferSource();
-    src.buffer = buf;
-    // "gritando con tono burlesco": cada grito con levantón y velocidad PROPIOS
-    // (rango data-driven en audio.json — el grito REAL grabado usa un rango más
-    // suave que el TTS: una voz humana subida de más suena a picaresca).
-    const v = this.data.voice;
-    const rMin = v?.rateMin ?? 1.08, rMax = v?.rateMax ?? 1.26;
-    const rate = rMin + Math.random() * Math.max(0, rMax - rMin);
-    src.playbackRate.value = rate;
-    const g = this.ctx.createGain();
-    g.gain.value = v?.gain ?? 0.95;
-    src.connect(g).connect(this.voiceGain);
-    src.start();
-    return buf.duration / Math.max(0.25, rate);
-  }
-
-  private speak(text: string, lang: string): number {
-    // speechSynthesis: duración desconocida → estimación por texto (paciencia
-    // del gesto de brazos en alto; nunca se corta el grito a mitad).
-    const guess = Math.min(4.5, Math.max(1.2, text.length * 0.055));
-    try {
-      const s = window.speechSynthesis;
-      if (!s) { this.play("gibberish"); return 1.6; }
-      s.cancel();
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang = lang === "en" ? "en-US" : "es-ES";
-      // voz GRAVE Y DESPÓTICA (T41): pitch grave, ritmo de patrón que manda
-      u.pitch = 0.55 + Math.random() * 0.15;
-      u.rate = 1.0 + Math.random() * 0.1;
-      u.volume = 1;
-      const want = u.lang.slice(0, 2).toLowerCase();
-      const voice = s.getVoices().find((v) => (v.lang ?? "").toLowerCase().startsWith(want));
-      if (voice) u.voice = voice;
-      s.speak(u);
-      return guess;
-    } catch { this.play("gibberish"); return 1.6; }
-  }
-
-  /** T44 — VOZ REAL DEL JUGADOR (banco audio.json → realVoice): grabaciones
-   *  castellanas que suenan SOLO con susto+desplazamiento o escora fuerte
-   *  (los disparadores viven en match.ts). Devuelve la duración EFECTIVA
-   *  (s, ya con playbackRate) o 0 si no se pudo reproducir. */
-  async shoutReal(): Promise<number> {
-    if (this.muted || this.disposed || !this.ctx || !this.voiceGain) return 0;
+  /** VOZ DEL RICACHÓN — SOLO GRABACIONES REALES DEL JUGADOR (petición literal:
+   *  "Solo usar las audios que he subido yo, no uses los que generas tú").
+   *  Sin TTS, sin speechSynthesis, sin gibberish: el banco realVoice de
+   *  audio.json con pitch/velocidad aleatorios por reproducción (rango suave:
+   *  una voz humana subida de más suena a picaresca). Si un fichero falla, el
+   *  subtítulo sigue en pantalla — nunca una voz generada. */
+  async shoutRealFile(name: string): Promise<number> {
+    if (this.muted || this.disposed || !this.ctx || !this.voiceGain || !name) return 0;
     const rv = this.data.realVoice;
-    if (!rv || !Array.isArray(rv.files) || rv.files.length === 0) return 0;
-    const idx = pickNonRepeating(rv.files.length, this.realLastIdx, Math.random);
-    this.realLastIdx = idx;
-    const name = rv.files[idx]!;
+    if (!rv) return 0;
     const path = (rv.dir ?? "/audio/rico/real/") + name + ".mp3";
+    return this.playRealPath(path, rv.gain ?? 0.95, rv.rateMin ?? 0.98, rv.rateMax ?? 1.06);
+  }
+
+  /** Ruta arbitraria (el GRITO DE CAÍDA protegido del jugador vive fuera del
+   *  banco: /audio/rico/es/cd0e9f33.mp3 — su grabación original intacta). */
+  async shoutPath(path: string, gain = 0.95): Promise<number> {
+    if (this.muted || this.disposed || !this.ctx || !this.voiceGain || !path) return 0;
+    return this.playRealPath(path, gain, 0.98, 1.06);
+  }
+
+  private async playRealPath(path: string, gain: number, rateMin: number, rateMax: number): Promise<number> {
+    if (!this.ctx || !this.voiceGain) return 0;
     let buf = this.realCache.get(path);
     if (!buf) {
       try {
@@ -237,13 +166,12 @@ export class SherpaAudio {
       } catch { return 0; }
     }
     if (this.disposed || !this.voiceGain) return 0;
-    const rMin = rv.rateMin ?? 0.98, rMax = rv.rateMax ?? 1.06;
-    const rate = rMin + Math.random() * Math.max(0, rMax - rMin);
+    const rate = rateMin + Math.random() * Math.max(0, rateMax - rateMin);
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
     src.playbackRate.value = rate;
     const g = this.ctx.createGain();
-    g.gain.value = rv.gain ?? 0.95;
+    g.gain.value = gain;
     src.connect(g).connect(this.voiceGain);
     src.start();
     const dur = buf.duration / Math.max(0.25, rate);
@@ -252,12 +180,62 @@ export class SherpaAudio {
     return dur;
   }
 
-  /** T44 — configuración del banco de voz real con defaults (match la lee
-   *  para los disparadores); null si el banco no tiene ficheros. `lines` son
-   *  las transcripciones castellanas (subtítulo mientras suena la grabación). */
+  /** VOZ REAL ALEATORIA del banco completo, sin repetir la última (disparo por
+   *  susto/escora). Devuelve la duración EFECTIVA o 0 si no se pudo. */
+  async shoutReal(): Promise<number> {
+    const name = this.pickBankFile("__scare");
+    if (!name) return 0;
+    return this.shoutRealFile(name);
+  }
+
+  /** ELIGE fichero del banco para un contexto (data-driven en
+   *  realVoice.contexts: { contexto: [ficheros…]}); sin contexto o sin pool →
+   *  banco completo. Nunca repite el último ÍNDICE global (una sola memoria de
+   *  rotación para TODO el banco: sustos + insultos). */
+  pickBankFile(context: string): string | null {
+    const rv = this.data.realVoice;
+    if (!rv || !Array.isArray(rv.files) || rv.files.length === 0) return null;
+    const pool = rv.contexts?.[context];
+    const names = pool && pool.length ? rv.files.filter((f) => pool.includes(f)) : rv.files;
+    if (names.length === 0) return this.pickBankFileAny(rv);
+    // índice GLOBAL del banco para la memoria de no-repetición
+    const candidates = names.map((n) => rv.files.indexOf(n)).filter((i) => i >= 0);
+    let idx = -1;
+    // hasta 8 tiradas: evita repetir la última voz global (banco pequeño)
+    for (let k = 0; k < 8 && idx < 0; k++) {
+      const c = candidates[Math.floor(Math.random() * candidates.length)]!;
+      idx = c !== this.realLastIdx ? c : -1;
+    }
+    if (idx < 0) idx = candidates[0]!;
+    this.realLastIdx = idx;
+    return rv.files[idx]!;
+  }
+
+  private pickBankFileAny(rv: NonNullable<AudioData["realVoice"]>): string | null {
+    const idx = pickNonRepeating(rv.files.length, this.realLastIdx, Math.random);
+    if (idx < 0) return null;
+    this.realLastIdx = idx;
+    return rv.files[idx]!;
+  }
+
+  /** Transcripción del fichero en el idioma del HUD (subtítulo mientras suena). */
+  realLineFor(file: string | null, lang: string): string {
+    const rv = this.data.realVoice;
+    if (!rv || !file) return "";
+    if (lang === "en") return rv.linesEn?.[file] ?? rv.lines?.[file] ?? "";
+    return rv.lines?.[file] ?? "";
+  }
+
+  /** Configuración del banco de voz real con defaults (match la lee para los
+   *  disparadores); null si el banco no tiene ficheros. `lines`/`linesEn` son
+   *  las transcripciones (subtítulo mientras suena la grabación); `contexts`
+   *  mapea contexto de insulto → ficheros válidos; `screamPath` es el grito de
+   *  caída protegido (grabación original del jugador fuera del banco). */
   get realVoiceCfg(): {
     cooldownS: number; scareSpeedMs: number; slideSpeedMs: number; tiltDeg: number; tiltRearmFrac: number;
     lines: Record<string, string>;
+    contexts: Record<string, string[]>;
+    screamPath: string;
   } | null {
     const rv = this.data.realVoice;
     if (!rv || !Array.isArray(rv.files) || rv.files.length === 0) return null;
@@ -268,6 +246,8 @@ export class SherpaAudio {
       tiltDeg: rv.tiltDeg ?? 11,
       tiltRearmFrac: rv.tiltRearmFrac ?? 0.7,
       lines: rv.lines ?? {},
+      contexts: rv.contexts ?? {},
+      screamPath: rv.screamPath ?? "/audio/rico/es/cd0e9f33.mp3",
     };
   }
 

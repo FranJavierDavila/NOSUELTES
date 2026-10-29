@@ -166,6 +166,8 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         const rig = state.match?.["sherpas"][p] as unknown as { dragging?: string | null; dragHold?: { id: string } | null } | undefined;
         return rig ? { dragging: rig.dragging ?? null, hold: rig.dragHold?.id ?? null } : null;
       },
+      /** Acceso de diagnóstico a la escena (E2E de gráficos: niebla/cielo en vivo). */
+      sceneObj: () => (state.match?.["d"]?.scene ?? state.scene) as unknown as Record<string, unknown> | null,
       depthProbe: () => {
         const sc = state.match?.["d"]?.scene as unknown as {
           scene: { render(): void };
@@ -238,6 +240,22 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
             getWallMaterialInfo?(): { chunks: number; pbrChunks: number; material: string; albedo: boolean; bump: boolean; strata: boolean; roughness: number; metallic: number } | null;
           } | null;
           return sc?.getWallMaterialInfo?.() ?? null;
+        } catch { return null; }
+      },
+      /** GRÁFICOS (sonda E2E): tone mapping ACES + viñeta + FXAA + niebla +
+       *  cielo + calidad de sombras — la cadena de calidad completa. */
+      graphics: (): {
+        toneMapping: string; exposure: number; contrast: number; vignette: boolean;
+        fxaa: boolean; fog: boolean; skyDome: boolean; shadowQuality: string; normalBias: number;
+      } | null => {
+        try {
+          const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
+            getGraphicsInfo?(): {
+              toneMapping: string; exposure: number; contrast: number; vignette: boolean;
+              fxaa: boolean; fog: boolean; skyDome: boolean; shadowQuality: string; normalBias: number;
+            } | null;
+          } | null;
+          return sc?.getGraphicsInfo?.() ?? null;
         } catch { return null; }
       },
       /** T44 VOZ REAL: estado del banco del jugador + brazos en alto (ostentación). */

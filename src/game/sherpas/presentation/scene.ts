@@ -24,6 +24,8 @@ import { InstancedMesh } from "@babylonjs/core/Meshes/instancedMesh";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData"; // RELIEVE por teselación (T39) + roca estratificada (T40)
 import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture"; // MAPA DE ROCA procedural (T40)
 import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator"; // LUZ Y SOMBRA (profundidad)
+import { ImageProcessingConfiguration } from "@babylonjs/core/Materials/imageProcessingConfiguration"; // GRÁFICOS: ACES + viñeta
+import { FxaaPostProcess } from "@babylonjs/core/PostProcesses/fxaaPostProcess"; // GRÁFICOS: antialiasing
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial"; // T44: pared PBR detallada
 import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
@@ -153,6 +155,14 @@ export class SherpaScene {
   private stormMode = false;
   private flashT = 0;
   private shadowGen: ShadowGenerator | null = null;
+  // GRÁFICOS (calidad general): cielo de degradado + niebla atmosférica + ACES
+  private skyDome: Mesh | null = null;
+  private skyMatDay: StandardMaterial | null = null;
+  private skyMatStorm: StandardMaterial | null = null;
+  private skyMatActive: StandardMaterial | null = null;
+  private fxaaOn = false;
+  private fogDay = new Color3(0.62, 0.71, 0.79);
+  private fogStorm = new Color3(0.08, 0.1, 0.15);
   // CAJAS DEL RICACHÓN sobre la tabla + cajas CAYENDO (balístico simple).
   private boxMeshes: Mesh[] = [];
   private fallingBoxes: { mesh: Mesh; vel: V3; rot: V3; rotV: V3 }[] = [];
@@ -306,7 +316,34 @@ export class SherpaScene {
     }
     sg.setDarkness(0.45); // sombra legible, no brea
     sg.bias = 0.0012;
+    sg.normalBias = 0.015; // GRÁFICOS: anti-acné en PBR (auto-sombra de la roca)
     this.shadowGen = sg;
+
+    // ---------- GRÁFICOS — CALIDAD GENERAL (petición: "mejorar la calidad
+    // gráfica en general") ---------- Cielo de degradado + niebla de altura +
+    // tone mapping ACES + viñeta + FXAA: profundidad atmosférica y acabado
+    // filmico, sin tocar el presupuesto de draw calls (+1 malla).
+    this.buildSkyDome();
+    const fogC = this.stormMode ? this.fogStorm : this.fogDay;
+    this.scene.fogMode = Scene.FOGMODE_EXP2;
+    this.scene.fogColor = fogC.clone();
+    this.scene.fogDensity = 0.012;
+    const ip = this.scene.imageProcessingConfiguration;
+    ip.toneMappingEnabled = true;
+    ip.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES;
+    ip.exposure = 1.28; // compensa la compresión ACES (el tono de roca T42/T44 se conserva)
+    ip.contrast = 1.12;
+    ip.vignetteEnabled = true; // viñeta sutil: foco en la pareja de escalada
+    ip.vignetteWeight = 1.5;
+    ip.vignetteStretch = 0.4;
+    ip.vignetteCameraFov = 0.9;
+    ip.vignetteColor = new Color4(0, 0, 0, 0);
+    ip.vignetteBlendMode = ImageProcessingConfiguration.VIGNETTEMODE_MULTIPLY;
+    if (!this.perfTuning.postFxOff) {
+      this.fxaaOn = true;
+      // el constructor con cámara YA adjunta el post-proceso (y resuelve engine)
+      new FxaaPostProcess("fxaa", 1.0, this.camera);
+    }
     this.fxTexture = this.makeDotTexture();
     this.snowSystem = new ParticleSystem("snow", 600, this.scene);
     this.snowSystem.particleTexture = this.fxTexture.clone();
@@ -1074,6 +1111,27 @@ export class SherpaScene {
     return this.strataTex;
   }
 
+  /** GRÁFICOS (sonda E2E): estado de la cadena de calidad — tone mapping,
+   *  viñeta, FXAA, niebla, cielo y sombras. */
+  getGraphicsInfo(): {
+    toneMapping: string; exposure: number; contrast: number; vignette: boolean;
+    fxaa: boolean; fog: boolean; skyDome: boolean; shadowQuality: string; normalBias: number;
+  } {
+    const ip = this.scene.imageProcessingConfiguration;
+    return {
+      toneMapping: !ip.toneMappingEnabled ? "off"
+        : ip.toneMappingType === ImageProcessingConfiguration.TONEMAPPING_ACES ? "ACES" : "standard",
+      exposure: ip.exposure,
+      contrast: ip.contrast,
+      vignette: ip.vignetteEnabled,
+      fxaa: this.fxaaOn,
+      fog: this.scene.fogMode !== Scene.FOGMODE_NONE,
+      skyDome: !!this.skyDome && !!this.skyDome.material,
+      shadowQuality: this.perfTuning.shadowQuality,
+      normalBias: this.shadowGen?.normalBias ?? 0,
+    };
+  }
+
   /** T44 (sonda E2E): material de la pared — PBR + triplanar + normales. */
   getWallMaterialInfo(): {
     chunks: number; pbrChunks: number; material: string;
@@ -1714,11 +1772,60 @@ export class SherpaScene {
 
   // ---------- tormenta / relámpagos / cajas ----------
 
+  /** GRÁFICOS — CIELO DE DEGRADADO: cúpula sin luz con textura de gradiente
+   *  vertical generada (cénit azul profundo → horizonte pálido de altura).
+   *  Sustituye el clearColor plano: el fondo deja de ser un vacío negro.
+   *  infiniteDistance → siempre centrada en la cámara; sin niebla (ES el
+   *  fondo). Variante TORMENTA azul noche para el modo tormenta. */
+  private buildSkyDome(): void {
+    const makeGradient = (top: string, mid: string, bottom: string): DynamicTexture => {
+      const dt = new DynamicTexture("skyGrad", { width: 8, height: 256 }, this.scene, false);
+      const ctx = dt.getContext() as unknown as CanvasRenderingContext2D;
+      const g = ctx.createLinearGradient(0, 0, 0, 256);
+      g.addColorStop(0, top);
+      g.addColorStop(0.62, mid);
+      g.addColorStop(1, bottom);
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, 8, 256);
+      dt.update();
+      return dt;
+    };
+    const mkMat = (name: string, tex: DynamicTexture): StandardMaterial => {
+      const m = new StandardMaterial(name, this.scene);
+      m.disableLighting = true;
+      m.emissiveTexture = tex;
+      m.emissiveColor = new Color3(1, 1, 1); // texture × emissiveColor: blanco = textura tal cual
+      m.backFaceCulling = false;
+      m.fogEnabled = false; // el cielo NUNCA se niebla
+      return m;
+    };
+    // ACES comprime y aclara los medios tonos: los stops van MÁS saturados y
+    // oscuros de lo deseado a pantalla (el visible dominante es el medio).
+    this.skyMatDay = mkMat("skyDay", makeGradient("#17334f", "#3f6f99", "#7fa6bd"));
+    this.skyMatStorm = mkMat("skyStorm", makeGradient("#05070d", "#0d1220", "#1a2230"));
+    this.skyMatActive = this.stormMode ? this.skyMatStorm : this.skyMatDay;
+    const dome = MeshBuilder.CreateSphere("skyDome", { diameter: 260, segments: 10, sideOrientation: Mesh.BACKSIDE }, this.scene);
+    dome.material = this.skyMatActive;
+    dome.infiniteDistance = true;
+    dome.isPickable = false;
+    dome.applyFog = false;
+    dome.alwaysSelectAsActiveMesh = true;
+    this.skyDome = dome;
+  }
+
+  /** Cambia cielo + niebla día ⇄ tormenta (coherentes entre sí). */
+  private setSkyStorm(storm: boolean): void {
+    this.skyMatActive = storm ? this.skyMatStorm : this.skyMatDay;
+    if (this.skyDome) this.skyDome.material = this.skyMatActive;
+    this.scene.fogColor = (storm ? this.fogStorm : this.fogDay).clone();
+  }
+
   /** MODO TORMENTA: cielo más oscuro (azul noche) + sol APAGADO mientras dura
    *  el ciclo (luces y sombras también obedecen a la tormenta). */
   setStorm(storm: boolean): void {
     if (this.stormMode === storm) return;
     this.stormMode = storm;
+    this.setSkyStorm(storm);
     if (!storm && this.flashT <= 0) {
       this.scene.clearColor = new Color4(0.055, 0.07, 0.09, 1);
       if (this.hemiLight) this.hemiLight.intensity = this.hemiBase;
@@ -2151,16 +2258,18 @@ export class SherpaScene {
     const eng = this.engine as unknown as { _depthCullingState?: { depthMask: boolean }; _gl?: { depthMask(v: boolean): void } };
     if (eng._depthCullingState) eng._depthCullingState.depthMask = true;
     else if (eng._gl) eng._gl.depthMask(true);
-    // RELÁMPAGO de tormenta: blanco breve (fade por frame).
+    // RELÁMPAGO de tormenta: blanco breve (fade por frame) — cielo incluido.
     if (this.flashT > 0) {
       this.flashT -= Math.max(0.001, this.engine.getDeltaTime() / 1000);
       const k = Math.max(0, Math.min(1, this.flashT / 0.14));
       this.scene.clearColor = new Color4(0.028 + 0.72 * k, 0.032 + 0.72 * k, 0.048 + 0.72 * k, 1);
+      if (this.skyMatActive) this.skyMatActive.emissiveColor.set(1 + 2.4 * k, 1 + 2.4 * k, 1 + 2.4 * k);
       if (this.hemiLight) this.hemiLight.intensity = this.hemiBase * 0.72 + 2.2 * k;
       if (this.sunLight) this.sunLight.intensity = this.sunBase * 0.28 + 2.0 * k;
       if (this.rockFill) this.rockFill.intensity = 0.3 + 2.0 * k; // tormenta: flash también en la roca
       if (this.flashT <= 0 && this.stormMode) {
         this.scene.clearColor = new Color4(0.028, 0.032, 0.048, 1);
+        if (this.skyMatActive) this.skyMatActive.emissiveColor.set(1, 1, 1);
         if (this.hemiLight) this.hemiLight.intensity = this.hemiBase * 0.72;
         if (this.sunLight) this.sunLight.intensity = this.sunBase * 0.28;
         if (this.rockFill) this.rockFill.intensity = 0.3;

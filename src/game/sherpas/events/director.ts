@@ -140,8 +140,9 @@ export class EventDirector {
 
     switch (def.id) {
       case "insult": {
-        const line = this.insults.pick(this.ctx.insultContext());
-        if (line) this.events.emit("InsultSaid", { lineId: def.id, context: "auto", text: line });
+        // VOZ REAL DEL JUGADOR: el handler de InsultSaid elige la grabación
+        // por CONTEXTO (audio.json → realVoice.contexts) — cero TTS generado.
+        this.events.emit("InsultSaid", { lineId: def.id, context: this.ctx.insultContext(), text: "" });
         this.brain.requestAction("insultando");
         this.finish(def);
         break;
@@ -149,8 +150,7 @@ export class EventDirector {
       case "eat": {
         this.brain.requestAction("comiendo");
         this.ctx.addRichMass(this.richTuning.foodBonus);
-        const line = this.insults.pick("eating");
-        if (line) this.events.emit("InsultSaid", { lineId: def.id, context: "eating", text: line });
+        this.events.emit("InsultSaid", { lineId: def.id, context: "eating", text: "" });
         this.eatDone = true;
         this.trashArmed = true;
         this.finish(def);
@@ -167,8 +167,7 @@ export class EventDirector {
       case "pee": {
         this.brain.requestAction("meandome");
         this.ctx.spawnUrine(1.5, v3(this.ctx.richHarness().x, this.ctx.richHarness().y - 0.3, this.ctx.richHarness().z));
-        const line = this.insults.pick("pee");
-        if (line) this.events.emit("InsultSaid", { lineId: def.id, context: "pee", text: line });
+        this.events.emit("InsultSaid", { lineId: def.id, context: "pee", text: "" });
         this.finish(def);
         break;
       }

@@ -165,6 +165,8 @@ export interface PerfTuning {
   targetFps: number; minScale: number; maxScale: number; step: number; checkSeconds: number;
   /** Calidad de sombras del sol: "off" | "low" | "medium" | "high" (PCF). */
   shadowQuality: "off" | "low" | "medium" | "high";
+  /** GRÁFICOS: apaga los post-procesos (FXAA) — dispositivos mínimos. */
+  postFxOff?: boolean;
 }
 export interface AnchorTypeData {
   label: string; gripQuality: number; durability: number | null;
@@ -315,6 +317,13 @@ export interface AudioData {
     tiltRearmFrac: number;
     /** transcripción castellana por fichero (subtítulo mientras suena). */
     lines?: Record<string, string>;
+    /** transcripción inglesa (HUD en en): cae a `lines` si falta. */
+    linesEn?: Record<string, string>;
+    /** contexto de insulto → ficheros válidos del banco (data-driven). */
+    contexts?: Record<string, string[]>;
+    /** grito de caída protegido (grabación original del jugador, fuera del
+     *  banco: /audio/rico/es/cd0e9f33.mp3, 62 829 B intactos). */
+    screamPath?: string;
   };
 }
 export interface VfxData {

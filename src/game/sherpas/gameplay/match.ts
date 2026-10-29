@@ -730,13 +730,13 @@ export class SherpasMatch {
       this.richFellImpactDone = false; // el thud sonará al tocar suelo
       this.rich.launchFall(ps.fellDir);
       this.d.audio.play("fall");
-      // EL GRITO (petición del jugador): al caer suelta el improperio — se emite
-      // por InsultSaid para heredar TTS MP3 → speechSynthesis → gibberish +
-      // subtítulo + burbuja en pantalla. Fijo, no del banco: es SU grito.
+      // EL GRITO (petición del jugador): al caer suelta SU grabación real
+      // "¡¡CABRONEEEESSSS!!" (screamPath protegido — el handler de InsultSaid
+      // la reproduce por contexto rich_fell).
       this.d.bus.emit("InsultSaid", {
         lineId: "rich_fell",
-        context: "fall",
-        text: this.d.hud.lang === "en" ? "YOU BASTAAAARDS!!!" : "¡¡CABRONEEEEESSSS!!!!",
+        context: "rich_fell",
+        text: "",
       });
       this.onTeamFell(true);
     }
@@ -770,11 +770,9 @@ export class SherpasMatch {
         if (this.richScareVoice()) {
           this.boxes = null;
         } else {
+          // ESTALLA con SU voz real (contexto boxes_fell): una grabación +
+          // su transcripción — sin segunda línea de relleno (ya no hay TTS).
           this.sayInsult("boxes_fell");
-          const line2 = this.insults.pick("boxes_fell");
-          // T44: el segundo improperio era SOLO bocadillo (ya sin bocadillos) →
-          // pasa al subtítulo: sigue leyéndose el estallido, sin burbuja.
-          if (line2) this.d.hud.subtitle(line2, 3.2);
           this.boxes = null;
         }
       }
@@ -1293,9 +1291,11 @@ export class SherpasMatch {
 
   private lastEventTimes = new Map<string, number>();
 
+  /** IMPROPERIO por contexto — SIEMPRE una grabación real del banco del
+   *  jugador (elige audio.json → realVoice.contexts[contexto]); el handler de
+   *  InsultSaid resuelve fichero + transcripción + brazos en alto. */
   private sayInsult(context: string): void {
-    const line = this.insults.pick(context);
-    if (line) this.d.bus.emit("InsultSaid", { lineId: context, context, text: line });
+    this.d.bus.emit("InsultSaid", { lineId: context, context, text: "" });
   }
 
   // ---------------- T44: voz real del jugador (susto+desplazamiento / escora)
@@ -1388,17 +1388,26 @@ export class SherpasMatch {
     on("CondorLanded", () => {
       this.d.hud.subtitle(this.d.hud.t("hud.condorLanded"), 2.6);
       const line = this.insults.pick("condor_angry");
-      if (line) this.d.bus.emit("InsultSaid", { lineId: "condor_angry", context: "condor_angry", text: line });
+      if (line) this.d.bus.emit("InsultSaid", { lineId: "condor_angry", context: "condor_angry", text: "" });
     });
     on("CondorLeft", () => { /* se va solo: la carga desaparece con él */ });
     on("InsultSaid", (p) => {
-      // VOZ DEL RICACHÓN (petición del jugador: "escucharse gritando con tono
-      // burlesco"): TTS pregenerado con tono subido; si falta el fichero,
-      // speechSynthesis; si no hay voz, charla sintética cómica.
-      const dS = this.d.audio.shout(p.text, this.d.hud.lang);
+      // VOZ DEL RICACHÓN — SOLO GRABACIONES REALES DEL JUGADOR (petición:
+      // "Solo usar las audios que he subido yo, no uses los que generas tú").
+      // El fichero viene por evento o se elige por CONTEXTO (audio.json →
+      // realVoice.contexts); el subtítulo SIEMPRE es la transcripción de la
+      // grabación que suena. Cero TTS / speechSynthesis / gibberish.
+      const rvCfg = this.d.audio.realVoiceCfg;
+      const isScream = p.context === "rich_fell";
+      const text = isScream
+        ? p.text || (this.d.hud.lang === "en" ? "YOU BASTAAAARDS!!!" : "¡¡CABRONEEEEESSSS!!!!")
+        : (p.text || this.d.audio.realLineFor(p.file ?? null, this.d.hud.lang));
+      const dS = isScream
+        ? this.d.audio.shoutPath(rvCfg?.screamPath ?? "/audio/rico/es/cd0e9f33.mp3")
+        : this.d.audio.shoutRealFile(p.file ?? this.d.audio.pickBankFile(p.context) ?? "");
       // JUICE T38: bocanadas de furia sobre su cabeza — el enojo se VE.
       this.d.scene.fxRage(this.rich.bodies[RM.head].pos);
-      this.d.hud.subtitle(p.text, 3.8);
+      if (text) this.d.hud.subtitle(text, 3.8);
       // T44 — BRAZOS EN ALTO mientras EMITE UN SONIDO (petición: "para saber
       // que el ricachón habla... de forma muy clara y ostentosa"): gesto
       // "exaltado" durante la duración EFECTIVA del clip.

@@ -23,7 +23,7 @@ export interface SherpasEvents {
   TrashThrown: { position: { x: number; y: number; z: number } };
   UrineSplash: { position: { x: number; y: number; z: number }; wetAnchors: string[] };
   RichMassChanged: { massKg: number };
-  InsultSaid: { lineId: string; context: string; text: string };
+  InsultSaid: { lineId: string; context: string; text: string; /** fichero del banco real (opcional: si falta, elige por contexto) */ file?: string };
   RichBumpWall: { speed: number };
   // Pájaros
   BirdTelegraph: { birdId: number; targetPlayer: 0 | 1 };

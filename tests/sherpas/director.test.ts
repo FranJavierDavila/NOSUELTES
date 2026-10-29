@@ -59,14 +59,17 @@ const phase1 = () => data.phases[0]; // solo insultos, presupuesto 0.5/s
 const phase3 = () => data.phases[2]; // insulto + pájaro + comer + basura
 
 describe("EventDirector (doc 7.5)", () => {
-  it("los insultos (blandos) disparan con presupuesto y emiten línea", () => {
+  it("los insultos (blandos) disparan con presupuesto y emiten contexto", () => {
+    // VOZ 100 % REAL (petición del jugador): el director ya NO elige texto TTS —
+    // emite el CONTEXTO y el handler de InsultSaid resuelve la grabación real
+    // del banco (audio.json → realVoice.contexts) + su transcripción.
     const { dir, bus } = mkDirector();
-    const lines: string[] = [];
-    bus.on("InsultSaid", (e) => lines.push(e.text));
+    const evs: { context: string; text: string }[] = [];
+    bus.on("InsultSaid", (e) => evs.push({ context: e.context, text: e.text }));
     for (let i = 0; i < 10; i++) dir.tick(1, phase1()); // presupuesto acumula 0.5/s
     expect(dir.firedCount("insult")).toBeGreaterThanOrEqual(1);
-    expect(lines.length).toBe(dir.firedCount("insult"));
-    expect(lines[0].length).toBeGreaterThan(0);
+    expect(evs.length).toBe(dir.firedCount("insult"));
+    expect(evs[0]!.context.length).toBeGreaterThan(0);
   });
 
   it("cooldown: no repite el mismo evento antes de cooldownSeconds", () => {
