@@ -63,6 +63,21 @@ def get(url):
 
 MAX_YAW = math.radians(30)
 
+def hold_until_yaw(page, key, want, timeout_s=14):
+    """MANTIENE la tecla hasta que el yaw alcanza la meseta `want` (robusto a
+    fps: en software-GL el juego corre a ~4 fps y un hold FIJO de 1,6 s no
+    satura — la intención de T45 es REACH el tope, no contar segundos)."""
+    page.keyboard.down(key)
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        c = cam(page)
+        if c and (abs(c["yaw"] - want) < 0.055):
+            break
+        page.wait_for_timeout(120)
+    page.keyboard.up(key)
+    page.wait_for_timeout(250)  # asienta el suavizado (fundido exponencial)
+    return cam(page)
+
 with sync_playwright() as pw:
     browser = pw.chromium.launch(args=["--no-sandbox", "--autoplay-policy=no-user-gesture-required"])
     page = browser.new_page(viewport={"width": 1280, "height": 800})
@@ -107,10 +122,7 @@ with sync_playwright() as pw:
     print("CAPTURA t45-0-frente.png")
 
     # 4) Z → ÓRBITA IZQUIERDA: ~+30° y desplazamiento FÍSICO a la izquierda
-    page.keyboard.down("KeyZ")
-    page.wait_for_timeout(1600)
-    page.keyboard.up("KeyZ")
-    c1 = cam(page)
+    c1 = hold_until_yaw(page, "KeyZ", MAX_YAW)
     print(f"Z (izquierda): yaw={math.degrees(c1['yaw']):+.1f}° pos.x={c1['x']:.2f} (Δx={c1['x']-x0:+.2f} m)")
     assert c1["yaw"] > 0.42, f"Z no orbita a la izquierda: {math.degrees(c1['yaw']):.1f}°"
     assert abs(c1["yaw"] - MAX_YAW) < 0.06, f"Z no llega a ~30°: {math.degrees(c1['yaw']):.1f}°"
@@ -135,10 +147,7 @@ with sync_playwright() as pw:
     assert abs(c3["yaw"]) < 0.04, f"C no reencuadra la órbita: {c3['yaw']}"
 
     # 7) X → ÓRBITA DERECHA: ~-30° y desplazamiento físico a la derecha
-    page.keyboard.down("KeyX")
-    page.wait_for_timeout(1600)
-    page.keyboard.up("KeyX")
-    c4 = cam(page)
+    c4 = hold_until_yaw(page, "KeyX", -MAX_YAW)
     print(f"X (derecha): yaw={math.degrees(c4['yaw']):+.1f}° pos.x={c4['x']:.2f} (Δx={c4['x']-x0:+.2f} m)")
     assert c4["yaw"] < -0.42, f"X no orbita a la derecha: {math.degrees(c4['yaw']):.1f}°"
     assert abs(c4["yaw"] + MAX_YAW) < 0.06, f"X no llega a ~-30°: {math.degrees(c4['yaw']):.1f}°"
@@ -147,11 +156,8 @@ with sync_playwright() as pw:
     print("CAPTURA t45-2-orbita-derecha.png")
 
     # 8) TOPE: mantener Z mucho más de lo necesario → nunca pasa de +30°
-    page.keyboard.down("KeyZ")
-    page.wait_for_timeout(2600)
-    page.keyboard.up("KeyZ")
-    c5 = cam(page)
-    print(f"TOPE: tras 2,6 s manteniendo Z, yaw={math.degrees(c5['yaw']):+.2f}° (tope +30°)")
+    c5 = hold_until_yaw(page, "KeyZ", MAX_YAW)
+    print(f"TOPE: manteniendo Z hasta la meseta, yaw={math.degrees(c5['yaw']):+.2f}° (tope +30°)")
     assert c5["yaw"] <= MAX_YAW + 0.02, f"la órbita SE PASA de 30°: {math.degrees(c5['yaw']):.1f}°"
     assert c5["yaw"] >= MAX_YAW - 0.06, f"no alcanzó el tope: {math.degrees(c5['yaw']):.1f}°"
 

@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "model": "/models/escalador.glb",
+  "turnDeg": 0,
+  "tint": [
+    "#ffffff",
+    "#9fc4ff"
+  ]
+}

@@ -63,7 +63,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
   input.attach(window);
 
   const makePreviewScene = async (): Promise<SherpaScene> => {
-    const scene = await SherpaScene.create(opts.canvas, data.camera, data.hud, data.tuning.perf, data.vfx, data.wallGen.relief ?? null);
+    const scene = await SherpaScene.create(opts.canvas, data.camera, data.hud, data.tuning.perf, data.vfx, data.wallGen.relief ?? null, data.climber);
     const gen = new WallGenerator(
       { phases: data.phases, wallGen: data.wallGen, safePathRockRatio: 0.4 },
       Math.floor(Math.random() * 1000000),
@@ -109,7 +109,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     // motor WebGL sobre el mismo canvas deja el nuevo contexto sin pantalla
     // (el visible conserva el último frame del motor anterior).
     if (!state.scene) {
-      state.scene = await SherpaScene.create(opts.canvas, data.camera, data.hud, data.tuning.perf, data.vfx, data.wallGen.relief ?? null);
+      state.scene = await SherpaScene.create(opts.canvas, data.camera, data.hud, data.tuning.perf, data.vfx, data.wallGen.relief ?? null, data.climber);
     }
     await audio.start();
     audio.setMuted(choice.mute);
@@ -184,6 +184,13 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
           plantasDebug?: () => { x: number; y: number; z: number; scale: number }[];
         } | null;
         return sc?.plantasDebug?.() ?? [];
+      },
+      /** T49 MODELO GLB DE LOS ESCALADORES: estado de carga/mapeo/pose. */
+      climber: (): Record<string, unknown> | null => {
+        const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
+          getClimberInfo?: () => Record<string, unknown>;
+        } | null;
+        return sc?.getClimberInfo?.() ?? null;
       },
       depthProbe: () => {
         const sc = state.match?.["d"]?.scene as unknown as {

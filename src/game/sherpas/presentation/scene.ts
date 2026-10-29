@@ -9,6 +9,7 @@ import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
 import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
 import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
+import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import "@babylonjs/core/Meshes/Builders/boxBuilder";
 import "@babylonjs/core/Meshes/Builders/groundBuilder";
@@ -44,7 +45,7 @@ import { v3, vAdd, vScale, vSub, vLen, type V3 } from "../../physics/pbd/math";
 import type { HoldInstance } from "../physics/anchors";
 import type { DragReachInfo } from "../physics/sherpaRig";
 import { RichManSim, RM } from "../physics/richMan";
-import type { CameraData, HudData, PerfTuning, VfxData } from "../core/data";
+import type { CameraData, ClimberData, HudData, PerfTuning, VfxData } from "../core/data";
 import type { OrbitAxis } from "../input/input";
 import { orbitLimits, rotYxz, sunAzimuth } from "./orbitMath"; // T47: sol orbital + vista libre (puro)
 import type { WallLayout } from "../world/wallGenerator";
@@ -64,6 +65,7 @@ import { makeRng } from "../core/rng";
 import { generateStrataColor } from "../world/strataTexture"; // T44: estratos superpuestos
 import { resolvePlantasCfg, selectPlantSpots, stampTufts, type PlantasCfg } from "../world/plantas"; // T48: vegetación en hundimientos
 import { TriPlanarStrataPlugin } from "./wallStrataMaterial"; // T44: mapeado triplanar
+import { SkinnedClimberFactory, type ClimberInstance } from "./skinnedClimber"; // T49: modelo GLB de los escaladores
 
 interface Bone { a: number; b: number; mesh: Mesh; rest: number; offY?: number }
 interface RigVisual { bones: Bone[]; head: Mesh; roots: Mesh[] }
@@ -121,6 +123,18 @@ export class SherpaScene {
   private holdMeshes = new Map<string, Mesh>();
   private holdMasters = new Map<string, Mesh>();
   private rigVisuals: (RigVisual | null)[] = [null, null];
+  // T49 — MODELO GLB DE LOS ESCALADORES: la física POSEA el esqueleto Mixamo
+  // (climberPoseMath + skinnedClimber). La carga es ASÍNCRONA y arranca con el
+  // constructor (el menú da de margen); si al hacer spawn aún no llegó se
+  // nacen cápsulas y se INTERCAMBIAN solas cuando el .glb esté listo. Cualquier
+  // fallo → cápsulas de siempre (el juego nunca se rompe por un modelo).
+  private climberCfg: ClimberData | null = null;
+  private climberFactory: SkinnedClimberFactory | null = null;
+  private climberState: "off" | "loading" | "ready" | "error" = "off";
+  private climberError: string | null = null;
+  private skinned: (ClimberInstance | null)[] = [null, null];
+  private climberRig: (SherpaSpawnRig | null)[] = [null, null];
+  private climberPendingSwap: [boolean, boolean] = [false, false];
   private richVisual: {
     bones: Bone[]; head: Mesh;
     hat: Mesh; brim: Mesh; glasses: Mesh; // personalidad fija
@@ -263,7 +277,8 @@ export class SherpaScene {
   private rockJobByChunk = new Map<number, number>(); // chunk → jobId (stale/disposal)
   private rockSyncQueue: number[] = []; // fallback sin worker (1 chunk/frame)
 
-  private constructor(engine: AbstractEngine, backend: string, camData: CameraData, hudData: HudData, perf?: PerfTuning, vfx?: VfxData, relief?: ReliefData | null) {
+  private constructor(engine: AbstractEngine, backend: string, camData: CameraData, hudData: HudData, perf?: PerfTuning, vfx?: VfxData, relief?: ReliefData | null, climber?: ClimberData) {
+    this.climberCfg = climber ?? null;
     this.vfxData = vfx;
     // convención del proyecto: dato ausente → comportamiento anterior (pared plana).
     this.reliefCfg = relief ? reliefFromData(relief) : null;
@@ -406,9 +421,51 @@ export class SherpaScene {
       this.streaks.push(m);
       this.streakState.push({ x: 0, y: 0, z: 0, v: 6 });
     }
+    // T49: carga del modelo de escaladores en SEGUNDO PLANO (el menú da margen).
+    if (this.climberCfg?.enabled) {
+      this.climberState = "loading";
+      const cfg = this.climberCfg;
+      SkinnedClimberFactory.load(this.scene, cfg.model, { turnDeg: cfg.turnDeg ?? 0 })
+        .then((f) => {
+          if (this.disposed) { f.disposeContainer(); return; }
+          this.climberFactory = f;
+          this.climberState = "ready";
+          // los materiales del GLB llegan tras executeWhenReady: reactiva el
+          // mecanismo de dirty para su primera compilación y lo vuelve a
+          // bloquear tras un render (misma política PERF del constructor).
+          this.scene.blockMaterialDirtyMechanism = false;
+          const rearm = (): void => {
+            this.scene.blockMaterialDirtyMechanism = true;
+            this.scene.onAfterRenderObservable.removeCallback(rearm);
+          };
+          this.scene.onAfterRenderObservable.add(rearm);
+          this.swapPendingToSkinned();
+          // PRECALENTAMIENTO (lección T49): la primera partida compilaba los
+          // shaders del pipeline skinneado JUSTO al hacer spawn — un tirón de
+          // cientos de ms en software-GL que se comía las ventanas temporales
+          // de la E2E (T45: 23° vs 29°). Una instancia desechable, fuera de
+          // cámara pero SIEMPRE activa (alwaysSelectAsActiveMesh), fuerza la
+          // compilación durante el menú; se retira a los 3 renders.
+          const warm = f.instantiate(this.scene, "#ffffff", () => { }, () => { });
+          if (warm) {
+            for (const r of warm.rootNodes) r.position.set(0, -300, 0);
+            let renders = 0;
+            const retire = (): void => {
+              if (++renders < 3) return;
+              this.scene.onAfterRenderObservable.removeCallback(retire);
+              warm.dispose();
+            };
+            this.scene.onAfterRenderObservable.add(retire);
+          }
+        })
+        .catch((err: unknown) => {
+          this.climberState = "error";
+          this.climberError = err instanceof Error ? err.message : String(err);
+        });
+    }
   }
 
-  static async create(canvas: HTMLCanvasElement, camData: CameraData, hudData: HudData, perf?: PerfTuning, vfx?: VfxData, relief?: ReliefData | null): Promise<SherpaScene> {
+  static async create(canvas: HTMLCanvasElement, camData: CameraData, hudData: HudData, perf?: PerfTuning, vfx?: VfxData, relief?: ReliefData | null, climber?: ClimberData): Promise<SherpaScene> {
     // WebGL2 PRIMERO (fix Task 22, regresión del árbol roto): en iframes
     // cross-origin WebGPU cae a adaptador bloqueado → canvas negro a 6 fps.
     let engine: AbstractEngine;
@@ -421,7 +478,7 @@ export class SherpaScene {
       engine = gpu;
       backend = "WebGPU";
     }
-    return new SherpaScene(engine, backend, camData, hudData, perf, vfx, relief);
+    return new SherpaScene(engine, backend, camData, hudData, perf, vfx, relief, climber);
   }
 
   private makeDotTexture(): Texture {
@@ -437,8 +494,9 @@ export class SherpaScene {
     return dt as unknown as Texture;
   }
 
-  /** Suma una malla a los CASTERS de sombra del sol (luces y sombras). */
-  private castShadow(m: Mesh): void {
+  /** Suma una malla a los CASTERS de sombra del sol (luces y sombras).
+   *  T49: acepta AbstractMesh (las mallas skinneadas del GLB lo son). */
+  private castShadow(m: AbstractMesh): void {
     m.receiveShadows = false;
     this.shadowGen?.addShadowCaster(m, false);
   }
@@ -1384,6 +1442,13 @@ export class SherpaScene {
 
   spawnSherpa(player: 0 | 1, rig: SherpaSpawnRig): void {
     this.despawnSherpa(player);
+    this.climberRig[player] = rig; // T49: referencia para el intercambio en caliente
+    // T49: si el modelo GLB ya está listo, el escalador nace con piel.
+    if (this.climberState === "ready" && this.trySpawnSkinned(player)) {
+      this.climberPendingSwap[player] = false;
+      return;
+    }
+    this.climberPendingSwap[player] = this.climberState === "loading"; // llegará tarde: intercambiar
     const colors = SHERPA_COLORS[player];
     const body = mat(this.scene, `body${player}`, colors.body);
     const strap = mat(this.scene, `strap${player}`, colors.strap);
@@ -1421,7 +1486,59 @@ export class SherpaScene {
     (this.rigVisuals[player] as RigVisual & { pack?: Mesh }).pack = pack;
   }
 
+  /** T49: instancia el GLB para un jugador. false si no hay modelo o falla
+   *  (y la escena se queda con las cápsulas). */
+  private trySpawnSkinned(player: 0 | 1): boolean {
+    const cfg = this.climberCfg;
+    if (!this.climberFactory || !cfg) return false;
+    let inst: ClimberInstance | null = null;
+    try {
+      inst = this.climberFactory.instantiate(
+        this.scene,
+        cfg.tint[player] ?? "#ffffff",
+        (m) => this.castShadow(m),
+        (m) => { this.rockFill?.includedOnlyMeshes.push(m); }, // T44: relleno frío para el PBR
+      );
+    } catch (err) {
+      this.climberState = "error";
+      this.climberError = err instanceof Error ? err.message : String(err);
+      return false;
+    }
+    if (!inst) {
+      this.climberState = "error";
+      this.climberError = "faltan huesos controlados en el esqueleto";
+      return false;
+    }
+    this.skinned[player] = inst;
+    return true;
+  }
+
+  /** T49: cuando el .glb llega tarde, sustituye las cápsulas vivas por piel. */
+  private swapPendingToSkinned(): void {
+    for (const p of [0, 1] as const) {
+      if (this.climberPendingSwap[p] && this.climberRig[p]) this.spawnSherpa(p, this.climberRig[p]!);
+    }
+  }
+
+  /** Sonda E2E (T49): estado del modelo de escaladores. */
+  getClimberInfo(): {
+    state: string; error: string | null; turnDeg: number;
+    mapped: number; missing: string[]; heightModel: number; meshes: number; skeletons: number;
+    players: [boolean, boolean];
+  } {
+    const d = this.climberFactory
+      ? this.climberFactory.diagnostics
+      : { mapped: 0, missing: [] as string[], heightModel: 0, meshes: 0, skeletons: 0 };
+    return {
+      state: this.climberState, error: this.climberError, turnDeg: this.climberCfg?.turnDeg ?? 0,
+      ...d,
+      players: [this.skinned[0] !== null, this.skinned[1] !== null],
+    };
+  }
+
   despawnSherpa(player: 0 | 1): void {
+    this.climberPendingSwap[player] = false; // T49: un escalador retirado no se intercambia solo
+    if (this.skinned[player]) { this.skinned[player]!.dispose(); this.skinned[player] = null; }
     const vis = this.rigVisuals[player];
     if (!vis) return;
     for (const b of vis.bones) b.mesh.dispose();
@@ -1430,12 +1547,20 @@ export class SherpaScene {
   }
 
   syncSherpa(player: 0 | 1, solver: SherpaSyncSolver, alpha: number): void {
-    const vis = this.rigVisuals[player];
-    if (!vis) return;
     const lerp = (i: number): V3 => {
       const p = solver.getParticle(i);
       return vAdd(p.prev, vScale(vSub(p.pos, p.prev), alpha));
     };
+    // T49: con el modelo GLB la física POSEA el esqueleto (sin cápsulas).
+    const skin = this.skinned[player];
+    if (skin) {
+      const parts: { x: number; y: number; z: number }[] = new Array(15);
+      for (let i = 0; i < 15; i++) parts[i] = lerp(i);
+      skin.pose(parts);
+      return;
+    }
+    const vis = this.rigVisuals[player];
+    if (!vis) return;
     for (const b of vis.bones) {
       const pa = lerp(b.a);
       const pb = lerp(b.b);
@@ -2504,6 +2629,11 @@ export class SherpaScene {
 
   dispose(): void {
     this.disposed = true;
+    // T49: libera las instancias del modelo antes de tirar la escena.
+    for (const p of [0, 1] as const) {
+      this.climberPendingSwap[p] = false;
+      if (this.skinned[p]) { this.skinned[p]!.dispose(); this.skinned[p] = null; }
+    }
     this.destroyWorker();
     this.strataTex?.dispose(); // T44: capa de estratos compartida (los chunks no la tocan)
     this.strataTex = null;

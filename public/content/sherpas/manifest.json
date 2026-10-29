@@ -5,7 +5,7 @@
     "tuning.json", "anchor_types.json", "phases.json", "wall_gen.json",
     "events.json", "machines.json", "richman.json", "difficulty.json",
     "input_maps.json", "hud.json", "camera.json", "audio.json", "vfx.json",
-    "net.json", "voice.json",
+    "net.json", "voice.json", "climber.json",
     "insults_es.json", "insults_en.json", "strings_es.json", "strings_en.json"
   ]
 }

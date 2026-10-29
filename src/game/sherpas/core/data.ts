@@ -362,6 +362,22 @@ export interface VoiceData { opusBitrateKbps: number; echoCancellation: boolean;
 export type InsultBank = Record<string, string[]>;
 export type StringsData = Record<string, unknown>;
 
+/** T49 — MODELO GLB DE LOS ESCALADORES (petición del jugador: "cambiar el
+ *  modelo de los escaladores por un mesh nuevo escalador.glb"). El esqueleto
+ *  Mixamo se POSA desde la física cada frame (la física ES la animación);
+ *  sin clip ni retargeting. Si el .glb no carga → cápsulas de siempre. */
+export interface ClimberData {
+  enabled: boolean;
+  /** URL del .glb (servido desde /public/models). */
+  model: string;
+  /** Corrección de orientación del export sobre su eje vertical (grados):
+   *  0 = mira a la pared · 180 = mira a cámara (se ajusta con la E2E). */
+  turnDeg?: number;
+  /** Teñido del mono por jugador (multiplica la textura base PBR).
+   *  El primero en blanco deja el arte original del modelo. */
+  tint: [string, string];
+}
+
 export interface SherpasData {
   tuning: TuningData;
   anchorTypes: Record<string, AnchorTypeData>;
@@ -378,6 +394,7 @@ export interface SherpasData {
   vfx: VfxData;
   net: NetData;
   voice: VoiceData;
+  climber: ClimberData;
   insults: Record<"es" | "en", InsultBank>;
   strings: Record<"es" | "en", StringsData>;
   manifest: { schemaVersion: number; pack: string; files: string[] };
@@ -547,6 +564,14 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
       },
     },
     input_maps: { type: "object", required: ["players", "shared"], properties: { players: { type: "object" }, shared: { type: "object" } } },
+    climber: {
+      type: "object", required: ["enabled", "model", "tint"], properties: {
+        enabled: { type: "boolean" },
+        model: { type: "string", minLength: 1 },
+        turnDeg: { type: "number" },
+        tint: { type: "array", minItems: 2, maxItems: 2, items: { type: "string", pattern: "^#[0-9a-fA-F]{6}$" } },
+      },
+    },
     insults: { type: "object", minProperties: 1, additionalProperties: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } } },
     strings: { type: "object", minProperties: 1 },
   };
@@ -586,7 +611,7 @@ export async function loadSherpasData(loader: JsonLoader, basePath: string): Pro
   // esperaba al anterior) — con la latencia del preview eran varios segundos.
   // Todos son independientes: UNA ronda en paralelo (la validación es igual).
   const [manifest, tuning, anchorTypes, phasesDoc, wallGen, events, machines, richMan, difficulty,
-    inputMaps, hud, camera, audio, vfx, net, voice, insultsEs, insultsEn, stringsEs, stringsEn] =
+    inputMaps, hud, camera, audio, vfx, net, voice, climber, insultsEs, insultsEn, stringsEs, stringsEn] =
     await Promise.all([
       read<SherpasData["manifest"]>("manifest.json"),
       read<TuningData>("tuning.json", "tuning"),
@@ -604,6 +629,7 @@ export async function loadSherpasData(loader: JsonLoader, basePath: string): Pro
       read<VfxData>("vfx.json"),
       read<NetData>("net.json"),
       read<VoiceData>("voice.json"),
+      read<ClimberData>("climber.json", "climber"),
       read<InsultBank>("insults_es.json", "insults"),
       read<InsultBank>("insults_en.json", "insults"),
       read<StringsData>("strings_es.json", "strings"),
@@ -643,7 +669,7 @@ export async function loadSherpasData(loader: JsonLoader, basePath: string): Pro
 
   return {
     tuning, anchorTypes, phases, wallGen, events, machines, richMan, difficulty,
-    inputMaps, hud, camera, audio, vfx, net, voice,
+    inputMaps, hud, camera, audio, vfx, net, voice, climber,
     insults: { es: insultsEs, en: insultsEn },
     strings: { es: stringsEs, en: stringsEn },
     manifest,
