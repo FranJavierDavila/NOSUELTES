@@ -23,9 +23,9 @@ import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { Quaternion } from "@babylonjs/core/Maths/math.vector";
 import {
-  BONE_SPECS, bodyFacing, computePoseLocals, mat4FromQuatPos, mat4Invert, mat4Mul,
-  matchBoneName, v3t, vNorm, xfDir, xfPoint,
-  type BoneRest, type Mat4, type V3T,
+  BONE_SPECS, HELPER_SPECS, bodyFacing, captureModelRests, computePoseLocals,
+  mat4FromQuatPos, mat4Invert, matchBoneName, v3t, vNorm, xfDir, xfPoint,
+  type BoneKey, type BoneRest, type Mat4, type V3T,
 } from "./climberPoseMath";
 
 export interface ClimberLoadOpts {
@@ -40,6 +40,9 @@ export interface ClimberDiag {
   heightModel: number;   // alto del modelo medido en el .glb (unidades del export)
   meshes: number;
   skeletons: number;
+  /** T49b: error de reproducción del reposo (rad+u). ~0 = el bind se reproduce
+   *  EXACTO; >0.05 = captura rota → la piel saldría estirada/torcida. */
+  restError: number;
 }
 
 const CONTROLLED = BONE_SPECS.map((s) => s.key);
@@ -67,7 +70,7 @@ export class SkinnedClimberFactory {
     }
     const heightModel = Number.isFinite(minY) && Number.isFinite(maxY) ? maxY - minY : 0;
     return new SkinnedClimberFactory(container, opts, {
-      mapped: 0, missing: [], heightModel, meshes,
+      mapped: 0, missing: [], heightModel, meshes, restError: 0,
       skeletons: container.skeletons.length,
     });
   }
@@ -107,14 +110,30 @@ export class SkinnedClimberFactory {
     walk(entries.rootNodes as unknown as Iterable<AbstractMesh | TransformNode>);
 
     // --- mapeo nombre → nodo (huesos del esqueleto clonado) ---
-    const nodeBy = new Map<string, TransformNode>();
+    const nodeBy = new Map<BoneKey, TransformNode>();
     const skels: Skeleton[] = entries.skeletons ?? [];
+    // ayudantes "mean" (falanges 1 de los dedos): se ACUMULAN todos los
+    // matches para promediar su posición local (dirección de la mano).
+    const meanAcc = new Map<BoneKey, { n: number; x: number; y: number; z: number; q: Quaternion }>();
+    const quatOf = (n: TransformNode): Quaternion =>
+      n.rotationQuaternion
+        ?? Quaternion.FromEulerAngles(n.rotation.x, n.rotation.y, n.rotation.z);
     for (const sk of skels) {
       for (const b of sk.bones) {
         const m = matchBoneName(b.name);
         if (!m) continue;
         const node = b.getTransformNode();
-        if (node && !nodeBy.has(m.key)) nodeBy.set(m.key, node);
+        if (!node) continue;
+        const helper = HELPER_SPECS.find((h) => h.key === m.key);
+        if (helper?.mean) {
+          const q = quatOf(node);
+          const acc = meanAcc.get(m.key) ?? { n: 0, x: 0, y: 0, z: 0, q };
+          acc.n++; acc.x += node.position.x; acc.y += node.position.y; acc.z += node.position.z;
+          meanAcc.set(m.key, acc);
+          if (!nodeBy.has(m.key)) nodeBy.set(m.key, node);
+          continue;
+        }
+        if (!nodeBy.has(m.key)) nodeBy.set(m.key, node);
       }
     }
     // ayudantes (direcciones de reposo) también viven como nodos del clon
@@ -132,13 +151,13 @@ export class SkinnedClimberFactory {
       return null;
     }
 
-    // --- captura del REPOSO (T-pose del export) en ESPACIO MODELO ---
-    // Babylon compone el skinning como v_world = meshWorld · boneFinal ·
-    // bindInv · v, donde boneFinal son los LOCALES de nodos (espacio del
-    // esqueleto) y meshWorld es la cadena raíz del export. Por eso la pose
-    // debe expresarse en espacio modelo (locales), NO en mundo: las
-    // partículas de física (metros) se convierten con M_W2M, que además
-    // absorbe la escala del export (los Sketchfab de Blender traen ×0,01).
+    // --- captura del REPOSO en ESPACIO MODELO (T49b: corrige el bug de piel
+    // estirada/torcida) --- Babylon compone el skinning como v_world =
+    // meshWorld · boneFinal · bindInv · v: boneFinal son los LOCALES de nodos
+    // (espacio del esqueleto) y meshWorld es la cadena raíz del export. Por
+    // eso la pose debe expresarse en espacio modelo: las partículas de física
+    // (metros) se convierten con M_W2M, que absorbe la escala del export (los
+    // Sketchfab de Blender traen ×0,01).
     for (const n of nodeBy.values()) n.computeWorldMatrix(true);
     // M_W2M = mundo(_rootJoint)⁻¹ (nodo padre de Hips: raíz del esqueleto)
     const hipsNode = nodeBy.get("hips")!;
@@ -148,45 +167,42 @@ export class SkinnedClimberFactory {
       parentNode.computeWorldMatrix(true);
       mW2M = mat4Invert(Array.from(parentNode.getWorldMatrix().m));
     }
-    // local del nodo en espacio modelo: posición + cuaternión del export
-    const localOf = (k: string): { p: V3T; m: Mat4 } => {
-      const n = nodeBy.get(k)!;
-      const q = n.rotationQuaternion
-        ?? Quaternion.FromEulerAngles(n.rotation.x, n.rotation.y, n.rotation.z);
-      const m = mat4FromQuatPos({ x: q.x, y: q.y, z: q.z, w: q.w }, { x: n.position.x, y: n.position.y, z: n.position.z });
-      return { p: { x: n.position.x, y: n.position.y, z: n.position.z }, m };
-    };
-
-    // Giro del modelo sobre su eje vertical EN ESPACIO MODELO (Mixamo: +Y arriba)
-    const turn = ((this.opts.turnDeg || 0) * Math.PI) / 180;
-    const turnM: Mat4 | null = Math.abs(turn) > 1e-6 ? rotYMat(turn) : null;
-
-    const rests: BoneRest[] = [];
-    const nodeList: TransformNode[] = [];
-    const specIndexByKey = new Map<string, number>(BONE_SPECS.map((s, i) => [s.key, i]));
-    for (let i = 0; i < BONE_SPECS.length; i++) {
-      const spec = BONE_SPECS[i];
-      const self = localOf(spec.key);
-      const child = spec.child ? localOf(spec.child) : null;
-      let restDir = child
-        ? vNorm({ x: child.p.x - self.p.x, y: child.p.y - self.p.y, z: child.p.z - self.p.z })
-        // sin hijo útil: el eje Y del propio hueso (convención Mixamo: Y a lo largo del hueso)
-        : boneUpAxis(self.m);
-      let restM = self.m;
-      if (turnM) {
-        restDir = xfDir(turnM, restDir);
-        restM = mat4Mul(restM, turnM); // primero el reposo, después el giro
+    // BUG T49: antes se capturaba el reposo con los LOCALES CRUDOS de cada
+    // nodo (relativos a su padre) tratándolos como espacio modelo. Con huesos
+    // muy rotados en el bind (hombros de este export) la restDir salía
+    // INVERTIDA y la cadena no reproducía el bind → malla destrozada. Ahora
+    // las locales se COMPONEN en cadena (captureModelRests) y el resultado se
+    // AUTOVERIFICA con el teorema de reproducción (restError ≈ 0).
+    const locals = new Map<BoneKey, Mat4>();
+    for (const [key, node] of nodeBy) {
+      const helper = HELPER_SPECS.find((h) => h.key === key);
+      if (helper?.mean) {
+        const acc = meanAcc.get(key);
+        if (acc) {
+          locals.set(key, mat4FromQuatPos(
+            { x: acc.q.x, y: acc.q.y, z: acc.q.z, w: acc.q.w },
+            { x: acc.x / acc.n, y: acc.y / acc.n, z: acc.z / acc.n }, // media de falanges
+          ));
+          continue;
+        }
       }
-      // ortonormaliza la rotación de reposo (por si el export arrastra escala)
-      restM = orthonormalized(restM);
-      const parentKey = BONE_SPECS[i].parent;
-      rests.push({
-        key: spec.key, restM, restDir, specIndex: i,
-        parentIndex: parentKey ? (specIndexByKey.get(parentKey) ?? -1) : -1,
-        postTurn: turnM ?? undefined, // el modo "cuerpo" no hereda el turno del reposo
-      });
-      nodeList.push(nodeBy.get(spec.key)!);
+      const q = quatOf(node);
+      locals.set(key, mat4FromQuatPos(
+        { x: q.x, y: q.y, z: q.z, w: q.w },
+        { x: node.position.x, y: node.position.y, z: node.position.z },
+      ));
     }
+    // Giro del modelo sobre su eje vertical EN ESPACIO MODELO (Mixamo: +Y arriba)
+    const turnRad = ((this.opts.turnDeg || 0) * Math.PI) / 180;
+    const capture = captureModelRests(locals, turnRad);
+    this.diag.restError = capture.maxRestError;
+    if (capture.maxRestError > 0.02) {
+      // nunca debería pasar (el teorema se cumple por construcción): si pasa,
+      // algo cambió en el export y hay que verlo en consola de la E2E.
+      console.warn(`[T49b] el reposo NO reproduce el bind (error ${capture.maxRestError.toFixed(4)})`);
+    }
+    const rests: BoneRest[] = capture.rests;
+    const nodeList: TransformNode[] = BONE_SPECS.map((s) => nodeBy.get(s.key)!);
 
     // --- material: dieléctrico + tinte + piso de legibilidad ---
     // El glTF por defecto deja metallic=1.0 en los materiales que no lo fijan:
@@ -219,36 +235,6 @@ export class SkinnedClimberFactory {
   disposeContainer(): void {
     try { this.container.dispose(); } catch { /* ya liberado */ }
   }
-}
-
-/** RotY(θ) en almacenamiento de filas (transpuesta de la matriz de columnas). */
-function rotYMat(rad: number): Mat4 {
-  const c = Math.cos(rad), s = Math.sin(rad);
-  return [c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, 0, 0, 0, 1];
-}
-
-/** Eje +Y LOCAL de un hueso en espacio modelo (convención Mixamo). */
-function boneUpAxis(worldM: Mat4): V3T {
-  // columna Y de R_col = fila Y del almacenamiento de filas
-  return vNorm({ x: worldM[4], y: worldM[5], z: worldM[6] });
-}
-
-/** Elimina escala/cizalla de la parte de rotación (Gram-Schmidt por filas). */
-function orthonormalized(m: Mat4): Mat4 {
-  const c0 = vNorm({ x: m[0], y: m[1], z: m[2] });
-  let c1 = { x: m[4], y: m[5], z: m[6] };
-  const d0 = c0.x * c1.x + c0.y * c1.y + c0.z * c1.z;
-  c1 = vNorm({ x: c1.x - c0.x * d0, y: c1.y - c0.y * d0, z: c1.z - c0.z * d0 });
-  const c2 = vNorm({
-    x: c0.y * c1.z - c0.z * c1.y,
-    y: c0.z * c1.x - c0.x * c1.z,
-    z: c0.x * c1.y - c0.y * c1.x,
-  });
-  const o = m.slice();
-  o[0] = c0.x; o[1] = c0.y; o[2] = c0.z;
-  o[4] = c1.x; o[5] = c1.y; o[6] = c1.z;
-  o[8] = c2.x; o[9] = c2.y; o[10] = c2.z;
-  return o;
 }
 
 /** Un escalador instanciado (P0 o P1). pose() una vez por frame. */

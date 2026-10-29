@@ -249,64 +249,70 @@ const footTail = (side: "L" | "R") => (j: V3T[], _f: V3T, restDir: V3T): V3T => 
   return vAdd(foot, vScale(dir, 0.18));
 };
 
-/** Tabla en ORDEN TOPOLÓGICO (padres antes que hijos). Nombres con sufijos
- *  numéricos del export (Sketchfab añade _NNN; toleramos también sin sufijo). */
+/** Tabla en ORDEN TOPOLÓGICO (padres antes que hijos). T49c: el prefijo
+ *  "mixamorig:" es OPCIONAL (los rigs re-armados en Blender/Mixamo suelen
+ *  perderlo) y toleramos sufijos numéricos "_NNN" de Sketchfab/Fuse. */
 export const BONE_SPECS: BoneSpecDef[] = [
-  { key: "hips", re: /^mixamorig:Hips(_\d+)?$/, parent: null, child: "spine", mode: "cuerpo",
+  { key: "hips", re: /^Hips(_\d+)?$/, parent: null, child: "spine", mode: "cuerpo",
     head: jPelvis, tail: spineAt(0.30) },
-  { key: "spine", re: /^mixamorig:Spine(_\d+)?$/, parent: "hips", child: "spine1", mode: "arco",
+  { key: "spine", re: /^Spine(_\d+)?$/, parent: "hips", child: "spine1", mode: "arco",
     head: spineAt(0.30), tail: spineAt(0.55) },
-  { key: "spine1", re: /^mixamorig:Spine1(_\d+)?$/, parent: "spine", child: "spine2", mode: "arco",
+  { key: "spine1", re: /^Spine1(_\d+)?$/, parent: "spine", child: "spine2", mode: "arco",
     head: spineAt(0.55), tail: spineAt(0.80) },
-  { key: "spine2", re: /^mixamorig:Spine2(_\d+)?$/, parent: "spine1", child: "neck", mode: "arco",
+  { key: "spine2", re: /^Spine2(_\d+)?$/, parent: "spine1", child: "neck", mode: "arco",
     head: spineAt(0.80), tail: jChest },
-  { key: "neck", re: /^mixamorig:Neck(_\d+)?$/, parent: "spine2", child: "head", mode: "arco",
+  { key: "neck", re: /^Neck(_\d+)?$/, parent: "spine2", child: "head", mode: "arco",
     head: jChest, tail: (j) => vMix(jChest(j), jHead(j), 0.25) },
-  { key: "head", re: /^mixamorig:Head(_\d+)?$/, parent: "neck", child: "headTop", mode: "arco",
+  { key: "head", re: /^Head(_\d+)?$/, parent: "neck", child: "headTop", mode: "arco",
     head: (j) => vMix(jChest(j), jHead(j), 0.35), tail: headTail },
-  { key: "shL", re: /^mixamorig:LeftShoulder(_\d+)?$/, parent: "spine2", child: "armL", mode: "arco",
+  { key: "shL", re: /^LeftShoulder(_\d+)?$/, parent: "spine2", child: "armL", mode: "arco",
     head: (j) => vMix(jChest(j), j[P.shL], 0.28), tail: (j) => j[P.shL] },
-  { key: "armL", re: /^mixamorig:LeftArm(_\d+)?$/, parent: "shL", child: "farmL", mode: "arco",
+  { key: "armL", re: /^LeftArm(_\d+)?$/, parent: "shL", child: "farmL", mode: "arco",
     head: (j) => j[P.shL], tail: (j) => j[P.elbowL] },
-  { key: "farmL", re: /^mixamorig:LeftForeArm(_\d+)?$/, parent: "armL", child: "handL", mode: "arco",
+  { key: "farmL", re: /^LeftForeArm(_\d+)?$/, parent: "armL", child: "handL", mode: "arco",
     head: (j) => j[P.elbowL], tail: (j) => j[P.handL] },
-  { key: "handL", re: /^mixamorig:LeftHand(_\d+)?$/, parent: "farmL", child: "fingersL", mode: "arco",
+  { key: "handL", re: /^LeftHand(_\d+)?$/, parent: "farmL", child: "fingersL", mode: "arco",
     head: (j) => j[P.handL], tail: handTail("L") },
-  { key: "shR", re: /^mixamorig:RightShoulder(_\d+)?$/, parent: "spine2", child: "armR", mode: "arco",
+  { key: "shR", re: /^RightShoulder(_\d+)?$/, parent: "spine2", child: "armR", mode: "arco",
     head: (j) => vMix(jChest(j), j[P.shR], 0.28), tail: (j) => j[P.shR] },
-  { key: "armR", re: /^mixamorig:RightArm(_\d+)?$/, parent: "shR", child: "farmR", mode: "arco",
+  { key: "armR", re: /^RightArm(_\d+)?$/, parent: "shR", child: "farmR", mode: "arco",
     head: (j) => j[P.shR], tail: (j) => j[P.elbowR] },
-  { key: "farmR", re: /^mixamorig:RightForeArm(_\d+)?$/, parent: "armR", child: "handR", mode: "arco",
+  { key: "farmR", re: /^RightForeArm(_\d+)?$/, parent: "armR", child: "handR", mode: "arco",
     head: (j) => j[P.elbowR], tail: (j) => j[P.handR] },
-  { key: "handR", re: /^mixamorig:RightHand(_\d+)?$/, parent: "farmR", child: "fingersR", mode: "arco",
+  { key: "handR", re: /^RightHand(_\d+)?$/, parent: "farmR", child: "fingersR", mode: "arco",
     head: (j) => j[P.handR], tail: handTail("R") },
-  { key: "uplegL", re: /^mixamorig:LeftUpLeg(_\d+)?$/, parent: "hips", child: "legL", mode: "arco",
+  { key: "uplegL", re: /^LeftUpLeg(_\d+)?$/, parent: "hips", child: "legL", mode: "arco",
     head: (j) => j[P.hipL], tail: (j) => j[P.kneeL] },
-  { key: "legL", re: /^mixamorig:LeftLeg(_\d+)?$/, parent: "uplegL", child: "footL", mode: "arco",
+  { key: "legL", re: /^LeftLeg(_\d+)?$/, parent: "uplegL", child: "footL", mode: "arco",
     head: (j) => j[P.kneeL], tail: (j) => j[P.footL] },
-  { key: "footL", re: /^mixamorig:LeftFoot(_\d+)?$/, parent: "legL", child: "toeL", mode: "arco",
+  { key: "footL", re: /^LeftFoot(_\d+)?$/, parent: "legL", child: "toeL", mode: "arco",
     head: (j) => j[P.footL], tail: footTail("L") },
-  { key: "uplegR", re: /^mixamorig:RightUpLeg(_\d+)?$/, parent: "hips", child: "legR", mode: "arco",
+  { key: "uplegR", re: /^RightUpLeg(_\d+)?$/, parent: "hips", child: "legR", mode: "arco",
     head: (j) => j[P.hipR], tail: (j) => j[P.kneeR] },
-  { key: "legR", re: /^mixamorig:RightLeg(_\d+)?$/, parent: "uplegR", child: "footR", mode: "arco",
+  { key: "legR", re: /^RightLeg(_\d+)?$/, parent: "uplegR", child: "footR", mode: "arco",
     head: (j) => j[P.kneeR], tail: (j) => j[P.footR] },
-  { key: "footR", re: /^mixamorig:RightFoot(_\d+)?$/, parent: "legR", child: "toeR", mode: "arco",
+  { key: "footR", re: /^RightFoot(_\d+)?$/, parent: "legR", child: "toeR", mode: "arco",
     head: (j) => j[P.footR], tail: footTail("R") },
 ];
 
 /** Ayudantes (NO se posan): dan direcciones de reposo fiables. */
 export const HELPER_SPECS: { key: BoneKey; re: RegExp; mean?: boolean }[] = [
-  { key: "toeL", re: /^mixamorig:LeftToeBase(_\d+)?$/ },
-  { key: "toeR", re: /^mixamorig:RightToeBase(_\d+)?$/ },
-  { key: "headTop", re: /^mixamorig:HeadTop_End/ },
-  { key: "fingersL", re: /^mixamorig:LeftHand(Index|Middle|Ring|Pinky|Thumb)1(_\d+)?$/, mean: true },
-  { key: "fingersR", re: /^mixamorig:RightHand(Index|Middle|Ring|Pinky|Thumb)1(_\d+)?$/, mean: true },
+  { key: "toeL", re: /^LeftToeBase(_\d+)?$/ },
+  { key: "toeR", re: /^RightToeBase(_\d+)?$/ },
+  { key: "headTop", re: /^HeadTop_End/ },
+  { key: "fingersL", re: /^LeftHand(Index|Middle|Ring|Pinky|Thumb)1(_\d+)?$/, mean: true },
+  { key: "fingersR", re: /^RightHand(Index|Middle|Ring|Pinky|Thumb)1(_\d+)?$/, mean: true },
 ];
+
+/** Quita el prefijo de Mixamo/Fuse ("mixamorig:", "mixamorig1:") para que el
+ *  emparejamiento funcione también con rigs re-armados sin prefijo (T49c). */
+const boneBareName = (name: string): string => name.replace(/^mixamorig\d*:/i, "");
 
 /** Empareja un nombre de nodo/hueso con un spec (hueso o ayudante). */
 export function matchBoneName(name: string): { key: BoneKey; helper: boolean } | null {
-  for (const s of BONE_SPECS) if (s.re.test(name)) return { key: s.key, helper: false };
-  for (const s of HELPER_SPECS) if (s.re.test(name)) return { key: s.key, helper: true };
+  const n = boneBareName(name);
+  for (const s of BONE_SPECS) if (s.re.test(n)) return { key: s.key, helper: false };
+  for (const s of HELPER_SPECS) if (s.re.test(n)) return { key: s.key, helper: true };
   return null;
 }
 
@@ -325,6 +331,134 @@ export interface BoneRest {
 }
 
 export interface BoneLocal { pos: V3T; quat: QuatT }
+
+// ---------- captura del REPOSO en ESPACIO MODELO (T49b) ----------
+
+/** Elimina escala/cizalla de la parte de rotación (Gram-Schmidt por columnas
+ *  del R_col, almacenamiento de filas). Necesaria: algunos exports arrastran
+ *  escala ~1.000006 en los huesos y la ortonormalización la absorbe. */
+export function orthonormalized(m: Mat4): Mat4 {
+  const c0 = vNorm({ x: m[0], y: m[1], z: m[2] });
+  let c1 = { x: m[4], y: m[5], z: m[6] };
+  const d0 = c0.x * c1.x + c0.y * c1.y + c0.z * c1.z;
+  c1 = vNorm({ x: c1.x - c0.x * d0, y: c1.y - c0.y * d0, z: c1.z - c0.z * d0 });
+  const c2 = vNorm({
+    x: c0.y * c1.z - c0.z * c1.y,
+    y: c0.z * c1.x - c0.x * c1.z,
+    z: c0.x * c1.y - c0.y * c1.x,
+  });
+  const o = m.slice();
+  o[0] = c0.x; o[1] = c0.y; o[2] = c0.z;
+  o[4] = c1.x; o[5] = c1.y; o[6] = c1.z;
+  o[8] = c2.x; o[9] = c2.y; o[10] = c2.z;
+  return o;
+}
+
+/** Padre de cada ayudante que BONE_SPECS usa como "child" (todos cuelgan de
+ *  un hueso controlado: su matriz de modelo se compone por el mismo camino). */
+const HELPER_PARENT: Partial<Record<BoneKey, BoneKey>> = {
+  toeL: "footL", toeR: "footR", headTop: "head", fingersL: "handL", fingersR: "handR",
+};
+
+export interface RestCapture {
+  rests: BoneRest[];
+  /** Posición de cada hueso/ayudante en espacio modelo (unidades del export). */
+  modelPos: Map<BoneKey, V3T>;
+  /** Máximo error al REPRODUCIR los locales del bind con la cadena capturada
+   *  (rad de rotación + unidades de traslación). Debe ser ~0 (fp): si no, la
+   *  captura está rota y la piel saldrá estirada/torcida. */
+  maxRestError: number;
+}
+
+/**
+ * T49b — CAPTURA DEL REPOSO EN ESPACIO MODELO.
+ *
+ * BUG T49 (piel estirada/torcida con el escalador.glb): el reposo se capturaba
+ * con las transformaciones LOCALES de cada nodo (relativas a SU padre) pero se
+ * usaban como si viviesen en espacio modelo. Con huesos muy rotados en el bind
+ * (hombros de este export: cuaternión [-0.54,-0.48,0.58,-0.38]) la dirección
+ * restDir salía INVERTIDA — el hombro izquierdo "apuntaba" al pecho en vez de
+ * hacia fuera — y la cadena reconstruida no reproducía el bind: el skinning
+ * deformaba la malla aunque la física estuviera en reposo.
+ *
+ * Aquí la cadena se COMPONE de verdad: model_i = local_i · model_padre (fila:
+ * world = local·worldDelPadre). Con eso reproducir el bind es un teorema que
+ * se autoverifica (maxRestError) y el delta de posado se aplica sobre el
+ * marco correcto.
+ *
+ * @param locals  matriz LOCAL (rot+pos, sin escala) por clave — huesos de
+ *                BONE_SPECS y ayudantes de HELPER_SPECS presentes.
+ * @param turnRad giro del modelo sobre Y (0 = sin giro). Se aplica al reposo
+ *                DESPUÉS de capturarlo (restM = model·turn); entre padre e
+ *                hijo se cancela en los locales, y el modo "cuerpo" lo lleva
+ *                en postTurn.
+ */
+export function captureModelRests(locals: Map<BoneKey, Mat4>, turnRad = 0): RestCapture {
+  const specIndexByKey = new Map<string, number>(BONE_SPECS.map((s, i) => [s.key, i]));
+  const model = new Map<BoneKey, Mat4>();
+  const modelPos = new Map<BoneKey, V3T>();
+
+  const modelOf = (key: BoneKey): Mat4 => {
+    const hit = model.get(key);
+    if (hit) return hit;
+    const local = locals.get(key);
+    if (!local) throw new Error(`captureModelRests: falta la matriz local de "${key}"`);
+    const specIdx = specIndexByKey.get(key);
+    const parentKey = HELPER_PARENT[key]
+      ?? (specIdx !== undefined ? BONE_SPECS[specIdx].parent : null)
+      ?? null;
+    const parentM = parentKey ? modelOf(parentKey) : mat4Identity();
+    const m = mat4Mul(local, parentM);
+    model.set(key, m);
+    modelPos.set(key, mat4Translation(m));
+    return m;
+  };
+  for (const s of BONE_SPECS) modelOf(s.key);
+  for (const h of HELPER_SPECS) if (locals.has(h.key)) modelOf(h.key);
+
+  // Verificación del teorema: world_i = model_i (rot) + modelPos_i debe
+  // reproducir los locales originales al componer la cadena (sin turn: el
+  // turn se aplica después y se cancela solo entre padre e hijo).
+  const checkWorlds: Mat4[] = BONE_SPECS.map((s) => {
+    const m = orthonormalized(model.get(s.key)!);
+    const p = modelPos.get(s.key)!;
+    return [m[0], m[1], m[2], 0, m[4], m[5], m[6], 0, m[8], m[9], m[10], 0, p.x, p.y, p.z, 1];
+  });
+  let maxRestError = 0;
+  for (let i = 0; i < BONE_SPECS.length; i++) {
+    const spec = BONE_SPECS[i];
+    const parentW = spec.parent
+      ? checkWorlds[specIndexByKey.get(spec.parent)!]
+      : mat4Identity();
+    const rec = mat4Mul(checkWorlds[i], mat4Invert(parentW));
+    const orig = locals.get(spec.key)!;
+    const qA = quatFromMat4(rec), qB = quatFromMat4(orig);
+    const dot = Math.min(1, Math.abs(qA.x * qB.x + qA.y * qB.y + qA.z * qB.z + qA.w * qB.w));
+    maxRestError = Math.max(maxRestError, 2 * Math.acos(dot) + vLen(vSub(mat4Translation(rec), mat4Translation(orig))));
+  }
+
+  const turnM = Math.abs(turnRad) > 1e-9 ? mat4RotY(turnRad) : null;
+  const rests: BoneRest[] = BONE_SPECS.map((spec, i) => {
+    const self = model.get(spec.key)!;
+    const childKey = spec.child;
+    let restDir = childKey && model.has(childKey)
+      ? vNorm(vSub(modelPos.get(childKey)!, modelPos.get(spec.key)!))
+      // sin hijo útil: eje +Y del hueso en espacio modelo (convención Mixamo)
+      : vNorm({ x: self[4], y: self[5], z: self[6] });
+    let restM = orthonormalized(self);
+    if (turnM) {
+      restDir = xfDir(turnM, restDir);          // el objetivo de posado NO está girado
+      restM = mat4Mul(restM, turnM);            // primero el reposo, después el giro
+    }
+    return {
+      key: spec.key, restM, restDir, specIndex: i,
+      parentIndex: spec.parent ? (specIndexByKey.get(spec.parent) ?? -1) : -1,
+      postTurn: spec.mode === "cuerpo" ? (turnM ?? undefined) : undefined,
+    };
+  });
+
+  return { rests, modelPos, maxRestError };
+}
 
 /**
  * Calcula las transformaciones LOCALES de los huesos controlados.

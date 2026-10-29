@@ -93,8 +93,11 @@ with sync_playwright() as pw:
     assert c["mapped"] >= 20, f"huesos controlados insuficientes: {c['mapped']}"
     assert not c["missing"], f"huesos ausentes: {c['missing']}"
     assert c["heightModel"] > 0.5, f"alto del modelo absurdo: {c['heightModel']}"
+    # T49b: el reposo capturado debe REPRODUCIR el bind del export (error ~0).
+    # Si esto se dispara, la piel saldría estirada/torcida otra vez.
+    assert c.get("restError", 1) < 0.05, f"reposo no reproduce el bind: restError={c.get('restError')}"
     print(f"MODELO: state={c['state']} mapped={c['mapped']}/20 alto={c['heightModel']:.2f}u "
-          f"mallas={c['meshes']} esqueletos={c['skeletons']} players={c['players']}")
+          f"mallas={c['meshes']} esqueletos={c['skeletons']} restError={c.get('restError', -1):.2e} players={c['players']}")
     page.wait_for_timeout(1200)  # asienta frames con la pose física activa
     page.screenshot(path=f"{OUT}/t49-0-escaladores-glb.png")
     print("CAPTURA t49-0-escaladores-glb.png")
