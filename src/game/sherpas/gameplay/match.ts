@@ -108,7 +108,13 @@ export class SherpasMatch {
   private knownHolds = new Set<string>();
   private tickCounter = 0;
   private unsubscribes: (() => void)[] = [];
-  private pendingBubbles: { text: string; until: number }[] = [];
+  // T44 — BOCADILLOS FUERA (petición del jugador: "vamos a eliminar los
+  // bocadillos de momento"): los insultos viven como VOZ + subtítulo.
+  // VOZ REAL DEL JUGADOR: disparadores (susto+desplazamiento / escora fuerte).
+  private realVoiceLast = -1e9;
+  private tiltVoiceArmed = false;
+  private richSlidePrev = 0;
+  private lastSimDt = 1 / 60;
   private wallFrontZ: number;
   readonly wallWidthM: number;
   // CAJAS DEL RICACHÓN (petición del jugador): apiladas sobre la tabla, PESAN,
@@ -480,6 +486,7 @@ export class SherpasMatch {
   private simTick(dt: number): void {
     this.simTime += dt;
     this.tickCounter++;
+    this.lastSimDt = dt;
 
     const intents = this.d.input.poll(dt);
     if (!this.frozen) this.applyIntents(intents, dt);
@@ -503,6 +510,7 @@ export class SherpasMatch {
         this.d.hud.subtitle(this.d.hud.fmt("hud.twoHandsFall", { name: `P${p + 1}` }), 2.8);
         this.d.scene.shake(this.d.hud.wantsReduceShake ? 0.015 : 0.05);
         this.brain.panic();
+        this.richScareVoice();
       }
       // SEGURO DE CUERDA (Task 36): la cuerda de porteo ATRAPA la caída —
       // chicote sonoro + aviso legible + propina + susto del ricachón. La caída
@@ -526,7 +534,8 @@ export class SherpasMatch {
         // JUICE T38: chispas ámbar en la cintura — el chicote se VE agarrar.
         this.d.scene.fxSpark(this.sherpas[p].rig.particles[P.pelvisC].pos);
         this.propina.add(this.data.tuning.fall.ropeCatchPropina ?? -3, "rope_catch", this.d.bus);
-        this.brain.panic(); // el tirón lo despierta/soresalta
+        this.brain.panic();
+        this.richScareVoice(); // el tirón lo despierta/soresalta
         this.d.bus.emit("RopeCaught", { playerId: p, dropM: Math.round(info.rope.dropM * 100) / 100 });
       }
       if (info.rope.haulStart) {
@@ -568,6 +577,7 @@ export class SherpasMatch {
         this.d.bus.emit("PlayerFell", { playerId: p, cause: info.slippedByTwoHands ? "two_hands" : "no_grips" });
         this.sayInsult("fall");
         this.brain.panic();
+        this.richScareVoice();
       }
     }
 
@@ -701,6 +711,20 @@ export class SherpasMatch {
       },
     });
     const ps = this.plankState;
+    // T44 — VOZ REAL POR ESCORA (petición: "...o la tabla se inclina bastante"):
+    // al alcanzar la escora dramática UNA VEZ por episodio suelta una voz real
+    // del banco del jugador (rearmado al recuperarse + cooldown global).
+    const rvCfg = this.d.audio.realVoiceCfg;
+    if (rvCfg && ps) {
+      this.trackRichSlide(ps);
+      const tilted = !ps.grounded && !ps.fellOff && Math.abs(ps.tiltDeg) >= rvCfg.tiltDeg;
+      if (tilted && !this.tiltVoiceArmed) {
+        this.tiltVoiceArmed = true;
+        this.fireRealVoice();
+      } else if (!tilted && Math.abs(ps.tiltDeg) <= rvCfg.tiltDeg * rvCfg.tiltRearmFrac) {
+        this.tiltVoiceArmed = false;
+      }
+    }
     if (ps.fellOff && !this.richFellHandled) {
       this.richFellHandled = true;
       this.richFellImpactDone = false; // el thud sonará al tocar suelo
@@ -740,11 +764,14 @@ export class SherpasMatch {
         this.d.hud.subtitle(this.d.hud.t("hud.boxesFell"), 3);
         this.propina.add(-4, "boxes_fell", this.d.bus);
         this.brain.panic();
+        this.richScareVoice();
         this.d.bus.emit("BoxesFell", { count: this.boxes.count, side });
         // ESTALLA: dos insultos seguidos (contexto boxes_fell — muy enojado).
         this.sayInsult("boxes_fell");
         const line2 = this.insults.pick("boxes_fell");
-        if (line2) this.pendingBubbles.push({ text: line2, until: this.simTime + 3.8 });
+        // T44: el segundo improperio era SOLO bocadillo (ya sin bocadillos) →
+        // pasa al subtítulo: sigue leyéndose el estallido, sin burbuja.
+        if (line2) this.d.hud.subtitle(line2, 3.2);
         this.boxes = null;
       }
     }
@@ -767,6 +794,7 @@ export class SherpasMatch {
         this.d.audio.play("thud");
         this.propina.add(-3, "drone_pkg_fell", this.d.bus);
         this.brain.panic();
+        this.richScareVoice();
         this.d.bus.emit("DroneLost", { kg: this.dronePkg.kg });
         this.sayInsult("boxes_fell");
         this.dronePkg = null;
@@ -844,6 +872,7 @@ export class SherpasMatch {
       this.d.bus.emit("DroneDelivered", { kg, offsetFrac: frac });
       this.sayInsult("drone");
       this.brain.panic(); // ¡el dron lo despierta/soresalta!
+      this.richScareVoice();
     });
     this.stepProjectiles(dt);
 
@@ -1211,6 +1240,7 @@ export class SherpasMatch {
           this.rich.setMassTarget(base);
         }
         this.brain.panic();
+        this.richScareVoice();
       },
       insultContext: () => {
         if (this.directorCtxMaxTension() > 0.8) return "high_tension";
@@ -1260,6 +1290,46 @@ export class SherpasMatch {
     if (line) this.d.bus.emit("InsultSaid", { lineId: context, context, text: line });
   }
 
+  // ---------------- T44: voz real del jugador (susto+desplazamiento / escora)
+
+  /** Deslizamiento del ricachón sobre la tabla ("se desplaza"): caminando,
+   *  deslizando por escora o con la tabla ya notablemente inclinada. */
+  private richDisplaced(): boolean {
+    if (this.brain.state === "caminando") return true;
+    const ps = this.plankState;
+    if (!ps || ps.grounded || ps.fellOff) return false;
+    if (Math.abs(ps.tiltDeg) >= 8) return true;
+    const slideV = Math.abs(ps.slide - this.richSlidePrev) / Math.max(1e-3, this.lastSimDt);
+    return slideV > (this.d.audio.realVoiceCfg?.slideSpeedMs ?? 0.1);
+  }
+
+  /** histórico de slide para richDisplaced (se llama 1×/tick tras la tabla). */
+  private trackRichSlide(ps: PlankState): void {
+    this.richSlidePrev = ps.slide;
+  }
+
+  /** SUELTA una voz real del banco (con cooldown global y sin pisar otra voz). */
+  private fireRealVoice(force = false): void {
+    const rvCfg = this.d.audio.realVoiceCfg;
+    if (!rvCfg) return;
+    if (!force && this.simTime - this.realVoiceLast < rvCfg.cooldownS) return;
+    if (this.d.audio.realBusy()) return;
+    this.realVoiceLast = this.simTime;
+    void this.d.audio.shoutReal().then((dur) => {
+      if (dur <= 0) return;
+      // BRAZOS EN ALTO mientras suena SU voz (se le ve hablar: petición)
+      this.rich.ostentate(this.simTime, dur + 0.4);
+    });
+  }
+
+  /** SUSTO + DESPLAZAMIENTO: el ricachón se soresalta (panic) mientras se
+   *  mueve — petición: "los audios solo cuando lleva un susto y se desplaza". */
+  private richScareVoice(): void {
+    const rvCfg = this.d.audio.realVoiceCfg;
+    if (!rvCfg) return;
+    if (this.richDisplaced()) this.fireRealVoice();
+  }
+
   // ---------- eventos del bus → presentación ----------
 
   private wireEvents(): void {
@@ -1303,11 +1373,16 @@ export class SherpasMatch {
       // VOZ DEL RICACHÓN (petición del jugador: "escucharse gritando con tono
       // burlesco"): TTS pregenerado con tono subido; si falta el fichero,
       // speechSynthesis; si no hay voz, charla sintética cómica.
-      this.d.audio.shout(p.text, this.d.hud.lang);
+      const dS = this.d.audio.shout(p.text, this.d.hud.lang);
       // JUICE T38: bocanadas de furia sobre su cabeza — el enojo se VE.
       this.d.scene.fxRage(this.rich.bodies[RM.head].pos);
       this.d.hud.subtitle(p.text, 3.8);
-      this.pendingBubbles.push({ text: p.text, until: this.simTime + 3.8 });
+      // T44 — BRAZOS EN ALTO mientras EMITE UN SONIDO (petición: "para saber
+      // que el ricachón habla... de forma muy clara y ostentosa"): gesto
+      // "exaltado" durante la duración EFECTIVA del clip.
+      void Promise.resolve(dS).then((dur) => {
+        if (dur > 0) this.rich.ostentate(this.simTime, dur + 0.35);
+      });
     });
     on("Telegraph", (p) => {
       const key = p.eventId === "pee" ? "hud.peeTelegraph"
@@ -1456,14 +1531,6 @@ export class SherpasMatch {
     if (this.hudAcc >= 0.1) {
       this.hudAcc = 0;
       this.updateHud();
-      // burbujas de insulto proyectadas sobre la cabeza del ricachón (doc 7.2.3).
-      const head = this.rich.bodies[RM.head].pos;
-      const pct = s.projectToScreenCss(head);
-      this.pendingBubbles = this.pendingBubbles.filter((b) => {
-        if (b.until <= this.simTime) return false;
-        this.d.hud.bubble({ x: pct.x, y: pct.y - 3 }, b.text, this.simTime, 3.4);
-        return false;
-      });
     }
     s.render();
   }
@@ -1648,6 +1715,22 @@ export class SherpasMatch {
           })()
         : null,
       mmHolds: holds.length,
+      // T44 (sonda E2E): voz real del jugador + gesto de brazos en alto
+      voice: {
+        count: this.d.audio.realPlayedCount,
+        last: this.d.audio.realLastFile(),
+        busy: this.d.audio.realBusy(),
+        armed: this.tiltVoiceArmed,
+        sinceS: Math.round((this.simTime - this.realVoiceLast) * 10) / 10,
+        ostentateLeft: Math.round(this.rich.ostentateLeft(this.simTime) * 100) / 100,
+        handsUp: (() => {
+          const chestY = this.rich.bodies[RM.chest].pos.y;
+          return [
+            Math.round((this.rich.bodies[RM.handL].pos.y - chestY) * 100) / 100,
+            Math.round((this.rich.bodies[RM.handR].pos.y - chestY) * 100) / 100,
+          ];
+        })(),
+      },
       // PERF (sonda E2E): métricas de render para verificar los 60 FPS.
       perf: this.d.scene.getPerf(),
     });
@@ -1662,8 +1745,13 @@ export class SherpasMatch {
 
   /** Sonda E2E (solo pruebas, como setAim): fuerza los eventos del Task 31
    *  para verificar su presentación sin esperar al azar del director. */
-  debugForce(what: "boxes" | "condor" | "storm" | "fart" | "drone" | "subir" | "subir2" | "caida_rico" | "caida" | "ancla" | "impulso", player: 0 | 1 = 0): boolean {
+  debugForce(what: "boxes" | "condor" | "storm" | "fart" | "drone" | "subir" | "subir2" | "caida_rico" | "caida" | "ancla" | "impulso" | "voz", player: 0 | 1 = 0): boolean {
     switch (what) {
+      case "voz":
+        // SONDA E2E T44: suelta UNA voz real del banco (ignora cooldown) —
+        // el gesto de brazos en alto se dispara solo por el pipeline.
+        this.fireRealVoice(true);
+        return true;
       case "subir2": {
         // SONDA E2E Task 37: como "subir" pero SIN redirigir al entrante —
         // garantiza PROGRESO (+12 m) para fijar cotas aunque haya huecos encima

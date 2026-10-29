@@ -189,6 +189,9 @@ export interface RockwallStyle {
   plateauR: number;       // radio de la plataforma que funde la roca a la presa
   anchorBackM: number;    // la roca queda este margen DETRÁS del centro de la presa
   bodyBackM: number;      // (escena) retraso del cuerpo del muro para ver las grietas
+  /** T44: irregularidad del asiento (0..1) — el círculo aplanado se ondula con
+   *  ruido por anclaje para que NO se lea como un disco perfecto en la pared. */
+  seatWobble: number;
 }
 
 export const ROCKWALL_SEED = 0x5eed0123; // el macizo es EL MISMO en todas las partidas (T40)
@@ -223,9 +226,10 @@ export const ROCKWALL_STYLE_DEFAULTS: RockwallStyle = {
   zCeilM: 0.2,
   zCompressLow: 0.3,
   zCompressHigh: 0.3,
-  plateauR: 0.26,
+  plateauR: 0.15, // T44: era 0,26 — el círculo aplanado se veía MÁS que la presa (petición del jugador)
   anchorBackM: 0.012,
   bodyBackM: 0.35,
+  seatWobble: 0.45,
 };
 
 const num = (v: unknown, def: number, min: number, max: number): number =>
@@ -291,6 +295,7 @@ export function rockwallStyleFromData(d?: Partial<RockwallStyle> | null): Rockwa
     plateauR: num(d.plateauR, def.plateauR, 0.06, 0.8),
     anchorBackM: num(d.anchorBackM, def.anchorBackM, 0, 0.1),
     bodyBackM: num(d.bodyBackM, def.bodyBackM, 0, 1),
+    seatWobble: num(d.seatWobble, def.seatWobble, 0, 1),
   };
 }
 
@@ -430,7 +435,11 @@ export function sampleRegion(job: RockwallRegionJob): RockwallRegionResult {
         if (d2 > a.R2) continue;
         if (a.fn) hold += a.fn(dx, dy) + S.anchorPad * sg(dx / (2.4 * a.r), (dy + 0.5 * a.r) / (1.7 * a.r), 3);
         else {
-          const dp = Math.sqrt(d2);
+          // T44 — ASIENTO IRREGULAR: el disco fundido se ONDULA con ruido propio
+          // del anclaje (radio por dirección) para que en la pared se vea un
+          // apoyadero rocoso, no un círculo aplanado perfecto.
+          const wob = 1 + S.seatWobble * 0.3 * pn(x * 6.1 + k * 4.7, y * 6.1, sd + 81 + k);
+          const dp = Math.sqrt(d2) * wob;
           const wp = 1 - sstep(a.plateauR * 0.55, a.plateauR, dp);
           if (wp > 0.001) { wa += wp; za += (a.hz ?? 0) * wp; }
         }

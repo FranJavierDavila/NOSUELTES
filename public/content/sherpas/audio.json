@@ -153,5 +153,24 @@
   "rateMax": 1.05,
   "gain": 1.0,
   "note": "T41 voz GRAVE y despota del ricachon (TTS castellano re-pitchado + grito real del jugador): rango de playbackRate por repeticion y ganancia - nunca suena dos veces igual"
+ },
+ "realVoice": {
+  "dir": "/audio/rico/real/",
+  "files": [
+   "eltiempoesdineroyesmio",
+   "conomaslentoyteentierro",
+   "cabronessss",
+   "andayacabron",
+   "miabuelasubemasrapido",
+   "hostiatehasdormido"
+  ],
+  "gain": 0.95,
+  "rateMin": 0.98,
+  "rateMax": 1.06,
+  "cooldownS": 8,
+  "scareSpeedMs": 0.1,
+  "slideSpeedMs": 0.1,
+  "tiltDeg": 14,
+  "tiltRearmFrac": 0.7
  }
 }

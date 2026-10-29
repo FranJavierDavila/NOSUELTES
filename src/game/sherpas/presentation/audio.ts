@@ -14,6 +14,17 @@ export function ricoSlug(text: string): string {
   return h.toString(16).padStart(8, "0");
 }
 
+/** T44 — índice SIN repetición inmediata (banco de voz real): nunca repite el
+ *  último fichero. Función PURA y determinista dado el azar — test unitario. */
+export function pickNonRepeating(count: number, lastIdx: number, rnd: () => number): number {
+  if (count <= 0) return -1;
+  if (count === 1) return 0;
+  const i = Math.floor(rnd() * count) % count;
+  if (i !== lastIdx) return i;
+  // salto garantizado distinto del último (desfase aleatorio en 1..count-1)
+  return (i + 1 + Math.floor(rnd() * (count - 1))) % count;
+}
+
 export class SherpaAudio {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
@@ -29,6 +40,14 @@ export class SherpaAudio {
   private voiceCache = new Map<string, AudioBuffer | null>();
   private gustBoost = 0;
   private altT = 0;
+  // T44 — BANCO DE VOZ REAL DEL JUGADOR (6 grabaciones en castellano): solo
+  // con SUSTO + DESPLAZAMIENTO o ESCORA fuerte (match). Sin repetición
+  // inmediata; decodificación perezosa con caché; busy hasta terminar.
+  private realCache = new Map<string, AudioBuffer>();
+  private realLastIdx = -1;
+  private realBusyUntil = 0;
+  /** número de voces reales reproducidas (sonda E2E). */
+  realPlayedCount = 0;
 
   constructor(data: AudioData) {
     this.data = data;
@@ -128,16 +147,18 @@ export class SherpaAudio {
    *  1. MP3 TTS pregenerado (scripts/regen_rico_es_t41.mjs) con pitch/velocidad
    *     aleatorios por reproducción → nunca suena dos veces igual.
    *  2. speechSynthesis del navegador con pitch GRAVE (voz despótica).
-   *  3. Charla sintética cómica (gibberish) — nunca silencio total. */
-  shout(text: string, lang: string): void {
-    if (this.muted || this.disposed || !text) return;
+   *  3. Charla sintética cómica (gibberish) — nunca silencio total.
+   *  T44: devuelve la duración EFECTIVA del clip (s/playbackRate) para que el
+   *  cuerpo mueva los brazos en alto MIENTRAS suena. */
+  shout(text: string, lang: string): Promise<number> {
+    if (this.muted || this.disposed || !text) return Promise.resolve(0);
     const path = `/audio/rico/${lang === "en" ? "en" : "es"}/${ricoSlug(text)}.mp3`;
     const cached = this.voiceCache.get(path);
-    if (cached) { this.playVoice(cached); return; }
-    if (cached === null) { this.speak(text, lang); return; }
-    void this.loadVoice(path).then((buf) => {
-      if (buf) this.playVoice(buf);
-      else this.speak(text, lang);
+    if (cached) return Promise.resolve(this.playVoice(cached));
+    if (cached === null) { return Promise.resolve(this.speak(text, lang)); }
+    return this.loadVoice(path).then((buf) => {
+      if (buf) return this.playVoice(buf);
+      return this.speak(text, lang);
     });
   }
 
@@ -154,8 +175,8 @@ export class SherpaAudio {
     } catch { return null; }
   }
 
-  private playVoice(buf: AudioBuffer): void {
-    if (!this.ctx || !this.voiceGain) return;
+  private playVoice(buf: AudioBuffer): number {
+    if (!this.ctx || !this.voiceGain) return 0;
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
     // "gritando con tono burlesco": cada grito con levantón y velocidad PROPIOS
@@ -163,17 +184,22 @@ export class SherpaAudio {
     // suave que el TTS: una voz humana subida de más suena a picaresca).
     const v = this.data.voice;
     const rMin = v?.rateMin ?? 1.08, rMax = v?.rateMax ?? 1.26;
-    src.playbackRate.value = rMin + Math.random() * Math.max(0, rMax - rMin);
+    const rate = rMin + Math.random() * Math.max(0, rMax - rMin);
+    src.playbackRate.value = rate;
     const g = this.ctx.createGain();
     g.gain.value = v?.gain ?? 0.95;
     src.connect(g).connect(this.voiceGain);
     src.start();
+    return buf.duration / Math.max(0.25, rate);
   }
 
-  private speak(text: string, lang: string): void {
+  private speak(text: string, lang: string): number {
+    // speechSynthesis: duración desconocida → estimación por texto (paciencia
+    // del gesto de brazos en alto; nunca se corta el grito a mitad).
+    const guess = Math.min(4.5, Math.max(1.2, text.length * 0.055));
     try {
       const s = window.speechSynthesis;
-      if (!s) { this.play("gibberish"); return; }
+      if (!s) { this.play("gibberish"); return 1.6; }
       s.cancel();
       const u = new SpeechSynthesisUtterance(text);
       u.lang = lang === "en" ? "en-US" : "es-ES";
@@ -185,7 +211,73 @@ export class SherpaAudio {
       const voice = s.getVoices().find((v) => (v.lang ?? "").toLowerCase().startsWith(want));
       if (voice) u.voice = voice;
       s.speak(u);
-    } catch { this.play("gibberish"); }
+      return guess;
+    } catch { this.play("gibberish"); return 1.6; }
+  }
+
+  /** T44 — VOZ REAL DEL JUGADOR (banco audio.json → realVoice): grabaciones
+   *  castellanas que suenan SOLO con susto+desplazamiento o escora fuerte
+   *  (los disparadores viven en match.ts). Devuelve la duración EFECTIVA
+   *  (s, ya con playbackRate) o 0 si no se pudo reproducir. */
+  async shoutReal(): Promise<number> {
+    if (this.muted || this.disposed || !this.ctx || !this.voiceGain) return 0;
+    const rv = this.data.realVoice;
+    if (!rv || !Array.isArray(rv.files) || rv.files.length === 0) return 0;
+    const idx = pickNonRepeating(rv.files.length, this.realLastIdx, Math.random);
+    this.realLastIdx = idx;
+    const name = rv.files[idx]!;
+    const path = (rv.dir ?? "/audio/rico/real/") + name + ".mp3";
+    let buf = this.realCache.get(path);
+    if (!buf) {
+      try {
+        const res = await fetch(path);
+        if (!res.ok) return 0;
+        buf = await this.ctx.decodeAudioData(await res.arrayBuffer());
+        this.realCache.set(path, buf);
+      } catch { return 0; }
+    }
+    if (this.disposed || !this.voiceGain) return 0;
+    const rMin = rv.rateMin ?? 0.98, rMax = rv.rateMax ?? 1.06;
+    const rate = rMin + Math.random() * Math.max(0, rMax - rMin);
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.playbackRate.value = rate;
+    const g = this.ctx.createGain();
+    g.gain.value = rv.gain ?? 0.95;
+    src.connect(g).connect(this.voiceGain);
+    src.start();
+    const dur = buf.duration / Math.max(0.25, rate);
+    this.realBusyUntil = this.ctx.currentTime + dur + 0.25;
+    this.realPlayedCount++;
+    return dur;
+  }
+
+  /** T44 — configuración del banco de voz real con defaults (match la lee
+   *  para los disparadores); null si el banco no tiene ficheros. */
+  get realVoiceCfg(): {
+    cooldownS: number; scareSpeedMs: number; slideSpeedMs: number; tiltDeg: number; tiltRearmFrac: number;
+  } | null {
+    const rv = this.data.realVoice;
+    if (!rv || !Array.isArray(rv.files) || rv.files.length === 0) return null;
+    return {
+      cooldownS: rv.cooldownS ?? 8,
+      scareSpeedMs: rv.scareSpeedMs ?? 0.1,
+      slideSpeedMs: rv.slideSpeedMs ?? 0.1,
+      tiltDeg: rv.tiltDeg ?? 14,
+      tiltRearmFrac: rv.tiltRearmFrac ?? 0.7,
+    };
+  }
+
+  /** true mientras suena (o acaba de sonar) una voz real del banco. */
+  realBusy(): boolean {
+    return !!this.ctx && this.ctx.currentTime < this.realBusyUntil;
+  }
+
+  /** Última voz real elegida (nombre sin extensión; sonda E2E). */
+  realLastFile(): string | null {
+    const rv = this.data.realVoice;
+    if (!rv || this.realLastIdx < 0 || this.realLastIdx >= rv.files.length) return null;
+    return rv.files[this.realLastIdx]!;
   }
 
   /** Crujido de cuerda/hielo proporcional a la tensión (doc 4.5 telegrafía sonora). */

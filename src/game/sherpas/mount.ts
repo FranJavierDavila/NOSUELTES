@@ -228,6 +228,44 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
           return { bands: means.length, switches, maxDelta, meanDelta: sum / Math.max(1, means.length - 1) };
         } catch { return null; }
       },
+      /** T44 MATERIAL DE LA PARED: PBR + triplanar de estratos + normales. */
+      wallMat: (): {
+        chunks: number; pbrChunks: number; material: string;
+        albedo: boolean; bump: boolean; strata: boolean; roughness: number; metallic: number;
+      } | null => {
+        try {
+          const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
+            getWallMaterialInfo?(): { chunks: number; pbrChunks: number; material: string; albedo: boolean; bump: boolean; strata: boolean; roughness: number; metallic: number } | null;
+          } | null;
+          return sc?.getWallMaterialInfo?.() ?? null;
+        } catch { return null; }
+      },
+      /** T44 VOZ REAL: estado del banco del jugador + brazos en alto (ostentación). */
+      voice: (): {
+        count: number; last: string | null; busy: boolean; armed: boolean; since: number;
+        ostentateLeft: number; handsUp: [number, number] | null;
+      } | null => {
+        try {
+          const m = state.match as unknown as {
+            simTime: number; realVoiceLast: number; tiltVoiceArmed: boolean;
+            rich?: { ostentateLeft(t: number): number; bodies: { pos: { x: number; y: number; z: number } }[] };
+            d?: { audio: { realPlayedCount: number; realLastFile(): string | null; realBusy(): boolean } };
+          } | null;
+          if (!m?.d) return null;
+          const rich = m.rich;
+          const chestY = rich?.bodies?.[1]?.pos.y ?? 0;
+          return {
+            count: m.d.audio.realPlayedCount,
+            last: m.d.audio.realLastFile(),
+            busy: m.d.audio.realBusy(),
+            armed: m.tiltVoiceArmed,
+            since: m.simTime - m.realVoiceLast,
+            ostentateLeft: rich ? rich.ostentateLeft(m.simTime) : 0,
+            // manos EN ALTO = mano.y − pecho.y (gesto "exaltado": RM.handL/handR=5/6, chest=1)
+            handsUp: rich ? [rich.bodies[5].pos.y - chestY, rich.bodies[6].pos.y - chestY] : null,
+          };
+        } catch { return null; }
+      },
     };
   }
 

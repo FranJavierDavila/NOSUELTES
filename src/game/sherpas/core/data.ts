@@ -299,6 +299,21 @@ export interface AudioData {
    *  [rateMin..rateMax] y ganancia por reproducción — nunca suena dos veces igual.
    *  Opcional: ausente → 1.08..1.26 / 0.95 (comportamiento anterior). */
   voice?: { rateMin: number; rateMax: number; gain: number };
+  /** T44 — BANCO DE VOZ REAL del jugador (grabaciones castellanas): suenan
+   *  SOLO con susto + desplazamiento o escora fuerte (disparadores en match).
+   *  Opcional: ausente → el banco real queda desactivado (sin ficheros). */
+  realVoice?: {
+    dir: string;
+    files: string[];
+    gain: number;
+    rateMin: number;
+    rateMax: number;
+    cooldownS: number;
+    scareSpeedMs: number;
+    slideSpeedMs: number;
+    tiltDeg: number;
+    tiltRearmFrac: number;
+  };
 }
 export interface VfxData {
   grabChalk: { count: number; spread: number };

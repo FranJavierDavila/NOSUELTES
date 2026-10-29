@@ -25,6 +25,7 @@ import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData"; // RELIEVE 
 import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture"; // MAPA DE ROCA procedural (T40)
 import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator"; // LUZ Y SOMBRA (profundidad)
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
+import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial"; // T44: pared PBR detallada
 import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
 import { ParticleSystem } from "@babylonjs/core/Particles/particleSystem";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
@@ -56,6 +57,8 @@ import {
   type RockwallAnchorIn, type RockwallFeature, type RockwallRegionResult, type RockwallStyle,
 } from "../world/rockwall"; // T43: módulo del jugador (diaclasas) + worker
 import { makeRng } from "../core/rng";
+import { generateStrataColor } from "../world/strataTexture"; // T44: estratos superpuestos
+import { TriPlanarStrataPlugin } from "./wallStrataMaterial"; // T44: mapeado triplanar
 
 interface Bone { a: number; b: number; mesh: Mesh; rest: number; offY?: number }
 interface RigVisual { bones: Bone[]; head: Mesh; roots: Mesh[] }
@@ -146,6 +149,7 @@ export class SherpaScene {
   private sunLight: DirectionalLight | null = null;
   private sunBase = 1.15;
   private hemiBase = 0.62;
+  private rockFillBase = 1.15; // T44: compensa la conservación de energía del PBR
   private stormMode = false;
   private flashT = 0;
   private shadowGen: ShadowGenerator | null = null;
@@ -209,6 +213,12 @@ export class SherpaScene {
   // ni tirones), con fallback síncrono de 1 chunk/frame si no hay worker.
   private rockCtx: { style: RockwallStyle; anchors: RockwallAnchorIn[]; features: RockwallFeature[] } | null = null;
   private rockWorker: Worker | null = null;
+  // T44: textura de ESTRATOS superpuesta (triplanar) compartida por los chunks
+  private strataTex: RawTexture | null = null;
+  private strataCfg: { scale: number; strength: number } | null = null;
+  private strataTried = false;
+  /** materiales PBR de roca creados (sonda E2E: material/triplanar/normales). */
+  private rockPbrCount = 0;
   private rockWorkerDead = false;
   private rockJobSeq = 0;
   private rockJobs = new Map<number, number>(); // jobId → chunk (resultado en vuelo)
@@ -264,7 +274,9 @@ export class SherpaScene {
     // chunks de roca (includedOnlyMeshes, se rellena al construir cada losa):
     // la piedra gana lectura y el RESTO de la escena no cambia un ápice.
     const fill = new DirectionalLight("rockFill", new Vector3(0.1, -0.3, 1).normalize(), this.scene);
-    fill.intensity = 0.55;
+    // T44: PBR (conservación de energía) dejaba la piedra a 77/255 (T42: 91) —
+    // la luz exclusiva de la roca compensa el cambio de material.
+    fill.intensity = this.rockFillBase;
     fill.diffuse = new Color3(0.95, 0.97, 1.0); // relleno frío de cielo (contraste con el sol cálido)
     fill.specular = new Color3(0, 0, 0); // sin brillo extra: solo difusa
     fill.includedOnlyMeshes = [];
@@ -987,18 +999,27 @@ export class SherpaScene {
     vd.indices = indices;
     vd.applyToMesh(mesh);
     // texturas PROPIAS del chunk (el módulo hornea color+AO+vetas+magnesio en
-    // colorMap y el microrelieve en normalMap): sRGB en diffuse, bump 1:1.
-    const mat = new StandardMaterial(`rockDM_${c}`, this.scene);
+    // colorMap y el microrelieve en normalMap). T44: MATERIAL PBR DETALLADO —
+    // albedo del colorMap horneado, normales para el detalle fino (bump),
+    // metálico 0 / rugosidad de piedra + capa de ESTRATOS TRIPANAR encima.
+    const mat = new PBRMaterial(`rockDM_${c}`, this.scene);
     const cm = RawTexture.CreateRGBATexture(res.colorMap, res.W, res.H, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
     cm.anisotropicFilteringLevel = 4; // la piedrina se ve nítida en ángulo
-    mat.diffuseTexture = cm;
+    mat.albedoTexture = cm;
     const nmt = RawTexture.CreateRGBATexture(res.normalMap, res.W, res.H, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
     nmt.anisotropicFilteringLevel = 4;
-    mat.bumpTexture = nmt;
+    mat.bumpTexture = nmt; // DETALLE FINO: normales horneadas a 1 cm
     mat.bumpTexture.level = 1.15;
-    mat.diffuseColor = new Color3(1, 1, 1); // el tono final = colorMap horneado
-    mat.specularColor = new Color3(0.035, 0.034, 0.03); // micro-brillo en cantos
+    mat.albedoColor = new Color3(1, 1, 1); // el tono final = colorMap horneado
+    mat.metallic = 0; // piedra: sin reflejo metálico
+    mat.roughness = 0.93; // rugosidad de roca (micro-brillo solo en cantos)
     mat.backFaceCulling = true;
+    const strata = this.ensureStrataTexture();
+    if (strata) {
+      const plugin = new TriPlanarStrataPlugin(mat);
+      plugin.configure(strata, this.strataCfg!.scale, this.strataCfg!.strength);
+    }
+    this.rockPbrCount++;
     mesh.material = mat;
     mesh.receiveShadows = true; // la roca recibe la sombra de los cuerpos
     mesh.isPickable = false;
@@ -1020,6 +1041,63 @@ export class SherpaScene {
     const res = sampleRegion(payload.job);
     return this.buildRockChunkMesh(c, res);
   }
+
+  /** T44 — TEXTURA DE ESTRATOS SUPERPUESTA (lazy, una vez): se genera con
+   *  strataTexture.ts (tileable exacto, determinista) y se comparte entre
+   *  chunks. Parámetros por datos (wall_gen.relief.strataOverlay), con
+   *  defaults defensivos; `enabled:false` o datos rotos → capa ausente. */
+  private ensureStrataTexture(): RawTexture | null {
+    if (this.strataTried) return this.strataTex;
+    this.strataTried = true;
+    try {
+      const raw = (this.reliefRaw as { strataOverlay?: Record<string, unknown> } | null)?.strataOverlay;
+      const num = (v: unknown, def: number, min: number, max: number): number =>
+        typeof v === "number" && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : def;
+      const enabled = raw ? raw.enabled !== false : true;
+      if (!enabled) return null;
+      const sizePx = Math.round(num(raw?.sizePx, 512, 64, 1024));
+      const scale = num(raw?.scale, 0.72, 0.05, 4);
+      const strength = num(raw?.strength, 0.5, 0, 1);
+      const bands = num(raw?.bands, 7, 2, 24);
+      const warp = num(raw?.warp, 0.55, 0, 1.5);
+      const seam = num(raw?.seam, 0.24, 0, 1);
+      const data = generateStrataColor(sizePx, ROCKWALL_SEED ^ 0x574a44, { bands, warp, seam });
+      const tex = RawTexture.CreateRGBATexture(data, sizePx, sizePx, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
+      tex.wrapU = Texture.WRAP_ADDRESSMODE; // triplanar: el patrón se REPITE
+      tex.wrapV = Texture.WRAP_ADDRESSMODE;
+      tex.anisotropicFilteringLevel = 4;
+      this.strataTex = tex;
+      this.strataCfg = { scale, strength };
+    } catch {
+      this.strataTex = null; // la pared funciona sin la capa
+    }
+    return this.strataTex;
+  }
+
+  /** T44 (sonda E2E): material de la pared — PBR + triplanar + normales. */
+  getWallMaterialInfo(): {
+    chunks: number; pbrChunks: number; material: string;
+    albedo: boolean; bump: boolean; strata: boolean; roughness: number; metallic: number;
+  } | null {
+    for (const e of this.reliefMeshes.values()) {
+      const m = e.mesh.material as PBRMaterial | StandardMaterial | null;
+      if (!m) continue;
+      const isPbr = m.getClassName() === "PBRMaterial";
+      const pbr = m as PBRMaterial;
+      return {
+        chunks: this.reliefMeshes.size,
+        pbrChunks: this.rockPbrCount,
+        material: m.getClassName(),
+        albedo: isPbr ? !!pbr.albedoTexture : !!(m as StandardMaterial).diffuseTexture,
+        bump: !!m.bumpTexture,
+        strata: isPbr && this.strataTex !== null,
+        roughness: isPbr ? (pbr.roughness ?? NaN) : NaN,
+        metallic: isPbr ? (pbr.metallic ?? NaN) : NaN,
+      };
+    }
+    return null;
+  }
+
 
   /** Info del relieve (sonda E2E/perf): chunks vivos, piedras y triángulos.
    *  T43: algoritmo, estado del worker y cola pendiente. */
@@ -1645,7 +1723,7 @@ export class SherpaScene {
       this.scene.clearColor = new Color4(0.055, 0.07, 0.09, 1);
       if (this.hemiLight) this.hemiLight.intensity = this.hemiBase;
       if (this.sunLight) this.sunLight.intensity = this.sunBase;
-      if (this.rockFill) this.rockFill.intensity = 0.55;
+      if (this.rockFill) this.rockFill.intensity = this.rockFillBase;
     } else if (storm) {
       this.scene.clearColor = new Color4(0.028, 0.032, 0.048, 1);
       if (this.hemiLight) this.hemiLight.intensity = this.hemiBase * 0.72;
@@ -2117,6 +2195,8 @@ export class SherpaScene {
   dispose(): void {
     this.disposed = true;
     this.destroyWorker();
+    this.strataTex?.dispose(); // T44: capa de estratos compartida (los chunks no la tocan)
+    this.strataTex = null;
     this.scene.dispose();
     this.engine.dispose();
   }

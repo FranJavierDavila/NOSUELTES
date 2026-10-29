@@ -279,7 +279,7 @@
         0.22,
         0.15
       ],
-      "stainAmount": 0.55,
+      "stainAmount": 0.34,
       "moss": [
         0.34,
         0.38,
@@ -297,9 +297,19 @@
       "zCeilM": 0.2,
       "zCompressLow": 0.3,
       "zCompressHigh": 0.3,
-      "plateauR": 0.26,
+      "plateauR": 0.15,
       "anchorBackM": 0.012,
-      "bodyBackM": 0.35
+      "bodyBackM": 0.35,
+      "seatWobble": 0.45
+    },
+    "strataOverlay": {
+      "enabled": true,
+      "sizePx": 512,
+      "scale": 0.72,
+      "strength": 0.5,
+      "bands": 7.0,
+      "warp": 0.55,
+      "seam": 0.24
     }
   }
 }

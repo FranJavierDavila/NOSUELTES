@@ -22,7 +22,10 @@ export const RM_PARTICLES = 11;
 export type RichGesture =
   | "ninguno" | "dormitando" | "insultando" | "comiendo" | "tirando_basura"
   | "aplaudiendo" | "brindando" | "mirando" | "pataleando"
-  | "durmiendo" | "bailando" | "leyendo" | "telefono";
+  | "durmiendo" | "bailando" | "leyendo" | "telefono"
+  // T44 (petición del jugador: "que mueva los brazos en alto de forma muy
+  // clara y ostentosa"): se ve HABLAR — los DOS brazos en alto meneando.
+  | "exaltado";
 
 interface Body { pos: V3; prev: V3; mass: number; invMass: number; radius: number; share: number }
 interface RMStick { a: number; b: number; rest: number; min: number }
@@ -63,6 +66,16 @@ export class RichManSim {
 
   /** Gesto actual (para props visuales: bocadillo, copa...). */
   get gesture(): RichGesture { return this.gestureKind; }
+
+  // T44 — EXALTACIÓN POR VOZ: mientras el ricachón EMITE UN SONIDO (voz real
+  // del banco o TTS) los brazos se van EN ALTO: se le ve hablar desde lejos.
+  private ostentateUntil = -1;
+  /** Activa el gesto "exaltado" (brazos en alto) hasta `time + durS`. */
+  ostentate(time: number, durS: number): void {
+    this.ostentateUntil = Math.max(this.ostentateUntil, time + durS);
+  }
+  /** Segundos de exaltación restantes (sonda E2E). */
+  ostentateLeft(time: number): number { return Math.max(0, this.ostentateUntil - time); }
 
   /** Fija el gesto visible (el cerebro lo manda cada tick según su FSM). */
   setGesture(kind: RichGesture, time: number): void {
@@ -184,18 +197,24 @@ export class RichManSim {
     const stand = this.standLocal(time, slide, angle);
     const k = this.blend * this.blend * (3 - 2 * this.blend); // smoothstep
     const c = Math.cos(angle), s = Math.sin(angle);
+    // T44: el gesto se aplica sobre la pose YA FUNDIDA — se ve SENTADO y también
+    // DE PIE/paseando (la voz del ricachón no se interrumpe por cambiarse de postura).
+    const g = this.gestureOffsets(time);
+    const gw = g ? Math.min(1, Math.max(0, time - this.gestureStart) / 0.35) : 0; // fundido
     for (let i = 0; i < this.bodies.length; i++) {
       const a = sit[i], b = stand[i];
-      const dx = a.x + (b.x - a.x) * k;
-      const dy = a.y + (b.y - a.y) * k;
-      const dz = a.z + (b.z - a.z) * k;
+      let dx = a.x + (b.x - a.x) * k;
+      let dy = a.y + (b.y - a.y) * k;
+      let dz = a.z + (b.z - a.z) * k;
+      if (g) { dx += g[i].x * gw; dy += g[i].y * gw; dz += g[i].z * gw; }
       const p = v3(center.x + dx * c - dy * s, center.y + dx * s + dy * c, center.z + dz);
       this.bodies[i].prev = vClone(this.bodies[i].pos);
       this.bodies[i].pos = p;
     }
   }
 
-  /** Offsets locales (marco tabla) SENTADO, con gesto encima si lo hay. */
+  /** Offsets locales (marco tabla) SENTADO. El gesto se aplica en pose() (T44:
+   *  sobre la pose fundida, para que se vea también DE PIE). */
   private seatedLocal(time: number, slide: number, angle: number): V3[] {
     const o: V3[] = new Array(RM_PARTICLES);
     const lean = -Math.sin(angle) * 0.16; // se inclina con la tabla (lectura del peligro)
@@ -211,14 +230,8 @@ export class RichManSim {
     o[RM.kneeR] = v3(slide + 0.1, 0.1, -0.26);
     o[RM.footL] = v3(slide - 0.13, -0.16, -0.34);
     o[RM.footR] = v3(slide + 0.13, -0.16, -0.34);
-    const g = this.gestureOffsets(time);
-    if (g) {
-      const w = Math.min(1, Math.max(0, time - this.gestureStart) / 0.35); // fundido
-      for (let i = 0; i < o.length; i++) o[i] = vAdd(o[i], vScale(g[i], w));
-    }
     return o;
   }
-
   /** Deltas del gesto actual (11 entradas; null si no hay gesto).
    *  Cada uno se diseña para LEERSE a distancia de cámara: exagerado, lento y
    *  con una clara intención cómica (petición del jugador). */
@@ -226,7 +239,24 @@ export class RichManSim {
     const ph = time - this.gestureStart;
     const d: V3[] = new Array(RM_PARTICLES).fill(v3(0, 0, 0));
     const set = (i: number, x: number, y: number, z = 0): void => { d[i] = v3(x, y, z); };
-    switch (this.gestureKind) {
+    // T44: la voz MANDA mientras suena (por encima del gesto del FSM)
+    const kind: RichGesture = time < this.ostentateUntil ? "exaltado" : this.gestureKind;
+    switch (kind) {
+      case "exaltado": {
+        // HABLAR EN ALTO (petición: "mueva los brazos en alto de forma muy
+        // clara y ostentosa"): DOS brazos arriba a la vez, en V sobre la
+        // cabeza, meneo vivo desfasado — el MÍNIMO de la onda sigue por
+        // encima del pecho (se lee hablar desde cualquier ángulo de cámara).
+        const wL = Math.sin(ph * 7.1);
+        const wR = Math.sin(ph * 7.1 + 2.2);
+        set(RM.handL, 0.2, 0.55 + 0.04 * wL, -0.06);
+        set(RM.handR, -0.2, 0.55 + 0.04 * wR, -0.06);
+        set(RM.elbowL, -0.1, 0.3, -0.02);
+        set(RM.elbowR, 0.1, 0.3, -0.02);
+        set(RM.head, 0, 0.05, -0.05);
+        set(RM.chest, 0, 0.03, -0.03);
+        break;
+      }
       case "dormitando": {
         // cabecea: la cabeza cae y se incorpora; brazos colgando flojos
         const nod = Math.sin(ph * 1.9) * 0.5 + 0.5;

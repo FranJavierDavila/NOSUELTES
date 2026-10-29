@@ -140,7 +140,10 @@ describe("rockwall — fusión de anclajes a cota (modo juego)", () => {
       seed: 11, cell: 0.01, x0: -1, x1: 1, y0: 0, y1: 2, pad: 8,
       anchors: [{ x: 0, y: 1, hz, r: 0.09, kind: "hand" }],
     });
-    const at = r.height[(Math.round(1 / 0.01) - Math.round(r.y0 / 0.01)) * r.WP + (Math.round(0 / 0.01) - Math.round(r.x0 / 0.01))];
+    // indexado CON padding: interior (i,j) vive en (j+pad)*WP + (i+pad)
+    const idx = (x: number, y: number): number =>
+      (Math.round(y / 0.01) - Math.round(r.y0 / 0.01) + r.pad) * r.WP + (Math.round(x / 0.01) - Math.round(r.x0 / 0.01) + r.pad);
+    const at = r.height[idx(0, 1)];
     expect(Math.abs(at! - hz)).toBeLessThan(0.02); // plataforma fundida a la cota
     // lejos del anclaje el relieve no supera el techo comprimido
     const corner = r.height[(Math.round(0.2 / 0.01) - Math.round(r.y0 / 0.01)) * r.WP + 3];
@@ -153,7 +156,80 @@ describe("rockwall — fusión de anclajes a cota (modo juego)", () => {
       seed: 12, cell: 0.01, x0: -1, x1: 1, y0: 0, y1: 2, pad: 8,
       anchors: [{ x: 0, y: 1, hz, r: 0.09 }],
     });
-    const at = r.height[(Math.round(1 / 0.01) - Math.round(r.y0 / 0.01)) * r.WP + (Math.round(0 / 0.01) - Math.round(r.x0 / 0.01))];
+    const idx = (x: number, y: number): number =>
+      (Math.round(y / 0.01) - Math.round(r.y0 / 0.01) + r.pad) * r.WP + (Math.round(x / 0.01) - Math.round(r.x0 / 0.01) + r.pad);
+    const at = r.height[idx(0, 1)];
+    expect(Math.abs(at! - hz)).toBeLessThan(0.02);
+  });
+});
+
+describe("rockwall — T44 asiento del anclaje (aplanamiento reducido e irregular)", () => {
+  const atDist = (res: ReturnType<typeof sampleRegion>, ang: number, dist: number): number => {
+    // altura a `dist` metros del anclaje (0,1) en la dirección `ang` (CON pad)
+    const x = Math.cos(ang) * dist, y = 1 + Math.sin(ang) * dist;
+    const i = Math.round(x / 0.01) - Math.round(res.x0 / 0.01) + res.pad;
+    const j = Math.round(y / 0.01) - Math.round(res.y0 / 0.01) + res.pad;
+    return res.height[j * res.WP + i]!;
+  };
+  const hz = 0.4;
+  const sample = (plateauR: number, seatWobble = 0.45): ReturnType<typeof sampleRegion> =>
+    sampleRegion({
+      seed: 77, cell: 0.01, x0: -1, x1: 1, y0: 0, y1: 2, pad: 8,
+      style: { plateauR, seatWobble },
+      anchors: [{ x: 0, y: 1, hz, r: 0.09, kind: "hand" }],
+    });
+
+  it("plateauR por defecto es 0,15 (el círculo aplanado ya NO domina la pared)", () => {
+    expect(ROCKWALL_STYLE_DEFAULTS.plateauR).toBe(0.15);
+    const s = rockwallStyleFromData(null);
+    expect(s.plateauR).toBe(0.15);
+    expect(s.seatWobble).toBeGreaterThan(0);
+  });
+
+  it("el área APLANADA encoje: el disco de 0,3 m ya no es una llanura", () => {
+    const old = sample(0.26, 0); // comportamiento anterior
+    const now = sample(0.15, 0); // T44 (sin wobble: comparación pura de radio)
+    // fracción del disco de 0,3 m de radio fundida a la cota (±1 cm)
+    const flatFrac = (res: ReturnType<typeof sampleRegion>): number => {
+      let flat = 0, tot = 0;
+      for (let dx = -0.3; dx <= 0.3; dx += 0.02) {
+        for (let dy = -0.3; dy <= 0.3; dy += 0.02) {
+          const d = Math.hypot(dx, dy);
+          if (d > 0.3 || d < 1e-4) continue;
+          tot++;
+          if (Math.abs(atDist(res, Math.atan2(dy, dx), d) - hz) < 0.01) flat++;
+        }
+      }
+      return flat / Math.max(1, tot);
+    };
+    const fOld = flatFrac(old), fNew = flatFrac(now);
+    expect(fOld).toBeGreaterThan(0.15); // el plateau 0,26 aplanaba un buen disco
+    expect(fNew).toBeLessThan(fOld / 1.8); // T44: MENOS DE LA MITAD de área plana
+    // a 0,22 m la roca ya respira (antes seguía medio fundida a la cota)
+    expect(Math.abs(atDist(now, 0, 0.22) - hz)).toBeGreaterThan(0.05);
+    // el asiento INTERIOR (0,07 m) sigue plano: la presa no flota
+    expect(Math.abs(atDist(now, 0, 0.07) - hz)).toBeLessThan(0.02);
+  });
+
+  it("el wobble hace el asiento IRREGULAR y determinista", () => {
+    const a = sample(0.15, 0.45);
+    const b = sample(0.15, 0.45);
+    const c = sample(0.15, 0);
+    // determinista: misma semilla + estilo → idéntico
+    expect([...a.height]).toEqual([...b.height]);
+    // con wobble, el borde del asiento cambia respecto al círculo puro
+    let diff = 0;
+    for (let ang = 0; ang < 6.28; ang += 0.31) {
+      if (Math.abs(atDist(a, ang, 0.14) - atDist(c, ang, 0.14)) > 0.005) diff++;
+    }
+    expect(diff).toBeGreaterThan(6);
+  });
+
+  it("el centro del asiento SIGUE fundido a la cota (la presa no flota)", () => {
+    const r = sample(0.15, 0.45);
+    const i = 0 - Math.round(r.x0 / 0.01) + r.pad;
+    const j = Math.round(1 / 0.01) - Math.round(r.y0 / 0.01) + r.pad;
+    const at = r.height[j * r.WP + i];
     expect(Math.abs(at! - hz)).toBeLessThan(0.02);
   });
 });
