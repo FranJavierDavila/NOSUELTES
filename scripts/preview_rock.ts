@@ -14,7 +14,7 @@ for (let y = 1; y < 13; y += 0.75) {
 }
 f.anchors.push(...anchors);
 
-const W = 216, H = 400; // 0.025 m/px
+const W = 324, H = 600; // 0.0167 m/px
 const px = new Uint8Array(W * H * 3);
 let zmin = 1e9, zmax = -1e9;
 const zbuf = new Float64Array(W * H);
@@ -49,13 +49,13 @@ for (let j = 0; j < H; j++) {
   }
 }
 // PPM → PNG via PIL (python)
-writeFileSync("/tmp/rock_preview.ppm", Buffer.concat([
+writeFileSync("/home/z/my-project/scripts/out/rock_preview.ppm", Buffer.concat([
   Buffer.from(`P6\n${W} ${H}\n255\n`), Buffer.from(px),
 ]));
-writeFileSync("/tmp/rock_tex.ppm", (() => {
+writeFileSync("/home/z/my-project/scripts/out/rock_tex.ppm", (() => {
   const size = 256;
   const tex = rockTextureRGBA(size, 0x5eed0123 ^ 0x7a3f11, 0.5);
   return Buffer.concat([Buffer.from(`P6\n${size} ${size}\n255\n`), Buffer.from(tex.slice(0, size * size * 3))]);
 })());
 console.log(`d range: [${zmin.toFixed(3)}, ${zmax.toFixed(3)}]`);
-console.log("OK /tmp/rock_preview.ppm + /tmp/rock_tex.ppm");
+console.log("OK scripts/out/rock_preview.ppm + scripts/out/rock_tex.ppm");

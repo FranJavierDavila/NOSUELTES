@@ -134,6 +134,7 @@ export class SherpaScene {
   private worldBuilt = false;
   // MODO TORMENTA: cielo oscuro + RELÁMPAGOS (flash del clearColor+luz).
   private hemiLight: HemisphericLight | null = null;
+  private rockFill: DirectionalLight | null = null;
   // LUZ Y SOMBRA (petición del jugador: "sistema de luces y sombras para
   // incrementar la sensación de profundidad, está todo muy plano"): sol
   // direccional cálido que CASTA sombras reales de sherpas/tabla/ricachón/
@@ -243,6 +244,17 @@ export class SherpaScene {
     dir.shadowMinZ = 1;
     dir.shadowMaxZ = 55;
     this.sunLight = dir;
+    // T42 — LUZ DE RELLENO SOLO PARA LA ROCA: la cara de la pared solo recibe
+    // ~0,49 de lambert del sol y queda oscura (luminancia ~73/255) — los
+    // ESTRATOS TONALES se apagan. Esta luz rasante ilumina ÚNICAMENTE los
+    // chunks de roca (includedOnlyMeshes, se rellena al construir cada losa):
+    // la piedra gana lectura y el RESTO de la escena no cambia un ápice.
+    const fill = new DirectionalLight("rockFill", new Vector3(0.1, -0.3, 1).normalize(), this.scene);
+    fill.intensity = 0.55;
+    fill.diffuse = new Color3(0.95, 0.97, 1.0); // relleno frío de cielo (contraste con el sol cálido)
+    fill.specular = new Color3(0, 0, 0); // sin brillo extra: solo difusa
+    fill.includedOnlyMeshes = [];
+    this.rockFill = fill;
     const sg = new ShadowGenerator(1024, dir);
     // PERF: PCF en vez de Blur Exponential (el ESM renderiza el mapa + pasadas
     // de blur cada frame; con PCF el coste es 1 render del mapa + muestreo).
@@ -690,6 +702,12 @@ export class SherpaScene {
       mesh.receiveShadows = true; // la roca recibe la sombra de los cuerpos
       mesh.isPickable = false;
       mesh.freezeWorldMatrix();
+      // T42: la luz de relleno SOLO toca los chunks de roca (lista viva)
+      if (this.rockFill) {
+        const inc = this.rockFill.includedOnlyMeshes.filter((m) => m.isDisposed() !== true);
+        inc.push(mesh);
+        this.rockFill.includedOnlyMeshes = inc;
+      }
       this.reliefMeshes.set(c, { mesh, cells: geom.verts, tris: geom.tris });
       this.reliefStats.builds++;
       return true;
@@ -741,8 +759,12 @@ export class SherpaScene {
     return true;
   }
 
-  /** Info del relieve (sonda E2E/perf): chunks vivos, piedras y triángulos. */
-  getReliefInfo(): { chunks: number; cells: number; tris: number; builds: number; algorithm: string; viewBand: number } {
+  /** Info del relieve (sonda E2E/perf): chunks vivos, piedras y triángulos.
+   *  T42: expone también el estado de los ESTRATOS TONALES. */
+  getReliefInfo(): {
+    chunks: number; cells: number; tris: number; builds: number; algorithm: string; viewBand: number;
+    strataTones?: number; strataToneStrength?: number; strataSeamDark?: number;
+  } {
     let cells = 0, tris = 0;
     for (const e of this.reliefMeshes.values()) { cells += e.cells; tris += e.tris; }
     return {
@@ -752,6 +774,9 @@ export class SherpaScene {
       algorithm: this.rockField ? "estratificada" : (this.reliefCfg?.algorithm ?? "off"),
       viewBand: Number.isFinite(this.reliefLastCamY) && this.reliefCfg
         ? Math.floor(this.reliefLastCamY / this.reliefCfg.chunkHeightM) : -1,
+      strataTones: this.rockField?.cfg.strataTones.length,
+      strataToneStrength: this.rockField?.cfg.strataToneStrength,
+      strataSeamDark: this.rockField?.cfg.strataSeamDark,
     };
   }
 
@@ -1335,10 +1360,12 @@ export class SherpaScene {
       this.scene.clearColor = new Color4(0.055, 0.07, 0.09, 1);
       if (this.hemiLight) this.hemiLight.intensity = this.hemiBase;
       if (this.sunLight) this.sunLight.intensity = this.sunBase;
+      if (this.rockFill) this.rockFill.intensity = 0.55;
     } else if (storm) {
       this.scene.clearColor = new Color4(0.028, 0.032, 0.048, 1);
       if (this.hemiLight) this.hemiLight.intensity = this.hemiBase * 0.72;
       if (this.sunLight) this.sunLight.intensity = this.sunBase * 0.28;
+      if (this.rockFill) this.rockFill.intensity = 0.3; // noche: el relleno de roca se apaga
     }
   }
 
@@ -1768,10 +1795,12 @@ export class SherpaScene {
       this.scene.clearColor = new Color4(0.028 + 0.72 * k, 0.032 + 0.72 * k, 0.048 + 0.72 * k, 1);
       if (this.hemiLight) this.hemiLight.intensity = this.hemiBase * 0.72 + 2.2 * k;
       if (this.sunLight) this.sunLight.intensity = this.sunBase * 0.28 + 2.0 * k;
+      if (this.rockFill) this.rockFill.intensity = 0.3 + 2.0 * k; // tormenta: flash también en la roca
       if (this.flashT <= 0 && this.stormMode) {
         this.scene.clearColor = new Color4(0.028, 0.032, 0.048, 1);
         if (this.hemiLight) this.hemiLight.intensity = this.hemiBase * 0.72;
         if (this.sunLight) this.sunLight.intensity = this.sunBase * 0.28;
+        if (this.rockFill) this.rockFill.intensity = 0.3;
       }
     }
     // LUZ Y SOMBRA: el sol (su frustum de sombra) SIGUE a la cámara — las

@@ -19,7 +19,8 @@ import {
 } from "../../src/game/sherpas/world/wallRelief";
 import {
   ROCK_DEFAULTS, buildRockChunk, fbm, hash2i, makeRockField, ridgedFbm, rockFromData,
-  rockBumpHeight, rockNormalRGBA, rockSample, rockTextureRGBA, rockZAt, strataHardness, valueNoise,
+  rockBumpHeight, rockNormalRGBA, rockSample, rockTextureRGBA, rockZAt, strataHardness,
+  strataTone, valueNoise,
   type RockField, type RockFeature,
 } from "../../src/game/sherpas/world/wallRock";
 import { makeRng } from "../../src/game/sherpas/core/rng";
@@ -686,5 +687,119 @@ describe("wallRock — datos (wall_gen.relief algorithm estratificada)", () => {
   it("defaults del módulo intactos", () => {
     expect(ROCK_DEFAULTS.algorithm).toBe("estratificada");
     expect(ROCK_DEFAULTS.chunkHeightM).toBe(3);
+  });
+});
+
+// ============================================================================
+// T42 — ESTRATOS TONALES (petición del jugador: "dar a la pared diferentes
+// tonos de piedra con un efecto de estratos de forma que tengamos un patrón
+// de diferentes tonos y mejoremos la apariencia de la piedra").
+// ============================================================================
+
+describe("wallRock — estratos tonales (T42)", () => {
+  it("rockFromData: paleta por defecto y acotado defensivo", () => {
+    const a = rockFromData({ algorithm: "estratificada" });
+    expect(a.strataTones.length).toBeGreaterThanOrEqual(2);
+    expect(a.strataToneStrength).toBeGreaterThan(0);
+    expect(a.strataToneStrength).toBeLessThanOrEqual(1);
+    const b = rockFromData({
+      algorithm: "estratificada",
+      strataTones: ["#ff0000", "#00ff00"],
+      strataToneStrength: 5,
+      strataSeamDark: 9,
+    });
+    expect(b.strataTones).toEqual(["#ff0000", "#00ff00"]);
+    expect(b.strataToneStrength).toBe(1);
+    expect(b.strataSeamDark).toBe(0.6);
+    // basura → defaults (nada rompe la pared)
+    const c = rockFromData({
+      algorithm: "estratificada",
+      strataTones: ["x", 42, null] as unknown as string[],
+    });
+    expect(c.strataTones).toEqual(ROCK_DEFAULTS.strataTones);
+  });
+
+  it("strataTone: determinista y DISTINTO del tono vecino (franjas legibles)", () => {
+    const f = rockField();
+    for (let L = -2; L < 40; L++) {
+      const t = strataTone(f, L);
+      expect(t).toEqual(strataTone(f, L)); // determinista
+      expect(t).not.toEqual(strataTone(f, L + 1)); // sin bandas iguales seguidas
+      expect(t).not.toEqual(strataTone(f, L - 1));
+      for (const ch of t) expect(ch).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("BANDAS VISIBLES: la variación vertical del color se dispara con strength", () => {
+    // mismo campo con strength 0 vs 0,55: la desviación típica del canal R a
+    // lo largo de una vertical debe ser MUCHO mayor con bandas que sin ellas
+    const f0 = makeRockField({ ...rockCfg, strataToneStrength: 0 }, 5.4, -0.18);
+    const f1 = rockField();
+    const sd = (f: RockField): number => {
+      const rs: number[] = [];
+      for (let y = 2; y < 10; y += 0.02) rs.push(rockSample(f, 0.9, y).col[0]);
+      const m = rs.reduce((a, b) => a + b, 0) / rs.length;
+      return Math.sqrt(rs.reduce((a, b) => a + (b - m) ** 2, 0) / rs.length);
+    };
+    expect(sd(f1)).toBeGreaterThan(sd(f0) * 2); // (real ~2,8× con los parámetros T42)
+  });
+
+  it("los tonos de banda LLEGAN al color final (w>0 cambia el color respecto al base)", () => {
+    const f = rockField();
+    const f0 = makeRockField({ ...rockCfg, strataToneStrength: 0 }, 5.4, -0.18);
+    let changed = 0;
+    for (let y = 2; y < 10; y += 0.05) {
+      const a = rockSample(f, -1.3, y).col;
+      const b = rockSample(f0, -1.3, y).col;
+      if (Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]) > 0.06) changed++;
+    }
+    expect(changed).toBeGreaterThan(60); // la mayoría de la vertical lleva banda
+  });
+
+  it("CONTINUIDAD: el tono no salta en el contacto (mezcla suave entre bandas)", () => {
+    const f = rockField();
+    let maxStep = 0;
+    let px = rockSample(f, 0.4, 3).col;
+    for (let y = 3.01; y < 9; y += 0.01) {
+      const c = rockSample(f, 0.4, y).col;
+      const stepv = Math.abs(c[0] - px[0]) + Math.abs(c[1] - px[1]) + Math.abs(c[2] - px[2]);
+      maxStep = Math.max(maxStep, stepv);
+      px = c;
+    }
+    // paso de 1 cm: la transición (≈0,14 m de banda) debe ser suave;
+    // el propio patch tonal (freq 0,45) puede mover ~0,05 por cm — cota holgada
+    expect(maxStep).toBeLessThan(0.18);
+  });
+
+  it("COSTURA: la base de cada banda se oscurece (junta meteorizada)", () => {
+    const fOn = rockField();
+    const fOff = makeRockField({ ...rockCfg, strataSeamDark: 0 }, 5.4, -0.18);
+    let seamDarker = 0;
+    let samples = 0;
+    for (let y = 2; y < 10; y += 0.005) {
+      const a = rockSample(fOn, 0.4, y).col;
+      const b = rockSample(fOff, 0.4, y).col;
+      const lumA = a[0] + a[1] + a[2];
+      const lumB = b[0] + b[1] + b[2];
+      if (lumB - lumA > 0.01) seamDarker++; // en la costura, ON es más oscuro
+      samples++;
+    }
+    // la costura ocupa una franja MINORITARIA de la vertical (σ=0,09 ≈ 30 %)
+    const frac = seamDarker / samples;
+    expect(frac).toBeGreaterThan(0.04);
+    expect(frac).toBeLessThan(0.45);
+  });
+
+  it("el color sigue ACOTADO [0,1] y determinista con bandas activas", () => {
+    const f = rockField();
+    const rng = makeRng(777);
+    for (let i = 0; i < 400; i++) {
+      const { col } = rockSample(f, rng.range(-2.7, 2.7), rng.range(0, 40));
+      for (const ch of col) {
+        expect(ch).toBeGreaterThanOrEqual(0);
+        expect(ch).toBeLessThanOrEqual(1);
+      }
+    }
+    expect(rockSample(f, 1.1, 7.7).col).toEqual(rockSample(f, 1.1, 7.7).col);
   });
 });

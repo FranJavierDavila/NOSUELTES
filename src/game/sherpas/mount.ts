@@ -180,6 +180,54 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
           w: gl.drawingBufferWidth, h: gl.drawingBufferHeight,
         });
       },
+      /** T42 ESTRATOS TONALES: estadística de bandas de color por altura leída
+       *  DIRECTAMENTE de los vértices de la malla de roca (E2E a prueba de
+       *  cámara y de luz). null si la roca no está activa. */
+      rockBands: (): { bands: number; switches: number; maxDelta: number; meanDelta: number } | null => {
+        try {
+          const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
+            reliefMeshes?: Map<number, { mesh: { getVerticesData(k: string): number[] | null } }>;
+          } | null;
+          const meshes = sc?.reliefMeshes;
+          if (!meshes || !meshes.size) return null;
+          type V = { y: number; r: number; g: number; b: number };
+          const verts: V[] = [];
+          for (const e of meshes.values()) {
+            const pos = e.mesh.getVerticesData("position");
+            const col = e.mesh.getVerticesData("color");
+            if (!pos || !col) continue;
+            for (let i = 0, ci = 0; i < pos.length; i += 3, ci += 4) {
+              verts.push({ y: pos[i + 1], r: col[ci], g: col[ci + 1], b: col[ci + 2] });
+            }
+          }
+          if (verts.length < 100) return null;
+          // media de color por cubeta de MEDIA capa (0,31 m): bandas contiguas
+          // con tonos distintos → deltas NOTABLES al cruzar cada contacto
+          const HALF = 0.31;
+          const byY = new Map<number, { n: number; r: number; g: number; b: number }>();
+          for (const v of verts) {
+            const k = Math.floor(v.y / HALF);
+            const acc = byY.get(k) ?? { n: 0, r: 0, g: 0, b: 0 };
+            acc.n++; acc.r += v.r; acc.g += v.g; acc.b += v.b;
+            byY.set(k, acc);
+          }
+          const keys = [...byY.keys()].sort((a, b) => a - b);
+          const means = keys.map((k) => {
+            const a = byY.get(k)!;
+            return [a.r / a.n, a.g / a.n, a.b / a.n];
+          });
+          let switches = 0, maxDelta = 0, sum = 0;
+          for (let i = 1; i < means.length; i++) {
+            const d = Math.abs(means[i][0] - means[i - 1][0])
+              + Math.abs(means[i][1] - means[i - 1][1])
+              + Math.abs(means[i][2] - means[i - 1][2]);
+            sum += d;
+            maxDelta = Math.max(maxDelta, d);
+            if (d > 0.05) switches++;
+          }
+          return { bands: means.length, switches, maxDelta, meanDelta: sum / Math.max(1, means.length - 1) };
+        } catch { return null; }
+      },
     };
   }
 

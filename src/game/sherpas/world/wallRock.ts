@@ -77,6 +77,11 @@ export interface RockData {
   baseColor: string;
   toneVar: number;
   grainVar: number;
+  /** ESTRATOS TONALES (T42): paleta de tonos de piedra (uno por capa),
+   *  fuerza del bandeo y oscurecido de la costura entre capas. */
+  strataTones?: string[];
+  strataToneStrength?: number;
+  strataSeamDark?: number;
   /** oscurecido de hondonadas/entrantes (AO por altura). */
   aoStrength: number;
   /** textura procedural de roca (mapa tileable) + NORMAL map (relieve por
@@ -115,6 +120,9 @@ export interface RockResolved {
   baseColor: string;
   toneVar: number;
   grainVar: number;
+  strataTones: string[];
+  strataToneStrength: number;
+  strataSeamDark: number;
   aoStrength: number;
   textureSizePx: number;
   textureTileM: number;
@@ -153,6 +161,12 @@ export const ROCK_DEFAULTS: RockResolved = {
   baseColor: "#a39a8a",
   toneVar: 0.22,
   grainVar: 0.1,
+  // T42 — paleta sedimentaria CONTRASTADA (v3): arena clara, granito gris,
+  // ocre tostado, crema, pardo oscuro y PIZARRA azulada (matiz frío que
+  // alterna con los cálidos — capa mineral distinta, no más marrón igual).
+  strataTones: ["#c2b08d", "#8a867c", "#a87f57", "#b8ae98", "#6a6255", "#7e8a94"],
+  strataToneStrength: 0.85,
+  strataSeamDark: 0.18,
   aoStrength: 0.32,
   textureSizePx: 512,
   textureTileM: 1.0,
@@ -197,6 +211,14 @@ export function rockFromData(d?: Partial<RockData> | null): RockResolved {
     baseColor: typeof d.baseColor === "string" && d.baseColor.length >= 4 ? d.baseColor : def.baseColor,
     toneVar: num(d.toneVar, def.toneVar, 0, 0.4),
     grainVar: num(d.grainVar, def.grainVar, 0, 0.3),
+    strataTones: (() => {
+      const arr = Array.isArray(d.strataTones)
+        ? d.strataTones.filter((s): s is string => typeof s === "string" && s.length >= 4).slice(0, 10)
+        : [];
+      return arr.length >= 2 ? arr : [...def.strataTones];
+    })(),
+    strataToneStrength: num(d.strataToneStrength, def.strataToneStrength, 0, 1),
+    strataSeamDark: num(d.strataSeamDark, def.strataSeamDark, 0, 0.6),
     aoStrength: num(d.aoStrength, def.aoStrength, 0, 0.8),
     textureSizePx: Math.round(num(d.textureSizePx, def.textureSizePx, 64, 1024)),
     textureTileM: num(d.textureTileM, def.textureTileM, 0.3, 8),
@@ -300,6 +322,19 @@ export function strataHardness(f: RockField, L: number): number {
   return 0.3 + 0.55 * h;
 }
 
+/** Tono de piedra del estrato L (T42): CICLO por la paleta con arranque
+ *  hashed — paso 1 garantiza que dos capas contiguas NUNCA comparten tono
+ *  (O(1), sin cadena de estado). El orden cíclico (ritmita sedimentaria), la
+ *  máscara de visibilidad y el grosor variable de capa evitan el aspecto
+ *  mecánico. */
+export function strataTone(f: RockField, L: number): [number, number, number] {
+  const tones = f.cfg.strataTones;
+  const n = tones.length;
+  const offset = Math.floor(hash2i(1, 53, f.seed + 97) * n) % n;
+  const idx = ((((offset + L) % n) + n) % n);
+  return hexRGB(tones[idx] ?? f.cfg.baseColor);
+}
+
 /** Mezcla suave del rectángulo: 1 dentro, caída smoothstep en el feather. */
 function rectBlend(ft: RockFeature, x: number, y: number): number {
   const dx = Math.max(ft.xMin - x, 0, x - ft.xMax);
@@ -382,16 +417,53 @@ export function rockSample(f: RockField, x: number, y: number): { d: number; col
   // 8) CLAMP GLOBAL: techo del macizo arriba; suelo bajo (nichos) a medio
   //    metro del plano (el muro tiene 0,6 m de cuerpo — nada se sale).
   d = Math.min(c.dispMaxM, Math.max(-0.5, d));
-  // COLOR: tono piedra uniforme con variaciones LIGERAS. El grano FINO va en
-  // la TEXTURA (por píxel); el vértice solo lleva manchas grandes de tono +
-  // alternancia por estrato + AO de hondonada (si no, se ve la triangulación).
+  // COLOR — ESTRATOS TONALES (T42, petición del jugador: "diferentes tonos
+  // de piedra con un efecto de estratos... un patrón de diferentes tonos").
+  // Cada capa toma UN tono de la paleta; la transición L→L+1 vive en una
+  // franja estrecha sobre el contacto (continua entre celdas: en fr→1 de L y
+  // fr→0 de L+1 manda el MISMO tono). La costura se oscurece (junta
+  // meteorizada bajo cada repisa) y una máscara lenta hace que el bandeo se
+  // marque más en unos tramos que en otros. El grano FINO sigue en la
+  // TEXTURA (por píxel) — nada de papel pintado ni triangulación visible.
   const patch = fbm(x * 0.45, y * 0.45, f.seed + 41, 3);
   const ao = 1 - c.aoStrength * clamp01((c.dispMaxM * 0.55 - d) / (c.dispMaxM * 0.8));
-  const strat = 0.97 + 0.06 * h;
   const base = f.baseRGB ?? (f.baseRGB = hexRGB(c.baseColor));
   const kTone = 1 + (patch - 0.5) * 2 * c.toneVar;
-  const k = kTone * strat * ao;
-  return { d, col: [clamp01(base[0] * k), clamp01(base[1] * k), clamp01(base[2] * k)] };
+  if (c.strataToneStrength <= 0.001 || c.strataTones.length < 2) {
+    const k = kTone * ao;
+    return { d, col: [clamp01(base[0] * k), clamp01(base[1] * k), clamp01(base[2] * k)] };
+  }
+  const tB = smoothstep01((fr - 0.08) / 0.22); // transición junto al contacto
+  const tL = strataTone(f, L);
+  const tU = strataTone(f, L + 1);
+  const band: [number, number, number] = [
+    tL[0] + (tU[0] - tL[0]) * tB,
+    tL[1] + (tU[1] - tL[1]) * tB,
+    tL[2] + (tU[2] - tL[2]) * tB,
+  ];
+  // máscara de visibilidad: el bandeo se marca siempre (suelo alto) con
+  // tramos aún más marcados — nunca desaparece del todo
+  const mask = 0.65 + 0.35 * fbm(px * 0.12, py * 0.045, f.seed + 53, 2);
+  const w = Math.min(1, c.strataToneStrength * mask);
+  // costura meteorizada: sombra EN EL CONTACTO entre capas (fr≈0, distancia
+  // ENVOLVENTE → continua al cruzar el límite de fase). Se ROMPE en x con
+  // ruido propio: junta desigual, no línea dibujada.
+  const seamD = Math.min(fr, 1 - fr);
+  const seamBreak = 0.45 + 0.55 * fbm(px * 1.9, py * 0.6, f.seed + 67, 2);
+  const seam = Math.exp(-((seamD / 0.09) ** 2)) * seamBreak;
+  const kSeam = 1 - c.strataSeamDark * seam;
+  const kBand = 1 + (patch - 0.5) * 2 * c.toneVar * 0.55; // veta suave DENTRO de la banda
+  const k = ao * kSeam;
+  const kA = kTone * k * (1 - w);
+  const kB = kBand * k * w;
+  return {
+    d,
+    col: [
+      clamp01(base[0] * kA + band[0] * kB),
+      clamp01(base[1] * kA + band[1] * kB),
+      clamp01(base[2] * kA + band[2] * kB),
+    ],
+  };
 }
 
 const hexCache = new Map<string, [number, number, number]>();

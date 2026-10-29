@@ -179,6 +179,16 @@
   "textureContrast": 0.95,
   "backColor": "#2e353d",
   "naturalMaxM": 0.18,
-  "bumpStrength": 1.0
+  "bumpStrength": 1.0,
+  "strataTones": [
+   "#c2b08d",
+   "#8a867c",
+   "#a87f57",
+   "#b8ae98",
+   "#6a6255",
+   "#7e8a94"
+  ],
+  "strataToneStrength": 0.85,
+  "strataSeamDark": 0.18
  }
 }
