@@ -166,6 +166,16 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         const rig = state.match?.["sherpas"][p] as unknown as { dragging?: string | null; dragHold?: { id: string } | null } | undefined;
         return rig ? { dragging: rig.dragging ?? null, hold: rig.dragHold?.id ?? null } : null;
       },
+      /** T47 SOL ORBITAL: dirección/posición del sol (E2E: el azimut sigue el
+       *  yaw de la órbita y a yaw 0 restaura EXACTO). null si aún no hay luz. */
+      sun: (): { dx: number; dy: number; dz: number; px: number; py: number; pz: number } | null => {
+        const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
+          sunLight?: { direction: { x: number; y: number; z: number }; position: { x: number; y: number; z: number } } | null;
+        };
+        const l = sc?.sunLight;
+        if (!l) return null;
+        return { dx: l.direction.x, dy: l.direction.y, dz: l.direction.z, px: l.position.x, py: l.position.y, pz: l.position.z };
+      },
       /** Acceso de diagnóstico a la escena (E2E de gráficos: niebla/cielo en vivo). */
       sceneObj: () => (state.match?.["d"]?.scene ?? state.scene) as unknown as Record<string, unknown> | null,
       depthProbe: () => {

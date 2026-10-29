@@ -15,5 +15,10 @@
   "orbitPitchMaxDeg": 30,
   "orbitPitchSpeedDeg": 70,
   "orbitAutoReturnS": 3.5,
-  "orbitReturnRate": 1.3
+  "orbitReturnRate": 1.3,
+  "orbitSunFactor": 1.0,
+  "freeViewYawMaxDeg": 75,
+  "freeViewPitchMaxDeg": 50,
+  "freeViewSpeedMul": 1.8,
+  "freeViewReturnRate": 2.2
 }

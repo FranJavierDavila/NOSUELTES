@@ -64,6 +64,16 @@ export function stickOrbitAxis(vx: number, vy: number, deadzone: number): OrbitA
   return { x: norm(vx), y: norm(-vy) };
 }
 
+/** T47 — VISTA LIBRE TEMPORAL: ¿está MANTENIDA la tecla de vista libre?
+ *  Pure y testeable (misma convención que keyOrbitAxis). Mientras se mantiene,
+ *  la escena amplía límites/velocidad de la órbita; al soltar, vuelve. */
+export function freeViewHeldFromKeys(
+  held: Set<string>,
+  s: { cameraFreeView?: string },
+): boolean {
+  return !!s.cameraFreeView && held.has(s.cameraFreeView);
+}
+
 export class InputManager {
   private bindings: PlayerBindings[];
   private shared: InputMapData["shared"];
@@ -229,5 +239,12 @@ export class InputManager {
       x: Math.max(-1, Math.min(1, k.x + gx)),
       y: Math.max(-1, Math.min(1, k.y + gy)),
     };
+  }
+
+  /** VISTA LIBRE TEMPORAL (T47): ¿está MANTENIDA shared.cameraFreeView (G)?
+   *  Mientras sí, la escena usa límites freeView* y suspende el auto-retorno;
+   *  al soltar, la escena detecta el flanco y funde de vuelta al juego. */
+  freeViewHeld(): boolean {
+    return freeViewHeldFromKeys(this.held, this.shared);
   }
 }

@@ -46,6 +46,7 @@ import type { DragReachInfo } from "../physics/sherpaRig";
 import { RichManSim, RM } from "../physics/richMan";
 import type { CameraData, HudData, PerfTuning, VfxData } from "../core/data";
 import type { OrbitAxis } from "../input/input";
+import { orbitLimits, rotYxz, sunAzimuth } from "./orbitMath"; // T47: sol orbital + vista libre (puro)
 import type { WallLayout } from "../world/wallGenerator";
 import {
   bandsAround, buildReliefChunk, planChunks, reliefFromData, seedChunk, tectonicCells, voronoiCells,
@@ -105,6 +106,17 @@ export class SherpaScene {
   private orbitPitch = 0;
   private orbitPitchGoal = 0;
   private orbitIdle = 0;
+  /** T47 — VISTA LIBRE TEMPORAL: ¿se MANTENÍA la tecla en el frame anterior
+   *  (para detectar el flanco de SOLTADA) y ¿el retorno en marcha usa la tasa
+   *  rápida freeViewReturnRate en vez de orbitReturnRate? */
+  private freeViewOn = false;
+  private fvReturn = false;
+  /** T47 — SOL ORBITAL: dirección base del sol (la de siempre a yaw 0) y
+   *  offset base de su posición respecto al objetivo. Al orbitar se rotan AMBOS
+   *  alrededor del objetivo con el mismo azimut — las sombras barren los
+   *  salientes — y a yaw 0 se restauran EXACTOS. */
+  private sunDirBase: Vector3 | null = null;
+  private sunRel = new Vector3(3.5, 9, -6.5);
   private holdMeshes = new Map<string, Mesh>();
   private holdMasters = new Map<string, Mesh>();
   private rigVisuals: (RigVisual | null)[] = [null, null];
@@ -288,6 +300,7 @@ export class SherpaScene {
     dir.shadowMinZ = 1;
     dir.shadowMaxZ = 55;
     this.sunLight = dir;
+    this.sunDirBase = dir.direction.clone(); // T47: base del sol orbital
     // T42 — LUZ DE RELLENO SOLO PARA LA ROCA: la cara de la pared solo recibe
     // ~0,49 de lambert del sol y queda oscura (luminancia ~73/255) — los
     // ESTRATOS TONALES se apagan. Esta luz rasante ilumina ÚNICAMENTE los
@@ -1567,7 +1580,7 @@ export class SherpaScene {
 
   // ---------- cámara compartida (doc 9) ----------
 
-  updateCamera(dt: number, points: V3[], separation: number, orbit: OrbitAxis = { x: 0, y: 0 }): void {
+  updateCamera(dt: number, points: V3[], separation: number, orbit: OrbitAxis = { x: 0, y: 0 }, freeView = false): void {
     const c = this.camData;
     let cx = 0, cy = 0, cz = 0;
     for (const p of points) { cx += p.x; cy += p.y; cz += p.z; }
@@ -1579,34 +1592,48 @@ export class SherpaScene {
     const delta = target.subtract(this.camTarget);
     if (delta.length() > maxPan) delta.normalize().scaleInPlace(maxPan);
     this.camTarget.addInPlace(delta);
-    // ÓRBITA (T45 lateral + T46 vertical): las teclas/stick mueven el OBJETIVO
-    // de yaw/pitch (velocidades orbit*SpeedDeg, acotados a ±orbit*MaxDeg) y el
-    // ángulo real los persigue con suavizado. x +1 (X/stick derecha) → cámara
-    // al lado derecho; y +1 (B/stick arriba) → cámara por encima (mira hacia
-    // abajo); y -1 (V/stick abajo) → cámara POR DEBAJO (los techos se ven por
-    // debajo, petición literal). Persiste; el auto-retorno lo recoge.
-    const orbMaxYaw = ((c.orbitMaxDeg ?? 0) * Math.PI) / 180;
-    const orbMaxPitch = ((c.orbitPitchMaxDeg ?? 0) * Math.PI) / 180;
+    // ÓRBITA (T45 lateral + T46 vertical + T47 vista libre): las teclas/stick
+    // mueven el OBJETIVO de yaw/pitch (velocidades orbit*SpeedDeg, acotados a
+    // los límites efectivos) y el ángulo real los persigue con suavizado. x +1
+    // (X/stick derecha) → cámara al lado derecho; y +1 (B/stick arriba) →
+    // cámara por encima (mira hacia abajo); y -1 (V/stick abajo) → cámara POR
+    // DEBAJO (los techos se ven por debajo, petición literal). Persiste; el
+    // auto-retorno lo recoge. Con la VISTA LIBRE mantenida, los límites son
+    // los freeView* (orbitMath.orbitLimits) y la velocidad se multiplica.
+    const lim = orbitLimits(c, freeView);
     const orbiting = Math.abs(orbit.x) > 0.01 || Math.abs(orbit.y) > 0.01;
-    if (orbiting) this.orbitIdle = 0; else this.orbitIdle += dt;
-    if (orbMaxYaw > 0 && orbit.x !== 0) {
-      const spd = ((c.orbitSpeedDeg ?? 80) * Math.PI) / 180;
-      this.orbitYawGoal = Math.max(-orbMaxYaw, Math.min(orbMaxYaw, this.orbitYawGoal - orbit.x * spd * dt));
+    if (orbiting || freeView) this.fvReturn = false;
+    if (freeView || orbiting) {
+      // VISTA LIBRE (T47, "mantener para mirar") u ÓRBITA activa: el
+      // auto-retorno queda suspendido mientras se usa — se está estudiando
+      // la pared a propósito (T46: cualquier entrada de órbita resetea el idle).
+      this.orbitIdle = 0;
+    } else {
+      this.orbitIdle += dt;
+      // Flanco de SOLTADA ("soltar para volver al juego"): el retorno arranca
+      // YA (sin esperar orbitAutoReturnS) y con la tasa rápida freeViewReturnRate.
+      if (this.freeViewOn) { this.orbitIdle = (c.orbitAutoReturnS ?? 0) + dt; this.fvReturn = true; }
     }
-    if (orbMaxPitch > 0 && orbit.y !== 0) {
-      const spd = ((c.orbitPitchSpeedDeg ?? 70) * Math.PI) / 180;
-      this.orbitPitchGoal = Math.max(-orbMaxPitch, Math.min(orbMaxPitch, this.orbitPitchGoal + orbit.y * spd * dt));
+    this.freeViewOn = freeView;
+    if (lim.maxYaw > 0 && orbit.x !== 0) {
+      this.orbitYawGoal = Math.max(-lim.maxYaw, Math.min(lim.maxYaw, this.orbitYawGoal - orbit.x * lim.yawSpeed * dt));
     }
-    // AUTO-RETORNO LIGERO (T46): tras orbitAutoReturnS sin órbita, el objetivo
-    // decae EXPONENCIALMENTE a 0 (tasa orbitReturnRate) — un fundido lento, no
-    // un corte: de 30° tarda ~2,5 s en volverse despreciable.
+    if (lim.maxPitch > 0 && orbit.y !== 0) {
+      this.orbitPitchGoal = Math.max(-lim.maxPitch, Math.min(lim.maxPitch, this.orbitPitchGoal + orbit.y * lim.pitchSpeed * dt));
+    }
+    // AUTO-RETORNO LIGERO (T46/T47): tras orbitAutoReturnS sin órbita, el
+    // objetivo decae EXPONENCIALMENTE a 0 — un fundido lento, no un corte: de
+    // 30° tarda ~2,5 s en volverse despreciable. Tras soltar la vista libre la
+    // tasa es freeViewReturnRate (más rápida: hay que volver a jugar).
     const arS = c.orbitAutoReturnS ?? 0;
     if (arS > 0 && this.orbitIdle > arS && (this.orbitYawGoal !== 0 || this.orbitPitchGoal !== 0)) {
-      const k = Math.min(1, dt * (c.orbitReturnRate ?? 1.3));
+      const rate = this.fvReturn ? (c.freeViewReturnRate ?? c.orbitReturnRate ?? 1.3) : (c.orbitReturnRate ?? 1.3);
+      const k = Math.min(1, dt * rate);
       this.orbitYawGoal += -this.orbitYawGoal * k;
       this.orbitPitchGoal += -this.orbitPitchGoal * k;
       if (Math.abs(this.orbitYawGoal) < 1e-4) this.orbitYawGoal = 0;
       if (Math.abs(this.orbitPitchGoal) < 1e-4) this.orbitPitchGoal = 0;
+      if (this.orbitYawGoal === 0 && this.orbitPitchGoal === 0) this.fvReturn = false;
     }
     if (this.orbitYaw !== this.orbitYawGoal) {
       this.orbitYaw += (this.orbitYawGoal - this.orbitYaw) * Math.min(1, dt * (c.orbitSmoothing ?? 7));
@@ -1615,6 +1642,22 @@ export class SherpaScene {
     if (this.orbitPitch !== this.orbitPitchGoal) {
       this.orbitPitch += (this.orbitPitchGoal - this.orbitPitch) * Math.min(1, dt * (c.orbitSmoothing ?? 7));
       if (Math.abs(this.orbitPitchGoal - this.orbitPitch) < 1e-4) this.orbitPitch = this.orbitPitchGoal;
+    }
+    // T47 — SOL ORBITAL ("que la órbita también gire el sol/sombras"): el
+    // azimut del sol sigue el yaw REAL de la órbita (orbitSunFactor) con la
+    // MISMA convención de giro que la cámara. Derivado SIEMPRE de la base: a
+    // yaw 0 el sol es exactamente el de siempre y al volver la órbita las
+    // sombras regresan con ella. La posición (frustum de sombra) gira igual
+    // más abajo, en el síncrono por frame.
+    const sunFactor = c.orbitSunFactor ?? 0;
+    if (this.sunLight && this.sunDirBase && sunFactor !== 0) {
+      const az = sunAzimuth(this.orbitYaw, sunFactor);
+      if (Math.abs(az) < 1e-6) {
+        this.sunLight.direction.copyFrom(this.sunDirBase);
+      } else {
+        const d = rotYxz(this.sunDirBase.x, this.sunDirBase.z, az);
+        this.sunLight.direction.set(d.x, this.sunDirBase.y, d.z);
+      }
     }
     const sinY = Math.sin(this.orbitYaw);
     const cosY = Math.cos(this.orbitYaw);
@@ -1645,12 +1688,15 @@ export class SherpaScene {
     let cx = 0, cy = 0;
     for (const p of points) { cx += p.x; cy += p.y; }
     this.camTarget.set(cx / points.length, cy / points.length + 0.6, -0.3);
-    // la órbita (lateral Y vertical) vuelve al encuadre frontal al instante
+    // la órbita (lateral, vertical y vista libre T47) vuelve al encuadre
+    // frontal AL INSTANTE — y el sol orbital se restaura con ella.
     this.orbitYaw = 0;
     this.orbitYawGoal = 0;
     this.orbitPitch = 0;
     this.orbitPitchGoal = 0;
     this.orbitIdle = 0;
+    this.freeViewOn = false;
+    this.fvReturn = false;
   }
 
   // ---------- FX ----------
@@ -2341,9 +2387,19 @@ export class SherpaScene {
       }
     }
     // LUZ Y SOMBRA: el sol (su frustum de sombra) SIGUE a la cámara — las
-    // sombras nítidas caen siempre cerca de lo que se está mirando.
+    // sombras nítidas caen siempre cerca de lo que se está mirando. T47: con
+    // órbita activa el offset gira alrededor del objetivo con el MISMO azimut
+    // que la dirección (arriba) — el sol orbita la pared con la cámara; a yaw
+    // 0 la posición es bit-exacto la de siempre.
     if (this.sunLight && this.worldBuilt) {
-      this.sunLight.position.set(this.camTarget.x + 3.5, this.camTarget.y + 9, this.camTarget.z - 6.5);
+      const sunFactor = this.camData.orbitSunFactor ?? 0;
+      if (this.sunDirBase && sunFactor !== 0) {
+        const az = sunAzimuth(this.orbitYaw, sunFactor);
+        const p = Math.abs(az) < 1e-6 ? { x: this.sunRel.x, z: this.sunRel.z } : rotYxz(this.sunRel.x, this.sunRel.z, az);
+        this.sunLight.position.set(this.camTarget.x + p.x, this.camTarget.y + this.sunRel.y, this.camTarget.z + p.z);
+      } else {
+        this.sunLight.position.set(this.camTarget.x + this.sunRel.x, this.camTarget.y + this.sunRel.y, this.camTarget.z + this.sunRel.z);
+      }
     }
     this.stepFallingBoxes(Math.max(0.001, this.engine.getDeltaTime() / 1000));
     // BRINCO de las banderitas al fijar la cota (overshoot elástico breve).

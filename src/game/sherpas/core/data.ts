@@ -270,7 +270,7 @@ export interface InputMapData {
     keyboard: { aimUp: string; aimDown: string; aimLeft: string; aimRight: string; aimSpeed: number; grip: Record<string, string>; shoo: string; fart?: string; anchor?: string; impulse?: string };
     gamepad?: { index: number; aim: { stick: number; deadzone: number; aimSpeed: number }; grip: Record<string, number>; shoo: number; fart?: number; anchor?: number; impulse?: number; gripNames: Record<string, string>; cameraOrbit?: { stick: number; deadzone: number } };
   }>;
-  shared: { pause: string; help: string; cameraRecenter: string; cameraOrbitLeft?: string; cameraOrbitRight?: string; cameraOrbitUp?: string; cameraOrbitDown?: string };
+  shared: { pause: string; help: string; cameraRecenter: string; cameraOrbitLeft?: string; cameraOrbitRight?: string; cameraOrbitUp?: string; cameraOrbitDown?: string; /** T47: MANTENER → vista libre temporal (límites ampliados, retorno al soltar). */ cameraFreeView?: string };
 }
 export interface HudData {
   tension: { warn: number; blinkHz: number; gradient: string[] };
@@ -296,6 +296,15 @@ export interface CameraData {
   orbitMaxDeg?: number; orbitSpeedDeg?: number; orbitSmoothing?: number;
   orbitPitchMaxDeg?: number; orbitPitchSpeedDeg?: number;
   orbitAutoReturnS?: number; orbitReturnRate?: number;
+  /** T47 — SOL ORBITAL: el azimut del sol sigue el yaw de la órbita con este
+   *  factor (1 = 1:1 con la cámara) — al orbitar, las sombras BARREN los
+   *  salientes para estudiar cómo cae la luz. 0/ausente → sol fijo. */
+  orbitSunFactor?: number;
+  /** T47 — VISTA LIBRE TEMPORAL (mantener shared.cameraFreeView): límites y
+   *  velocidad ampliados mientras se mantiene; al SOLTAR, retorno suave con
+   *  freeViewReturnRate (cae a orbitReturnRate si falta). */
+  freeViewYawMaxDeg?: number; freeViewPitchMaxDeg?: number;
+  freeViewSpeedMul?: number; freeViewReturnRate?: number;
 }
 export interface AudioSfxData { kind: string; dur: number; gain: number; hz?: number; hzStart?: number; hzEnd?: number; pitchDown?: boolean; pitchUp?: boolean }
 export interface AudioData {
