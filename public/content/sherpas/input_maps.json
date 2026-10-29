@@ -69,6 +69,8 @@
  "shared": {
   "pause": "Space",
   "help": "KeyH",
-  "cameraRecenter": "KeyC"
+  "cameraRecenter": "KeyC",
+  "cameraOrbitLeft": "KeyZ",
+  "cameraOrbitRight": "KeyX"
  }
 }

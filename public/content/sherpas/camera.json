@@ -8,5 +8,8 @@
   "lookAheadY": 0.35,
   "deadzoneM": 0.5,
   "ropeZoomPaddingM": 0.8,
-  "shakeDecay": 2.6
+  "shakeDecay": 2.6,
+  "orbitMaxDeg": 30,
+  "orbitSpeedDeg": 80,
+  "orbitSmoothing": 7.0
 }

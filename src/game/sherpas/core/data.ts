@@ -270,7 +270,7 @@ export interface InputMapData {
     keyboard: { aimUp: string; aimDown: string; aimLeft: string; aimRight: string; aimSpeed: number; grip: Record<string, string>; shoo: string; fart?: string; anchor?: string; impulse?: string };
     gamepad?: { index: number; aim: { stick: number; deadzone: number; aimSpeed: number }; grip: Record<string, number>; shoo: number; fart?: number; anchor?: number; impulse?: number; gripNames: Record<string, string> };
   }>;
-  shared: { pause: string; help: string; cameraRecenter: string };
+  shared: { pause: string; help: string; cameraRecenter: string; cameraOrbitLeft?: string; cameraOrbitRight?: string };
 }
 export interface HudData {
   tension: { warn: number; blinkHz: number; gradient: string[] };
@@ -289,6 +289,9 @@ export interface HudData {
 export interface CameraData {
   baseDist: number; distPerMeterSpread: number; maxDist: number; minDist: number;
   smoothing: number; maxPanSpeed: number; lookAheadY: number; deadzoneM: number; ropeZoomPaddingM: number; shakeDecay: number;
+  /** ÓRBITA LATERAL (T45): giro ±orbitMaxDeg alrededor del eje vertical para
+   *  analizar los salientes de la pared. Opcional: ausente → sin órbita. */
+  orbitMaxDeg?: number; orbitSpeedDeg?: number; orbitSmoothing?: number;
 }
 export interface AudioSfxData { kind: string; dur: number; gain: number; hz?: number; hzStart?: number; hzEnd?: number; pitchDown?: boolean; pitchUp?: boolean }
 export interface AudioData {

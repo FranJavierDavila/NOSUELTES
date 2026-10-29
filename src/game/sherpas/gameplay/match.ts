@@ -1555,7 +1555,8 @@ export class SherpasMatch {
     const wa = this.sherpas[0].waist();
     const wb = this.sherpas[1].waist();
     const camPts = this.plankState ? [wa, wb, this.plankState.center] : [wa, wb];
-    s.updateCamera(frameDt, camPts, vLen(vSub(wa, wb)));
+    // ÓRBITA LATERAL (T45): Z/X mantienen un giro ±30° para ver los salientes.
+    s.updateCamera(frameDt, camPts, vLen(vSub(wa, wb)), this.d.input.orbitAxis());
 
     this.d.hud.pruneBubbles(this.simTime);
     this.hudAcc += frameDt;

@@ -95,6 +95,11 @@ export class SherpaScene {
   private camTarget = new Vector3(0, 1.5, -0.3);
   private camDist = 7;
   private shakeAmp = 0;
+  /** ÓRBITA LATERAL (T45): yaw actual y objetivo (rad, ±orbitMaxDeg). El ángulo
+   *  PERSISTE al soltar la tecla (se analiza el saliente con calma) y solo
+   *  vuelve a 0 con C (reencuadrar). */
+  private orbitYaw = 0;
+  private orbitYawGoal = 0;
   private holdMeshes = new Map<string, Mesh>();
   private holdMasters = new Map<string, Mesh>();
   private rigVisuals: (RigVisual | null)[] = [null, null];
@@ -1557,7 +1562,7 @@ export class SherpaScene {
 
   // ---------- cámara compartida (doc 9) ----------
 
-  updateCamera(dt: number, points: V3[], separation: number): void {
+  updateCamera(dt: number, points: V3[], separation: number, orbitAxis: -1 | 0 | 1 = 0): void {
     const c = this.camData;
     let cx = 0, cy = 0, cz = 0;
     for (const p of points) { cx += p.x; cy += p.y; cz += p.z; }
@@ -1569,9 +1574,29 @@ export class SherpaScene {
     const delta = target.subtract(this.camTarget);
     if (delta.length() > maxPan) delta.normalize().scaleInPlace(maxPan);
     this.camTarget.addInPlace(delta);
+    // ÓRBITA LATERAL (T45): la tecla mueve el OBJETIVO de yaw (velocidad
+    // orbitSpeedDeg, acotado a ±orbitMaxDeg) y el yaw real lo persigue con
+    // suavizado. axis +1 (X) → la cámara PHYSICALLY se desplaza al lado
+    // derecho (+x); axis -1 (Z) → al izquierdo. Persiste al soltar.
+    const orbMax = ((c.orbitMaxDeg ?? 0) * Math.PI) / 180;
+    if (orbMax > 0 && orbitAxis !== 0) {
+      const orbSpd = ((c.orbitSpeedDeg ?? 80) * Math.PI) / 180;
+      this.orbitYawGoal = Math.max(-orbMax, Math.min(orbMax, this.orbitYawGoal - orbitAxis * orbSpd * dt));
+    }
+    if (this.orbitYaw !== this.orbitYawGoal) {
+      this.orbitYaw += (this.orbitYawGoal - this.orbitYaw) * Math.min(1, dt * (c.orbitSmoothing ?? 7));
+      if (Math.abs(this.orbitYawGoal - this.orbitYaw) < 1e-4) this.orbitYaw = this.orbitYawGoal;
+    }
+    const sinY = Math.sin(this.orbitYaw);
+    const cosY = Math.cos(this.orbitYaw);
     // la cara de escalada mira a -z (los escaladores viven en z negativo):
-    // la cámara se coloca DELANTE de ellos, más negativa aún.
-    this.camera.position.set(this.camTarget.x, this.camTarget.y + 0.6, this.camTarget.z - this.camDist);
+    // la cámara se coloca DELANTE de ellos, más negativa aún; el yaw orbita
+    // ese offset alrededor del eje vertical que pasa por el objetivo.
+    this.camera.position.set(
+      this.camTarget.x - this.camDist * sinY,
+      this.camTarget.y + 0.6,
+      this.camTarget.z - this.camDist * cosY,
+    );
     if (this.shakeAmp > 0.001) {
       this.camera.position.x += (Math.random() - 0.5) * this.shakeAmp;
       this.camera.position.y += (Math.random() - 0.5) * this.shakeAmp;
@@ -1586,6 +1611,9 @@ export class SherpaScene {
     let cx = 0, cy = 0;
     for (const p of points) { cx += p.x; cy += p.y; }
     this.camTarget.set(cx / points.length, cy / points.length + 0.6, -0.3);
+    // la órbita también vuelve al encuadre frontal (C = "déjame como estaba")
+    this.orbitYaw = 0;
+    this.orbitYawGoal = 0;
   }
 
   // ---------- FX ----------

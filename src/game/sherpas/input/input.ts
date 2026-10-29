@@ -40,6 +40,7 @@ const isTypingTarget = (t: EventTarget | null): boolean =>
 
 export class InputManager {
   private bindings: PlayerBindings[];
+  private shared: InputMapData["shared"];
   private held = new Set<string>();
   private pendingToggles = new Map<0 | 1, Limb[]>();
   private pendingShoo = new Map<0 | 1, boolean>();
@@ -55,6 +56,7 @@ export class InputManager {
 
   constructor(inputMaps: InputMapData, handlers: SharedKeysHandlers) {
     this.handlers = handlers;
+    this.shared = inputMaps.shared;
     this.bindings = [
       { playerId: 0, label: inputMaps.players.p1?.label ?? "P1", keyboard: inputMaps.players.p1.keyboard, gamepad: undefined },
       { playerId: 1, label: inputMaps.players.p2?.label ?? "P2", keyboard: inputMaps.players.p2.keyboard, gamepad: inputMaps.players.p2?.gamepad },
@@ -179,5 +181,19 @@ export class InputManager {
 
   labels(): { p1: string; p2: string } {
     return { p1: this.bindings[0].label, p2: this.bindings[1].label };
+  }
+
+  /** ÓRBITA LATERAL DE CÁMARA (T45): -1 = órbita a la izquierda, +1 = a la
+   *  derecha, 0 = quieta. Es MANTENIDA (no flanco): el ángulo persiste hasta
+   *  reencuadrar con C, para analizar los salientes con calma. Opcional en el
+   *  mapa: sin teclas → siempre 0. */
+  orbitAxis(): -1 | 0 | 1 {
+    const left = this.shared.cameraOrbitLeft;
+    const right = this.shared.cameraOrbitRight;
+    if (!left || !right) return 0;
+    let ax = 0;
+    if (this.held.has(left)) ax -= 1;
+    if (this.held.has(right)) ax += 1;
+    return ax as -1 | 0 | 1;
   }
 }

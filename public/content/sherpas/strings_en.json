@@ -123,7 +123,7 @@
  "keys": {
   "p1": "MOUSE: press a limb and drag it onto a hold (green ring) · release to fix it · F: superpower",
   "p2": "P2: Arrows aim · I/O hands · K/L feet · U shoo · or gamepad: stick + A/B/X/Y + RB · P: superpower",
-  "shared": "Space pause · H help · C recenter · F3 debug"
+  "shared": "Space pause · H help · Z/X camera orbit (±30°) · C recenter · F3 debug"
  },
  "settings": {
   "title": "Settings",
@@ -153,6 +153,6 @@
   "step2": "2) DRAG: move the pointer across the wall. Nearby holds act like MAGNETS: a green ring appears when a hold can capture the limb. Only holds you can reach will catch it.",
   "step3": "3) CLIMB: release the click over the hold and the limb flies to it. Alternate feet and hands (feet first, then hands) and never let go of all 4 at once or you will fall.",
   "step4": "4) COORDINATE: one rope goes from each side of the plank to each sherpa. If one climbs higher than the other, the plank TILTS, shifts and the rich man SLIPS towards the abyss: climb at the same height, step by step.",
-  "extra": "R shoo birds · Space pause · C recenter camera · H opens/closes this help."
+  "extra": "Z/X orbits the camera ±30° to inspect the overhangs (the angle persists; C recenters it) · R shoo birds · Space pause · H opens/closes this help."
  }
 }

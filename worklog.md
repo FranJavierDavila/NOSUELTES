@@ -975,3 +975,20 @@ Stage Summary:
 - La pared es PBR DE VERDAD: albedo horneado + normales de 1 cm para el detalle fino + una capa de estratos sedimentarios tileable muestreada TRIPANAR en espacio mundo (sin fugas ni estiramientos) — más riqueza y variedad sobre el módulo de diaclasas intacto.
 - Los anclajes ya no dejan círculos aplanados: asiento la mitad de grande, irregular como un apoyadero rocoso y con la roca respirando a 0,22 m — se ve la presa, no el plato.
 - El ricachón HABLA CON TU VOZ REAL: tus 6 grabaciones suenan solo con susto+desplazamiento o escora fuerte (≥14°), sin bocadillos, y cada vez que emite un sonido levanta LOS DOS BRAZOS EN ALTO de forma ostentosa mientras dura el clip. Sombras: ya las teníamos (sol + PCF) y la pared las recibe.
+
+---
+Task ID: 45
+Agent: Z.ai (principal)
+Task: "Se podría orbitar un poco la cámara hacia los lados, como unos 30 grados en cada dirección para poder analizar los salientes."
+
+Work Log:
+- ÓRBITA LATERAL ±30° (petición literal): nuevo parámetro de cámara orbitMaxDeg 30 + orbitSpeedDeg 80°/s + orbitSmoothing 7 en camera.json (regla de oro: nada hardcodeado). La cámara comparte el MISMO objetivo (camTarget) y distancia, pero el offset frontal (0, 0.6, -d) ahora se ROTA alrededor del eje vertical por un yaw orbitYaw acotado a ±30°: pos = target + (-d·sin yaw, 0.6, -d·cos yaw). A yaw 0 el encuadre es BYTE-A-BYTE el de siempre (sin/cos de 0 = frontal exacto).
+- ENTRADA: teclas compartidas Z/X (libres en ambos jugadores; input_maps.json shared.cameraOrbitLeft/Right opcionales). InputManager.orbitAxis() lee las teclas MANTENIDAS (no flanco): -1 izquierda / +1 derecha. Semántica física: Z lleva la cámara al lado IZQUIERDO de la escena (miras el saliente desde su izquierda), X al derecho. match.ts pasa el eje a scene.updateCamera en cada frame.
+- PERSISTENCIA (decisión de diseño): el ángulo NO vuelve solo al soltar — se queda clavado donde lo dejes para analizar el saliente CON CALMA mientras arrastras extremidades con el ratón (la otra mano está ocupada). C (reencuadrar) resetea la órbita a 0 además de recentrar el objetivo: "déjame como estaba". Suavizado exponencial del yaw real hacia el objetivo (orbitSmoothing), sin saltos.
+- SIN EFECTOS SECUNDARIOS: el sol y su frustum de sombra siguen a camTarget (no al yaw) → sombras estables; los badges de extremidades y toda la proyección HUD usan la matriz de cámara → orbitar no rompe nada; el picking/drag del ratón lanza rayos desde la cámara → funciona igual girado; minimapa independiente de la cámara.
+- CALIDAD: vitest sherpas 240/240 (0 regresiones); tsc 0 errores en sherpas (baseline ejemplos/skills intacta); teclas Z/X verificadas libres en AMBOS mapas de jugador.
+- E2E REAL (Playwright, scripts/e2e-t45-orbita.py): DATOS (orbitMaxDeg 30 servido, teclas KeyZ/KeyX, ayuda es/en con "Z/X ... ±30°") → FRENTE yaw 0.0° → Z 1,6 s: yaw +29.2°, Δx -4.26 m (desplazamiento FÍSICO, no solo giro) → PERSISTENCIA: deriva 0.84° tras 0,7 s suelto → C: yaw 0.0° → X: yaw -29.9°, Δx +4.36 m → TOPE: 2,6 s manteniendo Z → 29.94° (NUNCA pasa de 30) → HUD vivo en órbita (manos agarradas) → capturas t45-0-frente / t45-1-orbita-izquierda / t45-2-orbita-derecha (el relieve de las diaclasas y los salientes se lee con profundidad 3D real) → 0 errores JS. VERDE.
+- GRITO REAL PROTEGIDO: public/audio/rico/real/cabronessss.mp3 SIN TOCAR (git limpio en el fichero; la regla del jugador se respeta).
+
+Stage Summary:
+- La cámara ORBITA ±30° con Z/X (mantén para girar, suelta y el ángulo se queda, C reencuadra): los salientes de la pared se analizan desde la izquierda o la derecha con profundidad 3D real, sin perder el encuadre jugable ni romper arrastres, badges ni sombras.
