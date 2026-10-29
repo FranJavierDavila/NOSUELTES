@@ -1,7 +1,7 @@
 {
   "enabled": true,
-  "model": "/models/escalador.glb",
-  "turnDeg": 0,
+  "model": "/models/escalador-fixed.glb",
+  "turnDeg": 180,
   "tint": [
     "#ffffff",
     "#9fc4ff"

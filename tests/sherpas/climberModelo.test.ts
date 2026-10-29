@@ -297,7 +297,7 @@ describe("climber.json", () => {
   };
   it("habilitado con modelo y tinte de 2 jugadores", () => {
     expect(raw.enabled).toBe(true);
-    expect(raw.model).toBe("/models/escalador.glb");
+    expect(raw.model).toBe("/models/escalador-fixed.glb");
     expect(raw.tint).toHaveLength(2);
     for (const t of raw.tint) expect(t).toMatch(/^#[0-9a-fA-F]{6}$/);
   });
