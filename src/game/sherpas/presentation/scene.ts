@@ -45,6 +45,7 @@ import type { HoldInstance } from "../physics/anchors";
 import type { DragReachInfo } from "../physics/sherpaRig";
 import { RichManSim, RM } from "../physics/richMan";
 import type { CameraData, HudData, PerfTuning, VfxData } from "../core/data";
+import type { OrbitAxis } from "../input/input";
 import type { WallLayout } from "../world/wallGenerator";
 import {
   bandsAround, buildReliefChunk, planChunks, reliefFromData, seedChunk, tectonicCells, voronoiCells,
@@ -95,11 +96,15 @@ export class SherpaScene {
   private camTarget = new Vector3(0, 1.5, -0.3);
   private camDist = 7;
   private shakeAmp = 0;
-  /** ÓRBITA LATERAL (T45): yaw actual y objetivo (rad, ±orbitMaxDeg). El ángulo
-   *  PERSISTE al soltar la tecla (se analiza el saliente con calma) y solo
-   *  vuelve a 0 con C (reencuadrar). */
+  /** ÓRBITA LATERAL (T45) + VERTICAL y AUTO-RETORNO (T46): yaw/pitch actual y
+   *  objetivo (rad, ±orbitMax/PitchDeg). El ángulo PERSISTE mientras se usa
+   *  (se analiza el saliente con calma) y tras orbitAutoReturnS SIN tocar la
+   *  órbita el objetivo decae suavemente a 0. C (reencuadrar) lo resetea ya. */
   private orbitYaw = 0;
   private orbitYawGoal = 0;
+  private orbitPitch = 0;
+  private orbitPitchGoal = 0;
+  private orbitIdle = 0;
   private holdMeshes = new Map<string, Mesh>();
   private holdMasters = new Map<string, Mesh>();
   private rigVisuals: (RigVisual | null)[] = [null, null];
@@ -1562,7 +1567,7 @@ export class SherpaScene {
 
   // ---------- cámara compartida (doc 9) ----------
 
-  updateCamera(dt: number, points: V3[], separation: number, orbitAxis: -1 | 0 | 1 = 0): void {
+  updateCamera(dt: number, points: V3[], separation: number, orbit: OrbitAxis = { x: 0, y: 0 }): void {
     const c = this.camData;
     let cx = 0, cy = 0, cz = 0;
     for (const p of points) { cx += p.x; cy += p.y; cz += p.z; }
@@ -1574,29 +1579,58 @@ export class SherpaScene {
     const delta = target.subtract(this.camTarget);
     if (delta.length() > maxPan) delta.normalize().scaleInPlace(maxPan);
     this.camTarget.addInPlace(delta);
-    // ÓRBITA LATERAL (T45): la tecla mueve el OBJETIVO de yaw (velocidad
-    // orbitSpeedDeg, acotado a ±orbitMaxDeg) y el yaw real lo persigue con
-    // suavizado. axis +1 (X) → la cámara PHYSICALLY se desplaza al lado
-    // derecho (+x); axis -1 (Z) → al izquierdo. Persiste al soltar.
-    const orbMax = ((c.orbitMaxDeg ?? 0) * Math.PI) / 180;
-    if (orbMax > 0 && orbitAxis !== 0) {
-      const orbSpd = ((c.orbitSpeedDeg ?? 80) * Math.PI) / 180;
-      this.orbitYawGoal = Math.max(-orbMax, Math.min(orbMax, this.orbitYawGoal - orbitAxis * orbSpd * dt));
+    // ÓRBITA (T45 lateral + T46 vertical): las teclas/stick mueven el OBJETIVO
+    // de yaw/pitch (velocidades orbit*SpeedDeg, acotados a ±orbit*MaxDeg) y el
+    // ángulo real los persigue con suavizado. x +1 (X/stick derecha) → cámara
+    // al lado derecho; y +1 (B/stick arriba) → cámara por encima (mira hacia
+    // abajo); y -1 (V/stick abajo) → cámara POR DEBAJO (los techos se ven por
+    // debajo, petición literal). Persiste; el auto-retorno lo recoge.
+    const orbMaxYaw = ((c.orbitMaxDeg ?? 0) * Math.PI) / 180;
+    const orbMaxPitch = ((c.orbitPitchMaxDeg ?? 0) * Math.PI) / 180;
+    const orbiting = Math.abs(orbit.x) > 0.01 || Math.abs(orbit.y) > 0.01;
+    if (orbiting) this.orbitIdle = 0; else this.orbitIdle += dt;
+    if (orbMaxYaw > 0 && orbit.x !== 0) {
+      const spd = ((c.orbitSpeedDeg ?? 80) * Math.PI) / 180;
+      this.orbitYawGoal = Math.max(-orbMaxYaw, Math.min(orbMaxYaw, this.orbitYawGoal - orbit.x * spd * dt));
+    }
+    if (orbMaxPitch > 0 && orbit.y !== 0) {
+      const spd = ((c.orbitPitchSpeedDeg ?? 70) * Math.PI) / 180;
+      this.orbitPitchGoal = Math.max(-orbMaxPitch, Math.min(orbMaxPitch, this.orbitPitchGoal + orbit.y * spd * dt));
+    }
+    // AUTO-RETORNO LIGERO (T46): tras orbitAutoReturnS sin órbita, el objetivo
+    // decae EXPONENCIALMENTE a 0 (tasa orbitReturnRate) — un fundido lento, no
+    // un corte: de 30° tarda ~2,5 s en volverse despreciable.
+    const arS = c.orbitAutoReturnS ?? 0;
+    if (arS > 0 && this.orbitIdle > arS && (this.orbitYawGoal !== 0 || this.orbitPitchGoal !== 0)) {
+      const k = Math.min(1, dt * (c.orbitReturnRate ?? 1.3));
+      this.orbitYawGoal += -this.orbitYawGoal * k;
+      this.orbitPitchGoal += -this.orbitPitchGoal * k;
+      if (Math.abs(this.orbitYawGoal) < 1e-4) this.orbitYawGoal = 0;
+      if (Math.abs(this.orbitPitchGoal) < 1e-4) this.orbitPitchGoal = 0;
     }
     if (this.orbitYaw !== this.orbitYawGoal) {
       this.orbitYaw += (this.orbitYawGoal - this.orbitYaw) * Math.min(1, dt * (c.orbitSmoothing ?? 7));
       if (Math.abs(this.orbitYawGoal - this.orbitYaw) < 1e-4) this.orbitYaw = this.orbitYawGoal;
     }
+    if (this.orbitPitch !== this.orbitPitchGoal) {
+      this.orbitPitch += (this.orbitPitchGoal - this.orbitPitch) * Math.min(1, dt * (c.orbitSmoothing ?? 7));
+      if (Math.abs(this.orbitPitchGoal - this.orbitPitch) < 1e-4) this.orbitPitch = this.orbitPitchGoal;
+    }
     const sinY = Math.sin(this.orbitYaw);
     const cosY = Math.cos(this.orbitYaw);
+    const sinP = Math.sin(this.orbitPitch);
+    const cosP = Math.cos(this.orbitPitch);
     // la cara de escalada mira a -z (los escaladores viven en z negativo):
-    // la cámara se coloca DELANTE de ellos, más negativa aún; el yaw orbita
-    // ese offset alrededor del eje vertical que pasa por el objetivo.
+    // la cámara se coloca DELANTE de ellos, más negativa aún; yaw orbita el
+    // offset alrededor del eje vertical y pitch lo inclina por encima/bajo
+    // el horizonte del objetivo (radio horizontal d·cosP, altura +d·sinP).
     this.camera.position.set(
-      this.camTarget.x - this.camDist * sinY,
-      this.camTarget.y + 0.6,
-      this.camTarget.z - this.camDist * cosY,
+      this.camTarget.x - this.camDist * cosP * sinY,
+      this.camTarget.y + 0.6 + this.camDist * sinP,
+      this.camTarget.z - this.camDist * cosP * cosY,
     );
+    // NUNCA bajo la nieve (pitch -30° cerca del suelo metería la cámara en ella)
+    if (this.camera.position.y < 0.35) this.camera.position.y = 0.35;
     if (this.shakeAmp > 0.001) {
       this.camera.position.x += (Math.random() - 0.5) * this.shakeAmp;
       this.camera.position.y += (Math.random() - 0.5) * this.shakeAmp;
@@ -1611,9 +1645,12 @@ export class SherpaScene {
     let cx = 0, cy = 0;
     for (const p of points) { cx += p.x; cy += p.y; }
     this.camTarget.set(cx / points.length, cy / points.length + 0.6, -0.3);
-    // la órbita también vuelve al encuadre frontal (C = "déjame como estaba")
+    // la órbita (lateral Y vertical) vuelve al encuadre frontal al instante
     this.orbitYaw = 0;
     this.orbitYawGoal = 0;
+    this.orbitPitch = 0;
+    this.orbitPitchGoal = 0;
+    this.orbitIdle = 0;
   }
 
   // ---------- FX ----------

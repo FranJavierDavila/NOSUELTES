@@ -62,7 +62,11 @@
     },
     "fart": 4,
     "anchor": 6,
-    "impulse": 7
+    "impulse": 7,
+    "cameraOrbit": {
+     "stick": 2,
+     "deadzone": 0.22
+    }
    }
   }
  },
@@ -71,6 +75,8 @@
   "help": "KeyH",
   "cameraRecenter": "KeyC",
   "cameraOrbitLeft": "KeyZ",
-  "cameraOrbitRight": "KeyX"
+  "cameraOrbitRight": "KeyX",
+  "cameraOrbitUp": "KeyB",
+  "cameraOrbitDown": "KeyV"
  }
 }

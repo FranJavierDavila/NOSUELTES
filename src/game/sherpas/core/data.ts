@@ -268,9 +268,9 @@ export interface InputMapData {
   players: Record<string, {
     label: string;
     keyboard: { aimUp: string; aimDown: string; aimLeft: string; aimRight: string; aimSpeed: number; grip: Record<string, string>; shoo: string; fart?: string; anchor?: string; impulse?: string };
-    gamepad?: { index: number; aim: { stick: number; deadzone: number; aimSpeed: number }; grip: Record<string, number>; shoo: number; fart?: number; anchor?: number; impulse?: number; gripNames: Record<string, string> };
+    gamepad?: { index: number; aim: { stick: number; deadzone: number; aimSpeed: number }; grip: Record<string, number>; shoo: number; fart?: number; anchor?: number; impulse?: number; gripNames: Record<string, string>; cameraOrbit?: { stick: number; deadzone: number } };
   }>;
-  shared: { pause: string; help: string; cameraRecenter: string; cameraOrbitLeft?: string; cameraOrbitRight?: string };
+  shared: { pause: string; help: string; cameraRecenter: string; cameraOrbitLeft?: string; cameraOrbitRight?: string; cameraOrbitUp?: string; cameraOrbitDown?: string };
 }
 export interface HudData {
   tension: { warn: number; blinkHz: number; gradient: string[] };
@@ -289,9 +289,13 @@ export interface HudData {
 export interface CameraData {
   baseDist: number; distPerMeterSpread: number; maxDist: number; minDist: number;
   smoothing: number; maxPanSpeed: number; lookAheadY: number; deadzoneM: number; ropeZoomPaddingM: number; shakeDecay: number;
-  /** ÓRBITA LATERAL (T45): giro ±orbitMaxDeg alrededor del eje vertical para
-   *  analizar los salientes de la pared. Opcional: ausente → sin órbita. */
+  /** ÓRBITA LATERAL (T45) + VERTICAL y AUTO-RETORNO (T46): giro/tilt alrededor
+   *  del objetivo para analizar salientes y techos. El ángulo persiste y tras
+   *  orbitAutoReturnS sin tocar la órbita decae suavemente a 0 (orbitReturnRate
+   *  1/s). Opcional: ausente → sin órbita. */
   orbitMaxDeg?: number; orbitSpeedDeg?: number; orbitSmoothing?: number;
+  orbitPitchMaxDeg?: number; orbitPitchSpeedDeg?: number;
+  orbitAutoReturnS?: number; orbitReturnRate?: number;
 }
 export interface AudioSfxData { kind: string; dur: number; gain: number; hz?: number; hzStart?: number; hzEnd?: number; pitchDown?: boolean; pitchUp?: boolean }
 export interface AudioData {

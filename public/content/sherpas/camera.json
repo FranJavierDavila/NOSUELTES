@@ -11,5 +11,9 @@
   "shakeDecay": 2.6,
   "orbitMaxDeg": 30,
   "orbitSpeedDeg": 80,
-  "orbitSmoothing": 7.0
+  "orbitSmoothing": 7.0,
+  "orbitPitchMaxDeg": 30,
+  "orbitPitchSpeedDeg": 70,
+  "orbitAutoReturnS": 3.5,
+  "orbitReturnRate": 1.3
 }

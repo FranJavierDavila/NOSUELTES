@@ -992,3 +992,22 @@ Work Log:
 
 Stage Summary:
 - La cámara ORBITA ±30° con Z/X (mantén para girar, suelta y el ángulo se queda, C reencuadra): los salientes de la pared se analizan desde la izquierda o la derecha con profundidad 3D real, sin perder el encuadre jugable ni romper arrastres, badges ni sombras.
+
+---
+Task ID: 46
+Agent: Z.ai (principal)
+Task: "Puedo añadir también órbita vertical (para ver los techos por debajo), un ligero auto-retorno tras X segundos, o el stick derecho del mando para P2." (acepta las 3 mejoras propuestas en T45)
+
+Work Log:
+- ÓRBITA VERTICAL (petición: "ver los techos por debajo"): el offset de cámara ahora es esférico — yaw T45 + pitch NUEVO: pos = target + (-d·cosP·sinY, 0.6 + d·sinP, -d·cosP·cosY). V (cameraOrbitDown) baja la cámara y mira ARRIBA (los salientes muestran su vientre), B (cameraOrbitUp) la sube y mira abajo (sus coronas). orbitPitchMaxDeg 30 ± orbitPitchSpeedDeg 70°/s en camera.json. GUARD DE NIEVE: la cámara nunca baja de y=0,35 (a pitch -30° cerca del suelo entraría en la nieve) — el tope real hacia abajo lo marca el guard cerca del suelo y los 30° en altura.
+- AUTO-RETORNO LIGERO (petición: "un ligero auto-retorno tras X segundos"): contador orbitIdle en la escena; tras orbitAutoReturnS=3,5 s SIN órbita, el yaw/pitch OBJETIVO decaen exponencialmente a 0 con tasa orbitReturnRate=1,3/s — un fundido de ~2,5 s desde 30°, nunca un corte. Cualquier tecla/stick de órbita resetea el idle. C sigue reencuadrando AL INSTANTE.
+- STICK DERECHO DEL MANDO PARA P2 (petición literal): input_maps p2.gamepad.cameraOrbit = {stick 2, deadzone 0.22}. La entrada de órbita es ahora ANALÓGICA: InputManager.orbitAxis() devuelve {x,y} en [-1..1] (teclado ±1 + stick mapeado con zona muerta lineal); scene.updateCamera la integra como velocidad. Stick arriba = cámara arriba (se niega vy de la Gamepad API). Helpers PUROS exportados y testeables: keyOrbitAxis() y stickOrbitAxis().
+- HALLAZGOS DE E2E: (1) en Babylon LH mirar hacia ABAJO es rotation.x POSITIVO (el frontal mira ~3,9° abajo por el offset +0,6 m: la línea base de pitch no es 0) — los asserts miden DELTAS y el retorno vuelve a LA LÍNEA BASE, no a 0 exacto; (2) el tope medido arriba = 30° de órbita + 3,9° de mira base ≈ 33-34° (correcto: el pitch orbita respecto al horizonte del objetivo); (3) frameDt clampado a 0,1 s: a 4 fps del entorno headless el auto-retorno corre a ~40% de velocidad real (11,3 s medidos ≈ 4,5 s reales) — en 60 fps el timing es exacto.
+- CALIDAD: vitest sherpas 253/253 (13 nuevos en tests/sherpas/orbita.test.ts: teclas, anulación, diagonal, mapa opcional, zona muerta, mapeo arriba/abajo del stick, vía completa con navigator stubbed, stick izquierdo NO orbita, pack declara V/B + stick 2); tsc 0 errores en sherpas.
+- E2E REAL (Playwright, scripts/e2e-t46-orbita-vertical.py): DATOS (pitch 30°, autoReturn 3,5 s/1,3, V/B, stick 2, ayuda) → V 1,6 s: Δy -3,20 m y pitch -18,5° (mira ARRIBA, y=0,35 por el guard) → PERSISTE 2 s (-18,7°) → AUTO-RETORNO solo hasta la línea base → B: Δy +4,31 m, pitch +32,9° → MESETA +33,28°→+33,29° (el tope actúa, no rampa) → TOPE V con guard y=0,35 exacto → REGRESIÓN Z +29,7° → C reencuadra yaw+pitch → capturas t46-1-techos-por-debajo.png (vientres de los salientes) y t46-2-desde-arriba.png (coronas) → T45 re-ejecutado VERDE (persistencia 0,7 s < 3,5 s de auto-retorno, compatible) → 0 errores JS.
+- El mando no es inyectable desde Playwright: la vía del stick derecho se verifica en UNITARIOS con navigator.getGamepads stubbed (14 aserciones de la familia órbita).
+
+Stage Summary:
+- La cámara ahora orbita en LOS DOS EJES: Z/X lateral ±30° (T45) y V/B vertical ±30° (NUEVO) — V te mete DEBAJO de los salientes para ver los techos por debajo, B te eleva sobre ellos; la cámara jamás atraviesa la nieve.
+- El ángulo se queda fijo mientras lo usas y, tras 3,5 s sin tocar la órbita, la cámara VUELVE SOLA con un fundido suave (~2,5 s); C la reencuadra al instante cuando quieras.
+- El J2 con mando orbita con el STICK DERECHO (analógico, con zona muerta), igual que Z/X/V/B del teclado; ayuda es/en actualizada.

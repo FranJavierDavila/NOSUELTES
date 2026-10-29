@@ -122,8 +122,8 @@
  },
  "keys": {
   "p1": "RATÓN: pulsa una extremidad y arrástrala hasta una presa (imán verde) · suéltala para fijarla · F: superpoder",
-  "p2": "J2: Flechas apuntar · I/O manos · K/L pies · U espantar · o mando: stick + A/B/X/Y + RB · P: superpoder",
-  "shared": "Espacio pausa · H ayuda · Z/X órbita de cámara (±30°) · C reencuadrar · F3 depuración"
+  "p2": "J2: Flechas apuntar · I/O manos · K/L pies · U espantar · o mando: stick + A/B/X/Y + RB · P: superpoder · stick derecho: órbita de cámara",
+  "shared": "Espacio pausa · H ayuda · Z/X órbita lateral · V/B órbita vertical · C reencuadrar · F3 depuración"
  },
  "settings": {
   "title": "Ajustes",
@@ -153,6 +153,6 @@
   "step2": "2) ARRASTRA: mueve el puntero por la pared. Las presas cercanas actúan como IMANES: verás un aro verde cuando una presa quiera capturar la extremidad. Solo se fijan presas que puedes alcanzar.",
   "step3": "3) SUBE: suelta el clic sobre la presa y la extremidad vuela hasta ella. Alterna pies y manos (primero los pies, luego las manos) y nunca sueltes las 4 a la vez o caeréis.",
   "step4": "4) COORDINAOS: de cada lado de la tabla sale una cuerda hacia un sherpa. Si uno sube más que el otro, la tabla se INCLINA, se desplaza y el ricachón RESBALA hacia el vacío: subed a la misma altura, peldaño a peldaño.",
-  "extra": "Z/X orbita la cámara ±30° para ver los salientes (el ángulo se mantiene; C lo reencuadra) · R espanta pájaros · Espacio pausa · H abre/cierra esta ayuda."
+  "extra": "Z/X orbita la cámara ±30° a los lados y V/B la inclina en vertical (V para ver los techos POR DEBAJO, B desde arriba); el stick derecho del mando también orbita. Sin tocar la órbita unos segundos, la cámara vuelve sola; C la reencuadra al instante · R espanta pájaros · Espacio pausa · H abre/cierra esta ayuda."
  }
 }

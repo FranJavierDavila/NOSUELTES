@@ -38,6 +38,32 @@ interface PlayerBindings {
 const isTypingTarget = (t: EventTarget | null): boolean =>
   t instanceof HTMLElement && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
 
+/** Eje de órbita de cámara: x = lateral (-1 izquierda..+1 derecha),
+ *  y = vertical (-1 abajo..+1 arriba). Analógico para el stick del mando. */
+export type OrbitAxis = { x: number; y: number };
+
+/** Teclas MANTENIDAS → eje de órbita (T45 lateral Z/X + T46 vertical V/B).
+ *  Pure y testeable: sin DOM, solo el conjunto de códigos y el mapa compartido. */
+export function keyOrbitAxis(
+  held: Set<string>,
+  s: { cameraOrbitLeft?: string; cameraOrbitRight?: string; cameraOrbitUp?: string; cameraOrbitDown?: string },
+): OrbitAxis {
+  let x = 0, y = 0;
+  if (s.cameraOrbitLeft && held.has(s.cameraOrbitLeft)) x -= 1;
+  if (s.cameraOrbitRight && held.has(s.cameraOrbitRight)) x += 1;
+  if (s.cameraOrbitDown && held.has(s.cameraOrbitDown)) y -= 1;
+  if (s.cameraOrbitUp && held.has(s.cameraOrbitUp)) y += 1;
+  return { x: Math.max(-1, Math.min(1, x)), y: Math.max(-1, Math.min(1, y)) };
+}
+
+/** Stick del mando → eje de órbita con zona muerta (T46: stick derecho).
+ *  Arriba (vy negativo en la Gamepad API) = cámara hacia ARRIBA. */
+export function stickOrbitAxis(vx: number, vy: number, deadzone: number): OrbitAxis {
+  const norm = (v: number): number =>
+    Math.abs(v) <= deadzone ? 0 : (v - Math.sign(v) * deadzone) / (1 - deadzone);
+  return { x: norm(vx), y: norm(-vy) };
+}
+
 export class InputManager {
   private bindings: PlayerBindings[];
   private shared: InputMapData["shared"];
@@ -183,17 +209,25 @@ export class InputManager {
     return { p1: this.bindings[0].label, p2: this.bindings[1].label };
   }
 
-  /** ÓRBITA LATERAL DE CÁMARA (T45): -1 = órbita a la izquierda, +1 = a la
-   *  derecha, 0 = quieta. Es MANTENIDA (no flanco): el ángulo persiste hasta
-   *  reencuadrar con C, para analizar los salientes con calma. Opcional en el
-   *  mapa: sin teclas → siempre 0. */
-  orbitAxis(): -1 | 0 | 1 {
-    const left = this.shared.cameraOrbitLeft;
-    const right = this.shared.cameraOrbitRight;
-    if (!left || !right) return 0;
-    let ax = 0;
-    if (this.held.has(left)) ax -= 1;
-    if (this.held.has(right)) ax += 1;
-    return ax as -1 | 0 | 1;
+  /** ÓRBITA DE CÁMARA (T45/T46): eje analógico. Teclado Z/X (lateral) y V/B
+   *  (vertical) dan pasos de ±1; el STICK DERECHO del mando (players.*.gamepad.
+   *  cameraOrbit) suma analógico con zona muerta. Es MANTENIDA (no flanco):
+   *  el ángulo persiste y el auto-retorno de la escena lo recoge después. */
+  orbitAxis(): OrbitAxis {
+    const k = keyOrbitAxis(this.held, this.shared);
+    const pads = typeof navigator !== "undefined" && navigator.getGamepads ? navigator.getGamepads() : [];
+    let gx = 0, gy = 0;
+    for (const b of this.bindings) {
+      const cfg = b.gamepad?.cameraOrbit;
+      if (!cfg) continue;
+      const pad = pads[b.gamepad!.index];
+      if (!pad) continue;
+      const s = stickOrbitAxis(pad.axes[cfg.stick] ?? 0, pad.axes[cfg.stick + 1] ?? 0, cfg.deadzone);
+      gx += s.x; gy += s.y;
+    }
+    return {
+      x: Math.max(-1, Math.min(1, k.x + gx)),
+      y: Math.max(-1, Math.min(1, k.y + gy)),
+    };
   }
 }
