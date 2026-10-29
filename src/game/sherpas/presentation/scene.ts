@@ -51,6 +51,10 @@ import {
   buildRockChunk, makeRockField, rockFromData, rockNormalRGBA, rockTextureRGBA, ROCK_SEED,
   type RockData, type RockField, type RockResolved,
 } from "../world/wallRock";
+import {
+  ROCKWALL_SEED, rockwallStyleFromData, sampleRegion,
+  type RockwallAnchorIn, type RockwallFeature, type RockwallRegionResult, type RockwallStyle,
+} from "../world/rockwall"; // T43: módulo del jugador (diaclasas) + worker
 import { makeRng } from "../core/rng";
 
 interface Bone { a: number; b: number; mesh: Mesh; rest: number; offY?: number }
@@ -200,6 +204,16 @@ export class SherpaScene {
   private rockCfg: RockResolved | null = null;
   private rockField: RockField | null = null;
   private rockMat: StandardMaterial | null = null;
+  // ROCKWALL DIACLASAS (T43, módulo del jugador): el relieve se genera SOLO en
+  // la región visible — en un WEB WORKER con buffers transferidos (sin copias
+  // ni tirones), con fallback síncrono de 1 chunk/frame si no hay worker.
+  private rockCtx: { style: RockwallStyle; anchors: RockwallAnchorIn[]; features: RockwallFeature[] } | null = null;
+  private rockWorker: Worker | null = null;
+  private rockWorkerDead = false;
+  private rockJobSeq = 0;
+  private rockJobs = new Map<number, number>(); // jobId → chunk (resultado en vuelo)
+  private rockJobByChunk = new Map<number, number>(); // chunk → jobId (stale/disposal)
+  private rockSyncQueue: number[] = []; // fallback sin worker (1 chunk/frame)
 
   private constructor(engine: AbstractEngine, backend: string, camData: CameraData, hudData: HudData, perf?: PerfTuning, vfx?: VfxData, relief?: ReliefData | null) {
     this.vfxData = vfx;
@@ -255,6 +269,18 @@ export class SherpaScene {
     fill.specular = new Color3(0, 0, 0); // sin brillo extra: solo difusa
     fill.includedOnlyMeshes = [];
     this.rockFill = fill;
+    // T43: worker de generación de roca (diaclasas). Si el entorno no lo
+    // soporta, el juego funciona igual por el camino síncrono (1 chunk/frame).
+    try {
+      if (typeof Worker !== "undefined") {
+        this.rockWorker = new Worker(new URL("../world/rockwallWorker.ts", import.meta.url), { type: "module" });
+        this.rockWorker.onmessage = (ev: MessageEvent) =>
+          this.onRockChunkBuffers(ev.data as { jobId: number; res?: RockwallRegionResult; error?: string });
+        this.rockWorker.onerror = () => this.rockWorkerFailed();
+      }
+    } catch {
+      this.rockWorker = null; // fallback síncrono
+    }
     const sg = new ShadowGenerator(1024, dir);
     // PERF: PCF en vez de Blur Exponential (el ESM renderiza el mapa + pasadas
     // de blur cada frame; con PCF el coste es 1 render del mapa + muestreo).
@@ -442,6 +468,38 @@ export class SherpaScene {
       this.reliefFront = Math.max(0.2, ...f.features.map((ft) => ft.dz)) + 0.045;
       this.reliefLastCamY = NaN; // fuerza el primer build
     }
+    // ROCKWALL DIACLASAS (T43, módulo del jugador): grietas planas y largas a
+    // 3 escalas + estratos + presas fundidas en la roca. Mismo reparto de
+    // salientes/entrantes que la rama estratificada (mismas cotas jugables).
+    this.rockCtx = null;
+    if (rc && rc.algorithm === "diaclasas" && (this.reliefRaw as { enabled?: boolean } | null)?.enabled !== false) {
+      const style = rockwallStyleFromData((this.reliefRaw as { rockwall?: Partial<RockwallStyle> } | null)?.rockwall ?? null);
+      const ctx: { style: RockwallStyle; anchors: RockwallAnchorIn[]; features: RockwallFeature[] } = { style, anchors: [], features: [] };
+      for (const s of layout.salientes ?? []) {
+        ctx.features.push({
+          xMin: s.xMin - 0.06, xMax: s.xMax + 0.06,
+          yMin: s.yMid - s.heightM / 2 - 0.05, yMax: s.yMid + s.heightM / 2 + s.heightM * 0.9,
+          dz: wallFaceZ - s.z, featherM: 0.5,
+        });
+      }
+      for (const e of layout.entrantes ?? []) {
+        ctx.features.push({
+          xMin: e.xMin - 0.02, xMax: e.xMax + 0.02,
+          yMin: e.yMid - e.heightM / 2 - 0.02, yMax: e.yMid + e.heightM / 2 + 0.02,
+          dz: -(Math.max(0.08, e.depthM) - 0.05), featherM: 0.28,
+        });
+      }
+      this.rockCtx = ctx;
+      // overlays (cotas/aim/alcance) por delante de presas y plataformas:
+      // el techo de plataformas = faceZ − zHold ≈ holdProudM (0,34 del pack).
+      this.reliefFront = Math.max(0.2, ...ctx.features.map((f) => f.dz), 0.33) + 0.045;
+      this.reliefLastCamY = NaN; // fuerza el primer build
+    }
+    // T43: el cuerpo del muro se RETRASA bodyBackM en diaclasas — las grietas
+    // profundas (h<0) quedan VISIBLES delante del fondo (antes el clamp T40
+    // se comía ese presupuesto y la pared salía plana). Las piernas siguen
+    // respirando: el techo del relieve natural (zCeilM) manda ENTRE anclajes.
+    const bodyBack = this.rockCtx ? this.rockCtx.style.bodyBackM : 0;
     const rock = mat(this.scene, "rock", rc ? rc.backColor : "#3c4652");
     rock.diffuseTexture = null;
     // PERF (60 FPS): la roca estática se FUNDE en un mesh por material — 1 draw
@@ -452,7 +510,7 @@ export class SherpaScene {
     // helper: bloque de roca del muro (receptor de sombras + arista blanca)
     const wallBlock = (name: string, w: number, h: number, x: number, y: number): void => {
       const b = MeshBuilder.CreateBox(name, { width: w, height: h, depth: wallDepth }, this.scene);
-      b.position.set(x, y, wallFaceZ + wallDepth / 2); // el cuerpo del muro se extiende hacia +z
+      b.position.set(x, y, wallFaceZ + bodyBack + wallDepth / 2); // el cuerpo se extiende hacia +z (retrasado en T43)
       b.material = rock;
       b.receiveShadows = true;
       b.freezeWorldMatrix();
@@ -517,21 +575,23 @@ export class SherpaScene {
       const hh = h.yMax - h.yMin;
       if (w <= 0.05 || hh <= 0.05) continue;
       const d = Math.max(0.08, e.depthM);
-      // caja trasera: del fondo del hueco (face + d) hasta la cara trasera del muro
+      // caja trasera: del fondo del hueco (face + bodyBack + d) hasta la cara trasera del muro
       const back = MeshBuilder.CreateBox(`entrante_${e.band}`, { width: w, height: hh, depth: wallDepth - d + 0.02 }, this.scene);
-      back.position.set((h.xMin + h.xMax) / 2, (h.yMin + h.yMax) / 2, wallFaceZ + d + (wallDepth - d) / 2);
+      back.position.set((h.xMin + h.xMax) / 2, (h.yMin + h.yMax) / 2, wallFaceZ + bodyBack + d + (wallDepth - d) / 2);
       back.material = entranteMats.dark;
       back.receiveShadows = true;
       back.freezeWorldMatrix();
       entBacks.push(back);
-      // LABIO superior: repisa de roca que se mete en el hueco (casta sombra
-      // dentro — la profundidad se LEE por la luz, petición del jugador).
-      const lip = MeshBuilder.CreateBox(`entranteLip_${e.band}`, { width: w + 0.08, height: 0.07, depth: 0.12 }, this.scene);
-      lip.position.set((h.xMin + h.xMax) / 2, h.yMax + 0.035, wallFaceZ - 0.06);
-      lip.material = entranteMats.lip;
-      lip.receiveShadows = true;
-      lip.freezeWorldMatrix();
-      entLips.push(lip);
+      // LABIO superior (solo modos sin roca diaclasada: la roca T43 envuelve
+      // el nicho con su propio relieve y el labio recto sobresaldría).
+      if (!this.rockCtx) {
+        const lip = MeshBuilder.CreateBox(`entranteLip_${e.band}`, { width: w + 0.08, height: 0.07, depth: 0.12 }, this.scene);
+        lip.position.set((h.xMin + h.xMax) / 2, h.yMax + 0.035, wallFaceZ - 0.06);
+        lip.material = entranteMats.lip;
+        lip.receiveShadows = true;
+        lip.freezeWorldMatrix();
+        entLips.push(lip);
+      }
     }
     if (entBacks.length) {
       const merged = Mesh.MergeMeshes(entBacks, true, true, undefined, false, false)!;
@@ -620,7 +680,8 @@ export class SherpaScene {
     if (!rc || !this.worldBuilt || this.disposed) return;
     const camY = this.camTarget.y;
     const moved = !Number.isFinite(this.reliefLastCamY) || Math.abs(camY - this.reliefLastCamY) > 0.35;
-    if (!moved && this.reliefPending.length === 0 && this.reliefMeshes.size > 0) return; // idle: coste ≈ 0
+    // T43: el idle también exige cola sync vacía (fallback sin worker)
+    if (!moved && this.reliefPending.length === 0 && this.rockSyncQueue.length === 0 && this.reliefMeshes.size > 0) return; // idle: coste ≈ 0
     if (moved) {
       this.reliefLastCamY = camY;
       const h = rc.chunkHeightM;
@@ -637,12 +698,19 @@ export class SherpaScene {
       const plan = planChunks([...this.reliefMeshes.keys()], wanted, rc.maxChunks, camY, h);
       for (const c of plan.dispose) {
         const e = this.reliefMeshes.get(c);
-        if (e) { e.mesh.dispose(); this.reliefMeshes.delete(c); }
+        if (e) { e.mesh.dispose(false, this.rockCtx !== null); this.reliefMeshes.delete(c); } // T43: material+texturas propios
+        this.cancelRockJob(c);
       }
       // cola ordenada por cercanía a la cámara: lo que se VE se construye primero
-      this.reliefPending = plan.create
-        .slice()
-        .sort((a, b) => Math.abs((a + 0.5) * h - camY) - Math.abs((b + 0.5) * h - camY));
+      if (this.rockCtx) {
+        for (const c of plan.create.slice().sort((a, b) => Math.abs((a + 0.5) * h - camY) - Math.abs((b + 0.5) * h - camY))) {
+          this.requestRockChunk(c); // worker (o cola sync sin worker)
+        }
+      } else {
+        this.reliefPending = plan.create
+          .slice()
+          .sort((a, b) => Math.abs((a + 0.5) * h - camY) - Math.abs((b + 0.5) * h - camY));
+      }
     }
     let builds = 0;
     while (this.reliefPending.length && builds < 2) {
@@ -650,15 +718,29 @@ export class SherpaScene {
       if (this.reliefMeshes.has(c)) continue;
       if (this.reliefBuildChunk(c)) builds++;
     }
+    // T43 fallback sin worker: 1 chunk por frame (~0,3 s) — sin worker no hay
+    // otra opción, y el drenado amortigua los tirones mejor que 1 por clic.
+    if (this.rockCtx) {
+      while (this.rockSyncQueue.length && builds < 1) {
+        const c = this.rockSyncQueue.shift()!;
+        if (this.reliefMeshes.has(c)) continue;
+        const jobId = this.rockJobByChunk.get(c);
+        if (jobId === undefined) continue;
+        this.rockJobByChunk.delete(c);
+        this.rockJobs.delete(jobId);
+        if (this.buildRockChunkSync(c)) builds++;
+      }
+    }
   }
 
   /** Construye la losa de relieve del chunk c. ROCA ESTRATIFICADA (T40):
    *  retícula de campo de altura fractal con UVs y textura de roca. MODO
    *  CLÁSICO: semillas (anclajes + relleno), teselación (Voronoi o tectónica),
-   *  extrusión por niveles y malla única. */
+   *  extrusión por niveles y malla única. (En diaclasas T43 este método NO se
+   *  usa: la roca llega por worker → buildRockChunkMesh.) */
   private reliefBuildChunk(c: number): boolean {
     const rc = this.reliefCfg;
-    if (!rc) return false;
+    if (!rc || this.rockCtx) return false;
     const h = rc.chunkHeightM;
     const yMin = c * h, yMax = Math.min(this.reliefTopY, (c + 1) * h);
     if (yMax - yMin < 0.2) return false;
@@ -759,10 +841,191 @@ export class SherpaScene {
     return true;
   }
 
+  // ---------- ROCA DIACLASADA (T43): worker + malla desde buffers ----------
+
+  /** Celda/estilo del trabajo de región: `cell`/`stride` viven en el bloque
+   *  rockwall de los datos; el estilo ya resuelto (defensivo) va entero. */
+  private rockCellAndStride(): { cell: number; stride: number } {
+    const raw = (this.reliefRaw as { rockwall?: { cell?: unknown; stride?: unknown } } | null)?.rockwall;
+    const cell = typeof raw?.cell === "number" && Number.isFinite(raw.cell)
+      ? Math.min(0.05, Math.max(0.006, raw.cell)) : 0.012;
+    const stride = Math.max(1, Math.round(typeof raw?.stride === "number" && Number.isFinite(raw.stride)
+      ? Math.min(6, Math.max(1, raw.stride)) : 2));
+    return { cell, stride };
+  }
+
+  private rockJobPayload(jobId: number, c: number): { jobId: number; job: Parameters<typeof sampleRegion>[0] } {
+    const rc = this.reliefCfg!;
+    const ctx = this.rockCtx!;
+    const h = rc.chunkHeightM;
+    const yMin = c * h, yMax = Math.min(this.reliefTopY, (c + 1) * h);
+    const half = this.reliefWallW / 2;
+    const { cell } = this.rockCellAndStride();
+    return {
+      jobId,
+      job: {
+        seed: ROCKWALL_SEED, // el macizo es EL MISMO en todas las partidas (T40)
+        cell,
+        x0: -half, x1: half, y0: yMin, y1: yMax,
+        pad: 20, // normales/AO con vecinos reales cruzando la frontera del chunk
+        flipNormalRG: true, // espacio tangente Babylon (derivación en buildRockChunkMesh)
+        style: ctx.style,
+        anchors: ctx.anchors,
+        features: ctx.features,
+      },
+    };
+  }
+
+  private requestRockChunk(c: number): void {
+    if (this.reliefMeshes.has(c) || this.rockJobByChunk.has(c)) return;
+    if (c * this.reliefCfg!.chunkHeightM >= this.reliefTopY - 0.2) return;
+    const jobId = this.rockJobSeq++;
+    this.rockJobByChunk.set(c, jobId);
+    this.rockJobs.set(jobId, c);
+    if (this.rockWorker && !this.rockWorkerDead) {
+      this.rockWorker.postMessage(this.rockJobPayload(jobId, c));
+    } else {
+      this.rockSyncQueue.push(c);
+    }
+  }
+
+  private cancelRockJob(c: number): void {
+    const jobId = this.rockJobByChunk.get(c);
+    if (jobId === undefined) return;
+    this.rockJobByChunk.delete(c);
+    this.rockJobs.delete(jobId);
+  }
+
+  private rockWorkerFailed(): void {
+    // worker roto (bundler/entorno): los chunks en vuelo se regeneran síncronos
+    if (this.rockWorkerDead) return;
+    this.rockWorkerDead = true;
+    try { this.rockWorker?.terminate(); } catch { /* ya muerto */ }
+    this.rockWorker = null;
+    for (const c of this.rockJobByChunk.keys()) this.rockSyncQueue.push(c);
+    this.rockJobByChunk.clear();
+    this.rockJobs.clear();
+  }
+
+  private onRockChunkBuffers(msg: { jobId: number; res?: RockwallRegionResult; error?: string }): void {
+    const c = this.rockJobs.get(msg.jobId);
+    this.rockJobs.delete(msg.jobId);
+    if (c === undefined) return; // chunk cancelado (LRU/disposal): resultado obsoleto
+    this.rockJobByChunk.delete(c);
+    if (msg.error || !msg.res) {
+      console.warn("[rockwall] chunk fallido → fallback síncrono:", msg.error ?? "sin buffers");
+      this.rockWorkerFailed();
+      this.rockSyncQueue.push(c);
+      this.rockJobByChunk.set(c, this.rockJobSeq++); // re-reservado para la cola sync
+      return;
+    }
+    if (this.reliefMeshes.has(c)) return;
+    this.buildRockChunkMesh(c, msg.res);
+  }
+
+  /** Malla del chunk desde los buffers de la región. La normal map llega en
+   *  ESPACIO TANGENTE ya (flip RG hecho en sampleRegion): para nuestro muro
+   *  axis-aligned, n_mundo = (hx, hy, −1)/|·| — las normales de VÉRTICE se
+   *  calculan con la MISMA fórmula sobre el grid PADRADO (vecinos reales
+   *  cruzando la frontera del chunk → sin costura de iluminación). Winding =
+   *  el verificado en pantalla del relieve T39/T40. */
+  private buildRockChunkMesh(c: number, res: RockwallRegionResult): boolean {
+    const rc = this.reliefCfg;
+    if (!rc || !this.rockCtx) return false;
+    const h = rc.chunkHeightM;
+    const yMin = c * h, yMax = Math.min(this.reliefTopY, (c + 1) * h);
+    if (yMax - yMin < 0.2) return false;
+    const { stride } = this.rockCellAndStride();
+    const ix: number[] = [];
+    for (let i = 0; i < res.W - 1; i += stride) ix.push(i);
+    ix.push(res.W - 1);
+    const iy: number[] = [];
+    for (let j = 0; j < res.H - 1; j += stride) iy.push(j);
+    iy.push(res.H - 1);
+    const vw = ix.length, vh = iy.length;
+    const faceZ = this.reliefFaceZ;
+    const cell = res.cell;
+    const positions = new Float32Array(vw * vh * 3);
+    const normals = new Float32Array(vw * vh * 3);
+    const uvs = new Float32Array(vw * vh * 2);
+    const o = Math.min(stride, res.pad); // vecinos para la normal (≤ padding)
+    for (let vj = 0; vj < vh; vj++) {
+      const j = iy[vj]!;
+      const y = res.y0 + j * cell;
+      for (let vi = 0; vi < vw; vi++) {
+        const i = ix[vi]!;
+        const p = vj * vw + vi;
+        const pi = (j + res.pad) * res.WP + (i + res.pad);
+        positions[p * 3] = res.x0 + i * cell;
+        positions[p * 3 + 1] = y;
+        // h-space (hacia el escalador) → z de Babylon: z = faceZ − h
+        positions[p * 3 + 2] = faceZ - res.height[pi]!;
+        const gx = (res.height[pi + o]! - res.height[pi - o]!) / (2 * o * cell);
+        const gy = (res.height[pi + o * res.WP]! - res.height[pi - o * res.WP]!) / (2 * o * cell);
+        const l = Math.hypot(gx, gy, 1);
+        normals[p * 3] = gx / l;
+        normals[p * 3 + 1] = gy / l;
+        normals[p * 3 + 2] = -1 / l;
+        uvs[p * 2] = i / (res.W - 1);
+        uvs[p * 2 + 1] = j / (res.H - 1);
+      }
+    }
+    const indices = new Uint32Array((vw - 1) * (vh - 1) * 6);
+    let q = 0;
+    for (let j = 0; j < vh - 1; j++) {
+      for (let i = 0; i < vw - 1; i++) {
+        const a = j * vw + i, b = a + 1, cc = a + vw + 1, d = a + vw;
+        indices[q++] = a; indices[q++] = b; indices[q++] = cc;
+        indices[q++] = a; indices[q++] = cc; indices[q++] = d;
+      }
+    }
+    const mesh = new Mesh(`rockD_${c}`, this.scene);
+    const vd = new VertexData();
+    vd.positions = positions;
+    vd.normals = normals;
+    vd.uvs = uvs;
+    vd.indices = indices;
+    vd.applyToMesh(mesh);
+    // texturas PROPIAS del chunk (el módulo hornea color+AO+vetas+magnesio en
+    // colorMap y el microrelieve en normalMap): sRGB en diffuse, bump 1:1.
+    const mat = new StandardMaterial(`rockDM_${c}`, this.scene);
+    const cm = RawTexture.CreateRGBATexture(res.colorMap, res.W, res.H, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
+    cm.anisotropicFilteringLevel = 4; // la piedrina se ve nítida en ángulo
+    mat.diffuseTexture = cm;
+    const nmt = RawTexture.CreateRGBATexture(res.normalMap, res.W, res.H, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
+    nmt.anisotropicFilteringLevel = 4;
+    mat.bumpTexture = nmt;
+    mat.bumpTexture.level = 1.15;
+    mat.diffuseColor = new Color3(1, 1, 1); // el tono final = colorMap horneado
+    mat.specularColor = new Color3(0.035, 0.034, 0.03); // micro-brillo en cantos
+    mat.backFaceCulling = true;
+    mesh.material = mat;
+    mesh.receiveShadows = true; // la roca recibe la sombra de los cuerpos
+    mesh.isPickable = false;
+    mesh.freezeWorldMatrix();
+    if (this.rockFill) {
+      const inc = this.rockFill.includedOnlyMeshes.filter((m) => m.isDisposed() !== true);
+      inc.push(mesh);
+      this.rockFill.includedOnlyMeshes = inc;
+    }
+    this.reliefMeshes.set(c, { mesh, cells: vw * vh, tris: (vw - 1) * (vh - 1) * 2 });
+    this.reliefStats.builds++;
+    return true;
+  }
+
+  /** Fallback SIN worker: muestrea la región en el hilo principal (~0,3 s). */
+  private buildRockChunkSync(c: number): boolean {
+    if (!this.rockCtx || !this.reliefCfg) return false;
+    const payload = this.rockJobPayload(0, c);
+    const res = sampleRegion(payload.job);
+    return this.buildRockChunkMesh(c, res);
+  }
+
   /** Info del relieve (sonda E2E/perf): chunks vivos, piedras y triángulos.
-   *  T42: expone también el estado de los ESTRATOS TONALES. */
+   *  T43: algoritmo, estado del worker y cola pendiente. */
   getReliefInfo(): {
     chunks: number; cells: number; tris: number; builds: number; algorithm: string; viewBand: number;
+    worker: boolean; pending: number;
     strataTones?: number; strataToneStrength?: number; strataSeamDark?: number;
   } {
     let cells = 0, tris = 0;
@@ -771,13 +1034,24 @@ export class SherpaScene {
       chunks: this.reliefMeshes.size,
       cells, tris,
       builds: this.reliefStats.builds,
-      algorithm: this.rockField ? "estratificada" : (this.reliefCfg?.algorithm ?? "off"),
+      algorithm: this.rockCtx ? "diaclasas" : (this.rockField ? "estratificada" : (this.reliefCfg?.algorithm ?? "off")),
       viewBand: Number.isFinite(this.reliefLastCamY) && this.reliefCfg
         ? Math.floor(this.reliefLastCamY / this.reliefCfg.chunkHeightM) : -1,
+      worker: this.rockWorker !== null && !this.rockWorkerDead,
+      pending: this.rockJobs.size + this.rockSyncQueue.length,
       strataTones: this.rockField?.cfg.strataTones.length,
       strataToneStrength: this.rockField?.cfg.strataToneStrength,
       strataSeamDark: this.rockField?.cfg.strataSeamDark,
     };
+  }
+
+  /** T43: termina recursos no-GC (worker de roca); lo llama dispose(). */
+  private destroyWorker(): void {
+    try { this.rockWorker?.terminate(); } catch { /* noop */ }
+    this.rockWorker = null;
+    this.rockJobs.clear();
+    this.rockJobByChunk.clear();
+    this.rockSyncQueue.length = 0;
   }
 
   setSnowDensity(perSecond: number): void {
@@ -801,15 +1075,26 @@ export class SherpaScene {
             dz: this.reliefFaceZ - (h.pos.z + this.rockField.cfg.anchorBackM),
           });
         }
+        // DIACLASAS (T43): cada presa FUNDE la roca a su cota (12 mm detrás
+        // del centro, contrato T40/T41). r modera la atenuación de grietas.
+        if (this.rockCtx) {
+          this.rockCtx.anchors.push({
+            x: h.pos.x, y: h.pos.y,
+            hz: this.reliefFaceZ - (h.pos.z + this.rockCtx.style.anchorBackM),
+            r: Math.min(0.12, Math.max(0.05, h.radius)),
+            kind: "hand", // magnesio en todas las presas visibles
+          });
+        }
         if (h.pos.y < minY) minY = h.pos.y;
         if (h.pos.y > maxY) maxY = h.pos.y;
       }
       const ch = this.reliefCfg.chunkHeightM;
       for (const [c, entry] of this.reliefMeshes) {
         if (c * ch <= maxY + 0.55 && (c + 1) * ch >= minY - 0.55) {
-          entry.mesh.dispose();
+          entry.mesh.dispose(false, this.rockCtx !== null); // T43: material+texturas propios
           this.reliefMeshes.delete(c);
         }
+        this.cancelRockJob(c);
       }
     }
     for (const h of holds) {
@@ -1831,6 +2116,7 @@ export class SherpaScene {
 
   dispose(): void {
     this.disposed = true;
+    this.destroyWorker();
     this.scene.dispose();
     this.engine.dispose();
   }

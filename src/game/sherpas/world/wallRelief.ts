@@ -63,8 +63,9 @@ export interface ReliefData {
 export interface ReliefResolved {
   enabled: boolean;
   /** "voronoi" (teselación poligonal) | "tectonic" (fractura por contracción)
-   *  | "estratificada" (roca fractal por campo de altura — wallRock.ts). */
-  algorithm: "voronoi" | "tectonic" | "estratificada";
+   *  | "estratificada" (roca fractal por campo de altura — wallRock.ts)
+   *  | "diaclasas" (T43, módulo del jugador — rockwall.ts + worker). */
+  algorithm: "voronoi" | "tectonic" | "estratificada" | "diaclasas";
   chunkHeightM: number;
   viewRadiusM: number;
   maxChunks: number;
@@ -113,6 +114,7 @@ export function reliefFromData(d?: Partial<ReliefData> | null): ReliefResolved {
   const alg = d.algorithm === "tectonic" ? "tectonic"
     : d.algorithm === "voronoi" ? "voronoi"
     : d.algorithm === "estratificada" ? "estratificada"
+    : d.algorithm === "diaclasas" ? "diaclasas"
     : def.algorithm;
   const palette = Array.isArray(d.palette) && d.palette.length >= 1
     ? d.palette.filter((c) => typeof c === "string" && c.length >= 4).slice(0, 16)

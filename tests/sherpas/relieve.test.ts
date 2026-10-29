@@ -353,7 +353,7 @@ describe("datos del relieve (wall_gen.relief)", () => {
     const raw = JSON.parse(readFileSync(join(process.cwd(), "public/content/sherpas/wall_gen.json"), "utf8"));
     expect(raw.relief).toBeDefined();
     expect(raw.relief.enabled).toBe(true);
-    expect(["voronoi", "tectonic", "estratificada"]).toContain(raw.relief.algorithm);
+    expect(["voronoi", "tectonic", "estratificada", "diaclasas"]).toContain(raw.relief.algorithm);
     const resolved = reliefFromData(raw.relief);
     expect(resolved.algorithm).toBe(raw.relief.algorithm);
     expect(resolved.extrudeMaxM).toBeGreaterThan(resolved.extrudeMinM);
@@ -658,30 +658,34 @@ describe("wallRock — datos (wall_gen.relief algorithm estratificada)", () => {
     expect(rockFromData(null).algorithm).toBe("estratificada");
   });
 
-  it("el pack real pide roca ESTRATIFICADA con parámetros sanos y el Ajv la acepta", async () => {
+  it("el pack real pide roca DIACLASADA (T43) con parámetros sanos y el Ajv la acepta", async () => {
     const { readFileSync } = await import("node:fs");
     const { join } = await import("node:path");
     const raw = JSON.parse(readFileSync(join(process.cwd(), "public/content/sherpas/wall_gen.json"), "utf8"));
-    expect(raw.relief.algorithm).toBe("estratificada");
+    expect(raw.relief.algorithm).toBe("diaclasas");
+    // el estilo rockwall del módulo del jugador viaja en el pack (data-driven)
+    const rw = raw.relief.rockwall as Record<string, unknown>;
+    expect(rw).toBeDefined();
+    expect((rw.layers as unknown[]).length).toBeGreaterThanOrEqual(3); // 3 familias de diaclasas
+    // y la ventana jugable deja ver grietas sin comerse a los escaladores
+    expect(rw.zCeilM as number).toBeLessThanOrEqual(0.3);
+    expect(rw.zFloorM as number).toBeGreaterThanOrEqual(-0.5);
+    // la rama estratificada sigue resolviendo (fallback si se vuelve a pedir)
     const resolved = rockFromData(raw.relief);
     expect(resolved.enabled).toBe(true);
-    expect(resolved.dispMaxM).toBeGreaterThan(0.3); // roca con volumen
-    expect(resolved.strataThicknessM).toBeGreaterThan(0.2); // estratos visibles
-    expect(resolved.textureSizePx).toBeGreaterThanOrEqual(64);
+    expect(resolved.dispMaxM).toBeGreaterThan(0.3);
     const { loadSherpasData } = await import("../../src/game/sherpas/core/data");
     const fsLoader = async (path: string): Promise<unknown> => JSON.parse(readFileSync(join(process.cwd(), path), "utf8"));
     const data = await loadSherpasData(fsLoader, "public/content/sherpas");
-    expect(data.wallGen.relief?.algorithm).toBe("estratificada");
-    // T41 — DESPEJE DE PIERNAS con los datos REALES del pack:
-    // piernas ≈ (zFront − holdProudM) − 0,22 (offset de colgado HANG_OFFSET_Z);
-    // la roca natural como mucho zFront − naturalMaxM →
-    // holgura = (holdProudM + 0,22) − naturalMaxM.
+    expect(data.wallGen.relief?.algorithm).toBe("diaclasas");
+    // T41/T43 — DESPEJE DE PIERNAS con los datos REALES del pack: el techo del
+    // relieve natural entre anclajes ES zCeilM (0,20) y las plataformas de presa
+    // llegan a holdProudM − anchorBackM ≈ 0,328: holgura colgado ≈ 0,21 m.
     const wall = raw.wall as { zFront: number; holdProudM: number };
-    const hangOffset = 0.34; // HANG_OFFSET_Z (sherpaRig.ts, T41: colgado despejado)
-    const clearance = wall.holdProudM + hangOffset - resolved.naturalMaxM;
+    const hangOffset = 0.34; // HANG_OFFSET_Z (sherpaRig.ts, T41)
+    const clearance = wall.holdProudM + hangOffset - (rw.zCeilM as number);
     expect(clearance).toBeGreaterThanOrEqual(0.25); // piernas despejadas con margen
-    // la tabla y el arrastre también despejan (constantes espejo de plank/sherpaRig)
-    expect(0.77).toBeGreaterThanOrEqual(resolved.naturalMaxM + 0.45); // END_Z_OFF vs saliente+presas
+    expect(0.77).toBeGreaterThanOrEqual((rw.zCeilM as number) + 0.45); // END_Z_OFF vs saliente+presas
   });
 
   it("defaults del módulo intactos", () => {

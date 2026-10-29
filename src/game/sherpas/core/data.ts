@@ -449,7 +449,7 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
         // RELIEVE POR TESELACIÓN (T39): Voronoi / fracturación tectónica data-driven.
         relief: { type: "object", required: ["enabled", "algorithm"], properties: {
           enabled: { type: "boolean" },
-          algorithm: { enum: ["voronoi", "tectonic", "estratificada"] },
+          algorithm: { enum: ["voronoi", "tectonic", "estratificada", "diaclasas"] },
           chunkHeightM: posNum, viewRadiusM: posNum, maxChunks: { type: "integer", minimum: 1 },
           cellAreaM2: posNum, extrudeLevels: { type: "integer", minimum: 1 },
           extrudeMinM: num, extrudeMaxM: num, anchorExtrudeM: num, jointM: num,
@@ -466,6 +466,9 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
           flattenRadiusM: posNum, anchorBackM: num, naturalMaxM: posNum,
           baseColor: { type: "string", minLength: 4 }, toneVar: num, grainVar: num, aoStrength: num,
           textureSizePx: { type: "integer", minimum: 64 }, textureTileM: posNum, textureContrast: num, bumpStrength: num,
+          // ROCKWALL DIACLASAS (T43): estilo del módulo del jugador (data-driven,
+          // rockwallStyleFromData es defensivo — aquí solo se valida la forma).
+          rockwall: { type: "object" },
         } },
         entrantes: { type: "object", required: ["chancePerBand", "minWidthM", "maxWidthM", "depthM", "heightM", "minBand"], properties: {
           chancePerBand: { type: "number", exclusiveMinimum: 0, maximum: 1 }, minWidthM: posNum, maxWidthM: posNum,
