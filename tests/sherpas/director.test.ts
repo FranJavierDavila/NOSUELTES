@@ -93,11 +93,25 @@ describe("EventDirector (doc 7.5)", () => {
     expect(dir.firedCount("insult") + dir.firedCount("eat")).toBeGreaterThanOrEqual(1);
   });
 
-  it("REGLA DE SEGURIDAD: un LimbReleased reciente (< 5 s) bloquea eventos duros", () => {
+  it("REGLA DE SEGURIDAD: un LimbReleased MUY reciente (< 1,2 s) bloquea eventos duros", () => {
+    // T48: la ventana bajó de 5 s a 1,2 s — con 5 s los pájaros/drones eran
+    // imposibles (soltar extremidad ocurre en cada movimiento de escalada).
+    // La regla sigue: un suelta EN CURSO (0,5 s) no se interrumpe.
     const { dir, ctx } = mkDirector();
-    ctx.secondsSince = (ev) => (ev === "LimbReleased" ? 2 : 999);
+    ctx.secondsSince = (ev) => (ev === "LimbReleased" ? 0.5 : 999);
     for (let i = 0; i < 40; i++) dir.tick(1, phase3());
     expect(dir.firedCount("bird_pecker")).toBe(0);
+  });
+
+  it("T48: escalando ACTIVO (suelta cada 3 s) los pájaros SÍ entran", () => {
+    const { dir } = mkDirector();
+    let t = 0;
+    for (let i = 0; i < 90; i++) {
+      t += 1;
+      if (i % 3 === 0) dir.notify("LimbReleased", t); // escalada activa: hay huecos ≥ 1,2 s
+      dir.tick(1, phase3());
+    }
+    expect(dir.firedCount("bird_pecker") + dir.firedCount("bird_thief")).toBeGreaterThanOrEqual(1);
   });
 
   it("peso 0 en la fase → el evento no existe en esa fase", () => {

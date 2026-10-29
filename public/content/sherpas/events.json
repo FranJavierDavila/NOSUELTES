@@ -154,7 +154,7 @@
         {
           "type": "secondsSince",
           "event": "LimbReleased",
-          "gt": 5
+          "gt": 1.2
         }
       ],
       "machine": "bird_pecker_fsm",
@@ -189,7 +189,7 @@
         {
           "type": "secondsSince",
           "event": "LimbReleased",
-          "gt": 5
+          "gt": 1.2
         }
       ],
       "machine": "bird_thief_fsm",
@@ -220,7 +220,7 @@
         {
           "type": "secondsSince",
           "event": "LimbReleased",
-          "gt": 4
+          "gt": 1.2
         }
       ],
       "telegraph": {
@@ -249,7 +249,7 @@
         {
           "type": "secondsSince",
           "event": "LimbReleased",
-          "gt": 4
+          "gt": 1.2
         }
       ],
       "telegraph": {
@@ -263,7 +263,7 @@
       "kind": "soft",
       "weightByPhase": {
         "1": 0,
-        "2": 0,
+        "2": 0.4,
         "3": 0.5,
         "4": 0.6,
         "5": 0.7,
@@ -274,7 +274,7 @@
         {
           "type": "secondsSince",
           "event": "LimbReleased",
-          "gt": 4
+          "gt": 1.2
         }
       ],
       "telegraph": {

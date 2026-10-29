@@ -62,6 +62,7 @@ import {
 } from "../world/rockwall"; // T43: módulo del jugador (diaclasas) + worker
 import { makeRng } from "../core/rng";
 import { generateStrataColor } from "../world/strataTexture"; // T44: estratos superpuestos
+import { resolvePlantasCfg, selectPlantSpots, stampTufts, type PlantasCfg } from "../world/plantas"; // T48: vegetación en hundimientos
 import { TriPlanarStrataPlugin } from "./wallStrataMaterial"; // T44: mapeado triplanar
 
 interface Bone { a: number; b: number; mesh: Mesh; rest: number; offY?: number }
@@ -223,7 +224,7 @@ export class SherpaScene {
   // cámara (chunks LRU) para optimizar el dibujado.
   private reliefCfg: ReliefResolved | null = null;
   private reliefHolds: { x: number; y: number }[] = [];
-  private reliefMeshes = new Map<number, { mesh: Mesh; cells: number; tris: number }>();
+  private reliefMeshes = new Map<number, { mesh: Mesh; plants?: Mesh; plantsN?: number; cells: number; tris: number }>();
   private reliefHoleRects: Rect[] = [];
   private reliefSalientRects: Rect[] = [];
   private reliefWallW = 5.4;
@@ -249,6 +250,11 @@ export class SherpaScene {
   private strataTex: RawTexture | null = null;
   private strataCfg: { scale: number; strength: number } | null = null;
   private strataTried = false;
+  // T48: VEGETACIÓN en los hundimientos de la pared (matas por chunk)
+  private plantasCfg: PlantasCfg | null = null;
+  private plantasMat: PBRMaterial | null = null;
+  private plantasTotal = 0;
+  private plantasSpots = new Map<number, { x: number; y: number; z: number; scale: number }[]>();
   /** materiales PBR de roca creados (sonda E2E: material/triplanar/normales). */
   private rockPbrCount = 0;
   private rockWorkerDead = false;
@@ -262,6 +268,7 @@ export class SherpaScene {
     // convención del proyecto: dato ausente → comportamiento anterior (pared plana).
     this.reliefCfg = relief ? reliefFromData(relief) : null;
     this.reliefRaw = relief ?? null; // datos CRUDOS: la rama roca lee de aquí
+    this.plantasCfg = resolvePlantasCfg((this.reliefRaw as { vegetacion?: unknown } | null)?.vegetacion);
     this.engine = engine;
     this.backend = backend;
     this.camData = camData;
@@ -770,7 +777,13 @@ export class SherpaScene {
       const plan = planChunks([...this.reliefMeshes.keys()], wanted, rc.maxChunks, camY, h);
       for (const c of plan.dispose) {
         const e = this.reliefMeshes.get(c);
-        if (e) { e.mesh.dispose(false, this.rockCtx !== null); this.reliefMeshes.delete(c); } // T43: material+texturas propios
+        if (e) {
+          e.plants?.dispose(); // T48: la vegetación muere con su chunk
+          this.plantasSpots.delete(c);
+          this.plantasTotal -= e.plantsN ?? 0;
+          e.mesh.dispose(false, this.rockCtx !== null); // T43: material+texturas propios
+          this.reliefMeshes.delete(c);
+        }
         this.cancelRockJob(c);
       }
       // cola ordenada por cercanía a la cámara: lo que se VE se construye primero
@@ -1091,7 +1104,70 @@ export class SherpaScene {
     }
     this.reliefMeshes.set(c, { mesh, cells: vw * vh, tris: (vw - 1) * (vh - 1) * 2 });
     this.reliefStats.builds++;
+    // T48 — VEGETACIÓN EN LOS HUNDIMIENTOS: sobre la MISMA rejilla visible se
+    // buscan depresiones reales (fondos de entrantes, concavidades) y se estampa
+    // UNA malla fusionada de matas por chunk, con el mismo ciclo de vida LRU.
+    if (this.plantasCfg?.enabled && this.plantasCfg.density > 0) {
+      const hGrid = new Float32Array(vw * vh);
+      const gxs = new Float32Array(vw);
+      const gys = new Float32Array(vh);
+      for (let p = 0; p < vw * vh; p++) hGrid[p] = faceZ - positions[p * 3 + 2]!;
+      for (let vi = 0; vi < vw; vi++) gxs[vi] = positions[vi * 3]!;
+      for (let vj = 0; vj < vh; vj++) gys[vj] = positions[(vj * vw) * 3 + 1]!;
+      const spots = selectPlantSpots({
+        xs: gxs, ys: gys, h: hGrid, vw, vh, faceZ,
+        anchors: this.rockCtx.anchors,
+        cfg: this.plantasCfg,
+        chunkIndex: c,
+      });
+      if (spots.length) {
+        const g = stampTufts(spots, (this.plantasCfg.seed ^ 0x71d1) >>> 0);
+        const pm = new Mesh(`plantas_${c}`, this.scene);
+        const pvd = new VertexData();
+        pvd.positions = g.positions;
+        pvd.normals = g.normals;
+        pvd.colors = g.colors;
+        pvd.indices = g.indices;
+        pvd.applyToMesh(pm);
+        pm.material = this.ensurePlantasMaterial();
+        pm.receiveShadows = true;
+        pm.isPickable = false;
+        pm.freezeWorldMatrix();
+        this.shadowGen?.addShadowCaster(pm, false); // sombritas de las matas
+        this.reliefMeshes.set(c, { mesh, plants: pm, plantsN: spots.length, cells: vw * vh, tris: (vw - 1) * (vh - 1) * 2 });
+        this.plantasSpots.set(c, spots.map((s) => ({ x: s.x, y: s.y, z: s.z, scale: s.scale })));
+        this.plantasTotal += spots.length;
+      }
+    }
     return true;
+  }
+
+  /** T48 — MATERIAL de la vegetación (lazy, UNO para todos los chunks): PBR
+   *  blanco (el tinte real va en VERTEX COLORS por mata), dos caras (hojas
+   *  planas visibles por detrás), sin brillo metálico. */
+  private ensurePlantasMaterial(): PBRMaterial {
+    if (!this.plantasMat) {
+      const m = new PBRMaterial("plantasM", this.scene);
+      m.albedoColor = new Color3(1, 1, 1);
+      m.metallic = 0;
+      m.roughness = 0.92;
+      m.backFaceCulling = false;
+      m.twoSidedLighting = true;
+      this.plantasMat = m;
+    }
+    return this.plantasMat;
+  }
+
+  /** T48 SONDA E2E: posiciones de las matas vivas (para capturas apuntadas). */
+  plantasDebug(): { x: number; y: number; z: number; scale: number }[] {
+    const out: { x: number; y: number; z: number; scale: number }[] = [];
+    for (const list of this.plantasSpots.values()) {
+      for (const s of list) {
+        out.push(s);
+        if (out.length >= 400) return out;
+      }
+    }
+    return out;
   }
 
   /** Fallback SIN worker: muestrea la región en el hilo principal (~0,3 s). */
@@ -1184,7 +1260,7 @@ export class SherpaScene {
    *  T43: algoritmo, estado del worker y cola pendiente. */
   getReliefInfo(): {
     chunks: number; cells: number; tris: number; builds: number; algorithm: string; viewBand: number;
-    worker: boolean; pending: number;
+    worker: boolean; pending: number; plants: number;
     strataTones?: number; strataToneStrength?: number; strataSeamDark?: number;
   } {
     let cells = 0, tris = 0;
@@ -1198,6 +1274,7 @@ export class SherpaScene {
         ? Math.floor(this.reliefLastCamY / this.reliefCfg.chunkHeightM) : -1,
       worker: this.rockWorker !== null && !this.rockWorkerDead,
       pending: this.rockJobs.size + this.rockSyncQueue.length,
+      plants: Math.max(0, this.plantasTotal),
       strataTones: this.rockField?.cfg.strataTones.length,
       strataToneStrength: this.rockField?.cfg.strataToneStrength,
       strataSeamDark: this.rockField?.cfg.strataSeamDark,
@@ -1250,6 +1327,9 @@ export class SherpaScene {
       const ch = this.reliefCfg.chunkHeightM;
       for (const [c, entry] of this.reliefMeshes) {
         if (c * ch <= maxY + 0.55 && (c + 1) * ch >= minY - 0.55) {
+          entry.plants?.dispose(); // T48: la vegetación muere con su chunk
+          this.plantasSpots.delete(c);
+          this.plantasTotal -= entry.plantsN ?? 0;
           entry.mesh.dispose(false, this.rockCtx !== null); // T43: material+texturas propios
           this.reliefMeshes.delete(c);
         }

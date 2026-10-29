@@ -310,6 +310,16 @@
       "bands": 7.0,
       "warp": 0.55,
       "seam": 0.24
+    },
+    "vegetacion": {
+      "enabled": true,
+      "density": 2.2,
+      "minDepthM": 0.05,
+      "maxDepthM": 0.3,
+      "scale": 1.5,
+      "scaleJitter": 0.4,
+      "keepFromHoldsM": 0.5,
+      "seed": 643895
     }
   }
 }

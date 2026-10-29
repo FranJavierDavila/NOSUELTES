@@ -201,4 +201,58 @@ describe("tabla de porteo (petición del jugador)", () => {
     }
     expect(last.slide).toBeLessThan(-0.3);
   });
+
+  it("T48 REGRESIÓN 'se va volando': tras un paseo TERMINADO, la tabla nivelada VUELVE a recentrar", () => {
+    // El bug real: walkSlide solo se llamaba con dir ≠ 0 → richWalking quedaba
+    // pegado en true al acabar el paseo → el recentrado moría el resto de la
+    // partida y el bamboleo (comer/patalear) derivaba hasta despacharlo con
+    // el HUD diciendo NIVELADA. Ahora: llamar walkSlide(0, dt) limpia el
+    // latch y el recentrado reanuda.
+    const a = v3(-1, 2.4, Z - 0.22);
+    const b = v3(1, 2.4, Z - 0.22);
+    const plank = new PlankSystem(t);
+    plank.reset(a, b, Z);
+    // paseo completo (2 s) hacia la derecha, como el FSM del match
+    let last = plank.state(a, b);
+    for (let i = 0; i < 60 * 2; i++) {
+      plank.walkSlide(1, 1 / 60);
+      last = plank.step(1 / 60, { a, b, wallFrontZ: Z, time: i / 60, wobble: 0, moveSherpa: () => {} });
+    }
+    const trasPaseo = Math.abs(last.slide);
+    expect(trasPaseo).toBeGreaterThan(0.2);
+    // el paseo TERMINA: el match llama walkSlide(0, dt) cada tick (fix T48)
+    for (let i = 0; i < 60 * 6; i++) {
+      plank.walkSlide(0, 1 / 60);
+      last = plank.step(1 / 60, { a, b, wallFrontZ: Z, time: i / 60, wobble: 0, moveSherpa: () => {} });
+    }
+    expect(last.fellOff).toBe(false);
+    expect(Math.abs(last.slide)).toBeLessThan(trasPaseo * 0.25); // recentró de verdad
+    // y con bamboleo de comer (media cero tras el fix del cerebro) NO deriva
+    for (let i = 0; i < 60 * 30; i++) {
+      const w = Math.sin(i / 60 * 7) * 0.1 * 0.6 + Math.cos(i / 60 * 7) * 0.25 * 0.4;
+      plank.walkSlide(0, 1 / 60);
+      last = plank.step(1 / 60, { a, b, wallFrontZ: Z, time: i / 60, wobble: w, moveSherpa: () => {} });
+    }
+    expect(last.fellOff).toBe(false);
+    expect(Math.abs(last.slide)).toBeLessThan(t.fallSlideFrac * (t.plankLen / 2) * 0.5);
+  });
+
+  it("T48: reset() limpia el latch de paseo (respawn sano)", () => {
+    const a = v3(-1, 2.4, Z - 0.22);
+    const b = v3(1, 2.4, Z - 0.22);
+    const plank = new PlankSystem(t);
+    plank.reset(a, b, Z);
+    for (let i = 0; i < 60 * 2; i++) {
+      plank.walkSlide(1, 1 / 60);
+      plank.step(1 / 60, { a, b, wallFrontZ: Z, time: i / 60, wobble: 0, moveSherpa: () => {} });
+    }
+    // sin llamar walkSlide(0): reset directo (respawn tras caída)
+    plank.reset(a, b, Z);
+    let last = plank.state(a, b);
+    for (let i = 0; i < 60 * 4; i++) {
+      last = plank.step(1 / 60, { a, b, wallFrontZ: Z, time: i / 60, wobble: 0, moveSherpa: () => {} });
+    }
+    expect(last.fellOff).toBe(false);
+    expect(Math.abs(last.slide)).toBeLessThan(0.02); // la tabla NUEVA recentra
+  });
 });

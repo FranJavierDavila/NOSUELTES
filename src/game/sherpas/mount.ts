@@ -178,6 +178,13 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
       },
       /** Acceso de diagnóstico a la escena (E2E de gráficos: niebla/cielo en vivo). */
       sceneObj: () => (state.match?.["d"]?.scene ?? state.scene) as unknown as Record<string, unknown> | null,
+      /** T48 VEGETACIÓN: matas vivas con posición mundo (capturas E2E apuntadas). */
+      plantas: (): { x: number; y: number; z: number; scale: number }[] => {
+        const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
+          plantasDebug?: () => { x: number; y: number; z: number; scale: number }[];
+        } | null;
+        return sc?.plantasDebug?.() ?? [];
+      },
       depthProbe: () => {
         const sc = state.match?.["d"]?.scene as unknown as {
           scene: { render(): void };

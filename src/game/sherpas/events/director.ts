@@ -36,7 +36,7 @@ export interface DirectorContext {
   spawnDrone?: () => void;
 }
 
-const HARD_EVENT_SAFETY_WINDOW_S = 5;
+const HARD_EVENT_SAFETY_WINDOW_S = 1.2;
 const MAX_CONCURRENT = 2;
 
 export class EventDirector {
@@ -94,8 +94,15 @@ export class EventDirector {
     if (this.activeHard === null && this.activeCount < MAX_CONCURRENT && this.budget >= 1) {
       const candidates = this.eventsData.events.filter((e) => this.isCandidate(e, phase));
       if (candidates.length) {
+        // FIX "drones y pájaros que nunca he llegado a ver": la perilla
+        // birdFrequencyMultiplier de difficulty.json (tranquilo 0.6 / normal
+        // 1.0 / caos 1.4) existía pero NO SE USABA en ningún sitio. Ahora
+        // pondera las aves (bird_*) en la elección.
         const weights: Record<string, number> = {};
-        for (const c of candidates) weights[c.id] = c.weightByPhase[String(phase.id)] ?? 0;
+        for (const c of candidates) {
+          const base = c.weightByPhase[String(phase.id)] ?? 0;
+          weights[c.id] = c.id.startsWith("bird_") ? base * (this.preset.birdFrequencyMultiplier || 1) : base;
+        }
         const chosen = this.rng.weighted(weights) as string;
         const def = candidates.find((c) => c.id === chosen)!;
         this.fire(def);
@@ -114,7 +121,13 @@ export class EventDirector {
       }
     }
     if (def.kind === "hard") {
-      // reglas de seguridad (doc 7.5.4): tensión alta, cuerda al límite o caída reciente.
+      // reglas de seguridad (doc 7.5.4): tensión alta o cuerda al límite
+      // bloquean; LimbReleased reciente SOLO evita interrumpir un movimiento
+      // EN CURSO (doc 7.4.4). FIX "drones y pájaros que nunca he llegado a
+      // ver": la ventana era 5 s pero soltar una extremidad ocurre EN CADA
+      // movimiento de escalada (1-3 s) → los eventos duros eran
+      // matemáticamente imposibles escalando activo. 1.2 s = margen para no
+      // partir un gesto, sin congelar el caos.
       if (this.ctx.maxLimbTension() > 0.85) return false;
       if (this.ctx.ropeOverstretched()) return false;
       if (this.ctx.secondsSince("LimbReleased") < HARD_EVENT_SAFETY_WINDOW_S) return false;

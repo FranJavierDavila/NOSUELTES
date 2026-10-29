@@ -172,20 +172,29 @@ export class RichManBrain {
         if (this.kickTimer <= 0) {
           this.kickTimer = 1 / (acts.kick.kickHz ?? 2.2);
           const side = this.deps.rng.next() > 0.5 ? 1 : -1;
-          this.sim.impulse(RM.footL, v3(side * 0.4, (acts.kick.legImpulse ?? 1.8) * 0.5, -0.2));
-          this.sim.impulse(RM.footR, v3(-side * 0.4, (acts.kick.legImpulse ?? 1.8) * 0.4, -0.1));
-          this.sim.impulse(RM.pelvis, v3(0, 0.15, 0));
+          // FIX "se va volando": la VERTICAL de la patada alterna con `side`
+          // (patada arriba ⇊ estirón abajo) — antes sumaba SIEMPRE +1.77 por
+          // patada (pies + pelvis) y en sentado ese sesgo se volvía deriva
+          // constante de la tabla hacia +x (wobble = dv.x·0.6 + dv.y·0.4).
+          this.sim.impulse(RM.footL, v3(side * 0.4, (acts.kick.legImpulse ?? 1.8) * 0.5 * side, -0.2));
+          this.sim.impulse(RM.footR, v3(-side * 0.4, (acts.kick.legImpulse ?? 1.8) * 0.4 * side, -0.1));
+          this.sim.impulse(RM.pelvis, v3(0, 0.15 * side, 0));
         }
         break;
       }
       case "comiendo": {
+        // FIX "se va volando": mano dando VUELTAS al plato (x=sin, y=cos) —
+        // antes dv.y=0.25 CONSTANTE = wobble sesgado +0.1/tick = deriva 0.297
+        // m/s, rozando el recentreRate (0.3): con tabla nivelada acababa en
+        // el borde. Ahora la media del impulso es CERO.
         const wig = Math.sin(time * 7) * 0.5;
-        this.sim.impulse(RM.handR, v3(wig * 0.2, 0.25, 0));
+        this.sim.impulse(RM.handR, v3(wig * 0.2, 0.25 * Math.cos(time * 7), 0));
         break;
       }
       case "insultando": {
         const a = acts.insult.armSwing ?? 0.6;
-        this.sim.impulse(RM.handL, v3(-a * 0.25, 0.2, 0));
+        // FIX: puño AL AIRE con sacudida de media cero (antes y=0.2 constante).
+        this.sim.impulse(RM.handL, v3(-a * 0.25 * Math.sin(time * 6), 0.2 * Math.cos(time * 6), 0));
         break;
       }
       case "dormitando": {

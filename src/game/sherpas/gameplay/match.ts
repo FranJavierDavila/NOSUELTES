@@ -671,7 +671,15 @@ export class SherpasMatch {
     this.rich.walkDir = walkDir;
     this.plank.setRichStanding(richStanding);
     this.plank.setRichMass(this.rich.currentMass());
-    if (walkDir !== 0) this.plank.walkSlide(walkDir, dt);
+    // FIX "se va volando con la tabla nivelada": llamada INCONDICIONAL. Antes
+    // solo se llamaba con walkDir ≠ 0 y walkSlide hacía richWalking = dir ≠ 0
+    // SOLO al ser llamada: al terminar cualquier paseo el flag quedaba pegado
+    // en true PARA SIEMPRE, el recentrado en tabla nivelada moría (plank.ts:
+    // "if (!this.richWalking)") y el bamboleo de comer/patalear derivaba sin
+    // freno hasta despacharlo — con el HUD diciendo NIVELADA y las rayas de
+    // viento en pantalla ("como si fuese arrastrado por el viento"). Con
+    // dir === 0 walkSlide solo limpia el latch y retorna: seguro cada tick.
+    this.plank.walkSlide(walkDir, dt);
     // CARGA sobre la tabla (cajas del ricachón + cóndor posado + PAQUETE DEL
     // DRON): PESA DE VERDAD — la descompensación que pidió el jugador.
     const cargo: { offsetFrac: number; kg: number }[] = [];

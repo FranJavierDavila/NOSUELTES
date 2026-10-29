@@ -310,6 +310,11 @@ export class PlankSystem {
     this.shakeAmp = 0;
     this.shakePhase = 0;
     this.cargo = [];
+    // FIX "se va volando": el respawn DEBE limpiar el estado de paseo — un
+    // richWalking pegado de una vida anterior mataría el recentrado de la
+    // tabla nueva (el latch sobrevivía a reset()).
+    this.richWalking = false;
+    this.richStanding = false;
     return this.buildState(a, b, true, 0, 0, visualA, visualB);
   }
 
