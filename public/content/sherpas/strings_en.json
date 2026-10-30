@@ -156,5 +156,36 @@
   "step3": "3) CLIMB: release the click over the hold and the limb flies to it. Alternate feet and hands (feet first, then hands) and never let go of all 4 at once or you will fall.",
   "step4": "4) COORDINATE: one rope goes from each side of the plank to each sherpa. If one climbs higher than the other, the plank TILTS, shifts and the rich man SLIPS towards the abyss: climb at the same height, step by step.",
   "extra": "Z/X orbits the camera ±30° sideways and V/B tilts it vertically (V looks at roofs FROM BELOW, B from above); the gamepad right stick orbits too. Leave the orbit alone for a few seconds and the camera eases back; C recenters it instantly · Hold G for FREE LOOK: wider angles and the sun swings with the orbit to study how light falls on the overhangs; release to return to the game · R shoo birds · Space pause · H opens/closes this help."
+ },
+ "onboarding": {
+  "title": "Welcome to the wall!",
+  "sub": "Five things before you climb. Take your time: nobody summits alone.",
+  "step": "Step {n} of {total}",
+  "skip": "Skip tutorial",
+  "next": "Next",
+  "start": "TO THE WALL!",
+  "menuButton": "How to play?",
+  "s1": {
+   "title": "The goal",
+   "body": "Two sherpas climb Everest (5,301 m) carrying the rich man SEATED on a plank hung from a rope on each side. You BOTH climb and reach the summit TOGETHER: if one stops, both stop. Camps along the way save your progress."
+  },
+  "s2": {
+   "title": "Orange sherpa — mouse (P1)",
+   "body": "Press a limb of the ORANGE sherpa and hold the click. Drag it along the wall: nearby holds act as magnets and show a green ring when they can capture it. Release the click over the hold and the limb flies to it. Alternate feet and hands, and watch the fatigue rings: a limb at its limit lets go."
+  },
+  "s3": {
+   "title": "Blue sherpa — keyboard or gamepad (P2)",
+   "body": "The BLUE sherpa uses the keyboard: arrows to aim plus the hand and foot keys to lock or release holds (or gamepad: stick + buttons). Share the work: while one holds, the other gains height and steadies the rich man's plank."
+  },
+  "s4": {
+   "title": "Cooperative rope",
+   "body": "Each sherpa carries a rope to HELP the partner: by setting the ANCHOR, the one standing firm stops the other's fall and pulls him up. The rope is your safety net: use it before risking a high hold.",
+   "keys": "Coop anchor: Q (P1) · J (P2) — the firm one stops and pulls the partner"
+  },
+  "s5": {
+   "title": "MASH! (when someone falls)",
+   "body": "If a sherpa falls, he hangs from the rope holding it with BOTH hands: mash the effort key TOGETHER at the same time. The meter next to the hanger must pass the notch to climb; below it he slides down and burns rope. If the rope runs out… he lets go and falls. Sharing the effort makes the rescue easy.",
+   "keys": "MASH: hammer C (P1) and N (P2) TOGETHER until the meter passes the notch"
+  }
  }
 }

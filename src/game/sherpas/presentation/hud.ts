@@ -4,6 +4,10 @@
 // Todo texto visible viene de strings_<idioma>.json (regla de oro, doc 11).
 import type { HudData, StringsData } from "../core/data";
 import type { Limb } from "../core/bus";
+import {
+  ONBOARDING_STEPS, advanceOnboarding, openOnboarding, skipOnboarding,
+  type OnboardingState,
+} from "../gameplay/onboarding";
 
 export type Lang = "es" | "en";
 export type BalanceUiState = "equilibrado" | "aviso" | "desequilibrado";
@@ -149,6 +153,16 @@ const CSS = `
 .sphud .hidden { display:none !important; }
 .sphud .finale-grid { display:grid; grid-template-columns:1fr auto; gap:6px 18px; font-size:14px; margin:14px 0; }
 .sphud .finale-grid b { text-align:right; font-variant-numeric:tabular-nums; }
+/* T59 ONBOARDING: asistente de primera vez — puntos de progreso, viñeta de
+ * paso con acento por jugador y bloque de teclas reales (mismo .keys). */
+.sphud .ob-num { font-size:11px; letter-spacing:.14em; text-transform:uppercase; opacity:.65; }
+.sphud .ob-dots { display:flex; gap:7px; margin:10px 0 12px; }
+.sphud .ob-dots i { width:9px; height:9px; border-radius:50%; background:rgba(255,255,255,.18); transition:background .2s, transform .2s; }
+.sphud .ob-dots i.on { background:var(--obc,#5ad46a); transform:scale(1.3); }
+.sphud .ob-step { border-left:3px solid var(--obc,#5ad46a); padding-left:12px; }
+.sphud .ob-step h2 { margin:0 0 6px; font-size:20px; letter-spacing:.03em; }
+.sphud .ob-step p { margin:0; font-size:14px; line-height:1.6; opacity:.92; }
+.sphud .ob-foot { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:20px; }
 `;
 
 function esc(s: string): string {
@@ -170,8 +184,10 @@ export class SherpaHud {
   private reduceShake = false;
   private mute = false;
   private disablePee = false;
-  private opts?: { onGo: (c: HudStartChoice) => void };
+  private opts?: { onGo: (c: HudStartChoice) => void; onHowToDone?: () => void };
   private choice: Partial<HudStartChoice> = { lang: "es" };
+  /** T59: estado del asistente de onboarding (núcleo puro de gameplay). */
+  private ob: OnboardingState = openOnboarding();
 
   constructor(root: HTMLElement, hud: HudData, strings: Record<Lang, StringsData>) {
     this.root = root;
@@ -222,6 +238,9 @@ export class SherpaHud {
         <h1 style="font-size:24px">⏸</h1><p class="sub" data-e="pauseHint"></p></div></div>
       <div class="overlay hidden" data-e="start"></div>
       <div class="overlay hidden" data-e="finale"></div>
+      <!-- T59: el onboarding es el ÚLTIMO overlay: desde el menú ("¿Cómo se
+           juega?") debe pintarse POR ENCIMA del menú y recibir sus clics. -->
+      <div class="overlay hidden" data-e="onboard"><div class="panel" data-e="onboardBody"></div></div>
     `;
     root.appendChild(frame);
     for (const n of frame.querySelectorAll<HTMLElement>("[data-e]")) {
@@ -574,8 +593,57 @@ export class SherpaHud {
 
   // ---------- menú de inicio ----------
 
-  showStart(opts: { difficulties: string[]; defaultPreset: string; seed: number; saveCampLabel: string | null; onGo: (c: HudStartChoice) => void }): void {
-    this.opts = { onGo: opts.onGo };
+  // ---------- T59 ONBOARDING: asistente de primera vez ----------
+
+  /** Abre el tutorial. La máquina de pasos es PURA (gameplay/onboarding):
+   *  aquí solo se dibuja el paso actual y se avanza con el núcleo.
+   *  onDone se llama al COMPLETAR o SALTAR (el montaje decide el efecto:
+   *  arrancar la partida y/o marcar "visto"). */
+  showOnboarding(opts: { onDone: () => void }): void {
+    const el = this.el.onboard!;
+    const body = this.el.onboardBody!;
+    const render = (): void => {
+      const steps = ONBOARDING_STEPS;
+      const st = this.ob;
+      const step = steps[Math.min(st.stepIndex, steps.length - 1)]!;
+      const last = st.stepIndex >= steps.length - 1;
+      body.style.setProperty("--obc", step.accent ?? "#5ad46a");
+      body.innerHTML = `
+        <div class="ob-num">${esc(this.fmt("onboarding.step", { n: st.stepIndex + 1, total: steps.length }))}</div>
+        <h1 style="font-size:24px">⛰️ ${esc(this.t("onboarding.title"))}</h1>
+        <div class="sub" style="margin:2px 0 0">${esc(this.t("onboarding.sub"))}</div>
+        <div class="ob-dots">${steps.map((_, i) => `<i class="${i === st.stepIndex ? "on" : ""}"></i>`).join("")}</div>
+        <div class="ob-step"><h2>${esc(this.t(step.titleKey))}</h2><p>${esc(this.t(step.bodyKey))}</p></div>
+        ${step.keysKey ? `<div class="keys">${esc(this.t(step.keysKey))}</div>` : ""}
+        <div class="ob-foot">
+          <button data-a="obSkip">${esc(this.t("onboarding.skip"))}</button>
+          <button class="go" data-a="obNext" style="font-size:15px;padding:9px 30px">${esc(last ? this.t("onboarding.start") : this.t("onboarding.next"))}</button>
+        </div>`;
+      body.setAttribute("data-ob-step", step.id);
+      body.querySelector<HTMLElement>("[data-a=obNext]")!.onclick = () => {
+        this.ob = advanceOnboarding(this.ob);
+        if (this.ob.done) { el.classList.add("hidden"); body.removeAttribute("data-ob-step"); opts.onDone(); return; }
+        render();
+      };
+      body.querySelector<HTMLElement>("[data-a=obSkip]")!.onclick = () => {
+        this.ob = skipOnboarding(this.ob);
+        el.classList.add("hidden");
+        body.removeAttribute("data-ob-step");
+        opts.onDone();
+      };
+    };
+    this.ob = openOnboarding();
+    render();
+    el.classList.remove("hidden");
+  }
+
+  /** Sonda E2E: el tutorial está sobre la pantalla. */
+  get onboardingVisible(): boolean { return !this.el.onboard!.classList.contains("hidden"); }
+  /** Sonda E2E: id del paso actual (null si cerrado). */
+  get onboardingStep(): string | null { return this.el.onboardBody!.getAttribute("data-ob-step"); }
+
+  showStart(opts: { difficulties: string[]; defaultPreset: string; seed: number; saveCampLabel: string | null; onGo: (c: HudStartChoice) => void; onHowToDone?: () => void }): void {
+    this.opts = { onGo: opts.onGo, onHowToDone: opts.onHowToDone };
     this.choice = { lang: this.lang, resume: false, mute: false, daltonism: false, reduceShake: false, disablePee: false, difficulty: opts.defaultPreset, seed: opts.seed };
     const el = this.el.start!;
     el.innerHTML = `<div class="panel">
@@ -592,6 +660,7 @@ export class SherpaHud {
         <span class="chk"><input type="checkbox" data-a="nopee" id="ck_p"><label for="ck_p">${esc(this.t("settings.disablePee"))}</label></span>
       </div>
       <div class="row" style="margin-top:18px"><button class="go" data-a="go">${esc(this.t("menu.start"))}</button></div>
+      <div class="row" style="justify-content:center"><button data-a="howto">🎓 ${esc(this.t("onboarding.menuButton"))}</button></div>
       <div class="keys">${esc(this.t("keys.p1"))}<br>${esc(this.t("keys.p2"))}<br>${esc(this.t("keys.shared"))}</div>
     </div>`;
     const diffs = el.querySelector("[data-a=diffs]")!;
@@ -619,11 +688,16 @@ export class SherpaHud {
         (el.querySelector(".sub") as HTMLElement).textContent = this.t("menu.subtitle");
         const go = el.querySelector("[data-a=go]") as HTMLElement;
         go.textContent = this.t("menu.start");
+        const howto = el.querySelector("[data-a=howto]") as HTMLElement | null;
+        if (howto) howto.innerHTML = `🎓 ${esc(this.t("onboarding.menuButton"))}`;
       };
       langs.appendChild(b);
     }
     (el.querySelector("[data-a=seed]") as HTMLInputElement).oninput = (e) => {
       this.choice.seed = Math.abs(Math.floor(Number((e.target as HTMLInputElement).value) || 0)) % 1000000;
+    };
+    el.querySelector<HTMLElement>("[data-a=howto]")!.onclick = () => {
+      this.showOnboarding({ onDone: () => this.opts?.onHowToDone?.() });
     };
     (el.querySelector("[data-a=dice]") as HTMLElement).onclick = () => {
       const s = Math.floor(Math.random() * 1000000);

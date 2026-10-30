@@ -156,5 +156,36 @@
   "step3": "3) SUBE: suelta el clic sobre la presa y la extremidad vuela hasta ella. Alterna pies y manos (primero los pies, luego las manos) y nunca sueltes las 4 a la vez o caeréis.",
   "step4": "4) COORDINAOS: de cada lado de la tabla sale una cuerda hacia un sherpa. Si uno sube más que el otro, la tabla se INCLINA, se desplaza y el ricachón RESBALA hacia el vacío: subed a la misma altura, peldaño a peldaño.",
   "extra": "Z/X orbita la cámara ±30° a los lados y V/B la inclina en vertical (V para ver los techos POR DEBAJO, B desde arriba); el stick derecho del mando también orbita. Sin tocar la órbita unos segundos, la cámara vuelve sola; C la reencuadra al instante · Mantén G para la VISTA LIBRE: ángulos más amplios y el sol gira con la órbita para estudiar cómo cae la luz en los salientes; al soltar, vuelves al juego · R espanta pájaros · Espacio pausa · H abre/cierra esta ayuda."
+ },
+ "onboarding": {
+  "title": "¡Bienvenido a la pared!",
+  "sub": "Cinco cosas antes de escalar. Tómalas con calma: no se sube solo.",
+  "step": "Paso {n} de {total}",
+  "skip": "Saltar tutorial",
+  "next": "Siguiente",
+  "start": "¡A LA PARED!",
+  "menuButton": "¿Cómo se juega?",
+  "s1": {
+   "title": "El objetivo",
+   "body": "Dos sherpas suben el Everest (5.301 m) llevando al ricachón SENTADO en una tabla que cuelga de una cuerda a cada lado. Los DOS escaláis y llegáis JUNTOS a la cima: si uno se para, los dos se paran. Hay campamentos que guardan vuestro progreso."
+  },
+  "s2": {
+   "title": "Sherpa naranja — ratón (J1)",
+   "body": "Pulsa una extremidad del sherpa NARANJA y mantén el clic. Arrástrala por la pared: las presas cercanas son imanes y muestran un aro verde cuando pueden capturarla. Suelta el clic sobre la presa y la extremidad vuela hasta ella. Alterna pies y manos, y vigila sus anillos de fatiga: una extremidad al límite se suelta."
+  },
+  "s3": {
+   "title": "Sherpa azul — teclado o mando (J2)",
+   "body": "El sherpa AZUL se mueve con teclado: flechas para apuntar y las teclas de manos y pies para fijar o soltar presas (o mando: stick + botones). Reparte el trabajo: mientras uno sostiene, el otro gana altura y sujeta mejor la tabla del ricachón."
+  },
+  "s4": {
+   "title": "Cuerda cooperativa",
+   "body": "Cada sherpa lleva una cuerda con la que AYUDA al compañero: poniendo el ANCLA, el que está firme frena la caída del otro y tira de él. La cuerda es vuestra red de seguridad: úsala antes de arriesgar una presa alta.",
+   "keys": "Ancla cooperativa: Q (J1) · J (J2) — el firme frena y tira del compañero"
+  },
+  "s5": {
+   "title": "¡A SACO! (cuando alguien cae)",
+   "body": "Si un sherpa cae, queda COLGADO de la cuerda sujetándola con las dos manos: machacad la tecla de esfuerzo LOS DOS a la vez. El medidor junto al colgado debe superar la raya para trepar; si no llega, se desliza y gasta la cuerda. Si la cuerda se agota… suelta y cae. Repartir el esfuerzo hace el rescate fácil.",
+   "keys": "A SACO: machaca C (J1) y N (J2) LOS DOS a la vez hasta pasar la raya del medidor"
+  }
  }
 }

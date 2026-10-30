@@ -9,6 +9,7 @@ import { SherpaAudio } from "./presentation/audio";
 import { SherpaHud, type HudStartChoice } from "./presentation/hud";
 import { InputManager } from "./input/input";
 import { SherpasMatch } from "./gameplay/match";
+import { browserStore, markOnboardingSeen, shouldShowOnboarding } from "./gameplay/onboarding";
 import { WallGenerator } from "./world/wallGenerator";
 import { loadAscent, clearAscent, type SavedAscent } from "./world/camps";
 import { v3, type V3 } from "../physics/pbd/math";
@@ -392,15 +393,32 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
       );
       saveCampLabel = gen.layout.campZones[save.campIndex]?.campId ?? null;
     }
+    // T59 ONBOARDING: la PRIMERA vez que se va a jugar, el botón GO abre el
+    // tutorial antes de la partida; a partir de ahí entra directo. El botón
+    // "¿Cómo se juega?" del menú lo reabre (y también marca visto: lo ha
+    // leído). Sin almacén disponible (modo privado) se muestra igualmente.
+    const store = browserStore();
+    const startAscent = (choice: HudStartChoice): void => {
+      void begin(choice).catch((err) => {
+        console.error("fallo al iniciar la ascensión:", err instanceof Error ? err.stack : err);
+        hud.subtitle(`Error: ${String(err instanceof Error ? err.message : err)}`, 8);
+      });
+    };
     hud.showStart({
       difficulties: Object.keys(data.difficulty.presets),
       defaultPreset: data.difficulty.defaultPreset,
       seed: Math.floor(Math.random() * 1000000),
       saveCampLabel,
-      onGo: (choice) => { void begin(choice).catch((err) => {
-        console.error("fallo al iniciar la ascensión:", err instanceof Error ? err.stack : err);
-        hud.subtitle(`Error: ${String(err instanceof Error ? err.message : err)}`, 8);
-      }); },
+      onHowToDone: () => markOnboardingSeen(store),
+      onGo: (choice) => {
+        if (shouldShowOnboarding(store)) {
+          hud.showOnboarding({
+            onDone: () => { markOnboardingSeen(store); startAscent(choice); },
+          });
+          return;
+        }
+        startAscent(choice);
+      },
     });
   };
 
