@@ -50,6 +50,10 @@ export interface BaseCampCfg {
    *  de la pared (donde se aprecia el corte y donde cae el ricachón) y muere;
    *  por encima la pared sigue limpia (menos carga visual y de vértices). */
   spurMaxTopM: number;
+  /** ABOMBADERA frontal del faldón hacia la cámara (m): en la BASE y cerca del
+   *  muro el espolón sale en -z (falda de roca que envuelve el canto visto
+   *  desde el juego) y muere con la altura y la distancia. 0 = plano (antes). */
+  spurBulgeZM: number;
   /** amplitud del relieve del pedriz (m). */
   screeAmpM: number;
   /** paso de la retícula del pedriz (m). */
@@ -80,6 +84,7 @@ export const BASE_CAMP_DEFAULTS: BaseCampCfg = {
   spurStepY: 0.55,
   spurCols: 22,
   spurMaxTopM: 40,
+  spurBulgeZM: 1.4,
   screeAmpM: 0.17,
   screeStepM: 0.55,
   screeHalfXM: 13.5,
@@ -108,6 +113,7 @@ export function resolveBaseCampCfg(raw: unknown): BaseCampCfg {
     spurStepY: num(r?.spurStepY, d.spurStepY, 0.2, 1.5),
     spurCols: Math.round(num(r?.spurCols, d.spurCols, 6, 40)),
     spurMaxTopM: num(r?.spurMaxTopM, d.spurMaxTopM, 6, 200),
+    spurBulgeZM: num(r?.spurBulgeZM, d.spurBulgeZM, 0, 4),
     screeAmpM: num(r?.screeAmpM, d.screeAmpM, 0, 0.5),
     screeStepM: num(r?.screeStepM, d.screeStepM, 0.25, 1.5),
     screeHalfXM: num(r?.screeHalfXM, d.screeHalfXM, 6, 24),
@@ -175,6 +181,9 @@ export interface GeomData {
   positions: Float32Array;
   normals: Float32Array;
   colors: Float32Array;
+  /** T56: UVs de mundo (u=x·0.45, v=(y·0.7+z·0.7)·0.45) para la textura de
+   *  pedriza del material base — clastos cada ~2.2 m, sin estiramientos. */
+  uvs: Float32Array;
   indices: Uint32Array;
   tris: number;
   verts: number;
@@ -209,6 +218,7 @@ export function buildSpurGeometry(opts: SpurOpts): GeomData {
 
   // 1ª pasada: vértices por columna (filas desde ySink hasta yTop(u), paso fijo)
   const pos: number[] = [];
+  const uvs: number[] = [];
   const colFirst: number[] = []; // índice del PRIMER vértice de cada columna
   const colRows: number[] = []; // nº de filas de cada columna
   const dy = cfg.spurStepY;
@@ -223,8 +233,13 @@ export function buildSpurGeometry(opts: SpurOpts): GeomData {
       // cara: pegada al muro en u=0 (cubre el relieve del borde), retrocede con u
       const back = u * cfg.spurSlopeBackM * smooth(0.08, 0.6, u / span);
       const rough = (fbm(x * 0.9, yy * 0.9, seedS ^ 0x2b1d) - 0.5) * 2 * cfg.spurRoughM * Math.min(1, u * 2.2 + 0.35);
-      const z = zFace - 0.17 + back + rough;
+      // ABOMBADERA hacia la cámara (falda del espolón): nula en la costura
+      // (u≤0.35: la prueba de la junta enterrada sigue viva), MÁXIMA alrededor
+      // de u≈1.1..2.1 y solo en la BASE (muere con la altura a ~14 m)
+      const bulge = cfg.spurBulgeZM * smooth(0.35, 1.1, u) * smooth(2.9, 0.9, u) * smooth(14, 0.6, yy);
+      const z = zFace - 0.17 + back + rough - bulge;
       pos.push(x, yy, z);
+      uvs.push(x * 0.45, (yy * 0.7 + z * 0.7) * 0.45);
       rows++;
     }
     colRows.push(rows);
@@ -287,7 +302,7 @@ export function buildSpurGeometry(opts: SpurOpts): GeomData {
     colors[v * 4 + 3] = 1;
   }
 
-  return finalizeGeom(pos, idx, colors);
+  return finalizeGeom(pos, uvs, idx, colors);
 }
 
 // ---------- PEDRIZ (suelo de piedra en la cota inferior) ----------
@@ -313,6 +328,7 @@ export function buildScreeGeometry(opts: ScreeOpts): GeomData {
   const nx = Math.max(4, Math.round((cfg.screeHalfXM * 2) / step));
   const nz = Math.max(4, Math.round((cfg.screeHalfZM * 2) / step));
   const pos: number[] = [];
+  const uvs: number[] = [];
   const cols: number[] = [];
   const seedS = cfg.seed;
   for (let j = 0; j <= nz; j++) {
@@ -341,6 +357,7 @@ export function buildScreeGeometry(opts: ScreeOpts): GeomData {
         h *= 0.1 + 0.9 * smooth(cabin.r * 0.55, cabin.r, dc);
       }
       pos.push(x, h, z);
+      uvs.push(x * 0.45, z * 0.45);
       cols.push(0);
     }
     void cols;
@@ -380,14 +397,15 @@ export function buildScreeGeometry(opts: ScreeOpts): GeomData {
     colors[v * 4 + 2] = Math.min(1.25, Math.max(0.25, b));
     colors[v * 4 + 3] = 1;
   }
-  return finalizeGeom(pos, idx, colors);
+  return finalizeGeom(pos, uvs, idx, colors);
 }
 
 // ---------- normales (acumuladas por cara, normalizadas) ----------
 
 /** Cierra la geometría: normales por acumulación de caras + recuento. */
-function finalizeGeom(pos: number[], idx: number[], colors: Float32Array): GeomData {
+function finalizeGeom(pos: number[], uvs: number[], idx: number[], colors: Float32Array): GeomData {
   const positions = new Float32Array(pos);
+  const uvArr = new Float32Array(uvs);
   const indices = new Uint32Array(idx);
   const normals = new Float32Array(positions.length);
   const tri = indices.length / 3;
@@ -415,7 +433,7 @@ function finalizeGeom(pos: number[], idx: number[], colors: Float32Array): GeomD
     normals[v + 2] /= l;
   }
   return {
-    positions, normals, colors, indices,
+    positions, normals, colors, uvs: uvArr, indices,
     tris: tri,
     verts: positions.length / 3,
   };

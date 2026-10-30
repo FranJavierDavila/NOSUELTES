@@ -63,7 +63,7 @@ import {
   type RockwallAnchorIn, type RockwallFeature, type RockwallRegionResult, type RockwallStyle,
 } from "../world/rockwall"; // T43: módulo del jugador (diaclasas) + worker
 import { makeRng } from "../core/rng";
-import { generateStrataColor } from "../world/strataTexture"; // T44: estratos superpuestos
+import { generatePedrizaColor, generateStrataColor } from "../world/strataTexture"; // T44 estratos + T56 pedriza
 import { resolvePlantasCfg, selectPlantSpots, stampTufts, type PlantasCfg } from "../world/plantas"; // T48: vegetación en hundimientos
 import { TriPlanarStrataPlugin } from "./wallStrataMaterial"; // T44: mapeado triplanar
 import { PlantWindPlugin, resolvePlantWindCfg } from "./plantWindMaterial"; // T55: viento en la vegetación
@@ -103,6 +103,7 @@ function mergeGeoms(list: GeomData[]): GeomData {
   const positions = new Float32Array(verts * 3);
   const normals = new Float32Array(verts * 3);
   const colors = new Float32Array(verts * 4);
+  const uvs = new Float32Array(verts * 2);
   const indices = new Uint32Array(tris * 3);
   let vo = 0;
   let io = 0;
@@ -110,11 +111,12 @@ function mergeGeoms(list: GeomData[]): GeomData {
     positions.set(g.positions, vo * 3);
     normals.set(g.normals, vo * 3);
     colors.set(g.colors, vo * 4);
+    uvs.set(g.uvs, vo * 2);
     for (let i = 0; i < g.indices.length; i++) indices[io + i] = g.indices[i]! + vo;
     vo += g.verts;
     io += g.indices.length;
   }
-  return { positions, normals, colors, indices, tris, verts };
+  return { positions, normals, colors, uvs, indices, tris, verts };
 }
 
 export class SherpaScene {
@@ -307,7 +309,7 @@ export class SherpaScene {
   private baseRockMat: PBRMaterial | null = null; // material COMPARTIDO pedriz+faldones
   private flagWind: PlantWindPlugin | null = null; // viento propio de los banderines
   private flagMat: PBRMaterial | null = null;
-  private baseCampStats = { enabled: false, screeTris: 0, spurTris: 0, rocks: 0, cabinPieces: 0, flags: 0, smoke: false };
+  private baseCampStats = { enabled: false, screeTris: 0, spurTris: 0, rocks: 0, cabinPieces: 0, flags: 0, smoke: false, pedrizaTex: false };
   /** T55 SONDA E2E: nº de chunks de roca con tinte por vértice aplicado. */
   rockTintChunks = 0;
   /** materiales PBR de roca creados (sonda E2E: material/triplanar/normales). */
@@ -856,10 +858,13 @@ export class SherpaScene {
 
   // ---------- T56 BASE CAMP: pedriz + faldones + cabaña sherpa ----------
 
-  /** Posición de la cabaña (mundo): a la derecha de la base, sobre el pedriz,
-   *  fuera de la franja de caída (los cuerpos caen en z≈−1.1, x≤±2.7) y con
-   *  giro para que la puerta y los banderines miren a la cámara. */
-  private static readonly CABIN_POS = { x: 2.15, z: 1.8, ry: -0.52 };
+  // LADO VISIBLE: la cámara del juego vive en z NEGATIVO mirando a +z — la
+  // cabaña tiene que estar en -z (delante del muro, junto a la zona de caída)
+  // o quedaría DETRÁS de la pared (invisible; bug visto en la E2E T56).
+  // (2.9, -3.6): en pantalla cae a la derecha del centro (no bajo el minimapa),
+  // fuera de la línea de caída (el ricachón aterriza en x≈0.8..1.7, z≈-1.2) y
+  // de la abombadera del faldón (x≥3.2). Giro 3.49 rad: puerta a la cámara.
+  private static readonly CABIN_POS = { x: 2.9, z: -3.6, ry: 3.49 };
 
   /** VertexData de un GeomData puro (baseCamp.ts) → malla de Babylon. */
   private geomToMesh(name: string, g: GeomData): Mesh {
@@ -868,6 +873,7 @@ export class SherpaScene {
     vd.positions = g.positions;
     vd.normals = g.normals;
     vd.colors = g.colors;
+    vd.uvs = g.uvs; // T56: textura de pedriza (clastos) necesita UVs
     vd.indices = g.indices;
     vd.applyToMesh(m);
     m.isPickable = false;
@@ -880,6 +886,7 @@ export class SherpaScene {
   private buildBaseCamp(): void {
     const cfg = resolveBaseCampCfg((this.reliefRaw as { baseCamp?: unknown } | null)?.baseCamp);
     this.baseCampCfg = cfg;
+    this.baseCampStats.enabled = cfg.enabled; // sonda E2E: refleja el estado REAL
     if (!cfg.enabled) return;
     const baseMat = this.ensureBaseRockMaterial();
     const faceZ = this.reliefFaceZ; // espeja wall.zFront (−0.3)
@@ -955,15 +962,28 @@ export class SherpaScene {
   private ensureBaseRockMaterial(): PBRMaterial {
     if (this.baseRockMat) return this.baseRockMat;
     const m = new PBRMaterial("baseRockM", this.scene);
-    m.albedoColor = new Color3(0.78, 0.74, 0.68); // piedra del pedriz (la multiplican los vertex colors)
+    // T56 — TEXTURA DE PEDRIZA PROPIA (lección de la E2E: el albedoColor liso
+    // + la capa de estratos ±15% era INVISIBLE a media distancia; la piedra
+    // necesita CONTRASTE propio como la pared): clastos tileable determinista
+    // con UVs de mundo (tile ≈ 2.2 m). El tono lo PORTA la textura.
+    const ped = RawTexture.CreateRGBATexture(
+      generatePedrizaColor(256, (ROCKWALL_SEED ^ 0x70ca) >>> 0), 256, 256, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE,
+    );
+    ped.wrapU = Texture.WRAP_ADDRESSMODE;
+    ped.wrapV = Texture.WRAP_ADDRESSMODE;
+    ped.anisotropicFilteringLevel = 4;
+    m.albedoTexture = ped;
+    m.albedoColor = new Color3(0.98, 0.96, 0.92); // casi blanco: manda la textura
+    this.baseCampStats.pedrizaTex = true;
     m.metallic = 0;
     m.roughness = 0.95;
     m.backFaceCulling = false; // los faldones se ven por detrás al orbitar
     const strata = this.ensureStrataTexture();
     if (strata) {
       const plugin = new TriPlanarStrataPlugin(m);
-      // escala más FINA que la pared (0.6): aquí es grava/derrubio, no estrato
-      plugin.configure(strata, (this.strataCfg?.scale ?? 0.6) * 1.9, (this.strataCfg?.strength ?? 0.5) * 0.7, 0.2);
+      // capa MACRO de estratos encima (misma familia que la pared: continuidad
+      // de tono en espacio mundo) — ahora SÍ se nota sobre la pedriza
+      plugin.configure(strata, (this.strataCfg?.scale ?? 0.6) * 1.55, (this.strataCfg?.strength ?? 0.5) * 0.9, 0.24);
     }
     this.baseRockMat = m;
     return m;
@@ -1148,7 +1168,7 @@ export class SherpaScene {
   }
 
   /** T56 SONDA E2E: estado del base camp (pedriz/faldones/cabaña/banderines). */
-  getBaseCampInfo(): { enabled: boolean; screeTris: number; spurTris: number; rocks: number; cabinPieces: number; flags: number; smoke: boolean; flagWindActive: boolean } {
+  getBaseCampInfo(): { enabled: boolean; screeTris: number; spurTris: number; rocks: number; cabinPieces: number; flags: number; smoke: boolean; pedrizaTex: boolean; flagWindActive: boolean } {
     return { ...this.baseCampStats, flagWindActive: this.flagWind?.debugInfo().active ?? false };
   }
 

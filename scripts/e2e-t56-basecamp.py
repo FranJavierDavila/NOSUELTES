@@ -116,15 +116,16 @@ with sync_playwright() as pw:
     check("cabaña con piezas", bool(bc) and bc.get("cabinPieces", 0) >= 14, f"(piezas={bc and bc.get('cabinPieces')})")
     check("banderines de rezo (9)", bool(bc) and bc.get("flags", 0) == 9)
     check("humo de chimenea activo", bool(bc) and bc.get("smoke") is True)
+    check("textura de pedriza activa", bool(bc) and bc.get("pedrizaTex") is True)
     check("viento en banderines activo", bool(bc) and bc.get("flagWindActive") is True)
 
     # ---- 2. CAPTURAS: base completa + cierres ----
     print("== CAPTURAS ==")
     ok_general = screenshot_until_scene(page, f"{OUT}/t56-0-base-camp.png")
     check("frame presentado en captura general", ok_general)
-    crop_around(page, f"{OUT}/t56-0-base-camp.png", f"{OUT}/t56-1-cabana.png", (2.15, 1.15, 1.9), box=(420, 520), scale=2.6)
-    crop_around(page, f"{OUT}/t56-0-base-camp.png", f"{OUT}/t56-2-faldon-der.png", (4.6, 3.2, -0.75), box=(460, 620), scale=2.2)
-    crop_around(page, f"{OUT}/t56-0-base-camp.png", f"{OUT}/t56-3-faldon-izq.png", (-4.6, 3.2, -0.75), box=(460, 620), scale=2.2)
+    crop_around(page, f"{OUT}/t56-0-base-camp.png", f"{OUT}/t56-1-cabana.png", (2.9, 1.0, -3.6), box=(420, 520), scale=2.6)
+    crop_around(page, f"{OUT}/t56-0-base-camp.png", f"{OUT}/t56-2-faldon-der.png", (3.9, 1.8, -1.2), box=(460, 620), scale=2.2)
+    crop_around(page, f"{OUT}/t56-0-base-camp.png", f"{OUT}/t56-3-faldon-izq.png", (-3.9, 1.8, -1.2), box=(460, 620), scale=2.2)
 
     # ---- 3. CAÍDA REALISTA del ricachón ----
     print("== CAÍDA DEL RICACHÓN ==")

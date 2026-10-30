@@ -135,3 +135,55 @@ export function generateStrataColor(sizePx: number, seed: number, opts?: Partial
   }
   return px;
 }
+
+/**
+ * T56 — TEXTURA DE PEDRIZA (suelo de piedra del base camp): grava/clastos
+ * tileable y determinista. A diferencia de los estratos (una CAPA tonal sobre
+ * un colorMap ya existente), esta textura PORTA el tono: luma media ≈ 0,55 y
+ * contraste propio (clastos claros con borde oscuro, arenas, poros) — el
+ * material del pedriz la usa como albedoTexture con UVs de mundo.
+ * Campo: moteado multi-octava + clastos (manchas claras con aro oscuro en 3
+ * escalas) + poros. Todo con ruido PERIÓDICO → tileable exacto (u≡u+1).
+ */
+export function generatePedrizaColor(sizePx: number, seed: number): Uint8Array {
+  const size = Math.max(32, Math.round(sizePx));
+  const px = new Uint8Array(size * size * 4);
+  for (let j = 0; j < size; j++) {
+    const v = j / size;
+    for (let i = 0; i < size; i++) {
+      const u = i / size;
+      const k4 = (j * size + i) * 4;
+      // base de arena parda (luma ~0.55) con variación macro cálida/fría
+      const macro = (fbmP(u, v, 4, 3, seed + 5) - 0.5) * 2;
+      let R = 0.60 + macro * 0.05;
+      let G = 0.57 + macro * 0.03;
+      let B = 0.52 - macro * 0.03;
+      // CLASTOS en 3 escalas: mancha clara con aro oscuro (piedra rodada)
+      const scales: [number, number][] = [[7, 0.10], [15, 0.055], [33, 0.03]];
+      for (const [period, amp] of scales) {
+        const c = fbmP(u, v, period, 2, seed + period * 13);
+        const edge = Math.abs(c - 0.5);
+        if (edge < amp) {
+          const t = edge / amp; // 0 centro del clasto → 1 borde
+          const lift = (1 - t) * 0.16;
+          R += lift * 1.0; G += lift * 0.92; B += lift * 0.78;
+          const rim = Math.max(0, 1 - Math.abs(t - 0.82) / 0.18) * 0.20;
+          R -= rim; G -= rim * 1.05; B -= rim * 1.1;
+        }
+      }
+      // grano fino + poros
+      const grain = (fbmP(u, v, 56, 2, seed + 97) - 0.5) * 0.13;
+      R += grain; G += grain; B += grain * 0.9;
+      const pore = pnoise(u, v, 72, seed + 113);
+      if (pore > 0.86) {
+        const p = (pore - 0.86) / 0.14;
+        R -= p * 0.16; G -= p * 0.17; B -= p * 0.17;
+      }
+      px[k4] = Math.max(0, Math.min(255, Math.round(R * 255)));
+      px[k4 + 1] = Math.max(0, Math.min(255, Math.round(G * 255)));
+      px[k4 + 2] = Math.max(0, Math.min(255, Math.round(B * 255)));
+      px[k4 + 3] = 255;
+    }
+  }
+  return px;
+}

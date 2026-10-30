@@ -5,8 +5,8 @@
     "": {
       "name": "nextjs_tailwind_shadcn_ts",
       "dependencies": {
-        "@babylonjs/core": "^9.32.0",
-        "@babylonjs/loaders": "^9.32.0",
+        "@babylonjs/core": "9.32.0",
+        "@babylonjs/loaders": "9.32.0",
         "@dnd-kit/core": "^6.3.1",
         "@dnd-kit/sortable": "^10.0.0",
         "@dnd-kit/utilities": "^3.2.2",
@@ -76,6 +76,7 @@
         "zustand": "^5.0.6",
       },
       "devDependencies": {
+        "@babylonjs/serializers": "9.32.0",
         "@tailwindcss/postcss": "^4",
         "@types/react": "^19",
         "@types/react-dom": "^19",
@@ -129,7 +130,9 @@
 
     "@babylonjs/core": ["@babylonjs/core@9.32.0", "", {}, "sha512-mHBsyKJuQHbs97Rb/1qxMRg6Ru79+0BjLhGLTa34s6U/fkBCtOh+xKTQDqFpFtPqgBw9TLFcIEvFHy01vnJxwA=="],
 
-    "@babylonjs/loaders": ["@babylonjs/loaders@9.33.1", "", { "peerDependencies": { "@babylonjs/core": "^9.0.0", "babylonjs-gltf2interface": "^9.0.0" } }, "sha512-FE3scCE1CaBg8e6a62CJCQA+X/sD13ILihy60PyOjapy0HSbGY3VZ1NQybnB+jiOUNM7+UVygBQKQEpCwHsrqw=="],
+    "@babylonjs/loaders": ["@babylonjs/loaders@9.32.0", "", { "peerDependencies": { "@babylonjs/core": "^9.0.0", "babylonjs-gltf2interface": "^9.0.0" } }, "sha512-pHWbOaR34riRNxX0rffPpVcbaAoEXmjtS00A4RO43zoz4EPVg4mESX0EqzaA8yl7FbVk+aYWwyj30uR1OWrl1Q=="],
+
+    "@babylonjs/serializers": ["@babylonjs/serializers@9.32.0", "", { "peerDependencies": { "@babylonjs/core": "^9.0.0", "babylonjs-gltf2interface": "^9.0.0" } }, "sha512-zvAT6lpUf4uQKvTOMXnizFfiP9f1kGcDs2r/aAy8p7DWuixMrK4AqMWP7x7WWzGIgSinU2qAiuQdoVjTz18nag=="],
 
     "@codemirror/autocomplete": ["@codemirror/autocomplete@6.20.0", "https://registry.npmjs.com/@codemirror/autocomplete/-/autocomplete-6.20.0.tgz", { "dependencies": { "@codemirror/language": "^6.0.0", "@codemirror/state": "^6.0.0", "@codemirror/view": "^6.17.0", "@lezer/common": "^1.0.0" } }, "sha512-bOwvTOIJcG5FVo5gUUupiwYh8MioPLQ4UcqbcRf7UQ98X90tCa9E1kZ3Z7tqwpZxYyOvh1YTYbmZE9RTfTp5hg=="],
 

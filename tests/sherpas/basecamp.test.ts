@@ -54,6 +54,9 @@ describe("T56 — faldones (continuidad lateral)", () => {
         expect(l).toBeGreaterThan(0.9);
         expect(l).toBeLessThan(1.1);
       }
+      // T56: UVs de mundo para la textura de pedriza (finas y en rango)
+      expect(g.uvs.length).toBe(g.verts * 2);
+      for (const uv of g.uvs) expect(Number.isFinite(uv)).toBe(true);
     }
   });
 
@@ -109,6 +112,29 @@ describe("T56 — faldones (continuidad lateral)", () => {
     for (let v = 0; v < l.verts; v++) minL = Math.min(minL, l.positions[v * 3]!);
     for (let v = 0; v < r.verts; v++) maxR = Math.max(maxR, r.positions[v * 3]!);
     expect(minL).toBeCloseTo(-maxR, 3);
+  });
+
+  it("ABOMBADERA visible: la base del faldón sale hacia la cámara (z<ZFACE) y muere con la altura", () => {
+    const g = buildSpurGeometry({ dir: 1, xEdge: WALL_EDGE, zFace: ZFACE, topY: 27, cfg });
+    let minZBase = Infinity;
+    let minZAlto = Infinity;
+    for (let v = 0; v < g.verts; v++) {
+      const x = g.positions[v * 3]!;
+      const y = g.positions[v * 3 + 1]!;
+      const z = g.positions[v * 3 + 2]!;
+      const u = x - (WALL_EDGE - cfg.spurOverlapM);
+      // zona de falda (u 0.8..2.2): la roca sale en -z (hacia la cámara)
+      if (u > 0.8 && u < 2.2 && y < 2.5) {
+        minZBase = Math.min(minZBase, z);
+      }
+      // en alto (y>12) el faldón vuelve a la cara: sin abombadera
+      if (u < 2.2 && y > 12) {
+        minZAlto = Math.min(minZAlto, z);
+      }
+    }
+    expect(Number.isFinite(minZBase)).toBe(true);
+    expect(minZBase).toBeLessThan(ZFACE - 0.9); // falda NOTABLE delante de la cara
+    expect(minZAlto).toBeGreaterThan(ZFACE - 0.8); // arriba: pegado a la cara
   });
 });
 
