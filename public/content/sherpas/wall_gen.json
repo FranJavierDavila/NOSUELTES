@@ -305,11 +305,11 @@
     "strataOverlay": {
       "enabled": true,
       "sizePx": 512,
-      "scale": 0.72,
-      "strength": 0.5,
-      "bands": 7.0,
-      "warp": 0.55,
-      "seam": 0.24
+      "scale": 0.6,
+      "strength": 0.8,
+      "bands": 12.0,
+      "warp": 0.7,
+      "seam": 0.2
     },
     "vegetacion": {
       "enabled": true,

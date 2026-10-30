@@ -295,14 +295,20 @@ describe("climber.json", () => {
   const raw = JSON.parse(readFileSync(join(__dirname, "../../public/content/sherpas/climber.json"), "utf8")) as {
     enabled: boolean; model: string; turnDeg?: number; tint: string[];
   };
-  it("habilitado con modelo y tinte de 2 jugadores", () => {
-    expect(raw.enabled).toBe(true);
-    // T52: el jugador subió un Spider-Man riggeado (saneado a /models/spiderman.glb)
-    expect(raw.model).toBe("/models/spiderman.glb");
+  it("T53: skinned RETIRADO — escalador PROCEDURAL (cápsulas de física)", () => {
+    // El mesh skinneado rompía la malla a la altura de la cadera y perdía la
+    // referencia de las extremidades (deriva piel↔partículas: se pinchaba
+    // donde no hay nada). Vuelven las cápsulas procedurales hasta tener el
+    // personaje por PIEZAS (plantilla GLB del procedural).
+    expect(raw.enabled).toBe(false);
+    // El campo model queda como referencia del último asset skinned (re-activable).
+    expect(typeof raw.model).toBe("string");
+    expect(raw.model).toMatch(/^\/models\/.+\.glb$/);
     expect(raw.tint).toHaveLength(2);
     for (const t of raw.tint) expect(t).toMatch(/^#[0-9a-fA-F]{6}$/);
   });
-  it("el GLB saneado existe y es un GLB con skin (skins ≥ 1)", () => {
+  it("si el modelo skinned se re-activa, el GLB existe con skin y sin clips", () => {
+    if (!raw.enabled) return; // T53: retirado — el escalador es el procedural
     const p = join(__dirname, "../../public", raw.model);
     const buf = readFileSync(p);
     expect(buf.readUInt32LE(0)).toBe(0x46546C67); // "glTF"

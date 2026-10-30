@@ -51,14 +51,19 @@ const sstep = (a: number, b: number, x: number): number => {
   return t * t * (3 - 2 * t);
 };
 
-/** Paleta de bandas (0..1, centrada ~0,5: ×2 en el shader ≈ neutro). */
+/** Paleta de bandas (0..1). T53 — ACLARADA y con CONTRASTE por estrato
+ *  (petición del jugador: "tonos diferenciados y más claros según estratificado"):
+ *  media de luma ≈ 0,61 → el ×2 del shader ACLARA la roca, y el ciclo alterna
+ *  claro/oscuro con saltos de luma > 10/255 entre bandas contiguas (franjas
+ *  legibles sin dejar de ser piedra). El ORDEN del array ES el ciclo: cada
+ *  banda toma el siguiente tono (dos contiguas jamás comparten tono). */
 export const STRATA_PALETTE: [number, number, number][] = [
-  [0.585, 0.545, 0.478], // arena
-  [0.478, 0.455, 0.412], // granito
-  [0.549, 0.494, 0.416], // ocre
-  [0.612, 0.580, 0.522], // crema
-  [0.404, 0.376, 0.337], // pardo
-  [0.478, 0.506, 0.522], // pizarra (matiz frío)
+  [0.73, 0.70, 0.63], // crema (clara cálida)
+  [0.55, 0.52, 0.47], // pardo (oscura)
+  [0.72, 0.66, 0.55], // arena (clara dorada)
+  [0.58, 0.62, 0.65], // pizarra (fría)
+  [0.64, 0.55, 0.40], // ocre (media saturada)
+  [0.62, 0.60, 0.55], // granito (media neutra)
 ];
 
 export interface StrataOptions {

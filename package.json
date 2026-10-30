@@ -84,6 +84,7 @@
     "zustand": "^5.0.6"
   },
   "devDependencies": {
+    "@babylonjs/serializers": "^9.32.0",
     "@tailwindcss/postcss": "^4",
     "@types/react": "^19",
     "@types/react-dom": "^19",
