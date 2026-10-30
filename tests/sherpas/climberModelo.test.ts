@@ -293,25 +293,29 @@ describe("bodyFacing", () => {
 // ---------- datos ----------
 describe("climber.json", () => {
   const raw = JSON.parse(readFileSync(join(__dirname, "../../public/content/sherpas/climber.json"), "utf8")) as {
-    enabled: boolean; model: string; turnDeg?: number; tint: string[];
+    enabled: boolean; mode?: string; model: string; turnDeg?: number; tint: string[];
   };
-  it("T53: skinned RETIRADO — escalador PROCEDURAL (cápsulas de física)", () => {
-    // El mesh skinneado rompía la malla a la altura de la cadera y perdía la
-    // referencia de las extremidades (deriva piel↔partículas: se pinchaba
-    // donde no hay nada). Vuelven las cápsulas procedurales hasta tener el
-    // personaje por PIEZAS (plantilla GLB del procedural).
-    expect(raw.enabled).toBe(false);
-    // El campo model queda como referencia del último asset skinned (re-activable).
+  it("T57: SHERPA POR PIEZAS ACTIVO — mode 'piezas' con el GLB del jugador", () => {
+    // Historia: el skinned (T49) rompía la malla y desfasaba el picking (T53 lo
+    // retiró); con la plantilla Opción B el jugador modeló sherpa.glb y el
+    // adaptador "puppet" (T57) lo posa rígidamente con la física.
+    expect(raw.enabled).toBe(true);
+    expect(raw.mode).toBe("piezas");
     expect(typeof raw.model).toBe("string");
     expect(raw.model).toMatch(/^\/models\/.+\.glb$/);
     expect(raw.tint).toHaveLength(2);
     for (const t of raw.tint) expect(t).toMatch(/^#[0-9a-fA-F]{6}$/);
   });
-  it("si el modelo skinned se re-activa, el GLB existe con skin y sin clips", () => {
-    if (!raw.enabled) return; // T53: retirado — el escalador es el procedural
+  it("el GLB activo existe y es un glTF binario válido", () => {
     const p = join(__dirname, "../../public", raw.model);
     const buf = readFileSync(p);
     expect(buf.readUInt32LE(0)).toBe(0x46546C67); // "glTF"
+    void buf;
+  });
+  it("en mode 'skin' el GLB tendría skin y sin clips (T49, re-activable)", () => {
+    if (raw.mode !== "skin") return; // T57: activo el modo piezas
+    const p = join(__dirname, "../../public", raw.model);
+    const buf = readFileSync(p);
     const jsLen = buf.readUInt32LE(12);
     const js = JSON.parse(buf.slice(20, 20 + jsLen).toString("utf8"));
     expect((js.skins ?? []).length).toBeGreaterThanOrEqual(1);

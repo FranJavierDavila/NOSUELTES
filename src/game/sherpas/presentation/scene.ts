@@ -70,6 +70,7 @@ import { PlantWindPlugin, resolvePlantWindCfg } from "./plantWindMaterial"; // T
 import { computeRockTint, resolveRockTintCfg, type RockTintCfg } from "../world/rockTint"; // T55: tinte de roca por vértice
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer"; // T55: atributo plantBend
 import { SkinnedClimberFactory, type ClimberInstance } from "./skinnedClimber"; // T49: modelo GLB de los escaladores
+import { SherpaPuppetFactory, type SherpaPuppetInstance } from "./sherpaPuppetFactory"; // T57: Sherpa.glb POR PIEZAS (marioneta)
 import {
   buildScreeGeometry, buildSpurGeometry, resolveBaseCampCfg, scatterRocks,
   type BaseCampCfg, type GeomData,
@@ -166,6 +167,11 @@ export class SherpaScene {
   private climberState: "off" | "loading" | "ready" | "error" = "off";
   private climberError: string | null = null;
   private skinned: (ClimberInstance | null)[] = [null, null];
+  // T57 — SHERPA.GLB POR PIEZAS (mode "piezas"): marioneta rígida poseída por
+  // las 15 partículas (sherpaPuppet/sherpaPuppetFactory). Mismo ciclo de carga
+  // tardía e intercambio en caliente que el skinned; si el .glb falla, cápsulas.
+  private puppetFactory: SherpaPuppetFactory | null = null;
+  private puppet: (SherpaPuppetInstance | null)[] = [null, null];
   private climberRig: (SherpaSpawnRig | null)[] = [null, null];
   private climberPendingSwap: [boolean, boolean] = [false, false];
   private richVisual: {
@@ -465,14 +471,19 @@ export class SherpaScene {
       this.streaks.push(m);
       this.streakState.push({ x: 0, y: 0, z: 0, v: 6 });
     }
-    // T49: carga del modelo de escaladores en SEGUNDO PLANO (el menú da margen).
+    // T49/T57: carga del modelo de escaladores en SEGUNDO PLANO (el menú da margen).
+    // mode "piezas" (T57) carga la marioneta; "skin"/ausente, el skinned T49.
     if (this.climberCfg?.enabled) {
       this.climberState = "loading";
       const cfg = this.climberCfg;
-      SkinnedClimberFactory.load(this.scene, cfg.model, { turnDeg: cfg.turnDeg ?? 0 })
+      const loader: Promise<SkinnedClimberFactory | SherpaPuppetFactory> = cfg.mode === "piezas"
+        ? SherpaPuppetFactory.load(this.scene, cfg.model)
+        : SkinnedClimberFactory.load(this.scene, cfg.model, { turnDeg: cfg.turnDeg ?? 0 });
+      loader
         .then((f) => {
           if (this.disposed) { f.disposeContainer(); return; }
-          this.climberFactory = f;
+          if (f instanceof SherpaPuppetFactory) this.puppetFactory = f;
+          else this.climberFactory = f;
           this.climberState = "ready";
           // los materiales del GLB llegan tras executeWhenReady: reactiva el
           // mecanismo de dirty para su primera compilación y lo vuelve a
@@ -485,12 +496,14 @@ export class SherpaScene {
           this.scene.onAfterRenderObservable.add(rearm);
           this.swapPendingToSkinned();
           // PRECALENTAMIENTO (lección T49): la primera partida compilaba los
-          // shaders del pipeline skinneado JUSTO al hacer spawn — un tirón de
+          // shaders del pipeline del modelo JUSTO al hacer spawn — un tirón de
           // cientos de ms en software-GL que se comía las ventanas temporales
           // de la E2E (T45: 23° vs 29°). Una instancia desechable, fuera de
           // cámara pero SIEMPRE activa (alwaysSelectAsActiveMesh), fuerza la
           // compilación durante el menú; se retira a los 3 renders.
-          const warm = f.instantiate(this.scene, "#ffffff", () => { }, () => { });
+          const warm = f instanceof SherpaPuppetFactory
+            ? f.instantiate("#ffffff", () => { })
+            : f.instantiate(this.scene, "#ffffff", () => { }, () => { });
           if (warm) {
             for (const r of warm.rootNodes) r.position.set(0, -300, 0);
             let renders = 0;
@@ -1612,6 +1625,26 @@ export class SherpaScene {
     return out;
   }
 
+  /** T57 SONDA E2E: piezas del puppet por jugador (mundo, m) + nº mallas.
+   *  La E2E cruza estas posiciones con las partículas de física: "lo visible
+   *  ES la física" (pivote de cada pieza = articulación proximal). */
+  puppetDebug(): Record<string, unknown> | null {
+    if (!this.puppet[0] && !this.puppet[1]) return null;
+    const out: Record<string, unknown> = {};
+    const r3 = (n: number): number => Math.round(n * 1000) / 1000;
+    for (const p of [0, 1] as const) {
+      const inst = this.puppet[p];
+      if (!inst) { out[`p${p}`] = null; continue; }
+      const pieces: Record<string, number[]> = {};
+      for (const [name, node] of inst.pieceEntries()) {
+        const wp = node.getAbsolutePosition();
+        pieces[name] = [r3(wp.x), r3(wp.y), r3(wp.z)];
+      }
+      out[`p${p}`] = { pieces, meshes: inst.meshes.length };
+    }
+    return out;
+  }
+
   /** T55 SONDA E2E: estado del plugin de viento de la vegetación. */
   getPlantWindInfo(): { active: boolean; level: number; dir: number; breezeAmpM: number; swayFreq: number; pushM: number } | null {
     return this.plantWind?.debugInfo() ?? null;
@@ -1833,10 +1866,10 @@ export class SherpaScene {
   spawnSherpa(player: 0 | 1, rig: SherpaSpawnRig): void {
     this.despawnSherpa(player);
     this.climberRig[player] = rig; // T49: referencia para el intercambio en caliente
-    // T49: si el modelo GLB ya está listo, el escalador nace con piel.
-    if (this.climberState === "ready" && this.trySpawnSkinned(player)) {
-      this.climberPendingSwap[player] = false;
-      return;
+    // T49/T57: si el modelo ya está listo, el escalador nace con piel o piezas.
+    if (this.climberState === "ready") {
+      if (this.trySpawnPuppet(player)) { this.climberPendingSwap[player] = false; return; }
+      if (this.trySpawnSkinned(player)) { this.climberPendingSwap[player] = false; return; }
     }
     this.climberPendingSwap[player] = this.climberState === "loading"; // llegará tarde: intercambiar
     const colors = SHERPA_COLORS[player];
@@ -1876,6 +1909,33 @@ export class SherpaScene {
     (this.rigVisuals[player] as RigVisual & { pack?: Mesh }).pack = pack;
   }
 
+  /** T57: instancia el GLB por piezas para un jugador. false si no hay modelo
+   *  o falla (y la escena se queda con cápsulas — o con el skinned si es modo
+   *  "skin" el activo). */
+  private trySpawnPuppet(player: 0 | 1): boolean {
+    const cfg = this.climberCfg;
+    if (!this.puppetFactory || !cfg) return false;
+    let inst: SherpaPuppetInstance | null = null;
+    try {
+      inst = this.puppetFactory.instantiate(
+        cfg.tint[player] ?? "#ffffff", // tinte de JUNTAS/CORREAS (el cuerpo conserva su arte)
+        (m) => this.castShadow(m),
+        (m) => { this.rockFill?.includedOnlyMeshes.push(m); }, // T44: relleno frío para el PBR
+      );
+    } catch (err) {
+      this.climberState = "error";
+      this.climberError = err instanceof Error ? err.message : String(err);
+      return false;
+    }
+    if (!inst) {
+      this.climberState = "error";
+      this.climberError = "faltan piezas en el .glb (plantilla Opción B)";
+      return false;
+    }
+    this.puppet[player] = inst;
+    return true;
+  }
+
   /** T49: instancia el GLB para un jugador. false si no hay modelo o falla
    *  (y la escena se queda con las cápsulas). */
   private trySpawnSkinned(player: 0 | 1): boolean {
@@ -1903,32 +1963,41 @@ export class SherpaScene {
     return true;
   }
 
-  /** T49: cuando el .glb llega tarde, sustituye las cápsulas vivas por piel. */
+  /** T49/T57: cuando el .glb llega tarde, sustituye las cápsulas vivas por el
+   *  modelo (spawnSherpa elige marioneta o skinned según lo que esté listo). */
   private swapPendingToSkinned(): void {
     for (const p of [0, 1] as const) {
       if (this.climberPendingSwap[p] && this.climberRig[p]) this.spawnSherpa(p, this.climberRig[p]!);
     }
   }
 
-  /** Sonda E2E (T49): estado del modelo de escaladores. */
+  /** Sonda E2E (T49/T57): estado del modelo de escaladores. */
   getClimberInfo(): {
-    state: string; error: string | null; turnDeg: number;
+    state: string; error: string | null; mode: string; turnDeg: number;
     mapped: number; missing: string[]; heightModel: number; meshes: number; skeletons: number;
+    pieces: number; missingPieces: string[]; mirrorStripped: boolean;
     players: [boolean, boolean];
   } {
     const d = this.climberFactory
       ? this.climberFactory.diagnostics
       : { mapped: 0, missing: [] as string[], heightModel: 0, meshes: 0, skeletons: 0 };
+    const dp = this.puppetFactory
+      ? this.puppetFactory.diagnostics
+      : { pieces: 0, missing: [] as string[], heightModel: 0, meshes: 0, mirrorStripped: false };
     return {
-      state: this.climberState, error: this.climberError, turnDeg: this.climberCfg?.turnDeg ?? 0,
+      state: this.climberState, error: this.climberError,
+      mode: this.climberCfg?.mode ?? "skin",
+      turnDeg: this.climberCfg?.turnDeg ?? 0,
       ...d,
-      players: [this.skinned[0] !== null, this.skinned[1] !== null],
+      pieces: dp.pieces, missingPieces: dp.missing, mirrorStripped: dp.mirrorStripped,
+      players: [this.skinned[0] !== null || this.puppet[0] !== null, this.skinned[1] !== null || this.puppet[1] !== null],
     };
   }
 
   despawnSherpa(player: 0 | 1): void {
     this.climberPendingSwap[player] = false; // T49: un escalador retirado no se intercambia solo
     if (this.skinned[player]) { this.skinned[player]!.dispose(); this.skinned[player] = null; }
+    if (this.puppet[player]) { this.puppet[player]!.dispose(); this.puppet[player] = null; } // T57
     const vis = this.rigVisuals[player];
     if (!vis) return;
     for (const b of vis.bones) b.mesh.dispose();
@@ -1941,7 +2010,15 @@ export class SherpaScene {
       const p = solver.getParticle(i);
       return vAdd(p.prev, vScale(vSub(p.pos, p.prev), alpha));
     };
-    // T49: con el modelo GLB la física POSEA el esqueleto (sin cápsulas).
+    // T49/T57: con un modelo GLB la física lo POSEA (sin cápsulas): marioneta
+    // por piezas (T57) o esqueleto skinneado (T49).
+    const pup = this.puppet[player];
+    if (pup) {
+      const parts: { x: number; y: number; z: number }[] = new Array(15);
+      for (let i = 0; i < 15; i++) parts[i] = lerp(i);
+      pup.pose(parts);
+      return;
+    }
     const skin = this.skinned[player];
     if (skin) {
       const parts: { x: number; y: number; z: number }[] = new Array(15);
@@ -3032,10 +3109,11 @@ export class SherpaScene {
 
   dispose(): void {
     this.disposed = true;
-    // T49: libera las instancias del modelo antes de tirar la escena.
+    // T49/T57: libera las instancias del modelo antes de tirar la escena.
     for (const p of [0, 1] as const) {
       this.climberPendingSwap[p] = false;
       if (this.skinned[p]) { this.skinned[p]!.dispose(); this.skinned[p] = null; }
+      if (this.puppet[p]) { this.puppet[p]!.dispose(); this.puppet[p] = null; }
     }
     this.destroyWorker();
     this.strataTex?.dispose(); // T44: capa de estratos compartida (los chunks no la tocan)

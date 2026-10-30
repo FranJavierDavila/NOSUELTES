@@ -1,9 +1,10 @@
 {
-  "enabled": false,
-  "model": "/models/spiderman.glb",
+  "enabled": true,
+  "mode": "piezas",
+  "model": "/models/sherpa.glb",
   "turnDeg": 0,
   "tint": [
-    "#ffffff",
-    "#9fc4ff"
+    "#e8542f",
+    "#2f9bd9"
   ]
 }

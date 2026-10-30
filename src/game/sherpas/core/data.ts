@@ -365,16 +365,23 @@ export type StringsData = Record<string, unknown>;
 /** T49 — MODELO GLB DE LOS ESCALADORES (petición del jugador: "cambiar el
  *  modelo de los escaladores por un mesh nuevo escalador.glb"). El esqueleto
  *  Mixamo se POSA desde la física cada frame (la física ES la animación);
- *  sin clip ni retargeting. Si el .glb no carga → cápsulas de siempre. */
+ *  sin clip ni retargeting. Si el .glb no carga → cápsulas de siempre.
+ *  T57 — mode "piezas": GLB por piezas (plantilla Opción B, jerarquía plana,
+ *  pivote en la articulación) poseído como marioneta RÍGIDA por las 15
+ *  partículas (sherpaPuppet.ts) — sin skinning. */
 export interface ClimberData {
   enabled: boolean;
+  /** "piezas" (marioneta rígida por piezas, T57) | "skin" (esqueleto Mixamo
+   *  skinneado, T49). Ausente = "skin" (compatibilidad con configs viejas). */
+  mode?: "piezas" | "skin";
   /** URL del .glb (servido desde /public/models). */
   model: string;
   /** Corrección de orientación del export sobre su eje vertical (grados):
    *  0 = mira a la pared · 180 = mira a cámara (se ajusta con la E2E). */
   turnDeg?: number;
-  /** Teñido del mono por jugador (multiplica la textura base PBR).
-   *  El primero en blanco deja el arte original del modelo. */
+  /** Teñido por jugador. En mode "skin" multiplica la textura del mono; en
+   *  "piezas" colorea las JUNTAS/CORREAS (el cuerpo texturizado conserva el
+   *  arte original del modelo). */
   tint: [string, string];
 }
 

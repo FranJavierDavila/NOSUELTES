@@ -217,6 +217,13 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         } | null;
         return sc?.getClimberInfo?.() ?? null;
       },
+      /** T57 SHERPA POR PIEZAS: posiciones de mundo de las piezas del puppet. */
+      puppetPieces: (): Record<string, unknown> | null => {
+        const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
+          puppetDebug?: () => Record<string, unknown> | null;
+        } | null;
+        return sc?.puppetDebug?.() ?? null;
+      },
       depthProbe: () => {
         const sc = state.match?.["d"]?.scene as unknown as {
           scene: { render(): void };
