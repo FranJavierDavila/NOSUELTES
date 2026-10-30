@@ -68,6 +68,8 @@ type Handler<K extends EventName> = (payload: SherpasEvents[K]) => void;
 
 export class EventBus {
   private handlers = new Map<EventName, Set<Handler<EventName>>>();
+  /** T60 RED: oyentes "todos los eventos" (tap de red — el host reenvía al guest). */
+  private anyHandlers = new Set<(name: EventName, payload: unknown) => void>();
 
   on<K extends EventName>(name: K, fn: Handler<K>): () => void {
     let set = this.handlers.get(name);
@@ -76,7 +78,18 @@ export class EventBus {
     return () => { set!.delete(fn as Handler<EventName>); };
   }
 
+  /** T60: suscripción a TODOS los eventos (para el tap de red). Devuelve baja. */
+  onAny(fn: (name: EventName, payload: unknown) => void): () => void {
+    this.anyHandlers.add(fn);
+    return () => { this.anyHandlers.delete(fn); };
+  }
+
   emit<K extends EventName>(name: K, payload: SherpasEvents[K]): void {
+    for (const fn of this.anyHandlers) {
+      try { fn(name, payload); } catch (err) {
+        console.error(`[Sherpas] any-handler error en ${String(name)}:`, err);
+      }
+    }
     const set = this.handlers.get(name);
     if (!set) return;
     for (const fn of set) {
@@ -86,5 +99,5 @@ export class EventBus {
     }
   }
 
-  clear(): void { this.handlers.clear(); }
+  clear(): void { this.handlers.clear(); this.anyHandlers.clear(); }
 }

@@ -187,5 +187,34 @@
    "body": "If a sherpa falls, he hangs from the rope holding it with BOTH hands: mash the effort key TOGETHER at the same time. The meter next to the hanger must pass the notch to climb; below it he slides down and burns rope. If the rope runs out… he lets go and falls. Sharing the effort makes the rescue easy.",
    "keys": "MASH: hammer C (P1) and N (P2) TOGETHER until the meter passes the notch"
   }
+ },
+ "net": {
+  "menu": "Play online",
+  "title": "Play online",
+  "subtitle": "One climbs here (orange, mouse), the other connects from the internet (blue, keyboard or gamepad).",
+  "create": "Create session (host)",
+  "join": "Join",
+  "codePh": "CODE",
+  "back": "Back to menu",
+  "waitingGuest": "Room created. Waiting for your partner…",
+  "guestJoined": "Partner connected! Press GO to start.",
+  "guestLeft": "Your partner disconnected. You can keep going solo or recreate the room.",
+  "connecting": "Connecting…",
+  "waitingHost": "Connected. Waiting for the host to start the ascent…",
+  "closed": "The session was closed (host left).",
+  "hostLabel": "HOST (orange)",
+  "guestLabel": "GUEST (blue)",
+  "hostNote": "You are the host: you play the ORANGE sherpa with the mouse. Your partner takes the BLUE one.",
+  "guestNote": "You are the guest: you play the BLUE sherpa (arrows + I/O/K/L or gamepad).",
+  "err": {
+   "sala-no-existe": "That code does not exist (room expired?).",
+   "sala-llena": "The room is full (2 players).",
+   "timeout-creando-sala": "Could not create the room (server down?).",
+   "timeout-uniendo": "Could not connect (wrong code?).",
+   "desconectado": "Connection to the server lost.",
+   "host-gone": "The host is gone.",
+   "host-left": "The host is gone.",
+   "host-recreated": "The host created another room."
+  }
  }
 }

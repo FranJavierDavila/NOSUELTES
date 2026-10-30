@@ -163,6 +163,9 @@ const CSS = `
 .sphud .ob-step h2 { margin:0 0 6px; font-size:20px; letter-spacing:.03em; }
 .sphud .ob-step p { margin:0; font-size:14px; line-height:1.6; opacity:.92; }
 .sphud .ob-foot { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:20px; }
+/* T60 RED: panel de juego online. */
+.sphud .net-code { font:26px/1.2 ui-monospace,monospace; letter-spacing:.35em; text-align:center; background:rgba(255,255,255,.06); border:1px dashed rgba(255,255,255,.3); border-radius:12px; padding:12px 10px 12px 16px; margin:12px 0; user-select:text; }
+.sphud .net-status { font-size:13px; min-height:20px; text-align:center; opacity:.9; margin:8px 0; }
 `;
 
 function esc(s: string): string {
@@ -184,7 +187,7 @@ export class SherpaHud {
   private reduceShake = false;
   private mute = false;
   private disablePee = false;
-  private opts?: { onGo: (c: HudStartChoice) => void; onHowToDone?: () => void };
+  private opts?: { onGo: (c: HudStartChoice) => void; onHowToDone?: () => void; onNet?: () => void };
   private choice: Partial<HudStartChoice> = { lang: "es" };
   /** T59: estado del asistente de onboarding (núcleo puro de gameplay). */
   private ob: OnboardingState = openOnboarding();
@@ -238,6 +241,7 @@ export class SherpaHud {
         <h1 style="font-size:24px">⏸</h1><p class="sub" data-e="pauseHint"></p></div></div>
       <div class="overlay hidden" data-e="start"></div>
       <div class="overlay hidden" data-e="finale"></div>
+      <div class="overlay hidden" data-e="net"><div class="panel" data-e="netBody"></div></div>
       <!-- T59: el onboarding es el ÚLTIMO overlay: desde el menú ("¿Cómo se
            juega?") debe pintarse POR ENCIMA del menú y recibir sus clics. -->
       <div class="overlay hidden" data-e="onboard"><div class="panel" data-e="onboardBody"></div></div>
@@ -642,8 +646,51 @@ export class SherpaHud {
   /** Sonda E2E: id del paso actual (null si cerrado). */
   get onboardingStep(): string | null { return this.el.onboardBody!.getAttribute("data-ob-step"); }
 
-  showStart(opts: { difficulties: string[]; defaultPreset: string; seed: number; saveCampLabel: string | null; onGo: (c: HudStartChoice) => void; onHowToDone?: () => void }): void {
-    this.opts = { onGo: opts.onGo, onHowToDone: opts.onHowToDone };
+  // ---------- T60 RED: panel de juego online ----------
+
+  showNet(opts: { onHost: () => void; onJoin: (code: string) => void; onBack: () => void }): void {
+    const el = this.el.net!;
+    const body = this.el.netBody!;
+    body.innerHTML = `
+      <h1 style="font-size:24px">🌐 ${esc(this.t("net.title"))}</h1>
+      <div class="sub">${esc(this.t("net.subtitle"))}</div>
+      <div class="row" style="justify-content:center"><button data-a="netHost">📡 ${esc(this.t("net.create"))}</button></div>
+      <div class="row" style="justify-content:center"><input data-a="netCode" placeholder="${esc(this.t("net.codePh"))}" maxlength="8" style="${esc("font:inherit;width:150px;background:#141b22;color:#e8eef4;border:1px solid rgba(255,255,255,.16);border-radius:8px;padding:8px 10px;text-transform:uppercase;letter-spacing:.2em;text-align:center")}"><button data-a="netJoin">${esc(this.t("net.join"))}</button></div>
+      <div class="net-status" data-a="netStatus"></div>
+      <div class="net-code hidden" data-a="netCodeBox"></div>
+      <div class="row" style="justify-content:center;margin-top:10px"><button data-a="netBack">${esc(this.t("net.back"))}</button></div>`;
+    body.querySelector<HTMLElement>("[data-a=netHost]")!.onclick = () => opts.onHost();
+    body.querySelector<HTMLElement>("[data-a=netJoin]")!.onclick = () => {
+      const code = (body.querySelector<HTMLInputElement>("[data-a=netCode]") as HTMLInputElement).value;
+      if (code.trim()) opts.onJoin(code);
+    };
+    body.querySelector<HTMLInputElement>("[data-a=netCode]")!.addEventListener("keydown", (e) => {
+      if ((e as KeyboardEvent).key === "Enter") {
+        const code = (body.querySelector<HTMLInputElement>("[data-a=netCode]") as HTMLInputElement).value;
+        if (code.trim()) opts.onJoin(code);
+      }
+    });
+    body.querySelector<HTMLElement>("[data-a=netBack]")!.onclick = () => { this.hideNet(); opts.onBack(); };
+    el.classList.remove("hidden");
+  }
+
+  hideNet(): void { this.el.net!.classList.add("hidden"); }
+  get netVisible(): boolean { return !this.el.net!.classList.contains("hidden"); }
+
+  /** Estado del panel (texto simple). */
+  netStatus(text: string): void {
+    const s = this.el.netBody!.querySelector<HTMLElement>("[data-a=netStatus]");
+    if (s) s.textContent = text;
+  }
+
+  /** Código de sala grande (fase de espera del host). */
+  netWaiting(code: string): void {
+    const box = this.el.netBody!.querySelector<HTMLElement>("[data-a=netCodeBox]");
+    if (box) { box.textContent = code; box.classList.remove("hidden"); }
+  }
+
+  showStart(opts: { difficulties: string[]; defaultPreset: string; seed: number; saveCampLabel: string | null; onGo: (c: HudStartChoice) => void; onHowToDone?: () => void; onNet?: () => void }): void {
+    this.opts = { onGo: opts.onGo, onHowToDone: opts.onHowToDone, onNet: opts.onNet };
     this.choice = { lang: this.lang, resume: false, mute: false, daltonism: false, reduceShake: false, disablePee: false, difficulty: opts.defaultPreset, seed: opts.seed };
     const el = this.el.start!;
     el.innerHTML = `<div class="panel">
@@ -660,7 +707,8 @@ export class SherpaHud {
         <span class="chk"><input type="checkbox" data-a="nopee" id="ck_p"><label for="ck_p">${esc(this.t("settings.disablePee"))}</label></span>
       </div>
       <div class="row" style="margin-top:18px"><button class="go" data-a="go">${esc(this.t("menu.start"))}</button></div>
-      <div class="row" style="justify-content:center"><button data-a="howto">🎓 ${esc(this.t("onboarding.menuButton"))}</button></div>
+      <div class="row" style="justify-content:center"><button data-a="howto">🎓 ${esc(this.t("onboarding.menuButton"))}</button>
+      <button data-a="net">🌐 ${esc(this.t("net.menu"))}</button></div>
       <div class="keys">${esc(this.t("keys.p1"))}<br>${esc(this.t("keys.p2"))}<br>${esc(this.t("keys.shared"))}</div>
     </div>`;
     const diffs = el.querySelector("[data-a=diffs]")!;
@@ -690,6 +738,8 @@ export class SherpaHud {
         go.textContent = this.t("menu.start");
         const howto = el.querySelector("[data-a=howto]") as HTMLElement | null;
         if (howto) howto.innerHTML = `🎓 ${esc(this.t("onboarding.menuButton"))}`;
+        const netBtn = el.querySelector("[data-a=net]") as HTMLElement | null;
+        if (netBtn) netBtn.innerHTML = `🌐 ${esc(this.t("net.menu"))}`;
       };
       langs.appendChild(b);
     }
@@ -698,6 +748,10 @@ export class SherpaHud {
     };
     el.querySelector<HTMLElement>("[data-a=howto]")!.onclick = () => {
       this.showOnboarding({ onDone: () => this.opts?.onHowToDone?.() });
+    };
+    el.querySelector<HTMLElement>("[data-a=net]")!.onclick = () => {
+      this.hideStart();
+      this.opts?.onNet?.();
     };
     (el.querySelector("[data-a=dice]") as HTMLElement).onclick = () => {
       const s = Math.floor(Math.random() * 1000000);

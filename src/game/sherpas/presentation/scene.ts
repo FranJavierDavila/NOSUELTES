@@ -47,11 +47,19 @@ export interface SherpaSyncSolver { getParticle(i: number): { pos: { x: number; 
 import { v3, vAdd, vScale, vSub, vLen, type V3 } from "../../physics/pbd/math";
 import type { HoldInstance } from "../physics/anchors";
 import type { DragReachInfo } from "../physics/sherpaRig";
-import { RichManSim, RM } from "../physics/richMan";
+import { RM } from "../physics/richMan";
 import type { CameraData, ClimberData, HudData, PerfTuning, VfxData } from "../core/data";
 import type { OrbitAxis } from "../input/input";
 import { orbitLimits, rotYxz, sunAzimuth } from "./orbitMath"; // T47: sol orbital + vista libre (puro)
 import type { WallLayout } from "../world/wallGenerator";
+
+/** T60 RED: vista ESTRUCTURAL del ricachón para el render — el guest no tiene
+ *  la simulación, solo posiciones interpoladas del snapshot. RichManSim la
+ *  cumple (bodies con pos/prev + gesture); el guest pasa un shim plano. */
+export interface RichManRenderView {
+  bodies: readonly { pos: { x: number; y: number; z: number }; prev: { x: number; y: number; z: number } }[];
+  gesture: string;
+}
 import {
   bandsAround, buildReliefChunk, planChunks, reliefFromData, seedChunk, tectonicCells, voronoiCells,
   type ReliefCell, type ReliefData, type ReliefResolved, type Rect,
@@ -2383,7 +2391,7 @@ export class SherpaScene {
     this.richVisual = null;
   }
 
-  syncRichMan(sim: RichManSim, alpha: number): void {
+  syncRichMan(sim: RichManRenderView, alpha: number): void {
     const vis = this.richVisual;
     if (!vis) return;
     const lerp = (i: number): V3 => {

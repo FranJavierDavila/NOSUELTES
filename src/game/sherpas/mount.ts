@@ -10,6 +10,10 @@ import { SherpaHud, type HudStartChoice } from "./presentation/hud";
 import { InputManager } from "./input/input";
 import { SherpasMatch } from "./gameplay/match";
 import { browserStore, markOnboardingSeen, shouldShowOnboarding } from "./gameplay/onboarding";
+import { HostNet, GuestNet } from "./net/netClient";
+import { HostInputMixer } from "./net/remoteInput";
+import { GuestRunner } from "./net/guestRunner";
+import type { NetSessionParams } from "./net/protocol";
 import { WallGenerator } from "./world/wallGenerator";
 import { loadAscent, clearAscent, type SavedAscent } from "./world/camps";
 import { v3, type V3 } from "../physics/pbd/math";
@@ -54,37 +58,153 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     scene: SherpaScene | null;
     disposed: boolean;
     menuRaf: number;
-  } = { match: null, scene: null, disposed: false, menuRaf: 0 };
+    previewSeed: number;
+    hostNet: HostNet | null;
+    guestNet: GuestNet | null;
+    guest: GuestRunner | null;
+    snapTimer: number;
+    unSubNet: (() => void) | null;
+    guestBuilding: boolean;
+  } = { match: null, scene: null, disposed: false, menuRaf: 0, previewSeed: 0, hostNet: null, guestNet: null, guest: null, snapTimer: 0, unSubNet: null, guestBuilding: false };
 
   const input = new InputManager(data.inputMaps, {
-    onPause: () => state.match?.togglePause(),
-    onHelp: () => state.match?.toggleHelp(),
-    onRecenter: () => state.match?.recenterCamera(),
+    onPause: () => { if (state.guest) state.guest.togglePause(); else state.match?.togglePause(); },
+    onHelp: () => { if (!state.guest) state.match?.toggleHelp(); else hud.showHelp(); },
+    onRecenter: () => { if (state.guest) state.guest.recenter(); else state.match?.recenterCamera(); },
   });
   input.attach(window);
 
-  const makePreviewScene = async (): Promise<SherpaScene> => {
+  const makePreviewScene = async (seed?: number): Promise<SherpaScene> => {
     const scene = await SherpaScene.create(opts.canvas, data.camera, data.hud, data.tuning.perf, data.vfx, data.wallGen.relief ?? null, data.climber);
     const gen = new WallGenerator(
       { phases: data.phases, wallGen: data.wallGen, safePathRockRatio: 0.4 },
-      Math.floor(Math.random() * 1000000),
+      seed ?? Math.floor(Math.random() * 1000000),
     );
     scene.buildWorld(gen.layout);
     scene.updateCamera(1 / 60, [v3(0, 2.2, -0.4)], 1.5);
     return scene;
   };
 
-  // fondo del menú: la pared nevada.
-  state.scene = await makePreviewScene();
+  // fondo del menú: la pared nevada. Su SEMILLA se recuerda: la partida local
+  // REUTILIZA esta pared (buildWorld corre una vez) y el guest debe construir
+  // la MISMA geometría (la semilla del menú solo rige presas/checkpoints).
+  state.previewSeed = Math.floor(Math.random() * 1000000);
+  state.scene = await makePreviewScene(state.previewSeed);
   const menuFrame = (): void => {
     state.menuRaf = requestAnimationFrame(menuFrame);
-    if (state.match || !state.scene) return; // la partida lleva su propio bucle
+    if (state.match || state.guest || !state.scene) return; // la partida/guest llevan su propio bucle
     state.scene.render();
   };
   menuFrame();
 
+  // ---------- T60 RED: flujo de juego online ----------
+
+  const stopSnapshots = (): void => {
+    if (state.snapTimer) { window.clearInterval(state.snapTimer); state.snapTimer = 0; }
+    if (state.unSubNet) { state.unSubNet(); state.unSubNet = null; }
+  };
+
+  const endGuestToMenu = async (): Promise<void> => {
+    state.guest?.dispose(); state.guest = null;
+    state.guestNet?.disconnect(); state.guestNet = null;
+    // el guest montó una escena PROPIA (pared del host): volver a la local
+    if (state.scene) { state.scene.dispose(); state.scene = null; }
+    if (!state.disposed) {
+      if (!state.scene) state.scene = await makePreviewScene();
+      await showMenu();
+    }
+  };
+
+  const beginGuest = async (params: NetSessionParams): Promise<void> => {
+    if (state.guestBuilding || state.guest || !state.guestNet) return;
+    state.guestBuilding = true;
+    try {
+      hud.hideNet();
+      hud.hideStart();
+      // el guest NO reutiliza la escena del menú: su pared debe coincidir con
+      // la que el host REUTILIZA de SU menú (semilla de pared de la sesión).
+      if (state.scene) { state.scene.dispose(); state.scene = null; }
+      state.scene = await SherpaScene.create(opts.canvas, data.camera, data.hud, data.tuning.perf, data.vfx, data.wallGen.relief ?? null, data.climber);
+      const mkGen = (seed: number): WallGenerator => new WallGenerator(
+        { phases: data.phases, wallGen: data.wallGen, safePathRockRatio: 0.4 }, seed,
+      );
+      state.scene.buildWorld(mkGen(params.wallSeed).layout);
+      state.scene.addHolds(mkGen(params.seed).allGeneratedHolds(), data.hud.anchorTypeColors);
+      state.scene.setCheckpoints(params.cpsYs, params.wallFrontZ, params.wallWidthM);
+      await audio.start();
+      audio.setMuted(false);
+      const runner = await GuestRunner.create({
+        data, scene: state.scene, hud, audio, input, net: state.guestNet, params,
+        onLeave: () => { void endGuestToMenu(); },
+      });
+      state.guest = runner;
+      runner.start();
+      // sonda E2E del extremo invitado (solo lectura + hold de render E2E)
+      (window as unknown as Record<string, unknown>).__NS_GUEST = () => state.guest?.debug() ?? null;
+      (window as unknown as Record<string, unknown>).__NS_GUEST_HOLD = (v: boolean) => { if (state.guest) state.guest.holdRender = !!v; };
+    } catch (err) {
+      console.error("fallo al montar la partida remota:", err instanceof Error ? err.stack : err);
+      hud.subtitle(`Error: ${String(err instanceof Error ? err.message : err)}`, 8);
+      await endGuestToMenu();
+    } finally {
+      state.guestBuilding = false;
+    }
+  };
+
+  const showNetPanel = (): void => {
+    hud.showNet({
+      onHost: () => {
+        void (async () => {
+          try {
+            hud.netStatus(hud.t("net.connecting"));
+            if (!state.hostNet) state.hostNet = new HostNet();
+            const code = await state.hostNet.create();
+            hud.netWaiting(code);
+            hud.netStatus(hud.t("net.waitingGuest"));
+            state.hostNet.onGuestJoined = () => hud.netStatus(hud.t("net.guestJoined"));
+            state.hostNet.onGuestLeft = () => hud.netStatus(hud.t("net.guestLeft"));
+          } catch {
+            hud.netStatus(hud.t("net.err.timeout-creando-sala"));
+          }
+        })();
+      },
+      onJoin: (code) => {
+        void (async () => {
+          try {
+            hud.netStatus(hud.t("net.connecting"));
+            state.guestNet?.disconnect();
+            state.guestNet = new GuestNet(); // conexión fresca por intento
+            await state.guestNet.join(code);
+            hud.netStatus(hud.t("net.waitingHost"));
+            state.guestNet.onSession = (p) => {
+              if (!p) { void endGuestToMenu(); return; }
+              void beginGuest(p);
+            };
+            state.guestNet.onClosed = () => {
+              hud.subtitle(hud.t("net.closed"), 6);
+              void endGuestToMenu();
+            };
+          } catch (err) {
+            const key = err instanceof Error ? `net.err.${err.message}` : "net.err.desconectado";
+            const msg = hud.t(key);
+            hud.netStatus(msg === key ? hud.t("net.err.desconectado") : msg);
+          }
+        })();
+      },
+      onBack: () => {
+        // el guest sí corta su conexión; el HOST conserva la sala abierta
+        // (puede volver a entrar cuando quiera: GO arranca con quien haya)
+        state.guestNet?.disconnect(); state.guestNet = null;
+        void showMenu();
+      },
+    });
+  };
+
   const backToMenu = async (): Promise<void> => {
     if (state.match) { state.match.dispose(); state.match = null; }
+    stopSnapshots();
+    // T60: si había guest, avisarle del fin de sesión (volverá a esperar)
+    if (state.hostNet?.hasGuest) state.hostNet.sendSession(null);
     // la escena (y su motor) SOBREVIVEN: son la misma que usará la próxima partida.
     if (!state.scene) state.scene = await makePreviewScene();
     await showMenu();
@@ -106,6 +226,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
   const beginInner = async (choice: HudStartChoice): Promise<void> => {
     if (state.disposed) return;
     if (state.match) { state.match.dispose(); state.match = null; }
+    stopSnapshots();
     // REUTILIZA la escena del menú como escena de partida: crear un segundo
     // motor WebGL sobre el mismo canvas deja el nuevo contexto sin pantalla
     // (el visible conserva el último frame del motor anterior).
@@ -121,12 +242,44 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     if (choice.resume) resumeSave = await loadAscent();
     else await clearAscent();
     const scene = state.scene;
+    // T60 RED: con guest conectado, el jugador 2 es DEL GUEST — el mixer
+    // sustituye el input local de P2 por el que llega por socket.
+    const netMixer = state.hostNet?.hasGuest
+      ? new HostInputMixer(input, state.hostNet.remote, () => state.hostNet?.hasGuest ?? false)
+      : null;
     state.match = new SherpasMatch({
-      data, scene, audio, hud, bus, input, character, profile, choice, resumeSave,
+      data, scene, audio, hud, bus, input: netMixer ?? input, character, profile, choice, resumeSave,
       onRestart: () => { void backToMenu(); },
     });
+    if (netMixer && state.hostNet?.hasGuest) {
+      // sesión para el guest (dos semillas: pared reutilizada + presas) y
+      // publicación de snapshots a data.net.snapshotHz con el tap del bus.
+      const info = state.match.netWorldInfo();
+      state.hostNet.sendSession({
+        wallSeed: state.previewSeed,
+        seed: resumeSave?.seed ?? choice.seed,
+        difficulty: choice.difficulty,
+        lang: choice.lang,
+        resume: choice.resume,
+        ...info,
+      });
+      const evs: { n: string; p: Record<string, unknown> }[] = [];
+      state.unSubNet = bus.onAny((n, p) => { if (evs.length < 40) evs.push({ n, p: p as Record<string, unknown> }); });
+      const hz = data.net?.snapshotHz ?? 30;
+      state.snapTimer = window.setInterval(() => {
+        if (!state.match || !state.hostNet?.hasGuest) return;
+        const ev = evs.splice(0, evs.length);
+        state.hostNet.sendSnapshot(state.match.captureSnapshot({ ev }));
+      }, Math.max(20, Math.round(1000 / hz)));
+    }
     // hook de depuración E2E (solo lectura, salvo setAim: herramienta de pruebas).
     (window as unknown as Record<string, unknown>).__SHERPAS_DEBUG = {
+      net: (): Record<string, unknown> => ({
+        hasGuest: state.hostNet?.hasGuest ?? false,
+        intents: state.hostNet?.intentCount ?? -1,
+        snaps: state.hostNet?.snapshotCount ?? -1,
+        pend: state.hostNet?.remote.size ?? -1,
+      }),
       waist: (p: number) => state.match?.["sherpas"][p]?.waist() ?? null,
       anchors: (p: number) => state.match?.["sherpas"][p]?.anchorsCount() ?? null,
       tension: (p: number) => state.match?.["sherpas"][p]?.maxTension() ?? null,
@@ -410,6 +563,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
       seed: Math.floor(Math.random() * 1000000),
       saveCampLabel,
       onHowToDone: () => markOnboardingSeen(store),
+      onNet: showNetPanel,
       onGo: (choice) => {
         if (shouldShowOnboarding(store)) {
           hud.showOnboarding({
@@ -428,6 +582,10 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     dispose(): void {
       state.disposed = true;
       cancelAnimationFrame(state.menuRaf);
+      stopSnapshots();
+      if (state.guest) { state.guest.dispose(); state.guest = null; }
+      state.hostNet?.disconnect(); state.hostNet = null;
+      state.guestNet?.disconnect(); state.guestNet = null;
       if (state.match) { state.match.dispose(); state.match = null; }
       if (state.scene) { state.scene.dispose(); state.scene = null; }
       input.dispose();

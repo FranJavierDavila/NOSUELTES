@@ -29,12 +29,21 @@ import { Matrix } from "@babylonjs/core/Maths/math.vector";
 import type { SherpaScene } from "../presentation/scene";
 import type { SherpaHud, HudStartChoice, HudTickState, MinimapHold } from "../presentation/hud";
 import type { SherpaAudio } from "../presentation/audio";
-import type { InputManager } from "../input/input";
+import type { InputManager, InputIntent, OrbitAxis } from "../input/input";
+import type { NetSnapSherpa, NetSnapshot } from "../net/protocol";
 
 // física de juego (reescritura): sin preset PBD — el rig es estable por construcción.
 const SHOO_COOLDOWN_S = 3;
 const REST_RECOVER_MULT = 3;
 const REGISTRATION_INTERVAL_TICKS = 30;
+
+/** T60 RED: lo que el match necesita del input. InputManager lo cumple al
+ *  dedillo; en partida online lo cumple HostInputMixer (local + remoto). */
+export interface MatchInputSource {
+  poll(dt: number): InputIntent[];
+  orbitAxis(): OrbitAxis;
+  freeViewHeld(): boolean;
+}
 
 export interface SherpasMatchDeps {
   data: SherpasData;
@@ -42,7 +51,7 @@ export interface SherpasMatchDeps {
   audio: SherpaAudio;
   hud: SherpaHud;
   bus: EventBus;
-  input: InputManager;
+  input: MatchInputSource;
   character: CharacterDefinition;
   profile: BodyProfileDefinition;
   choice: HudStartChoice;
@@ -108,6 +117,13 @@ export class SherpasMatch {
   private knownHolds = new Set<string>();
   private tickCounter = 0;
   private unsubscribes: (() => void)[] = [];
+  /** T60 RED: último estado de HUD construido (a 10 Hz) para el snapshot. */
+  private lastHud: HudTickState | null = null;
+  private lastMmMeta: { key: string; fracA: number; fracB: number; campFrac: number; metersLeft: number; campId: string | null; xA: number; xB: number; cps: { frac: number; reached: boolean }[] } | null = null;
+  /** T60 RED: tramo del minimapa ya enviado (holdsStatic solo al cambiar). */
+  private mmSentKey = "";
+  /** T60 RED: contador de capturas para el HUD a 10 Hz en el snapshot. */
+  private mmFrameCount = 0;
   // T44 — BOCADILLOS FUERA (petición del jugador: "vamos a eliminar los
   // bocadillos de momento"): los insultos viven como VOZ + subtítulo.
   // VOZ REAL DEL JUGADOR: disparadores (susto+desplazamiento / escora fuerte).
@@ -1610,6 +1626,114 @@ export class SherpasMatch {
     s.render();
   }
 
+  // ---------- T60 RED: snapshot del estado dinámico ----------
+
+  /** Info de mundo que el GUEST necesita ANTES del primer snapshot (construye
+   *  la MISMA pared desde la semilla; los checkpoints van aparte). */
+  netWorldInfo(): { cpsYs: number[]; wallFrontZ: number; wallWidthM: number; wallHeightM: number } {
+    return {
+      cpsYs: this.cps.list.map((c) => c.y),
+      wallFrontZ: this.wallFrontZ,
+      wallWidthM: this.wallWidthM,
+      wallHeightM: this.gen.layout.totalHeightM,
+    };
+  }
+
+  /** Snapshot JSON del estado dinámico (llamar a data.net.snapshotHz desde el
+   *  host). El HUD viaja cada `hudStride` capturas (~10 Hz con 30 Hz de red).
+   *  `ev` = eventos del bus recogidos por el tap de red desde el último envío. */
+  captureSnapshot(opts: { hudStride?: number; ev?: NetSnapshot["ev"] } = {}): NetSnapshot {
+    const hudStride = opts.hudStride ?? 3;
+    const flat = (arr: readonly { x: number; y: number; z: number }[]): number[] => {
+      const out: number[] = [];
+      for (const v of arr) out.push(v.x, v.y, v.z);
+      return out;
+    };
+    const sherpa = (p: 0 | 1): NetSnapSherpa => {
+      const rig = this.sherpas[p];
+      const meter = rig.ropeMashMeter();
+      return {
+        p: flat(rig.rig.particles.map((q) => q.pos)),
+        aim: [rig.aim.x, rig.aim.y],
+        limbs: LIMBS.map((l) => {
+          const s = rig.states.get(l)!;
+          return { t: s.tension, f: s.fatigue, a: s.anchored };
+        }),
+        ropeState: rig.ropeState,
+        belaying: rig.belaying,
+        fartCharge: rig.hasFartCharge,
+        fartFlying: rig.fartFlying,
+        mash: meter ? [meter.force01, meter.threshold01, meter.climbing ? 1 : 0] : null,
+        waist: [rig.waist().x, rig.waist().y, rig.waist().z],
+      };
+    };
+    const pk = this.plankState;
+    const rb: number[] = [];
+    for (const b of this.rich.bodies) rb.push(b.pos.x, b.pos.y, b.pos.z);
+    const t0 = this.trash[0];
+    // HUD a 10 Hz: metadatos del minimapa + ocupación compacta; el listado de
+    // presas del tramo SOLO cuando cambia (el guest lo cachea por clave).
+    let hudNet: NetSnapshot["hud"] = null;
+    this.mmFrameCount++;
+    if (this.lastHud && this.mmFrameCount % hudStride === 0 && this.lastMmMeta && this.mmCache) {
+      const occ: number[] = [];
+      const holds = this.mmCache.holds;
+      for (let i = 0; i < holds.length; i++) {
+        if (holds[i]!.occupied) occ.push(i, holds[i]!.occupied);
+      }
+      const mm: NonNullable<NetSnapshot["hud"]>["mm"] = {
+        key: this.lastMmMeta.key,
+        fracA: this.lastMmMeta.fracA,
+        fracB: this.lastMmMeta.fracB,
+        campFrac: this.lastMmMeta.campFrac,
+        metersLeft: this.lastMmMeta.metersLeft,
+        campId: this.lastMmMeta.campId,
+        xA: this.lastMmMeta.xA,
+        xB: this.lastMmMeta.xB,
+        cps: this.lastMmMeta.cps,
+        occ,
+      };
+      if (this.lastMmMeta.key !== this.mmSentKey) {
+        mm.holdsStatic = holds.map((h) => ({ ...h }));
+        this.mmSentKey = this.lastMmMeta.key;
+      }
+      hudNet = { ...this.lastHud, mm };
+    }
+    return {
+      v: 1,
+      tick: this.tickCounter,
+      st: this.simTime,
+      wall: performance.now(),
+      a: sherpa(0),
+      b: sherpa(1),
+      plank: pk ? {
+        c: [pk.center.x, pk.center.y, pk.center.z],
+        ang: pk.angle,
+        shake: pk.angleShake,
+        na: flat(pk.nodesA),
+        nb: flat(pk.nodesB),
+      } : null,
+      rich: { b: rb, g: this.rich.gesture, seated: this.rich.seated },
+      boxes: this.boxes ? { count: this.boxes.count, side: this.boxes.side } : null,
+      drone: this.drone ? (() => {
+        const rp = this.drone.renderPos();
+        return rp ? {
+          p: [rp.x, rp.y, rp.z] as [number, number, number],
+          pkg: this.drone.pkgCarried(),
+          frac: this.dronePkg?.frac ?? 0,
+        } : null;
+      })() : null,
+      birds: this.birds.birdsForRender().map((b) => ({
+        id: b.id, kind: b.kind as string, x: b.pos.x, y: b.pos.y, z: b.pos.z, phase: b.phase as string,
+      })),
+      trash: t0 && t0.alive ? [t0.pos.x, t0.pos.y, t0.pos.z] : null,
+      wind: { dir: this.weather.dir, level: this.weather.windLevel },
+      storm: this.weather.storm,
+      hud: hudNet,
+      ev: opts.ev ?? [],
+    };
+  }
+
   private updateHud(): void {
     const st: HudTickState = {
       timeS: this.stats.timeS,
@@ -1633,6 +1757,7 @@ export class SherpasMatch {
       resting: this.camps.resting,
       richState: this.brain.state,
     };
+    this.lastHud = st; // T60 RED: el snapshot reutiliza este estado
     this.d.hud.update(st);
     this.d.audio.setAltitude(st.narrativeY, st.maxNarrativeY);
     // MINIMAPA v2 (petición del jugador: "más grande y detallado, réplica de
@@ -1699,6 +1824,19 @@ export class SherpasMatch {
       // COTAS DE SEGURO (Task 37): línea discontinua verde; sólida + banderitas al fijar
       checkpoints: this.cps.list.map((c) => ({ frac: (c.y - yLow) / span, reached: c.reached })),
     });
+    // T60 RED: metadatos del minimapa para el snapshot (las presas del tramo
+    // van aparte, solo al cambiar de tramo — no 500 objetos a 30 Hz).
+    this.lastMmMeta = {
+      key: mmKey,
+      fracA: (this.sherpas[0].waist().y - yLow) / span,
+      fracB: (this.sherpas[1].waist().y - yLow) / span,
+      campFrac: nextCamp ? (yHigh - nextCamp.yBase) / span : 0.06,
+      metersLeft: this.gen.narrativeHeightOf(yHigh) - st.narrativeY,
+      campId: st.nextCampId,
+      xA: normX(this.sherpas[0].waist().x),
+      xB: normX(this.sherpas[1].waist().x),
+      cps: this.cps.list.map((c) => ({ frac: (c.y - yLow) / span, reached: c.reached })),
+    };
     const fps = this.hudFrameCount;
     this.hudFrameCount = 0;
     const waD = this.sherpas[0].waist();

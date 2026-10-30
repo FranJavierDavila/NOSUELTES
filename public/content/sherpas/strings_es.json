@@ -187,5 +187,34 @@
    "body": "Si un sherpa cae, queda COLGADO de la cuerda sujetándola con las dos manos: machacad la tecla de esfuerzo LOS DOS a la vez. El medidor junto al colgado debe superar la raya para trepar; si no llega, se desliza y gasta la cuerda. Si la cuerda se agota… suelta y cae. Repartir el esfuerzo hace el rescate fácil.",
    "keys": "A SACO: machaca C (J1) y N (J2) LOS DOS a la vez hasta pasar la raya del medidor"
   }
+ },
+ "net": {
+  "menu": "Jugar online",
+  "title": "Jugar online",
+  "subtitle": "Uno escala aquí (naranja, ratón) y el otro conecta desde internet (azul, teclado o mando).",
+  "create": "Crear sesión (anfitrión)",
+  "join": "Unirse",
+  "codePh": "CÓDIGO",
+  "back": "Volver al menú",
+  "waitingGuest": "Sala creada. Esperando a tu compañero…",
+  "guestJoined": "¡Compañero conectado! Pulsa ¡GO! para empezar.",
+  "guestLeft": "Tu compañero se ha desconectado. Puedes seguir solo o volver a crear la sala.",
+  "connecting": "Conectando…",
+  "waitingHost": "Conectado. Esperando a que el anfitrión empiece la ascensión…",
+  "closed": "La sesión se ha cerrado (el anfitrión salió).",
+  "hostLabel": "ANFITRIÓN (naranja)",
+  "guestLabel": "INVITADO (azul)",
+  "hostNote": "Eres el anfitrión: juegas al sherpa NARANJA con el ratón. Tu compañero lleva el AZUL.",
+  "guestNote": "Eres el invitado: juegas el sherpa AZUL (flechas + I/O/K/L o mando).",
+  "err": {
+   "sala-no-existe": "Ese código no existe (¿expiró la sala?).",
+   "sala-llena": "La sala ya está llena (2 jugadores).",
+   "timeout-creando-sala": "No se pudo crear la sala (¿servidor caído?).",
+   "timeout-uniendo": "No se pudo conectar (¿código mal escrito?).",
+   "desconectado": "Conexión perdida con el servidor.",
+   "host-gone": "El anfitrión se ha ido.",
+   "host-left": "El anfitrión se ha ido.",
+   "host-recreated": "El anfitrión creó otra sala."
+  }
  }
 }
