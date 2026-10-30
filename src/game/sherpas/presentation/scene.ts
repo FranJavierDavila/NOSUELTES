@@ -28,6 +28,8 @@ import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture"; // M
 import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator"; // LUZ Y SOMBRA (profundidad)
 import { ImageProcessingConfiguration } from "@babylonjs/core/Materials/imageProcessingConfiguration"; // GRÁFICOS: ACES + viñeta
 import { FxaaPostProcess } from "@babylonjs/core/PostProcesses/fxaaPostProcess"; // GRÁFICOS: antialiasing
+import { clampDpr, hardwareScaleFor } from "./renderQuality"; // T58-A: calidad de render (DPR)
+import { emoteOffset, stepEmote, startEmote, type EmoteSlot } from "../gameplay/emotes"; // T58-D: animaciones puntuales
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial"; // T44: pared PBR detallada
 import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
@@ -59,7 +61,7 @@ import {
   type RockData, type RockField, type RockResolved,
 } from "../world/wallRock";
 import {
-  ROCKWALL_SEED, rockwallStyleFromData, sampleRegion,
+  buildSideSkirts, ROCKWALL_SEED, rockwallStyleFromData, sampleRegion,
   type RockwallAnchorIn, type RockwallFeature, type RockwallRegionResult, type RockwallStyle,
 } from "../world/rockwall"; // T43: módulo del jugador (diaclasas) + worker
 import { makeRng } from "../core/rng";
@@ -259,7 +261,11 @@ export class SherpaScene {
   // si sobra margen) + geometría estática FUNDIDA (menos draw calls) + cuerdas
   // INSTANCIADAS (1 draw call por cuerda en vez de ~20).
   private perfTuning: PerfTuning;
-  private scaleLevel = 1; // 1 = píxeles nativos (más alto = más barato)
+  private scaleLevel = 1; // 1 = píxeles nativos FÍSICOS (más alto = más barato)
+  /** T58-A: DPR efectivo del dispositivo (acotado) — la escala adaptativa es
+   *  LÓGICA (1 = nativo físico); Babylon recibe scaleLevel/DPR. Ver
+   *  renderQuality.ts. */
+  private readonly dpr: number;
   private perfAcc = 0;
   private perfFrames = 0;
   private perfWarm = 0;
@@ -326,7 +332,10 @@ export class SherpaScene {
   private rockJobByChunk = new Map<number, number>(); // chunk → jobId (stale/disposal)
   private rockSyncQueue: number[] = []; // fallback sin worker (1 chunk/frame)
 
-  private constructor(engine: AbstractEngine, backend: string, camData: CameraData, hudData: HudData, perf?: PerfTuning, vfx?: VfxData, relief?: ReliefData | null, climber?: ClimberData) {
+  private constructor(engine: AbstractEngine, backend: string, camData: CameraData, hudData: HudData, perf?: PerfTuning, vfx?: VfxData, relief?: ReliefData | null, climber?: ClimberData, dpr = 1) {
+    // T58-A: DPR efectivo (ya viene acotado desde create()); escala lógica 1
+    // = nativo FÍSICO desde el primer frame.
+    this.dpr = clampDpr(dpr, perf?.dprCap ?? 2);
     this.climberCfg = climber ?? null;
     this.vfxData = vfx;
     // convención del proyecto: dato ausente → comportamiento anterior (pared plana).
@@ -527,15 +536,24 @@ export class SherpaScene {
     // cross-origin WebGPU cae a adaptador bloqueado → canvas negro a 6 fps.
     let engine: AbstractEngine;
     let backend = "WebGL 2";
+    // T58-A DEFINICIÓN: adaptToDeviceRatio = renderizar a píxeles FÍSICOS.
+    // Sin él, en HiDPI el canvas se estila a píxeles CSS y TODO se ve blando
+    // (el otro juego del proyecto ya lo hacía). El DPR se acota (móviles ×3)
+    // y la resolución adaptativa sigue operando en escala LÓGICA sobre él.
+    const dprCap = perf?.dprCap ?? 2;
+    const dpr = clampDpr(typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1, dprCap);
     try {
-      engine = new Engine(canvas, true, { stencil: true });
+      engine = new Engine(canvas, true, { stencil: true }, true);
+      engine.setHardwareScalingLevel(hardwareScaleFor(1, dpr, dprCap));
     } catch {
-      const gpu = new WebGPUEngine(canvas, { antialias: true, stencil: true });
+      // WebGPUEngine: el DPR va en OPTIONS (sin 4º argumento)
+      const gpu = new WebGPUEngine(canvas, { antialias: true, stencil: true, adaptToDeviceRatio: true });
       await gpu.initAsync();
       engine = gpu;
+      engine.setHardwareScalingLevel(hardwareScaleFor(1, dpr, dprCap));
       backend = "WebGPU";
     }
-    return new SherpaScene(engine, backend, camData, hudData, perf, vfx, relief, climber);
+    return new SherpaScene(engine, backend, camData, hudData, perf, vfx, relief, climber, dpr);
   }
 
   private makeDotTexture(): Texture {
@@ -1290,6 +1308,10 @@ export class SherpaScene {
         nTex.wrapV = Texture.WRAP_ADDRESSMODE;
         m.bumpTexture = nTex;
         m.bumpTexture.level = 1.35; // intensidad del relieve por píxel
+        // T58-A DEFINICIÓN: anisotropía en AMBOS mapas — la piedra se ve
+        // nítida en ángulo raso (la cámara vive casi siempre en ángulo).
+        tex.anisotropicFilteringLevel = 8;
+        nTex.anisotropicFilteringLevel = 8;
         m.diffuseColor = new Color3(1, 1, 1); // el tono final = textura × vertex colors
         m.specularColor = new Color3(0.035, 0.034, 0.03); // micro-brillo en cantos (rugosidad viva)
         m.backFaceCulling = true; // cara frontal con winding consistente
@@ -1504,18 +1526,54 @@ export class SherpaScene {
         indices[q++] = a; indices[q++] = cc; indices[q++] = d;
       }
     }
+    // T58-B — MACIZO LATERAL: faldón profundo por AMBOS cantos (la losa deja
+    // de ser papel: al orbitar/vista libre se ve roca, no el vacío). Se funde
+    // en la MISMA malla (0 draw calls nuevos) y su silueta vive en y de MUNDO
+    // (chunks apilados = costura invisible).
+    const skirtXs: number[] = new Array(vw);
+    for (let vi = 0; vi < vw; vi++) skirtXs[vi] = positions[vi * 3]!;
+    const skirtYs: number[] = new Array(vh);
+    for (let vj = 0; vj < vh; vj++) skirtYs[vj] = positions[(vj * vw) * 3 + 1]!;
+    const skirt = buildSideSkirts({
+      vw, vh, xs: skirtXs, ys: skirtYs, faceZ, heights: hGrid,
+      depthM: this.rockCtx.style.skirtDepthM,
+      roughM: this.rockCtx.style.skirtRoughM,
+      seed: (ROCKWALL_SEED ^ 0x51c7) >>> 0,
+    });
+    const skirtBase = vw * vh; // offset de índices del macizo
+    const allPositions = new Float32Array(positions.length + skirt.positions.length);
+    allPositions.set(positions, 0); allPositions.set(skirt.positions, positions.length);
+    const allNormals = new Float32Array(normals.length + skirt.normals.length);
+    allNormals.set(normals, 0); allNormals.set(skirt.normals, normals.length);
+    const allUvs = new Float32Array(uvs.length + skirt.uvs.length);
+    allUvs.set(uvs, 0); allUvs.set(skirt.uvs, uvs.length);
+    const allIndices = new Uint32Array(indices.length + skirt.indices.length);
+    allIndices.set(indices, 0);
+    for (let s = 0; s < skirt.indices.length; s++) allIndices[indices.length + s] = skirt.indices[s]! + skirtBase;
+    const chunkTris = (vw - 1) * (vh - 1) * 2 + skirt.tris;
     const mesh = new Mesh(`rockD_${c}`, this.scene);
     const vd = new VertexData();
-    vd.positions = positions;
-    vd.normals = normals;
-    vd.uvs = uvs;
-    vd.indices = indices;
+    vd.positions = allPositions;
+    vd.normals = allNormals;
+    vd.uvs = allUvs;
+    vd.indices = allIndices;
     // T55 — TINTE POR VÉRTICE (AO de concavidad + variación de macizo +
     // líquenes): el PBR lo multiplica con el albedo horneado (define
-    // VERTEXCOLOR automático al existir el buffer de color).
+    // VERTEXCOLOR automático al existir el buffer de color). La cara usa el
+    // tinte; el macizo trae sus PROPIOS colores oscuros (AO de canto) — si el
+    // tinte está apagado, la cara se rellena blanca (×1, idéntico al anterior).
     if (this.rockTintCfg?.enabled) {
-      vd.colors = computeRockTint({ positions, normals, h: hGrid, vw, vh, cfg: this.rockTintCfg, chunkIndex: c });
+      const faceColors = computeRockTint({ positions, normals, h: hGrid, vw, vh, cfg: this.rockTintCfg, chunkIndex: c });
+      const allColors = new Float32Array(faceColors.length + skirt.colors.length);
+      allColors.set(faceColors, 0); allColors.set(skirt.colors, faceColors.length);
+      vd.colors = allColors;
       this.rockTintChunks++;
+    } else {
+      // sin tinte: cara blanca (×1, idéntico al anterior) + macizo oscuro
+      const allColors = new Float32Array((vw * vh + skirt.verts) * 4);
+      allColors.fill(1);
+      allColors.set(skirt.colors, vw * vh * 4);
+      vd.colors = allColors;
     }
     vd.applyToMesh(mesh);
     // texturas PROPIAS del chunk (el módulo hornea color+AO+vetas+magnesio en
@@ -1549,7 +1607,7 @@ export class SherpaScene {
       inc.push(mesh);
       this.rockFill.includedOnlyMeshes = inc;
     }
-    this.reliefMeshes.set(c, { mesh, cells: vw * vh, tris: (vw - 1) * (vh - 1) * 2 });
+    this.reliefMeshes.set(c, { mesh, cells: vw * vh, tris: chunkTris });
     this.reliefStats.builds++;
     // T48 — VEGETACIÓN EN LOS HUNDIMIENTOS: sobre la MISMA rejilla visible se
     // buscan depresiones reales (fondos de entrantes, concavidades) y se estampa
@@ -1584,7 +1642,7 @@ export class SherpaScene {
         pm.isPickable = false;
         pm.freezeWorldMatrix();
         this.shadowGen?.addShadowCaster(pm, false); // sombritas de las matas
-        this.reliefMeshes.set(c, { mesh, plants: pm, plantsN: spots.length, cells: vw * vh, tris: (vw - 1) * (vh - 1) * 2 });
+        this.reliefMeshes.set(c, { mesh, plants: pm, plantsN: spots.length, cells: vw * vh, tris: chunkTris });
         this.plantasSpots.set(c, spots.map((s) => ({ x: s.x, y: s.y, z: s.z, scale: s.scale })));
         this.plantasTotal += spots.length;
       }
@@ -1696,6 +1754,9 @@ export class SherpaScene {
   getGraphicsInfo(): {
     toneMapping: string; exposure: number; contrast: number; vignette: boolean;
     fxaa: boolean; fog: boolean; skyDome: boolean; shadowQuality: string; normalBias: number;
+    /** T58-A: nitidez — DPR efectivo, escala lógica (1 = nativo FÍSICO) y
+     *  píxeles reales del backbuffer vs píxeles CSS del canvas. */
+    dpr: number; scaleLevel: number; renderW: number; renderH: number; clientW: number; clientH: number;
   } {
     const ip = this.scene.imageProcessingConfiguration;
     return {
@@ -1709,6 +1770,12 @@ export class SherpaScene {
       skyDome: !!this.skyDome && !!this.skyDome.material,
       shadowQuality: this.perfTuning.shadowQuality,
       normalBias: this.shadowGen?.normalBias ?? 0,
+      dpr: this.dpr,
+      scaleLevel: this.scaleLevel,
+      renderW: this.engine.getRenderWidth(),
+      renderH: this.engine.getRenderHeight(),
+      clientW: this.engine.getRenderWidth() * this.engine.getHardwareScalingLevel(),
+      clientH: this.engine.getRenderHeight() * this.engine.getHardwareScalingLevel(),
     };
   }
 
@@ -2010,38 +2077,142 @@ export class SherpaScene {
       const p = solver.getParticle(i);
       return vAdd(p.prev, vScale(vSub(p.pos, p.prev), alpha));
     };
+    // T58-D EMOTES: la animación puntual es un OFFSET sobre las partículas —
+    // se aplica a TODO lo visible (marioneta GLB, skin o cápsulas) porque los
+    // tres se posan desde aquí. RELOJ PROPIO (lección T58): el juego renderiza
+    // a mano (RAF + scene.render) y engine.getDeltaTime() no se actualiza sin
+    // beginFrame — medimos nosotros como en updatePerf.
+    const now = performance.now();
+    if (this.lastSyncNow[player] > 0) {
+      const dtR = Math.min(0.1, Math.max(0, (now - this.lastSyncNow[player]) / 1000));
+      const run = this.emoteRuns[player];
+      if (run) this.emoteRuns[player] = stepEmote(run, dtR);
+    }
+    this.lastSyncNow[player] = now;
+    const off = (i: number): V3 => {
+      if (!this.emoteRuns[player]) return v3(0, 0, 0);
+      const o = emoteOffset(this.emoteRuns[player], i);
+      return v3(o[0], o[1], o[2]);
+    };
     // T49/T57: con un modelo GLB la física lo POSEA (sin cápsulas): marioneta
     // por piezas (T57) o esqueleto skinneado (T49).
     const pup = this.puppet[player];
     if (pup) {
       const parts: { x: number; y: number; z: number }[] = new Array(15);
-      for (let i = 0; i < 15; i++) parts[i] = lerp(i);
+      for (let i = 0; i < 15; i++) { const p = lerp(i); const o = off(i); parts[i] = { x: p.x + o.x, y: p.y + o.y, z: p.z + o.z }; }
       pup.pose(parts);
       return;
     }
     const skin = this.skinned[player];
     if (skin) {
       const parts: { x: number; y: number; z: number }[] = new Array(15);
-      for (let i = 0; i < 15; i++) parts[i] = lerp(i);
+      for (let i = 0; i < 15; i++) { const p = lerp(i); const o = off(i); parts[i] = { x: p.x + o.x, y: p.y + o.y, z: p.z + o.z }; }
       skin.pose(parts);
       return;
     }
     const vis = this.rigVisuals[player];
     if (!vis) return;
     for (const b of vis.bones) {
-      const pa = lerp(b.a);
-      const pb = lerp(b.b);
+      const pa = vAdd(lerp(b.a), off(b.a));
+      const pb = vAdd(lerp(b.b), off(b.b));
       this.orientCapsule(b.mesh, pa, pb, b.rest);
     }
-    const headP = lerp(P.head);
+    const headP = vAdd(lerp(P.head), off(P.head));
     vis.head.position.set(headP.x, headP.y + 0.02, headP.z);
-    const chestP = lerp(P.chest);
-    const pelvisP = lerp(P.pelvisC);
+    const chestP = vAdd(lerp(P.chest), off(P.chest));
+    const pelvisP = vAdd(lerp(P.pelvisC), off(P.pelvisC));
     const pack = (vis as RigVisual & { pack?: Mesh }).pack;
     if (pack) {
       pack.position.set(chestP.x, (chestP.y + pelvisP.y) / 2, chestP.z - 0.13);
       pack.rotation.x = Math.atan2(pelvisP.x - chestP.x, pelvisP.y - chestP.y);
     }
+  }
+
+  // T58-D — EMOTES: estado y API (el MATCH dispara con eventos de juego; la
+  // escena posee el reloj de render). Ampliable: ver gameplay/emotes.ts.
+  private emoteRuns: EmoteSlot[] = [null, null];
+  private lastSyncNow: [number, number] = [0, 0]; // reloj propio por jugador (getDeltaTime miente aquí)
+
+  /** Dispara (o corta) una animación puntual en un jugador. Nombre
+   *  desconocido = no-op (el emote en curso sigue). */
+  setEmote(player: 0 | 1, name: string | null): void {
+    this.emoteRuns[player] = name === null ? null : startEmote(this.emoteRuns[player], name);
+  }
+
+  /** T58-D SONDA E2E: emote activo por jugador + desplazamiento vertical
+   *  aplicado a la mano izquierda (0 = física pura). */
+  emoteDebug(): { p0: { name: string | null; t: number; handDy: number } | null; p1: { name: string | null; t: number; handDy: number } | null } {
+    const one = (p: 0 | 1) => {
+      const run = this.emoteRuns[p];
+      if (!run) return null;
+      const o = emoteOffset(run, P.handL);
+      return { name: run.name, t: Math.round(run.t * 100) / 100, handDy: Math.round(o[1] * 1000) / 1000 };
+    };
+    return { p0: one(0), p1: one(1) };
+  }
+
+  // T58-E — MEDIDOR A SACO: barrita junto al colgado (la petición literal:
+  // "apareciendo al lado de los escaladores una barrita de medidor de fuerza
+  // con un umbral"). Dos quads + raya de umbral, cara a cámara (−z), se crea
+  // perezoso y se esconde con la ventana cerrada.
+  private mashMeterMeshes: ({ bg: Mesh; fill: Mesh; notch: Mesh; mat: StandardMaterial } | null)[] = [null, null];
+  /** últimos datos de medidor por jugador (sonda + color legible). */
+  private mashMeterData: ({ force01: number; threshold01: number; climbing: boolean } | null)[] = [null, null];
+
+  /** Actualiza (o esconde) el medidor del jugador p. `pos` = pelvis física. */
+  setRopeMashMeter(p: 0 | 1, meter: { force01: number; threshold01: number; climbing: boolean } | null, pos: { x: number; y: number; z: number }): void {
+    if (!meter) {
+      const m = this.mashMeterMeshes[p];
+      if (m) for (const q of [m.bg, m.fill, m.notch]) q.isVisible = false;
+      this.mashMeterData[p] = null;
+      return;
+    }
+    let m = this.mashMeterMeshes[p];
+    if (!m) {
+      const W = 0.62, H = 0.07;
+      const bgM = new StandardMaterial(`mashBg${p}`, this.scene);
+      bgM.emissiveColor = new Color3(0.06, 0.06, 0.08);
+      bgM.disableLighting = true;
+      bgM.alpha = 0.75;
+      const fillM = new StandardMaterial(`mashFill${p}`, this.scene);
+      fillM.emissiveColor = new Color3(0.35, 0.75, 0.28);
+      fillM.disableLighting = true;
+      const notchM = new StandardMaterial(`mashNotch${p}`, this.scene);
+      notchM.emissiveColor = new Color3(0.95, 0.85, 0.3);
+      notchM.disableLighting = true;
+      const bg = MeshBuilder.CreatePlane(`mashBG${p}`, { width: W, height: H }, this.scene);
+      bg.material = bgM;
+      const fill = MeshBuilder.CreatePlane(`mashFill${p}`, { width: 1, height: H * 0.72 }, this.scene);
+      fill.material = fillM;
+      const notch = MeshBuilder.CreatePlane(`mashNotch${p}`, { width: 0.025, height: H * 1.25 }, this.scene);
+      notch.material = notchM;
+      for (const q of [bg, fill, notch]) { q.isPickable = false; q.hasVertexAlpha = false; }
+      m = { bg, fill, notch, mat: fillM };
+      this.mashMeterMeshes[p] = m;
+    }
+    const W = 0.62;
+    const cx = pos.x, cy = pos.y + 0.95, cz = pos.z - 0.32;
+    m.bg.position.set(cx, cy, cz);
+    m.bg.isVisible = true;
+    const fw = Math.max(0.001, meter.force01 * W);
+    m.fill.scaling.x = meter.force01 * W; // CreatePlane width 1 → escala = ancho
+    m.fill.position.set(cx - W / 2 + fw / 2, cy, cz - 0.001);
+    m.fill.isVisible = meter.force01 > 0.003;
+    m.mat.emissiveColor = meter.climbing ? new Color3(0.35, 0.8, 0.3) : new Color3(0.9, 0.62, 0.2);
+    m.notch.position.set(cx - W / 2 + meter.threshold01 * W, cy, cz - 0.002);
+    m.notch.isVisible = true;
+    this.mashMeterData[p] = { ...meter };
+  }
+
+  /** T58-E SONDA E2E: medidor visible por jugador (posición + datos reales). */
+  ropeMashDebug(): { p0: { force01: number; threshold01: number; climbing: boolean; x: number; y: number } | null; p1: { force01: number; threshold01: number; climbing: boolean; x: number; y: number } | null } {
+    const one = (p: 0 | 1) => {
+      const d = this.mashMeterData[p];
+      const m = this.mashMeterMeshes[p];
+      if (!d || !m || !m.bg.isVisible) return null;
+      return { ...d, x: Math.round(m.bg.position.x * 100) / 100, y: Math.round(m.bg.position.y * 100) / 100 };
+    };
+    return { p0: one(0), p1: one(1) };
   }
 
   private readonly tmpDir = new Vector3();
@@ -3024,10 +3195,10 @@ export class SherpaScene {
       this.perfWarm++; // ignora el arranque (compilación de shaders, jank inicial)
     } else if (fps < p.targetFps - 10 && this.scaleLevel < p.maxScale) {
       this.scaleLevel = Math.min(p.maxScale, Math.round((this.scaleLevel + p.step) * 100) / 100);
-      this.engine.setHardwareScalingLevel(this.scaleLevel);
+      this.engine.setHardwareScalingLevel(hardwareScaleFor(this.scaleLevel, this.dpr, this.perfTuning.dprCap ?? 2));
     } else if (this.renderCostSmoothed > 0 && this.renderCostSmoothed < budgetMs * 0.55 && this.scaleLevel > p.minScale) {
       this.scaleLevel = Math.max(p.minScale, Math.round((this.scaleLevel - p.step) * 100) / 100);
-      this.engine.setHardwareScalingLevel(this.scaleLevel);
+      this.engine.setHardwareScalingLevel(hardwareScaleFor(this.scaleLevel, this.dpr, this.perfTuning.dprCap ?? 2));
     }
     // draw calls del frame = delta del contador del engine / nº de frames
     // (addCount acumula en .current sin fetchNewFrame: crece monótono)

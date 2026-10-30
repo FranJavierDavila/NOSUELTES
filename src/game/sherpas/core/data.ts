@@ -167,6 +167,9 @@ export interface PerfTuning {
   shadowQuality: "off" | "low" | "medium" | "high";
   /** GRÁFICOS: apaga los post-procesos (FXAA) — dispositivos mínimos. */
   postFxOff?: boolean;
+  /** T58-A: techo de devicePixelRatio (nitidez HiDPI vs coste). 2 = Retina
+   *  nativo; 1 = píxeles CSS (comportamiento anterior). Ausente → 2. */
+  dprCap?: number;
 }
 export interface AnchorTypeData {
   label: string; gripQuality: number; durability: number | null;
@@ -267,8 +270,8 @@ export interface DifficultyData { presets: Record<string, DifficultyPresetData>;
 export interface InputMapData {
   players: Record<string, {
     label: string;
-    keyboard: { aimUp: string; aimDown: string; aimLeft: string; aimRight: string; aimSpeed: number; grip: Record<string, string>; shoo: string; fart?: string; anchor?: string; impulse?: string };
-    gamepad?: { index: number; aim: { stick: number; deadzone: number; aimSpeed: number }; grip: Record<string, number>; shoo: number; fart?: number; anchor?: number; impulse?: number; gripNames: Record<string, string>; cameraOrbit?: { stick: number; deadzone: number } };
+    keyboard: { aimUp: string; aimDown: string; aimLeft: string; aimRight: string; aimSpeed: number; grip: Record<string, string>; shoo: string; fart?: string; anchor?: string; impulse?: string; /** T58-E: tecla A SACO para trepar por la cuerda. */ mash?: string };
+    gamepad?: { index: number; aim: { stick: number; deadzone: number; aimSpeed: number }; grip: Record<string, number>; shoo: number; fart?: number; anchor?: number; impulse?: number; /** T58-E: botón A SACO. */ mash?: number; gripNames: Record<string, string>; cameraOrbit?: { stick: number; deadzone: number } };
   }>;
   shared: { pause: string; help: string; cameraRecenter: string; cameraOrbitLeft?: string; cameraOrbitRight?: string; cameraOrbitUp?: string; cameraOrbitDown?: string; /** T47: MANTENER → vista libre temporal (límites ampliados, retorno al soltar). */ cameraFreeView?: string };
 }

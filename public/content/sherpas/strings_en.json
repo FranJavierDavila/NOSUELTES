@@ -95,7 +95,9 @@
   "coopAnchorOn": "{name} ANCHORS — short belay active",
   "coopImpulse": "{from} boosts {to}!",
   "coopImpulseNeed": "Anchor yourself first (Q/J) to give a boost",
-  "coopImpulseScore": "The boost paid off! Tip +{n}"
+  "coopImpulseScore": "The boost paid off! Tip +{n}",
+  "ropeMash": "{name} IS HANGING! MASH C (P1) AND N (P2) TO CLIMB THE ROPE",
+  "ropeReleased": "THE ROPE RAN OUT! {name} FALLS INTO THE VOID!"
  },
  "limb": {
   "hand_l": "L.Hand",

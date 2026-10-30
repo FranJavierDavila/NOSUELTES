@@ -1,0 +1,70 @@
+PLANTILLA DEL RICACHÓN POR PIEZAS — LEEME (T58-C)
+==================================================
+
+Qué es: ricachon_plantilla_piezas.glb — el muñeco del RICACHÓN troceado en
+17 piezas para que lo esculpas encima en Blender, EXACTAMENTE igual que hiciste
+con el escalador (sherpa.glb) con la plantilla Opción B. Cuando lo tengas,
+lo pasas y el juego lo poseerá con la física de 11 partículas igual que el
+escalador con sus 15 (adaptador "puppet" del T57, sin skinning).
+
+LA REGLA DE ORO (idéntica a la del escalador)
+---------------------------------------------
+1. NO renombres las piezas (los nombres rico_* son los que el juego busca).
+2. El ORIGEN DE CADA OBJETO (pivote) debe quedar EN SU ARTICULACIÓN — ya está
+   así: si esculpes en modo Edición (sin mover el objeto entero), se conserva.
+   Mover/rotar/girar el OBJETO entero rompe el bind: no lo hagas.
+3. Jerarquía PLANA: nada de parentar piezas entre sí.
+4. Escala 1,0,0,0 (aplica escala y rota en modo Edición si hace falta).
+5. Exporta GLB con Y arriba, mirando a +Z (igual que la plantilla viene).
+
+PIVOTES (los SAGRADOS — en metros, como vienen en el GLB)
+---------------------------------------------------------
+La pelvis está en (0, 0.90, 0). El resto de pivotes son los offsets del juego
+(física richMan.ts). Si respetas ESTOS orígenes, el modelo caerá alineado con
+la física sin tocar nada más:
+
+  pieza                    pivote (x, y, z)        qué es / radio actual
+  -----------------------  ----------------------  ---------------------------
+  rico_torso               (0, 0.90, 0)  = pelvis  cápsula pelvis→pecho, r 0,16
+                                                     (AQUÍ se esculpe la panza)
+  rico_cabeza              (0, 1.52, 0)  = head    esfera d 0,26 centrada aquí
+  rico_brazo_sup_izq       (0, 1.25, 0)  = chest   hombro COMÚN (una partícula
+  rico_brazo_sup_der       (0, 1.25, 0)  = chest    para los dos brazos)
+  rico_antebrazo_izq       (-0.20, 1.15, 0) = elbowL  r 0,05 / antebrazo r 0,04
+  rico_antebrazo_der       (0.20, 1.15, 0)  = elbowR
+  rico_muslo_izq           (0, 0.90, 0)  = pelvis  MUSLOS con pivote en la pelvis
+  rico_muslo_der           (0, 0.90, 0)  = pelvis   (una sola partícula)
+  rico_pantorrilla_izq     (-0.10, 0.55, 0) = kneeL   r 0,07 / pantorrilla 0,055
+  rico_pantorrilla_der     (0.10, 0.55, 0)  = kneeR
+  rico_sombrero            (0, 1.65, 0)  = corona  copa d 0,11-0,13 × h 0,10
+  rico_ala_sombrero        (0, 1.65, 0)  = corona  ala d 0,24 × 0,016
+  rico_gafas               (0, 1.52, 0)  = head    caja 0,20×0,045×0,028 a +z
+  rico_bocadillo           (-0.30, 0.95, 0) = handL  prop de COMER (mano izq)
+  rico_copita              (0.30, 0.95, 0)  = handR  prop de BRINDAR (mano der)
+  rico_libro               (-0.30, 0.95, 0) = handL  prop de LEER (mano izq)
+  rico_telefono            (0.30, 0.95, 0)  = handR  prop de LLAMAR (mano der)
+
+Las esferas "junta_*" son SOLO REFERENCIA (radio = hueso +10% para tapar
+uniones mientras esculpes): bórralas antes de exportar.
+
+LONGITUDES SAGRADAS (palos de la física — no los acortes al esculpir)
+---------------------------------------------------------------------
+  cuello (head↔chest)     0,27     torso (chest↔pelvis)    0,35
+  brazo (chest↔elbow)     0,24     antebrazo (elbow↔hand)  0,22
+  muslo (pelvis↔knee)     0,36     pantorrilla (knee↔foot) 0,34
+
+Puedes engordar/ensanchar TODO lo que quieras (¡es el ricachón!) mientras el
+volumen no impida leer la articulación: las piezas rotan sobre su pivote.
+
+SUGERENCIAS DE ESTILO (libres, no obligatorias)
+-----------------------------------------------
+· La panza: hincha rico_torso hacia +z (delante) — el juego no la simula,
+  es pura forma.
+· El sombrero/ala y las gafas pueden ser tan absurdos como quieras: rotan con
+  la cabeza.
+· Los props (bocadillo/copita/libro/teléfono) son opcionales: si los dejas,
+  seguirán apareciendo en los gestos del ricachón pero con TU forma.
+· Texturas: una sola imagen o materiales planos; el juego añade luz, sombra
+  y relleno frío igual que con el sherpa.
+
+Al terminar: exporta como sherpa.glb → "ricachon.glb" y pásalo por el chat.

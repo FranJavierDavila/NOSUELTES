@@ -189,6 +189,10 @@ export interface RockwallStyle {
   plateauR: number;       // radio de la plataforma que funde la roca a la presa
   anchorBackM: number;    // la roca queda este margen DETRÁS del centro de la presa
   bodyBackM: number;      // (escena) retraso del cuerpo del muro para ver las grietas
+  /** T58-B: MACIZO LATERAL — profundidad del faldón tras los cantos (m) y
+   *  rugosidad de su silueta trasera (m). La losa deja de ser papel al
+   *  orbitar: el canto lateral muestra roca, no el vacío. */
+  skirtDepthM: number; skirtRoughM: number;
   /** T44: irregularidad del asiento (0..1) — el círculo aplanado se ondula con
    *  ruido por anclaje para que NO se lea como un disco perfecto en la pared. */
   seatWobble: number;
@@ -228,6 +232,9 @@ export const ROCKWALL_STYLE_DEFAULTS: RockwallStyle = {
   zCompressHigh: 0.3,
   plateauR: 0.15, // T44: era 0,26 — el círculo aplanado se veía MÁS que la presa (petición del jugador)
   anchorBackM: 0.012,
+  // T58-B: macizo lateral profundo (se ve al orbitar; coste ≈ 0)
+  skirtDepthM: 7,
+  skirtRoughM: 1.2,
   bodyBackM: 0.35,
   seatWobble: 0.45,
 };
@@ -295,6 +302,10 @@ export function rockwallStyleFromData(d?: Partial<RockwallStyle> | null): Rockwa
     plateauR: num(d.plateauR, def.plateauR, 0.06, 0.8),
     anchorBackM: num(d.anchorBackM, def.anchorBackM, 0, 0.1),
     bodyBackM: num(d.bodyBackM, def.bodyBackM, 0, 1),
+    // T58-B: macizo lateral (datos ausentes = defaults; el cap evita macizos
+    // absurdos por typo en el JSON)
+    skirtDepthM: num(d.skirtDepthM, def.skirtDepthM, 0.4, 20),
+    skirtRoughM: num(d.skirtRoughM, def.skirtRoughM, 0, 10),
     seatWobble: num(d.seatWobble, def.seatWobble, 0, 1),
   };
 }
@@ -625,4 +636,93 @@ export function generate(o: RockwallGenerateOptions = {}): {
     return { x: a.x, y: a.y, z: hp[j * WP + i]!, nx: -gx / l, ny: -gy / l, nz: 1 / l, kind: a.kind, shape: a.shape, r: a.r };
   });
   return { W, H, s: cell, height: res.height, normalMap: res.normalMap, colorMap: res.colorMap, anchors };
+}
+
+// ---------- T58-B: MACIZO LATERAL POR CHUNK (petición: "las paredes de
+// relleno laterales deben meterse un poco más — al girar la cámara se ven
+// huecos") ----------
+// La pared era una LOSA DE PAPEL: un heightfield sin espesor. Con la órbita
+// (±30°) y la vista libre (±75°) el canto lateral deja ver el vacío y el
+// fondo negro. FIX: cada chunk de roca lleva AHORA un FALDÓN PROFUNDO por
+// sus dos cantos (x=x0 y x=x1): tiras de quads que se enrollan hacia +z
+// (detrás de la cara) formando el macizo del que la pared es una laja. Al
+// vivir EN el chunk, el macizo sigue la escalada a cualquier altura y muere
+// con el LRU (coste ≈ 4 tris por fila de chunk, 0 draw calls nuevos).
+//
+// CONTINUIDAD: la silueta trasera es ruido determinista sobre la y de MUNDO
+// (no del chunk) — dos chunks apilados comparten fila de borde y su z de
+// fondo coincide: costura invisible. DOBLE CARA: cada quad se emite con los
+// dos winding (solo uno pasa el culling por vista): sin z-fighting (nunca se
+// rasterizan los dos a la vez) y sin depender de la convención de caras.
+
+/** Entrada del macizo lateral: la rejilla VISIBLE de la cara del chunk. */
+export interface SideSkirtInput {
+  /** columnas × filas de la cara (tras el stride). */
+  vw: number; vh: number;
+  /** x de cada columna / y de cada fila (MUNDO, m, ascendente). */
+  xs: number[]; ys: number[];
+  /** plano frontal del muro (z de Babylon). */
+  faceZ: number;
+  /** altura de roca por vértice de cara (vw*vh): z = faceZ − h. */
+  heights: Float32Array;
+  /** profundidad del macizo tras la cara (m). */
+  depthM: number;
+  /** rugosidad de la silueta trasera (m, ± sobre depthM). */
+  roughM: number;
+  /** semilla determinista (misma partida = mismo macizo). */
+  seed: number;
+}
+
+export interface SkirtGeom {
+  positions: number[]; normals: number[]; colors: number[]; uvs: number[]; indices: number[];
+  verts: number; tris: number;
+}
+
+/** Faldón profundo de AMBOS cantos. Índices LOCALES (desde 0): el que fusiona
+ *  añade el offset de los vértices de la cara. Colores: AO de esquina (el
+ *  canto lee más oscuro que la cara, como una arista real de roca). */
+export function buildSideSkirts(inp: SideSkirtInput): SkirtGeom {
+  const g: SkirtGeom = { positions: [], normals: [], colors: [], uvs: [], indices: [], verts: 0, tris: 0 };
+  const depth = Math.max(0.4, inp.depthM);
+  const rough = Math.min(depth * 0.5, Math.max(0, inp.roughM));
+  for (let side = 0; side < 2; side++) {
+    const vi = side === 0 ? 0 : inp.vw - 1;
+    const dirOut = side === 0 ? -1 : 1; // normal de cara lateral (hacia fuera)
+    const xE = inp.xs[vi] ?? 0;
+    const eIdx: number[] = [];
+    const bIdx: number[] = [];
+    for (let vj = 0; vj < inp.vh; vj++) {
+      const y = inp.ys[vj] ?? 0;
+      const h = inp.heights[vj * inp.vw + vi] ?? 0;
+      const zE = inp.faceZ - h;
+      // silueta trasera en y de MUNDO (continuidad entre chunks apilados)
+      const k = Math.round(y * 512);
+      const n1 = H3(k, side * 7 + 1, inp.seed);
+      const n2 = H3(k + 1, side * 7 + 2, inp.seed);
+      const zB = inp.faceZ + depth + (n1 - 0.5) * 2 * rough;
+      // vértice de BORDE (hereda la esquina de la cara, sombra de arista)
+      eIdx.push(g.verts++);
+      g.positions.push(xE, y, zE);
+      g.normals.push(dirOut, 0, 0);
+      const cE = 0.6 + (n2 - 0.5) * 0.1;
+      g.colors.push(cE, cE * 0.985, cE * 0.955, 1);
+      g.uvs.push(0, y * 0.45);
+      // vértice de FONDO (dentro del macizo: mucho más oscuro, interior)
+      bIdx.push(g.verts++);
+      g.positions.push(xE, y, zB);
+      g.normals.push(dirOut, 0, 0);
+      const cB = 0.34 + (n1 - 0.5) * 0.08;
+      g.colors.push(cB, cB * 0.98, cB * 0.94, 1);
+      g.uvs.push(0.5, y * 0.45);
+    }
+    for (let vj = 0; vj < inp.vh - 1; vj++) {
+      const E0 = eIdx[vj]!, E1 = eIdx[vj + 1]!, B0 = bIdx[vj]!, B1 = bIdx[vj + 1]!;
+      // winding A (frontal visto desde fuera) + winding B (espejo): con
+      // backFaceCulling activo solo UNO rasteriza por lado de la cámara.
+      g.indices.push(E0, E1, B1, E0, B1, B0);
+      g.indices.push(E0, B1, E1, E0, B0, B1);
+      g.tris += 4;
+    }
+  }
+  return g;
 }

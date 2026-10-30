@@ -12,7 +12,7 @@
  */
 import { describe, it, expect } from "vitest";
 import {
-  ROCKWALL_SEED, ROCKWALL_STYLE_DEFAULTS, HOLD_SHAPES, generate, sampleRegion,
+  buildSideSkirts, ROCKWALL_SEED, ROCKWALL_STYLE_DEFAULTS, HOLD_SHAPES, generate, sampleRegion,
   rockwallStyleFromData, type RockwallAnchorIn,
 } from "../../src/game/sherpas/world/rockwall";
 // Módulo ORIGINAL del jugador (verbatim en fixtures) para el test de fidelidad.
@@ -323,5 +323,85 @@ describe("rockwall — rendimiento (chunk de juego)", () => {
     const dt = performance.now() - t0;
     expect(r.W).toBeGreaterThan(400);
     expect(dt).toBeLessThan(2000);
+  });
+});
+
+// ---------- T58-B: MACIZO LATERAL POR CHUNK ----------
+
+describe("T58-B buildSideSkirts — la losa deja de ser papel", () => {
+  const inp = (y0: number, y1: number, n = 5): Parameters<typeof buildSideSkirts>[0] => {
+    const vh = n, vw = 4;
+    const xs = [0, 0.4, 0.8, 1.2].slice(0, vw);
+    const ys: number[] = [];
+    for (let j = 0; j < vh; j++) ys.push(y0 + ((y1 - y0) * j) / (vh - 1));
+    const heights = new Float32Array(vw * vh);
+    for (let k = 0; k < vw * vh; k++) heights[k] = 0.2; // cara plana a 0,2
+    return { vw, vh, xs, ys, faceZ: -0.3, heights, depthM: 7, roughM: 1.2, seed: 1234 };
+  };
+
+  it("verts/tris/finitud: 2 lados × 2 vértices por fila, quads dobles", () => {
+    const g = buildSideSkirts(inp(0, 3));
+    expect(g.verts).toBe(2 * 2 * 5); // 2 lados × (borde+fondo) × 5 filas
+    expect(g.tris).toBe(4 * 4 * 2);  // 2 lados × 4 quads × 2 winding
+    expect(g.positions.length).toBe(g.verts * 3);
+    expect(g.indices.length).toBe(g.tris * 3);
+    for (const v of g.positions) expect(Number.isFinite(v)).toBe(true);
+    for (const i of g.indices) expect(i).toBeGreaterThanOrEqual(0), expect(i).toBeLessThan(g.verts);
+  });
+
+  it("el macizo queda DETRÁS de la cara (z > faceZ) y el borde hereda su z", () => {
+    const g = buildSideSkirts(inp(0, 3));
+    // pares (borde, fondo): z del fondo SIEMPRE > faceZ; z del borde = faceZ − h
+    for (let v = 0; v < g.verts; v += 2) {
+      const zE = g.positions[v * 3 + 2]!, zB = g.positions[(v + 1) * 3 + 2]!;
+      expect(zE).toBeCloseTo(-0.5, 6);        // faceZ − 0.2
+      expect(zB).toBeGreaterThan(-0.3);       // detrás del plano de cara
+      expect(zB).toBeGreaterThan(zE);
+    }
+  });
+
+  it("los cantos están en x0 y x1 con la normal hacia fuera", () => {
+    const g = buildSideSkirts(inp(0, 3));
+    const xLeft = g.positions[0]!, xRight = g.positions[(g.verts / 2) * 3]!;
+    expect(xLeft).toBeCloseTo(0, 6);   // xs[0]
+    expect(xRight).toBeCloseTo(1.2, 6); // xs[vw-1]
+    expect(g.normals[0]).toBe(-1);      // canto izquierdo mira a −x
+    expect(g.normals[(g.verts / 2) * 3]).toBe(1); // derecho mira a +x
+  });
+
+  it("CONTINUIDAD entre chunks apilados: misma fila de borde ⇒ misma silueta", () => {
+    const a = buildSideSkirts(inp(0, 3));   // chunk bajo: y 0..3
+    const b = buildSideSkirts(inp(3, 6));   // chunk alto: y 3..6
+    // layout por lado: vértices INTERCALADOS (E_j, B_j) — el fondo de la fila j
+    // del lado izquierdo vive en el índice j*2+1. Última fila del chunk bajo
+    // (j=vh-1, y=3) y primera del alto (j=0, y=3) comparten y de mundo.
+    const lastRowBack = ((5 - 1) * 2 + 1) * 3 + 2;
+    const firstRowBack = (0 * 2 + 1) * 3 + 2;
+    expect(a.positions[lastRowBack]).toBeCloseTo(b.positions[firstRowBack], 9);
+    // y también en el canto DERECHO (los dos lados continúan)
+    const lastRight = (5 * 2 + (5 - 1) * 2 + 1) * 3 + 2; // base lado der = 2*vh
+    const firstRight = (2 * 5 + 1) * 3 + 2;
+    expect(a.positions[lastRight]).toBeCloseTo(b.positions[firstRight], 9);
+  });
+
+  it("determinismo: misma entrada ⇒ mismas arrays bit a bit", () => {
+    const a = buildSideSkirts(inp(0, 3));
+    const b = buildSideSkirts(inp(0, 3));
+    expect(b.positions).toEqual(a.positions);
+    expect(b.colors).toEqual(a.colors);
+    expect(b.indices).toEqual(a.indices);
+  });
+
+  it("roughM=0 ⇒ silueta plana a depthM exacto; rough grande no cruza a la cara", () => {
+    const base = inp(0, 3);
+    const flat = buildSideSkirts({ ...base, roughM: 0 });
+    for (let v = 1; v < flat.verts; v += 2) {
+      expect(flat.positions[v * 3 + 2]!).toBeCloseTo(-0.3 + 7, 6);
+    }
+    const rough = buildSideSkirts({ ...base, roughM: 10 });
+    for (let v = 1; v < rough.verts; v += 2) {
+      expect(rough.positions[v * 3 + 2]!).toBeGreaterThan(-0.3 + 7 - 5); // ≥ depth − min(depth, rough)
+      expect(rough.positions[v * 3 + 2]!).toBeGreaterThan(-0.3);
+    }
   });
 });

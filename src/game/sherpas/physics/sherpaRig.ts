@@ -23,6 +23,10 @@ import type { CharacterDefinition, BodyProfileDefinition, LimbId } from "../../t
 import type { Limb, ReleaseCause } from "../core/bus";
 import type { LimbTuning, RopeTuning, FartTuning, CoopTuning } from "../core/data";
 import { AnchorSystem, AnchorInstance, type HoldInstance } from "./anchors";
+import {
+  mashMeter01, mashRisePerS, mashSlidePerS, mashThreshold01, openRopeMash, ROPE_MASH_DEFAULTS, stepRopeMash,
+  type RopeMashState, type RopeMashTuning,
+} from "../gameplay/ropeMash"; // T58-E: trepar a pulso
 
 export const LIMBS: Limb[] = ["hand_l", "hand_r", "foot_l", "foot_r"];
 const isHand = (l: Limb) => l === "hand_l" || l === "hand_r";
@@ -144,6 +148,9 @@ export interface SherpaGripTuning {
     haulPerSecondM?: number;
     /** el recobrado termina justo DEBAJO del punto de despegue (m). */
     haulTopOffsetM?: number;
+    /** T58-E TREPAR A PULSO: afinado de la ventana de fuerza (ausente →
+     *  ROPE_MASH_DEFAULTS). */
+    ropeMash?: Partial<RopeMashTuning>;
   };
   /** SUPER FLATULENCIA (opcional en tests: ausente → sin superpoder). */
   fart?: FartTuning;
@@ -200,8 +207,13 @@ export interface SherpaStepInfo {
   slippedByTwoHands: boolean;
   /** true SOLO en el tick en que se gana la carga de Super Flatulencia. */
   fartGained: boolean;
-  /** SEGURO DE CUERDA (Task 36): estado + eventos de borde del tick. */
-  rope: { state: RopeHoldState; tautNow: boolean; haulStart: boolean; dropM: number };
+  /** SEGURO DE CUERDA (Task 36): estado + eventos de borde del tick. T58-E:
+   *  medidor A SACO (mientras hay ventana) + desenroque de cuerda agotada. */
+  rope: {
+    state: RopeHoldState; tautNow: boolean; haulStart: boolean; dropM: number;
+    mash: { force01: number; threshold01: number; climbing: boolean } | null;
+    releasedNow: boolean;
+  };
 }
 
 interface GameParticle { pos: V3; prev: V3; mass: number; invMass: number; radius: number }
@@ -256,6 +268,18 @@ export class SherpaRig {
   private ropeHaulStartNow = false;
   private dangleSettleT = 0;
   private haulDone = false;
+  /** T58-E: borde — este tick la cuerda se AGOTÓ y soltó al colgado. */
+  private ropeReleasedNow = false;
+  // T58-E — TREPAR A PULSO: la recuperación ya no es automática: la fuerza la
+  // ponen LOS DOS JUGADORES machacando su tecla (ropeMash.ts). El match inyecta
+  // las pulsaciones del tick con feedRopeMash() justo antes de step().
+  private ropeMash: RopeMashState | null = null;
+  private readonly ropeMashCfg: RopeMashTuning;
+  private feedHangedPresses = 0;
+  private feedPartnerPresses = 0;
+  private feedPartnerAnchored = false;
+  /** T58-E: la cuerda se AGOTÓ deslizando → caída libre sin captura (suelo). */
+  private ropeReleased = false;
   /** CUERDA COOPERATIVA (Task 37): este escalador está ANCLADO como seguro del
    *  compañero — su ancla acorta la caída posible del otro (belayCatchDropM).
    *  El match valida requisitos y lo desactiva si se pierden los agarres. */
@@ -273,6 +297,8 @@ export class SherpaRig {
   constructor(deps: SherpaDeps, startHolds: { hand_l: HoldInstance; hand_r: HoldInstance; foot_l?: HoldInstance; foot_r?: HoldInstance }) {
     this.deps = deps;
     this.player = deps.player;
+    // T58-E: afinado de la ventana A SACO (datos ausentes → defaults)
+    this.ropeMashCfg = { ...ROPE_MASH_DEFAULTS, ...(deps.tuning.fall?.ropeMash ?? {}) };
     const mass = deps.tuning.limb.mass;
     this.rig = { particles: [] };
     for (let i = 0; i < 15; i++) {
@@ -682,6 +708,7 @@ export class SherpaRig {
     this.slippedByTwoHands = false;
     this.ropeTautNow = false; // eventos de borde del tick (Task 36)
     this.ropeHaulStartNow = false;
+    this.ropeReleasedNow = false; // T58-E
     const handBusy = (l: Limb): boolean => {
       const st = this.states.get(l)!;
       return st.anchored || st.traveling;
@@ -735,20 +762,48 @@ export class SherpaRig {
       this.fartTrailAcc += dt;
       if (this.fartLaunchT <= 0) this.autoGripAfterFart();
     } else if (nAnchored === 0 && this.ropeState === "hauling") {
-      // 2a-bis. RECUPERACIÓN MANO A MANO (Task 36): el escalador tira de la
-      //    cuerda y asciende hasta justo debajo de su punto de despegue.
-      //    Cinemática pura (como el vuelo de pedo): sin gravedad y sin energía
-      //    fantasma (pos y prev suben juntos). El jugador puede ADELANTAR la
-      //    recuperación arrastrando una mano a una presa (entonces hay anclas
-      //    y esta rama ni se entra).
-      const start = this.ropeFallStartY ?? body.pos.y;
-      const top = start - (fT?.haulTopOffsetM ?? 0.35);
-      const rise = Math.min((fT?.haulPerSecondM ?? 1.05) * dt, Math.max(0, top - body.pos.y));
-      body.pos = vAdd(body.pos, v3(0, rise, 0));
-      body.prev = v3(body.pos.x, body.pos.y - rise * 0.55, body.pos.z);
-      this.clampBody(body);
-      if (rise <= 0) { this.ropeState = "caught"; this.haulDone = true; }
-      vAbs = rise / Math.max(1e-4, dt);
+      // 2a-bis. RECUPERACIÓN A PULSO (T58-E, petición del jugador: "subir por
+      //    ella a pulso... pulsar una tecla a toda velocidad, los DOS: el
+      //    colgado para trepar y el compañero para tirar de la cuerda hacia
+      //    arriba, con un medidor con umbral"). La fuerza la ponen las
+      //    pulsaciones (ropeMash.ts): sobre el umbral asciende (más fuerza =
+      //    más rápido); debajo, DESLIZA y consume la cuerda de reserva;
+      //    agotada, SUELTA y cae al suelo. Cinemática pura: sin gravedad y
+      //    sin energía fantasma. El jugador puede ADELANTAR el rescate
+      //    arrastrando una mano a una presa (entonces hay anclas y esta rama
+      //    ni se entra).
+      const cfg = this.ropeMashCfg;
+      const rm = this.ropeMash ?? (this.ropeMash = openRopeMash());
+      const wasInGrace = rm.tOpen <= cfg.graceS; // el tick que cruza el descanso no desliza
+      this.ropeMash = stepRopeMash(rm, dt, this.feedHangedPresses, this.feedPartnerPresses, this.feedPartnerAnchored, this.handFatigueAvg(), cfg);
+      this.consumeRopeMashFeed();
+      const st = this.ropeMash;
+      if (st.released) {
+        // ¡SE ACABÓ LA CUERDA!: suelta y cae SIN captura (el suelo es el final)
+        this.ropeState = "falling";
+        this.ropeFallStartY = body.pos.y;
+        this.ropeMash = null;
+        this.ropeReleased = true;
+        this.ropeReleasedNow = true; // borde: el match suena/avisa
+        vAbs = 0; // la caída libre re-lee la velocidad del cuerpo el próximo bloque
+      } else {
+        const start = this.ropeFallStartY ?? body.pos.y;
+        const top = start - (fT?.haulTopOffsetM ?? 0.35);
+        const rising = mashRisePerS(st.force, cfg);
+        const sliding = wasInGrace ? 0 : mashSlidePerS(st.force, cfg);
+        const dy = Math.min(Math.max(0, top - body.pos.y), rising * dt) - sliding * dt;
+        body.pos = vAdd(body.pos, v3(0, dy, 0));
+        body.prev = v3(body.pos.x, body.pos.y - dy * 0.55, body.pos.z);
+        this.clampBody(body);
+        if (rising > 0 && body.pos.y >= top - 1e-4) {
+          // RESCATE COMPLETO: queda colgado bajo su punto de despegue (igual
+          // que el haul automático de siempre) — a un arrastre de las presas.
+          this.ropeState = "caught";
+          this.haulDone = true;
+          this.ropeMash = null;
+        }
+        vAbs = Math.abs(dy) / Math.max(1e-4, dt);
+      }
     } else {
       // RE-AGARRE: cualquier ancla viva devuelve la cuerda a holgura (Task 36).
       if (nAnchored > 0 && this.ropeState !== "climbing") {
@@ -782,7 +837,9 @@ export class SherpaRig {
           this.deps.floorY + (fT?.catchFloorM ?? 0.6),
           (this.ropeFallStartY ?? body.pos.y) - this.belayCatchDropM,
         );
-        if (this.ropeState === "falling" && body.pos.y <= catchY) {
+        // T58-E: si la cuerda se AGOTÓ en la ventana A SACO, NO vuelve a
+        // agarrar — el suelo es el final (castigo del rescate fallido).
+        if (this.ropeState === "falling" && body.pos.y <= catchY && !this.ropeReleased) {
           this.ropeState = "caught";
           this.ropeTautNow = true; // evento de borde: el match suena/avisa
           this.dangleSettleT = 0;
@@ -934,8 +991,47 @@ export class SherpaRig {
     return {
       result, released, gripped,
       slippedByTwoHands: this.slippedByTwoHands, fartGained,
-      rope: { state: this.ropeState, tautNow: this.ropeTautNow, haulStart: this.ropeHaulStartNow, dropM: this.ropeDropM() },
+      rope: {
+        state: this.ropeState, tautNow: this.ropeTautNow, haulStart: this.ropeHaulStartNow, dropM: this.ropeDropM(),
+        // T58-E: ventana A SACO (medidor para el HUD/escena) + desenroque
+        mash: this.ropeMashMeter(),
+        releasedNow: this.ropeReleasedNow,
+      },
     };
+  }
+
+  // ---------- T58-E: TREPAR A PULSO (inyección de pulsaciones + medidor) ----------
+
+  /** El match inyecta las pulsaciones del tick ANTES de step(): las del
+   *  COLGADO (sus teclas) y las del COMPAÑERO (que izá). Cap 4/tick: el
+   *  turbo-software no rompe la mecánica. */
+  feedRopeMash(hangedPresses: number, partnerPresses: number, partnerAnchored: boolean): void {
+    this.feedHangedPresses = Math.max(0, Math.min(4, hangedPresses));
+    this.feedPartnerPresses = Math.max(0, Math.min(4, partnerPresses));
+    this.feedPartnerAnchored = partnerAnchored;
+  }
+
+  private consumeRopeMashFeed(): void {
+    this.feedHangedPresses = 0;
+    this.feedPartnerPresses = 0;
+  }
+
+  /** Fatiga MEDIA de las manos (el chicote se paga: molar menos a saco). */
+  private handFatigueAvg(): number {
+    const a = this.states.get("hand_l")!.fatigue;
+    const b = this.states.get("hand_r")!.fatigue;
+    return (a + b) / 2;
+  }
+
+  /** Medidor leído por el match para el HUD/escena (null = sin ventana). */
+  ropeMashMeter(): { force01: number; threshold01: number; climbing: boolean } | null {
+    return this.ropeMash
+      ? {
+          force01: mashMeter01(this.ropeMash.force, this.ropeMashCfg),
+          threshold01: mashThreshold01(this.ropeMashCfg),
+          climbing: this.ropeMash.force >= this.ropeMashCfg.threshold,
+        }
+      : null;
   }
 
   // ---------- cargas (falseadas, suaves, con techo) ----------
@@ -1071,6 +1167,17 @@ export class SherpaRig {
 
   /** Objetivo de colgajo de una extremidad libre. */
   private dangleTarget(limb: Limb): V3 {
+    // T58-E: COLGADO DE LA CUERDA — petición literal: "debería quedarse
+    // colgado de la cuerda sujetándola con ambas manos". En caught/hauling
+    // (sin cuerda agotada) las MANOS suben a la cuerda por encima del pecho,
+    // con el balanceo del cuerpo; los pies siguen colgando.
+    if ((this.ropeState === "caught" || this.ropeState === "hauling") && isHand(limb) && !this.ropeReleased) {
+      const body = this.rig.particles[P.pelvisC];
+      const vx = (body.pos.x - body.prev.x) * 8;
+      const sway = Math.max(-0.12, Math.min(0.12, -vx));
+      const s = sideOf(limb);
+      return v3(body.pos.x + s * 0.09 + sway, body.pos.y + 0.52, body.pos.z - 0.06);
+    }
     const root = this.rig.particles[CHAIN_ROOT[limb]].pos;
     const len = (isHand(limb) ? ARM.upper + ARM.fore : LEG.thigh + LEG.shin) * 0.92;
     const body = this.rig.particles[P.pelvisC];
@@ -1213,6 +1320,10 @@ export class SherpaRig {
     this.ropeTautDone = false;
     this.dangleSettleT = 0;
     this.haulDone = false;
+    // T58-E: respawn = cuerda nueva (la ventana A SACO y el desenroque mueren)
+    this.ropeMash = null;
+    this.ropeReleased = false;
+    this.ropeReleasedNow = false;
     // Task 37 (cuerda cooperativa): el respawn deshace ancla e impulso, y la
     // holgura de captura vuelve a la de la cuerda de porteo.
     this.belaying = false;

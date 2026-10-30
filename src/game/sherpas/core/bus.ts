@@ -48,6 +48,10 @@ export interface SherpasEvents {
   // SEGURO DE CUERDA (Task 36): la cuerda de porteo atrapa la caída individual
   RopeCaught: { playerId: 0 | 1; dropM: number };
   RopeHaulStart: { playerId: 0 | 1 };
+  // T58-E: la cuerda de reserva se agotó deslizando → el colgado cae
+  RopeReleased: { playerId: 0 | 1 };
+  // T58-D EMOTES: animación puntual disparada en un escalador
+  EmotePlayed: { playerId: 0 | 1; name: string };
   CampReached: { campId: string; phase: number };
   SummitReached: { record: unknown };
   PhaseChanged: { phase: number };

@@ -490,6 +490,10 @@ export class SherpasMatch {
 
     const intents = this.d.input.poll(dt);
     if (!this.frozen) this.applyIntents(intents, dt);
+    // T58-E: pulsaciones A SACO de este tick (CONTADOR: ninguna se pierde,
+    // cap 4 por jugador y tick en el propio rig).
+    const mashPresses: [number, number] = [0, 0];
+    for (const it of intents) if (it.mashCount > 0) mashPresses[it.playerId] += Math.min(4, it.mashCount);
 
     // 1-5. sherpas: viaje, anclaje y física (dentro de SherpaRig.step).
     // CUERDA COOPERATIVA: la ancla del COMPAÑERO acorta la caída posible de
@@ -501,6 +505,9 @@ export class SherpasMatch {
     this.sherpas[1].setBelayCatch(this.sherpas[0].belaying ? (coopT?.belayCatchDropM ?? 1.2) : slackM);
     const prevAnchors: [number, number] = [this.sherpas[0].anchorsCount(), this.sherpas[1].anchorsCount()];
     for (const p of [0, 1] as const) {
+      // T58-E: inyectar las pulsaciones del tick (colgado p, compañero 1−p —
+      // el ancla del compañero TIRA con más apoyo: bono de seguro firme).
+      this.sherpas[p].feedRopeMash(mashPresses[p], mashPresses[1 - p], this.sherpas[1 - p].belaying);
       const info = this.sherpas[p].step(dt, 1);
       for (const r of info.released) this.d.bus.emit("LimbReleased", { playerId: p, limb: r.limb, cause: r.cause });
       for (const g of info.gripped) this.d.bus.emit("LimbGripped", { playerId: p, limb: g.limb, anchorId: g.anchor.hold.id });
@@ -533,15 +540,28 @@ export class SherpasMatch {
         this.d.scene.shake(this.d.hud.wantsReduceShake ? 0.02 : 0.055);
         // JUICE T38: chispas ámbar en la cintura — el chicote se VE agarrar.
         this.d.scene.fxSpark(this.sherpas[p].rig.particles[P.pelvisC].pos);
+        // T58-D EMOTE: tras el chicote el escalador queda AGOTADO un momento.
+        this.d.scene.setEmote(p, "agotado");
         this.propina.add(this.data.tuning.fall.ropeCatchPropina ?? -3, "rope_catch", this.d.bus);
         this.brain.panic();
         this.richScareVoice(); // el tirón lo despierta/soresalta
         this.d.bus.emit("RopeCaught", { playerId: p, dropM: Math.round(info.rope.dropM * 100) / 100 });
       }
       if (info.rope.haulStart) {
-        this.d.hud.subtitle(this.d.hud.fmt("hud.ropeHaul", { name: `P${p + 1}` }), 2.6);
+        // T58-E: la ventana A SACO abre — instrucciones legibles con las teclas.
+        this.d.hud.subtitle(this.d.hud.fmt("hud.ropeMash", { name: `P${p + 1}` }), 3.4);
         this.d.bus.emit("RopeHaulStart", { playerId: p });
       }
+      // T58-E: la cuerda se AGOTÓ deslizando — suelta y cae al abismo.
+      if (info.rope.releasedNow) {
+        this.d.audio.play("fall");
+        this.d.hud.subtitle(this.d.hud.fmt("hud.ropeReleased", { name: `P${p + 1}` }), 3.2);
+        this.d.scene.shake(this.d.hud.wantsReduceShake ? 0.02 : 0.06);
+        this.d.bus.emit("RopeReleased", { playerId: p });
+        this.brain.panic();
+      }
+      // T58-E: medidor de fuerza junto al colgado (null = ventana cerrada).
+      this.d.scene.setRopeMashMeter(p, info.rope.mash, this.sherpas[p].rig.particles[P.pelvisC].pos);
       // SUPER FLATULENCIA GANADA: presa verde agarrada → carga lista (una vez
       // por agarre: el propio info.fartGained solo es true el tick de llegada).
       if (info.fartGained) {
@@ -1140,6 +1160,9 @@ export class SherpasMatch {
     this.d.scene.setCheckpointReached(cp.index);
     this.d.scene.fxConfetti(v3(0, cp.y + 0.4, this.wallFrontZ - 0.6));
     this.d.audio.play("chime");
+    // T58-D EMOTE: el equipo CELEBRA el checkpoint (animación puntual demo).
+    this.playEmote(0, "celebrar");
+    this.playEmote(1, "celebrar");
     this.propina.add(this.data.tuning.checkpoint?.reachedPropina ?? 2, "checkpoint", this.d.bus);
     this.d.hud.banner(
       this.d.hud.fmt("hud.checkpointReached", { m: Math.round(cp.y) }),
@@ -1302,6 +1325,14 @@ export class SherpasMatch {
   }
 
   private lastEventTimes = new Map<string, number>();
+
+  /** T58-D EMOTES: dispara una animación puntual en un escalador. El registro
+   *  y la matemática viven en gameplay/emotes.ts (añadir animaciones = añadir
+   *  un EmoteSpec ahí y dispararlo desde el evento de juego que toque). */
+  playEmote(player: 0 | 1, name: string): void {
+    this.d.scene.setEmote(player, name);
+    this.d.bus.emit("EmotePlayed", { playerId: player, name });
+  }
 
   /** IMPROPERIO por contexto — SIEMPRE una grabación real del banco del
    *  jugador (elige audio.json → realVoice.contexts[contexto]); el handler de

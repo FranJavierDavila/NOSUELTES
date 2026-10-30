@@ -17,7 +17,8 @@
     "shoo": "KeyR",
     "fart": "KeyF",
     "anchor": "KeyQ",
-    "impulse": "KeyE"
+    "impulse": "KeyE",
+    "mash": "KeyC"
    }
   },
   "p2": {
@@ -37,7 +38,8 @@
     "shoo": "KeyU",
     "fart": "KeyP",
     "anchor": "KeyJ",
-    "impulse": "KeyM"
+    "impulse": "KeyM",
+    "mash": "KeyN"
    },
    "gamepad": {
     "index": 1,
@@ -66,7 +68,8 @@
     "cameraOrbit": {
      "stick": 2,
      "deadzone": 0.22
-    }
+    },
+    "mash": 4
    }
   }
  },

@@ -188,7 +188,8 @@ describe("Task 36: seguro de cuerda — caída atrapada + recuperación mano a m
     return { hand_l: left[0], hand_r: right[0] };
   };
 
-  const fallFromHigh = (fall: ConstructorParameters<typeof SherpaRig>[0]["tuning"]["fall"], ticks: number) => {
+  const fallFromHigh = (fall: ConstructorParameters<typeof SherpaRig>[0]["tuning"]["fall"], ticks: number,
+    mash?: (i: number) => [number, number]) => {
     const { rig, gen } = buildRigFull(0, fall);
     const holds = highHolds(gen);
     rig.respawnAt(holds);
@@ -198,35 +199,57 @@ describe("Task 36: seguro de cuerda — caída atrapada + recuperación mano a m
     rig.setGrip("hand_l", false);
     rig.setGrip("hand_r", false);
     let tautTicks = 0, haulStarts = 0, minWaist = Infinity;
-    let sawFalling = false, sawCaught = false, sawHauling = false;
+    let sawFalling = false, sawCaught = false, sawHauling = false, releasedTicks = 0;
     let fatiguePost = fatiguePre;
     for (let i = 0; i < ticks; i++) {
+      const presses = mash ? mash(i) : [0, 0];
+      rig.feedRopeMash(presses[0]!, presses[1]!, false);
       const info = rig.step(dt, 1);
       if (info.rope.tautNow) {
         tautTicks++;
         fatiguePost = Math.max(fatiguePost, rig.states.get("hand_l")!.fatigue, rig.states.get("hand_r")!.fatigue);
       }
       if (info.rope.haulStart) haulStarts++;
+      if (info.rope.releasedNow) releasedTicks++;
       if (info.rope.state === "falling") sawFalling = true;
       if (info.rope.state === "caught") sawCaught = true;
       if (info.rope.state === "hauling") sawHauling = true;
       minWaist = Math.min(minWaist, rig.waist().y);
     }
-    return { rig, y0, fatiguePre, fatiguePost, tautTicks, haulStarts, minWaist, sawFalling, sawCaught, sawHauling };
+    return { rig, y0, fatiguePre, fatiguePost, tautTicks, haulStarts, minWaist, sawFalling, sawCaught, sawHauling, releasedTicks };
   };
 
-  it("caída en alto: holgura → CHICOTE (una vez) → colgado → recupera mano a mano hasta el despegue", () => {
-    const r = fallFromHigh(FALL, 420); // 7 s: caída + chicote + recobrado completo
+  it("caída en alto: holgura → CHICOTE (una vez) → colgado → RECUPERACIÓN A SACO (los dos pulsamos) hasta el despegue", () => {
+    // T58-E: el haul ya NO es automático — la fuerza la ponen los jugadores.
+    // 1 pulsación cada 4 ticks por jugador = 15 puls/s cada uno: subida neta.
+    const r = fallFromHigh(FALL, 420, (i) => (i % 4 === 0 ? [1, 1] : [0, 0])); // 7 s
     expect(r.sawFalling).toBe(true); // caída libre honesta primero
     expect(r.tautTicks).toBe(1); // UN chicote, una sola vez
     expect(r.sawCaught).toBe(true);
     expect(r.haulStarts).toBe(1);
     expect(r.sawHauling).toBe(true);
+    expect(r.releasedTicks).toBe(0); // machacando, la cuerda NO se agota
     const dropMax = r.y0 - r.minWaist;
     expect(dropMax).toBeGreaterThan(2); // perdió altura DE VERDAD
     expect(r.minWaist).toBeGreaterThan(0.55); // jamás tocó el clamp del suelo (0,45)
     expect(r.y0 - r.rig.waist().y).toBeLessThan(0.8); // el recobrado lo devuelve al despegue
     expect(r.fatiguePost).toBeGreaterThanOrEqual(r.fatiguePre + 0.15); // el chicotazo se paga en las manos
+  });
+
+  it("T58-E: si NADIE pulsa, la ventana desliza, la cuerda se AGOTA y suelta al colgado (cae al suelo)", () => {
+    const r = fallFromHigh(FALL, 60 * 20); // 20 s sin pulsar ni una vez
+    expect(r.haulStarts).toBe(1); // la ventana abrió
+    expect(r.releasedTicks).toBe(1); // la cuerda se agotó UNA vez
+    expect(r.rig.waist().y).toBeLessThan(0.7); // en el suelo (pedriz), no colgado
+    // sin cuerda ya: una nueva caída no vuelve a ser atrapada (castigo real)
+  });
+
+  it("T58-E: machacar SOLO a 5 puls/s no llega al umbral — desliza sin soltarse aún", () => {
+    const r = fallFromHigh(FALL, 60 * 8, (i) => (i % 12 === 0 ? [1, 0] : [0, 0])); // 5/s solo el colgado
+    expect(r.sawHauling).toBe(true);
+    expect(r.releasedTicks).toBe(0); // la reserva (5 m) aguanta el deslizamiento lento
+    // pero el cuerpo DESCENDIÓ respecto del chicote (no sube: no llegó al umbral)
+    expect(r.rig.waist().y).toBeLessThan(r.y0 - 1.5);
   });
 
   it("re-agarrarse durante el recobrado devuelve la cuerda a holgura (climbing)", () => {

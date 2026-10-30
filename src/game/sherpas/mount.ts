@@ -217,6 +217,43 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         } | null;
         return sc?.getClimberInfo?.() ?? null;
       },
+      /** T58-D EMOTES: animación activa por jugador (sonda E2E). */
+      emote: (): { p0: { name: string | null; t: number; handDy: number } | null; p1: { name: string | null; t: number; handDy: number } | null } | null => {
+        const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
+          emoteDebug?: () => { p0: { name: string | null; t: number; handDy: number } | null; p1: { name: string | null; t: number; handDy: number } | null };
+        } | null;
+        return sc?.emoteDebug?.() ?? null;
+      },
+      /** T58-E A SACO: estado de cuerda del rig (sonda de diagnóstico). */
+      rope: (p: number): { state: string; haulDone: boolean; released: boolean; mash: boolean; limbs: ({ a: boolean; w: boolean; lock: number } | null)[] } | null => {
+        const rig = state.match?.["sherpas"][p] as unknown as {
+          ropeState?: string; haulDone?: boolean; ropeReleased?: boolean; ropeMash?: unknown;
+        } | undefined;
+        const limbs = (["hand_l", "hand_r", "foot_l", "foot_r"] as const).map((l) => {
+          const st = rig?.["states"]?.get?.(l);
+          return st ? { a: !!st.anchored, w: !!rig?.["gripWanted"]?.[l], lock: Math.round((st.lockedFor ?? 0) * 10) / 10 } : null;
+        });
+        return rig ? {
+          state: rig.ropeState ?? "?", haulDone: !!rig.haulDone,
+          released: !!rig.ropeReleased, mash: !!rig.ropeMash, limbs,
+        } : null;
+      },
+      /** T58-E A SACO: medidor de fuerza por jugador (sonda E2E). */
+      ropeMash: (): { p0: { force01: number; threshold01: number; climbing: boolean; x: number; y: number } | null; p1: { force01: number; threshold01: number; climbing: boolean; x: number; y: number } | null } | null => {
+        const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
+          ropeMashDebug?: () => { p0: { force01: number; threshold01: number; climbing: boolean; x: number; y: number } | null; p1: { force01: number; threshold01: number; climbing: boolean; x: number; y: number } | null };
+        } | null;
+        return sc?.ropeMashDebug?.() ?? null;
+      },
+      /** T58-D EMOTES: disparar una animación a mano (E2E y pruebas). */
+      emotePlay: (player: number, name: string): boolean => {
+        const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
+          setEmote?: (p: 0 | 1, n: string | null) => void;
+        } | null;
+        if (!sc?.setEmote) return false;
+        sc.setEmote(player === 1 ? 1 : 0, name);
+        return true;
+      },
       /** T57 SHERPA POR PIEZAS: posiciones de mundo de las piezas del puppet. */
       puppetPieces: (): Record<string, unknown> | null => {
         const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
@@ -303,12 +340,14 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
       graphics: (): {
         toneMapping: string; exposure: number; contrast: number; vignette: boolean;
         fxaa: boolean; fog: boolean; skyDome: boolean; shadowQuality: string; normalBias: number;
+        dpr?: number; scaleLevel?: number; renderW?: number; renderH?: number;
       } | null => {
         try {
           const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
             getGraphicsInfo?(): {
               toneMapping: string; exposure: number; contrast: number; vignette: boolean;
               fxaa: boolean; fog: boolean; skyDome: boolean; shadowQuality: string; normalBias: number;
+              dpr: number; scaleLevel: number; renderW: number; renderH: number;
             } | null;
           } | null;
           return sc?.getGraphicsInfo?.() ?? null;

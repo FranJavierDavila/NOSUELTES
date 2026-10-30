@@ -95,7 +95,9 @@
   "coopAnchorOn": "{name} SE ANCLA — seguro corto activo",
   "coopImpulse": "¡{from} da un impulso a {to}!",
   "coopImpulseNeed": "Anclate primero (Q/J) para dar el impulso",
-  "coopImpulseScore": "¡El impulso sirvió! Propina +{n}"
+  "coopImpulseScore": "¡El impulso sirvió! Propina +{n}",
+  "ropeMash": "¡{name} COLGADO! PULSAD C (P1) Y N (P2) A SACO PARA TREPARLA",
+  "ropeReleased": "¡LA CUERDA SE ACABÓ! ¡{name} CAE AL ABISMO!"
  },
  "limb": {
   "hand_l": "M.Izq",
