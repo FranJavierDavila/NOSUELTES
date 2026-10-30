@@ -297,9 +297,19 @@ describe("climber.json", () => {
   };
   it("habilitado con modelo y tinte de 2 jugadores", () => {
     expect(raw.enabled).toBe(true);
-    expect(raw.model).toBe("/models/escalador-fixed.glb");
+    // T52: el jugador subió un Spider-Man riggeado (saneado a /models/spiderman.glb)
+    expect(raw.model).toBe("/models/spiderman.glb");
     expect(raw.tint).toHaveLength(2);
     for (const t of raw.tint) expect(t).toMatch(/^#[0-9a-fA-F]{6}$/);
+  });
+  it("el GLB saneado existe y es un GLB con skin (skins ≥ 1)", () => {
+    const p = join(__dirname, "../../public", raw.model);
+    const buf = readFileSync(p);
+    expect(buf.readUInt32LE(0)).toBe(0x46546C67); // "glTF"
+    const jsLen = buf.readUInt32LE(12);
+    const js = JSON.parse(buf.slice(20, 20 + jsLen).toString("utf8"));
+    expect((js.skins ?? []).length).toBeGreaterThanOrEqual(1);
+    expect(js.animations ?? []).toHaveLength(0); // la física ES la animación
   });
   it("el manifest incluye climber.json", () => {
     const man = JSON.parse(readFileSync(join(__dirname, "../../public/content/sherpas/manifest.json"), "utf8")) as { files: string[] };
