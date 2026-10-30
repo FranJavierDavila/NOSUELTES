@@ -185,6 +185,31 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         } | null;
         return sc?.plantasDebug?.() ?? [];
       },
+      /** T56 BASE CAMP: pedriz + faldones + cabaña (sonda E2E). */
+      baseCamp: (): Record<string, unknown> | null => {
+        const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
+          getBaseCampInfo?: () => Record<string, unknown>;
+        } | null;
+        return sc?.getBaseCampInfo?.() ?? null;
+      },
+      /** T56 CAÍDA DEL RICACHÓN: estado de la caída (sonda E2E: aterriza en el
+       *  pedriz con impacto; el respawn llega después). */
+      richFall: (): Record<string, unknown> | null => {
+        const m = state.match as unknown as {
+          richFellImpactDone: boolean;
+          plankState?: { fellOff?: boolean } | null;
+          rich?: { seated: boolean; pelvis(): { x: number; y: number; z: number }; speed(): number };
+        } | null;
+        if (!m?.rich) return null;
+        const p = m.rich.pelvis();
+        return {
+          fell: !!m.plankState?.fellOff,
+          seated: m.rich.seated,
+          impactDone: m.richFellImpactDone,
+          speed: Math.round(m.rich.speed() * 100) / 100,
+          pelvis: { x: Math.round(p.x * 1000) / 1000, y: Math.round(p.y * 1000) / 1000, z: Math.round(p.z * 1000) / 1000 },
+        };
+      },
       /** T49 MODELO GLB DE LOS ESCALADORES: estado de carga/mapeo/pose. */
       climber: (): Record<string, unknown> | null => {
         const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {

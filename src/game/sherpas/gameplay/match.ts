@@ -816,9 +816,13 @@ export class SherpasMatch {
     const rmInfo = this.rich.step(dt);
     if (rmInfo.bumpWall > 1) this.d.bus.emit("RichBumpWall", { speed: rmInfo.bumpWall });
     // IMPACTO de la caída del ricachón: golpe seco + sacudida de cámara (una vez).
+    // T56 — CAÍDA REALISTA: sacudida y polvo PROPORCIONALES a la velocidad de
+    // impacto (el peso se VE — fxImpact con pedriz —, no solo se oye).
     if (rmInfo.floorHit && this.richFellHandled && !this.richFellImpactDone) {
       this.richFellImpactDone = true;
-      this.d.scene.shake(this.d.hud.wantsReduceShake ? 0.02 : 0.07);
+      const speed = this.rich.speed();
+      this.d.scene.shake(this.d.hud.wantsReduceShake ? 0.02 : Math.min(0.12, 0.03 + speed * 0.004));
+      this.d.scene.fxImpact(this.rich.pelvis(), speed);
       this.d.audio.play("thud");
     }
 

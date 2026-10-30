@@ -164,6 +164,10 @@ export interface PlantasGeom {
   positions: Float32Array;
   normals: Float32Array;
   colors: Float32Array;
+  /** T55 — DOBLADO POR VIENTO: 2 floats por vértice (x = factor de doblado
+   *  0 en la base → 1 en la punta; y = fase 0..1 de la mata, desincroniza el
+   *  balanceo). Lo consume el plugin de shader plantWindMaterial. */
+  bend: Float32Array;
   indices: Uint32Array;
   plants: number;
   verts: number;
@@ -179,8 +183,10 @@ export function stampTufts(spots: PlantSpot[], seed = 0x71d): PlantasGeom {
   const pos: number[] = [];
   const col: number[] = [];
   const nrm: number[] = [];
+  const bend: number[] = [];
   const idx: number[] = [];
   for (const s of spots) {
+    const phase = rng.next(); // T55: fase de balanceo propia de cada mata
     const blades = 9 + Math.floor(rng.next() * 5); // 9-13 hojas: mata llena
     const cosY = Math.cos(s.yaw);
     const sinY = Math.sin(s.yaw);
@@ -234,6 +240,8 @@ export function stampTufts(spots: PlantSpot[], seed = 0x71d): PlantasGeom {
         nrm.push(PLANT_N[0]!, PLANT_N[1]!, PLANT_N[2]!);
         if (k < 2) col.push(br, bg, bb, 1);
         else col.push(tr, tg, tb, 1);
+        // T55: vértices de base (k<2) anclados (bend 0), punta (k=2) libre (1)
+        bend.push(k < 2 ? 0 : 1, phase);
       }
       idx.push(base, base + 1, base + 2);
     }
@@ -242,6 +250,7 @@ export function stampTufts(spots: PlantSpot[], seed = 0x71d): PlantasGeom {
     positions: new Float32Array(pos),
     normals: new Float32Array(nrm),
     colors: new Float32Array(col),
+    bend: new Float32Array(bend),
     indices: new Uint32Array(idx),
     plants: spots.length,
     verts: pos.length / 3,

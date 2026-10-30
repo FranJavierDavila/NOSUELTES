@@ -309,7 +309,8 @@
       "strength": 0.8,
       "bands": 12.0,
       "warp": 0.7,
-      "seam": 0.2
+      "seam": 0.2,
+      "detail": 0.16
     },
     "vegetacion": {
       "enabled": true,
@@ -319,7 +320,38 @@
       "scale": 1.5,
       "scaleJitter": 0.4,
       "keepFromHoldsM": 0.5,
-      "seed": 643895
+      "seed": 643895,
+      "viento": {
+        "breezeAmpM": 0.022,
+        "swayFreq": 2.3,
+        "pushM": 0.055,
+        "dipK": 0.25,
+        "flutterK": 0.4
+      }
+    },
+    "tinteRoca": {
+      "enabled": true,
+      "aoStrength": 0.42,
+      "aoMaxDepthM": 0.16,
+      "skyDarken": 0.1,
+      "macroAmount": 0.08,
+      "macroFreqM": 0.06,
+      "lichenAmount": 0.3,
+      "lichenScaleM": 0.9,
+      "seed": 4711
+    },
+    "baseCamp": {
+      "enabled": true,
+      "spurSpanM": 6.2,
+      "spurFalloffM": 2.7,
+      "spurSlopeBackM": 0.62,
+      "spurRoughM": 0.3,
+      "screeAmpM": 0.17,
+      "screeHalfXM": 13.5,
+      "screeHalfZM": 11,
+      "fallFlatXM": 4.4,
+      "snowStartM": 4.6,
+      "seed": 561123
     }
   }
 }

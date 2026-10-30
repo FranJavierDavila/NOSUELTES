@@ -47,8 +47,9 @@ export class RichManSim {
   /** sentado en la tabla: pose cinemática, sin física libre (tabla de porteo). */
   seated = true;
   private wobbleAccum = 0;
-  /** techo de velocidad por tick (caída NORMAL 0,14 ≈ 8,4 m/s; al caer de la
-   *  tabla se libera a 0,27 ≈ 16 m/s: la caída del ricachón es CONTUNDENTE). */
+  /** Techo de velocidad por tick (caída NORMAL 0,14 ≈ 8,4 m/s; al caer de la
+   *  tabla se libera a 0,34 ≈ 20,4 m/s: la caída del ricachón es CONTUNDENTE
+   *  y realista (T56: velocidad terminal de un cuerpo pesado con ropa). */
   private velCap = 0.14;
 
   // ---- pose de juego (petición: gestos graciosos + de pie + pasear) ----
@@ -430,7 +431,7 @@ export class RichManSim {
     this.seated = false;
     const kick = v3(dir * 2.2 / 60, -1.4 / 60, -0.4 / 60);
     for (const b of this.bodies) b.prev = vSub(b.pos, kick);
-    this.velCap = 0.27;
+    this.velCap = 0.34; // T56: terminal de cuerpo pesado (≈20 m/s)
   }
 
   /** Paso propio: gravedad + sticks + mínimos + colisiones. SENTADO: solo la
@@ -449,8 +450,14 @@ export class RichManSim {
     let bumpWall = 0;
     let floorHit = false;
     for (const b of this.bodies) {
-      // física de juego: amortiguación fuerte + techo de velocidad (imposible que vuele).
-      let vel = vScale(vSub(b.pos, b.prev), 0.975);
+      // física de juego: amortiguación + techo de velocidad (imposible que vuele).
+      // T56 — CAÍDA REALISTA: en CAÍDA LIBRE (bajando y lejos del suelo) el
+      // arrastre se relaja (0,995): la gravedad acelera de verdad y la caída
+      // LARGA alcanza el techo de cuerpo pesado (~20 m/s). Cerca del suelo el
+      // arrastre fuerte vuelve (asentamiento, nada de rebotes locos).
+      const raw = vSub(b.pos, b.prev);
+      const freeFall = raw.y < -0.05 && b.pos.y > this.floorY + b.radius + 0.12;
+      let vel = vScale(raw, freeFall ? 0.995 : 0.975);
       // en contacto con el suelo: frena rápido (nada de retorcerse por el suelo).
       if (b.pos.y < this.floorY + b.radius + 0.06) vel = vScale(vel, 0.82);
       const vAbs = vLen(vel);
@@ -490,8 +497,20 @@ export class RichManSim {
           if (vz > 1) bumpWall = Math.max(bumpWall, vz);
         }
         if (b.pos.y < this.floorY + b.radius) {
+          // T56 — ATERRIZAJE con PESO: rebote PARCIAL (~20%, un cuerpo de
+          // 150 kg no botella) + rozamiento horizontal fuerte (se queda donde
+          // cae, no patina) + asentamiento (la amortiguación de contacto lo
+          // deja tumbado en 2-3 ticks).
+          const vy = (b.pos.y - b.prev.y) / Math.max(1e-4, dt); // impacto (negativa)
           b.pos = v3(b.pos.x, this.floorY + b.radius, b.pos.z);
-          b.prev = v3(b.prev.x, b.pos.y, b.prev.z);
+          if (vy < -0.9) {
+            const up = -vy * 0.2;
+            const vx = (b.pos.x - b.prev.x) * 0.5;
+            const vz = (b.pos.z - b.prev.z) * 0.5;
+            b.prev = v3(b.pos.x - vx * dt, b.pos.y - up * dt, b.pos.z - vz * dt);
+          } else {
+            b.prev = v3(b.prev.x, b.pos.y, b.prev.z);
+          }
           floorHit = true;
         }
       }

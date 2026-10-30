@@ -131,3 +131,41 @@ describe("stampTufts", () => {
     }
   });
 });
+
+describe("stampTufts — buffer de doblado T55 (viento)", () => {
+  it("bend: 2 floats por vértice, base 0 y punta 1, fases en [0,1)", () => {
+    const spots = selectPlantSpots(mkGrid());
+    expect(spots.length).toBeGreaterThanOrEqual(3);
+    const g = stampTufts(spots);
+    expect(g.bend.length).toBe(g.verts * 2);
+    // geometría de hoja: triángulos con 2 vértices de BASE (bend 0) y 1 de PUNTA
+    let bases = 0;
+    let puntas = 0;
+    for (let v = 0; v < g.verts; v++) {
+      const b = g.bend[v * 2]!;
+      const ph = g.bend[v * 2 + 1]!;
+      expect(b).toBeGreaterThanOrEqual(0);
+      expect(b).toBeLessThanOrEqual(1);
+      expect(ph).toBeGreaterThanOrEqual(0);
+      expect(ph).toBeLessThan(1);
+      if (b === 0) bases++;
+      else if (b === 1) puntas++;
+    }
+    expect(bases).toBe(g.verts * 2 / 3); // 2 de cada 3 vértices son base
+    expect(puntas).toBe(g.verts / 3); // 1 de cada 3 es punta libre
+  });
+
+  it("las fases desincronizan matas distintas (no todas iguales)", () => {
+    const g = stampTufts(selectPlantSpots(mkGrid()));
+    const fases = new Set<string>();
+    for (let v = 0; v < g.verts; v++) fases.add(g.bend[v * 2 + 1]!.toFixed(4));
+    expect(fases.size).toBeGreaterThanOrEqual(3);
+  });
+
+  it("determinismo: misma semilla → mismo bend", () => {
+    const spots = selectPlantSpots(mkGrid());
+    const a = stampTufts(spots, 0x1234);
+    const b = stampTufts(spots, 0x1234);
+    expect(Array.from(a.bend)).toEqual(Array.from(b.bend));
+  });
+});

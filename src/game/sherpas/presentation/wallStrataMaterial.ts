@@ -39,7 +39,14 @@ vec3 strataTri(vec3 p, vec3 n, float scale) {
 
 const FRAG_MAIN = `
 #ifdef TRISTATA
-surfaceAlbedo *= mix(vec3(1.0), strataTri(vPositionW, geometricNormalW, strataParams.x) * 2.0, strataParams.y);
+vec3 sCol = strataTri(vPositionW, geometricNormalW, strataParams.x) * 2.0;
+surfaceAlbedo *= mix(vec3(1.0), sCol, strataParams.y);
+// T55 — GRANO/DETALLE: segunda muestra TRIPANAR a escala fina (misma textura,
+// espacio mundo multiplicado) — rompe la planicie de tono de la escala media.
+if (strataParams.z > 0.001) {
+  vec3 dCol = strataTri(vPositionW * strataParams.w + vec3(7.31, 3.17, 11.7), geometricNormalW, strataParams.x) * 2.0;
+  surfaceAlbedo *= mix(vec3(1.0), dCol, strataParams.z);
+}
 #endif
 `;
 
@@ -49,16 +56,20 @@ export class TriPlanarStrataPlugin extends MaterialPluginBase {
   private _tex: BaseTexture | null = null;
   private _scale = 0.72;
   private _strength = 0.5;
+  private _detail = 0; // T55: fuerza del grano fino (0 = desactivado)
+  private _detailScaleMul = 6.3; // multiplicador de escala del grano
 
   constructor(material: PBRMaterial) {
     super(material, "TriPlanarStrata", 220, { TRISTATA: false }, true, false, false);
   }
 
   /** Textura de estratos (tileable, RGBA) + parámetros de mapeado. */
-  configure(tex: BaseTexture | null, scale: number, strength: number): void {
+  configure(tex: BaseTexture | null, scale: number, strength: number, detail = 0, detailScaleMul = 6.3): void {
     this._tex = tex;
     this._scale = Math.max(0.05, scale);
     this._strength = Math.min(1, Math.max(0, strength));
+    this._detail = Math.min(0.5, Math.max(0, detail));
+    this._detailScaleMul = Math.max(1.5, detailScaleMul);
     this._active = !!tex;
     this.markAllDefinesAsDirty();
   }
@@ -97,7 +108,7 @@ export class TriPlanarStrataPlugin extends MaterialPluginBase {
 
   bindForSubMesh(uniformBuffer: UniformBuffer, scene: Scene): void {
     if (!this._active || !this._tex) return;
-    uniformBuffer.updateFloat4("strataParams", this._scale, this._strength, 0, 0);
+    uniformBuffer.updateFloat4("strataParams", this._scale, this._strength, this._detail, this._detailScaleMul);
     if (scene.texturesEnabled) {
       uniformBuffer.setTexture("strataSampler", this._tex);
     }

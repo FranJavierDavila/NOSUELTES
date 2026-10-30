@@ -357,7 +357,11 @@ export class PlankSystem {
       }
       const share = i === 0 ? shareL : 1 - shareL;
       const cargoKg = i === 0 ? cargoExtraL : cargoExtraR;
-      const gLoad = G * (1 + RICH_LOAD * 2 * share + cargoKg / CARGO_REF_KG);
+      // T56 — DESCARGA: cuando el ricachón CAE de la tabla, su masa deja de
+      // pesar en los cabos (¡ya no está encima!): la tabla se equilibra y el
+      // lado que perdió la carga BRINCA hacia arriba, como en la realidad.
+      const richLoad = this.fell ? 0 : RICH_LOAD;
+      const gLoad = G * (1 + richLoad * 2 * share + cargoKg / CARGO_REF_KG);
       let vel = vScale(vSub(e.pos, e.prev), t.swingDamping);
       const vAbs = vLen(vel);
       if (vAbs > MAX_END_SPEED) vel = vScale(vel, MAX_END_SPEED / vAbs);
@@ -539,7 +543,8 @@ export class PlankSystem {
     const distB = vLen(vSub(er.pos, b));
     const halfLoad = 420;
     const shareL = Math.max(0, Math.min(1, 0.5 - this.slide / (2 * half)));
-    const richT = this.richMassKg * G * RICH_LOAD_G;
+    // T56: si el ricachón cayó, su masa ya NO tira de las cuerdas (descarga)
+    const richT = this.fell ? 0 : this.richMassKg * G * RICH_LOAD_G;
     // la CARGA (cajas/cóndor) también llega a las cuerdas: el lado cargado
     // tira más de su sherpa (legible en el reparto del HUD).
     let cargoExtraL2 = 0;

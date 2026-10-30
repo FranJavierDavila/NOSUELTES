@@ -9,6 +9,7 @@ import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
 import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
 import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { TransformNode } from "@babylonjs/core/Meshes/transformNode"; // T56: raíz de la cabaña
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import "@babylonjs/core/Meshes/Builders/boxBuilder";
@@ -65,7 +66,15 @@ import { makeRng } from "../core/rng";
 import { generateStrataColor } from "../world/strataTexture"; // T44: estratos superpuestos
 import { resolvePlantasCfg, selectPlantSpots, stampTufts, type PlantasCfg } from "../world/plantas"; // T48: vegetación en hundimientos
 import { TriPlanarStrataPlugin } from "./wallStrataMaterial"; // T44: mapeado triplanar
+import { PlantWindPlugin, resolvePlantWindCfg } from "./plantWindMaterial"; // T55: viento en la vegetación
+import { computeRockTint, resolveRockTintCfg, type RockTintCfg } from "../world/rockTint"; // T55: tinte de roca por vértice
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer"; // T55: atributo plantBend
 import { SkinnedClimberFactory, type ClimberInstance } from "./skinnedClimber"; // T49: modelo GLB de los escaladores
+import {
+  buildScreeGeometry, buildSpurGeometry, resolveBaseCampCfg, scatterRocks,
+  type BaseCampCfg, type GeomData,
+} from "../world/baseCamp"; // T56: faldones de continuidad + pedriz
+import { buildCabinSpec, flagRopePoint, type CabinMat, type CabinSpec } from "../world/cabin"; // T56: cabaña sherpa
 
 interface Bone { a: number; b: number; mesh: Mesh; rest: number; offY?: number }
 interface RigVisual { bones: Bone[]; head: Mesh; roots: Mesh[] }
@@ -84,6 +93,28 @@ function mat(scene: Scene, name: string, hex: string, opts?: { alpha?: number })
   m.specularColor = new Color3(0.08, 0.08, 0.08);
   if (opts?.alpha !== undefined) m.alpha = opts.alpha;
   return m;
+}
+
+/** T56 — FUSIÓN de geometrías puras de baseCamp.ts (faldones izq+der en UNA
+ *  malla: 1 draw call para toda la continuidad lateral). */
+function mergeGeoms(list: GeomData[]): GeomData {
+  const verts = list.reduce((s, g) => s + g.verts, 0);
+  const tris = list.reduce((s, g) => s + g.tris, 0);
+  const positions = new Float32Array(verts * 3);
+  const normals = new Float32Array(verts * 3);
+  const colors = new Float32Array(verts * 4);
+  const indices = new Uint32Array(tris * 3);
+  let vo = 0;
+  let io = 0;
+  for (const g of list) {
+    positions.set(g.positions, vo * 3);
+    normals.set(g.normals, vo * 3);
+    colors.set(g.colors, vo * 4);
+    for (let i = 0; i < g.indices.length; i++) indices[io + i] = g.indices[i]! + vo;
+    vo += g.verts;
+    io += g.indices.length;
+  }
+  return { positions, normals, colors, indices, tris, verts };
 }
 
 export class SherpaScene {
@@ -262,13 +293,23 @@ export class SherpaScene {
   private rockWorker: Worker | null = null;
   // T44: textura de ESTRATOS superpuesta (triplanar) compartida por los chunks
   private strataTex: RawTexture | null = null;
-  private strataCfg: { scale: number; strength: number } | null = null;
+  private strataCfg: { scale: number; strength: number; detail: number } | null = null;
   private strataTried = false;
   // T48: VEGETACIÓN en los hundimientos de la pared (matas por chunk)
   private plantasCfg: PlantasCfg | null = null;
   private plantasMat: PBRMaterial | null = null;
   private plantasTotal = 0;
   private plantasSpots = new Map<number, { x: number; y: number; z: number; scale: number }[]>();
+  private plantWind: PlantWindPlugin | null = null; // T55: plugin de viento en matas
+  private rockTintCfg: RockTintCfg | null = null; // T55: tinte de roca por vértice
+  // T56 — BASE CAMP: faldones de continuidad lateral + pedriz de piedra + cabaña
+  private baseCampCfg: BaseCampCfg | null = null;
+  private baseRockMat: PBRMaterial | null = null; // material COMPARTIDO pedriz+faldones
+  private flagWind: PlantWindPlugin | null = null; // viento propio de los banderines
+  private flagMat: PBRMaterial | null = null;
+  private baseCampStats = { enabled: false, screeTris: 0, spurTris: 0, rocks: 0, cabinPieces: 0, flags: 0, smoke: false };
+  /** T55 SONDA E2E: nº de chunks de roca con tinte por vértice aplicado. */
+  rockTintChunks = 0;
   /** materiales PBR de roca creados (sonda E2E: material/triplanar/normales). */
   private rockPbrCount = 0;
   private rockWorkerDead = false;
@@ -284,6 +325,7 @@ export class SherpaScene {
     this.reliefCfg = relief ? reliefFromData(relief) : null;
     this.reliefRaw = relief ?? null; // datos CRUDOS: la rama roca lee de aquí
     this.plantasCfg = resolvePlantasCfg((this.reliefRaw as { vegetacion?: unknown } | null)?.vegetacion);
+    this.rockTintCfg = resolveRockTintCfg((this.reliefRaw as { tinteRoca?: unknown } | null)?.tinteRoca);
     this.engine = engine;
     this.backend = backend;
     this.camData = camData;
@@ -510,6 +552,8 @@ export class SherpaScene {
    *  Mallas propias (no ParticleSystem): brillo y dirección garantizados. El
    *  "emisor" sigue a la cámara: el viento se ve a cualquier altura de la pared. */
   setWind(dir: number, level: number, dt = 1 / 60): void {
+    this.plantWind?.setWindState(dir, level); // T55: las matas también lo sienten
+    this.flagWind?.setWindState(dir, level); // T56: los banderines de la cabaña
     const cam = this.camera.position;
     // nieve ambiental: deriva lateral con la racha (ventisca)
     const on = level > 0.02;
@@ -804,6 +848,308 @@ export class SherpaScene {
     // que recorrían el muro eran parte del falso patrón "piedra a piedra" que
     // el jugador mandó quitar. La roca estratificada tiene grietas REALES
     // (surcos del campo de altura) y vetas en el mapa de textura.
+
+    // T56 — BASE CAMP: faldones de continuidad lateral + pedriz de piedra +
+    // cabaña sherpa de partida (todo estático y fusionado: coste por frame ≈ 0).
+    this.buildBaseCamp();
+  }
+
+  // ---------- T56 BASE CAMP: pedriz + faldones + cabaña sherpa ----------
+
+  /** Posición de la cabaña (mundo): a la derecha de la base, sobre el pedriz,
+   *  fuera de la franja de caída (los cuerpos caen en z≈−1.1, x≤±2.7) y con
+   *  giro para que la puerta y los banderines miren a la cámara. */
+  private static readonly CABIN_POS = { x: 2.15, z: 1.8, ry: -0.52 };
+
+  /** VertexData de un GeomData puro (baseCamp.ts) → malla de Babylon. */
+  private geomToMesh(name: string, g: GeomData): Mesh {
+    const m = new Mesh(name, this.scene);
+    const vd = new VertexData();
+    vd.positions = g.positions;
+    vd.normals = g.normals;
+    vd.colors = g.colors;
+    vd.indices = g.indices;
+    vd.applyToMesh(m);
+    m.isPickable = false;
+    return m;
+  }
+
+  /** T56 — BASE CAMP completo: pedriz, faldones, rocas sueltas y cabaña.
+   *  Todo con la MISMA capa triplanar de estratos que la pared (el patrón de
+   *  estratos vive en espacio mundo → continuidad de tono sin costuras). */
+  private buildBaseCamp(): void {
+    const cfg = resolveBaseCampCfg((this.reliefRaw as { baseCamp?: unknown } | null)?.baseCamp);
+    this.baseCampCfg = cfg;
+    if (!cfg.enabled) return;
+    const baseMat = this.ensureBaseRockMaterial();
+    const faceZ = this.reliefFaceZ; // espeja wall.zFront (−0.3)
+
+    // PEDRIZ: heightfield del suelo de piedra (franja de caída plana: la
+    // colisión física sigue siendo el plano y=0 de siempre)
+    const scree = buildScreeGeometry({
+      cfg,
+      cabin: { x: SherpaScene.CABIN_POS.x, z: SherpaScene.CABIN_POS.z, r: 2.1 },
+    });
+    const screeMesh = this.geomToMesh("screeFloor", scree);
+    screeMesh.material = baseMat;
+    screeMesh.receiveShadows = true; // recibe sombras de cuerpos/rocas/cabaña
+    screeMesh.freezeWorldMatrix();
+    this.baseCampStats.screeTris = scree.tris;
+
+    // FALDONES: espolón por lado que nace del borde del muro y muere en el
+    // pedriz. La costura arranca SOLAPADA 0.18 m dentro del muro (enterrada,
+    // invisible) y el material es el mismo → continuidad de color/estratos.
+    const spurs: GeomData[] = [
+      buildSpurGeometry({ dir: -1, xEdge: this.reliefWallW / 2, zFace: faceZ, topY: Math.max(6, this.reliefTopY), cfg }),
+      buildSpurGeometry({ dir: 1, xEdge: this.reliefWallW / 2, zFace: faceZ, topY: Math.max(6, this.reliefTopY), cfg }),
+    ];
+    const spurMesh = this.geomToMesh("spurs", mergeGeoms(spurs));
+    spurMesh.material = baseMat;
+    spurMesh.receiveShadows = true;
+    this.castShadow(spurMesh); // el espolón proyecta sombra sobre el pedriz
+    spurMesh.freezeWorldMatrix();
+    this.baseCampStats.spurTris = spurs.reduce((s, g) => s + g.tris, 0);
+
+    // ROCAS SUELTAS: 3 masters low-poly deformados + instancias sembradas
+    // (fuera de la franja de caída y de la cabaña): 3 draw calls.
+    const rockMat = mat(this.scene, "screeRockM", "#6f6a62");
+    rockMat.specularColor = new Color3(0.04, 0.04, 0.04);
+    const masters: Mesh[] = [];
+    const rngR = makeRng((cfg.seed ^ 0x0770) >>> 0);
+    for (let k = 0; k < 3; k++) {
+      const m = MeshBuilder.CreateIcoSphere(`screeRockM${k}`, { radius: 1, subdivisions: 1 }, this.scene);
+      const p = m.getVerticesData(VertexBuffer.PositionKind);
+      if (p) {
+        const out = new Array<number>(p.length);
+        for (let i = 0; i < p.length; i += 3) {
+          const f = 0.72 + rngR.next() * 0.55;
+          out[i] = p[i]! * f;
+          out[i + 1] = p[i + 1]! * (0.5 + rngR.next() * 0.5);
+          out[i + 2] = p[i + 2]! * f;
+        }
+        m.updateVerticesData(VertexBuffer.PositionKind, out);
+      }
+      m.material = rockMat;
+      m.isVisible = false; // solo es semilla (las instancias siguen visibles)
+      m.isPickable = false;
+      masters.push(m);
+    }
+    const rocks = scatterRocks(cfg, SherpaScene.CABIN_POS.x, SherpaScene.CABIN_POS.z, 2.3);
+    for (const [rx, , rz, s] of rocks) {
+      const inst = masters[Math.floor(rngR.next() * masters.length) % masters.length]!.createInstance(`screeRock${this.baseCampStats.rocks}`);
+      inst.position.set(rx, s * 0.28, rz);
+      inst.scaling.set(s * (0.8 + rngR.next() * 0.7), s * (0.55 + rngR.next() * 0.5), s * (0.8 + rngR.next() * 0.7));
+      inst.rotation.y = rngR.next() * Math.PI * 2;
+      inst.freezeWorldMatrix();
+      this.castShadow(inst); // sombritas cortas sobre el pedriz
+      this.baseCampStats.rocks++;
+    }
+
+    // CABAÑA SHERPA (relleno temporal; luego modelos propios del jugador)
+    this.buildCabin();
+  }
+
+  /** T56 — MATERIAL compartido pedriz+faldones: PBR piedra con la capa de
+   *  ESTRATOS TRIPANAR de la pared a escala más fina (grava). El tinte real va
+   *  en VERTEX COLORS (variación de macizo, AO, nieve — baseCamp.ts). */
+  private ensureBaseRockMaterial(): PBRMaterial {
+    if (this.baseRockMat) return this.baseRockMat;
+    const m = new PBRMaterial("baseRockM", this.scene);
+    m.albedoColor = new Color3(0.78, 0.74, 0.68); // piedra del pedriz (la multiplican los vertex colors)
+    m.metallic = 0;
+    m.roughness = 0.95;
+    m.backFaceCulling = false; // los faldones se ven por detrás al orbitar
+    const strata = this.ensureStrataTexture();
+    if (strata) {
+      const plugin = new TriPlanarStrataPlugin(m);
+      // escala más FINA que la pared (0.6): aquí es grava/derrubio, no estrato
+      plugin.configure(strata, (this.strataCfg?.scale ?? 0.6) * 1.9, (this.strataCfg?.strength ?? 0.5) * 0.7, 0.2);
+    }
+    this.baseRockMat = m;
+    return m;
+  }
+
+  /** T56 — CABAÑA SHERPA: piezas de cabin.ts → 1 mesh fusionado por material
+   *  (5 draw calls), cuerda + BANDERINES de rezo con viento (plugin T55) y
+   *  humo de chimenea (partículas baratas). Todo colgando de un TransformNode
+   *  (posición/giro del conjunto en un solo sitio). */
+  private buildCabin(): void {
+    const spec: CabinSpec = buildCabinSpec();
+    const root = new TransformNode("cabinRoot", this.scene);
+    root.position.set(SherpaScene.CABIN_POS.x, 0, SherpaScene.CABIN_POS.z);
+    root.rotation.y = SherpaScene.CABIN_POS.ry;
+
+    // materiales compartidos (estilo de siempre: mat() con specular bajo)
+    const mats: Record<CabinMat, StandardMaterial> = {
+      stone: mat(this.scene, "cabinStone", "#8a8378"),
+      wood: mat(this.scene, "cabinWood", "#7a5a3a"),
+      woodDark: mat(this.scene, "cabinWoodDark", "#4f3a28"),
+      roof: mat(this.scene, "cabinRoof", "#45403b"),
+      glass: (() => {
+        const g = mat(this.scene, "cabinGlass", "#9fc7d8", { alpha: 0.55 });
+        g.emissiveColor = new Color3(0.12, 0.16, 0.18); // luz interior tenue
+        return g;
+      })(),
+    };
+
+    // piezas → mesh local, agrupadas por material para el MERGE
+    const byMat = new Map<CabinMat, Mesh[]>();
+    for (const p of spec.pieces) {
+      let m: Mesh;
+      if (p.kind === "cyl") {
+        m = MeshBuilder.CreateCylinder(p.name, { diameterTop: p.size[0], diameterBottom: p.size[1], height: p.size[2], tessellation: 9 }, this.scene);
+      } else if (p.kind === "tri") {
+        m = new Mesh(p.name, this.scene);
+        const vd = new VertexData();
+        vd.positions = [...p.a!, ...p.b!, ...p.c!];
+        vd.indices = [0, 1, 2, 0, 2, 1]; // doble cara (gable visto por detrás)
+        const nrm = new Float32Array(9);
+        VertexData.ComputeNormals(vd.positions as number[], vd.indices as number[], nrm);
+        vd.normals = nrm;
+        // UVs también: el MERGE por material exige el MISMO set de atributos
+        vd.uvs = [0, 0, 1, 0, 0, 1];
+        vd.applyToMesh(m);
+      } else {
+        m = MeshBuilder.CreateBox(p.name, { width: p.size[0], height: p.size[1], depth: p.size[2] }, this.scene);
+      }
+      m.position.set(p.pos[0], p.pos[1], p.pos[2]);
+      if (p.rotDeg.some((r) => r !== 0)) m.rotation.set(p.rotDeg[0] * Math.PI / 180, p.rotDeg[1] * Math.PI / 180, p.rotDeg[2] * Math.PI / 180);
+      m.isPickable = false;
+      const list = byMat.get(p.mat) ?? [];
+      list.push(m);
+      byMat.set(p.mat, list);
+    }
+
+    // CUERDA de los banderines: segmentos finos en el grupo woodDark
+    const ropePts = 12;
+    for (let i = 0; i < ropePts; i++) {
+      const t0 = i / ropePts;
+      const t1 = (i + 1) / ropePts;
+      const a = flagRopePoint(spec.rope, t0);
+      const b = flagRopePoint(spec.rope, t1);
+      const seg = MeshBuilder.CreateCylinder(`flagRope${i}`, { diameter: 0.022, height: 1, tessellation: 5 }, this.scene);
+      seg.position.set((a[0]! + b[0]!) / 2, (a[1]! + b[1]!) / 2, (a[2]! + b[2]!) / 2);
+      const dx = b[0]! - a[0]!, dy = b[1]! - a[1]!, dz = b[2]! - a[2]!;
+      const len = Math.hypot(dx, dy, dz) || 1e-6;
+      seg.scaling.y = len;
+      if (!seg.rotationQuaternion) seg.rotationQuaternion = Quaternion.Identity();
+      Quaternion.FromUnitVectorsToRef(Vector3.Up(), new Vector3(dx / len, dy / len, dz / len), seg.rotationQuaternion);
+      const list = byMat.get("woodDark")!;
+      list.push(seg);
+    }
+
+    // MERGE por material (1 draw call por material) + sombras
+    for (const [k, list] of byMat) {
+      if (!list.length) continue;
+      const merged = Mesh.MergeMeshes(list, true, true, undefined, false, false);
+      if (!merged) continue;
+      merged.name = `cabin_${k}`;
+      merged.material = mats[k];
+      merged.parent = root;
+      merged.receiveShadows = true;
+      this.castShadow(merged);
+    }
+
+    // BANDERINES de rezo: UNA malla con vertex colors (tibetanos) + buffer
+    // plantBend (bend 0 atado a la cuerda / 1 borde libre) — ondean con el
+    // viento REAL del juego vía el plugin de la vegetación (T55).
+    const flags = spec.flagPendants;
+    const fp = new Float32Array(flags.length * 4 * 3);
+    const fc = new Float32Array(flags.length * 4 * 4);
+    const fi = new Uint32Array(flags.length * 6);
+    const fb = new Float32Array(flags.length * 4 * 2);
+    flags.forEach((f, i) => {
+      const v = i * 4;
+      const set = (k: number, p: [number, number, number], bend: number): void => {
+        fp[(v + k) * 3] = p[0]!;
+        fp[(v + k) * 3 + 1] = p[1]!;
+        fp[(v + k) * 3 + 2] = p[2]!;
+        fc[(v + k) * 4] = f.color[0]!;
+        fc[(v + k) * 4 + 1] = f.color[1]!;
+        fc[(v + k) * 4 + 2] = f.color[2]!;
+        fc[(v + k) * 4 + 3] = 1;
+        fb[(v + k) * 2] = bend;
+        fb[(v + k) * 2 + 1] = f.phase;
+      };
+      set(0, f.tL, 0);
+      set(1, f.tR, 0);
+      set(2, f.bL, 1);
+      set(3, f.bR, 1);
+      fi[i * 6] = v; fi[i * 6 + 1] = v + 1; fi[i * 6 + 2] = v + 3;
+      fi[i * 6 + 3] = v; fi[i * 6 + 4] = v + 3; fi[i * 6 + 5] = v + 2;
+    });
+    const fm = new Mesh("cabinFlags", this.scene);
+    const fvd = new VertexData();
+    fvd.positions = fp;
+    fvd.indices = fi;
+    const fnrm = new Float32Array(fp.length);
+    VertexData.ComputeNormals(fp as unknown as number[], fi as unknown as number[], fnrm);
+    fvd.normals = fnrm;
+    fvd.colors = fc;
+    fvd.applyToMesh(fm);
+    fm.setVerticesBuffer(new VertexBuffer(this.scene.getEngine(), fb, "plantBend", false, false, 2));
+    fm.material = this.ensureFlagMaterial();
+    fm.parent = root;
+    fm.isPickable = false;
+    this.castShadow(fm);
+    this.baseCampStats.flags = flags.length;
+    this.baseCampStats.cabinPieces = spec.pieces.length;
+
+    // HUMO de la chimenea (≤ 24 partículas, coste ≈ 0: campamento vivo)
+    const smoke = new ParticleSystem("cabinSmoke", 24, this.scene);
+    smoke.particleTexture = this.fxTexture;
+    smoke.emitter = this.cabinLocalToWorld(spec.smokePos);
+    smoke.minEmitBox = new Vector3(-0.06, 0, -0.06);
+    smoke.maxEmitBox = new Vector3(0.06, 0.04, 0.06);
+    smoke.color1 = new Color4(0.82, 0.82, 0.85, 0.5);
+    smoke.color2 = new Color4(0.7, 0.7, 0.74, 0.4);
+    smoke.colorDead = new Color4(0.75, 0.75, 0.8, 0);
+    smoke.minSize = 0.09;
+    smoke.maxSize = 0.32;
+    smoke.minLifeTime = 1.4;
+    smoke.maxLifeTime = 2.4;
+    smoke.emitRate = 9;
+    smoke.blendMode = ParticleSystem.BLENDMODE_STANDARD;
+    smoke.direction1 = new Vector3(-0.06, 0.55, -0.06);
+    smoke.direction2 = new Vector3(0.08, 0.95, 0.08);
+    smoke.minEmitPower = 0.35;
+    smoke.maxEmitPower = 0.8;
+    smoke.gravity = new Vector3(0, 0.12, 0);
+    smoke.start();
+    this.baseCampStats.smoke = true;
+  }
+
+  /** Material de los BANDERINES: PBR vertex-color doble cara con SU plugin de
+   *  viento (tela ligera: ondea el doble que las matas de la pared). */
+  private ensureFlagMaterial(): PBRMaterial {
+    if (this.flagMat) return this.flagMat;
+    const m = new PBRMaterial("cabinFlagM", this.scene);
+    m.albedoColor = new Color3(1, 1, 1); // el color real va en VERTEX COLORS
+    m.metallic = 0;
+    m.roughness = 0.9;
+    m.backFaceCulling = false;
+    this.flagMat = m;
+    this.flagWind = new PlantWindPlugin(m);
+    const viento = resolvePlantWindCfg((this.reliefRaw as { vegetacion?: { viento?: unknown } } | null)?.vegetacion?.viento);
+    this.flagWind.configure({
+      ...viento,
+      breezeAmpM: Math.min(0.12, Math.max(0.05, viento.breezeAmpM * 2.6)),
+      pushM: Math.min(0.3, Math.max(0.1, viento.pushM * 2.2)),
+    });
+    return m;
+  }
+
+  /** Local → mundo de la cabaña (rotación Y + traslación del conjunto). */
+  private cabinLocalToWorld(p: [number, number, number]): Vector3 {
+    const pos = SherpaScene.CABIN_POS;
+    const c = Math.cos(pos.ry);
+    const s = Math.sin(pos.ry);
+    return new Vector3(pos.x + p[0]! * c + p[2]! * s, p[1], pos.z - p[0]! * s + p[2]! * c);
+  }
+
+  /** T56 SONDA E2E: estado del base camp (pedriz/faldones/cabaña/banderines). */
+  getBaseCampInfo(): { enabled: boolean; screeTris: number; spurTris: number; rocks: number; cabinPieces: number; flags: number; smoke: boolean; flagWindActive: boolean } {
+    return { ...this.baseCampStats, flagWindActive: this.flagWind?.debugInfo().active ?? false };
   }
 
   // ---------- RELIEVE por teselación (T39): piedras solo donde mira la cámara ----------
@@ -1113,6 +1459,9 @@ export class SherpaScene {
         uvs[p * 2 + 1] = j / (res.H - 1);
       }
     }
+    // T55 — ALTURAS h (UNA sola vez: la consumen el tinte de roca Y la vegetación)
+    const hGrid = new Float32Array(vw * vh);
+    for (let p = 0; p < vw * vh; p++) hGrid[p] = faceZ - positions[p * 3 + 2]!;
     const indices = new Uint32Array((vw - 1) * (vh - 1) * 6);
     let q = 0;
     for (let j = 0; j < vh - 1; j++) {
@@ -1128,6 +1477,13 @@ export class SherpaScene {
     vd.normals = normals;
     vd.uvs = uvs;
     vd.indices = indices;
+    // T55 — TINTE POR VÉRTICE (AO de concavidad + variación de macizo +
+    // líquenes): el PBR lo multiplica con el albedo horneado (define
+    // VERTEXCOLOR automático al existir el buffer de color).
+    if (this.rockTintCfg?.enabled) {
+      vd.colors = computeRockTint({ positions, normals, h: hGrid, vw, vh, cfg: this.rockTintCfg, chunkIndex: c });
+      this.rockTintChunks++;
+    }
     vd.applyToMesh(mesh);
     // texturas PROPIAS del chunk (el módulo hornea color+AO+vetas+magnesio en
     // colorMap y el microrelieve en normalMap). T44: MATERIAL PBR DETALLADO —
@@ -1148,7 +1504,7 @@ export class SherpaScene {
     const strata = this.ensureStrataTexture();
     if (strata) {
       const plugin = new TriPlanarStrataPlugin(mat);
-      plugin.configure(strata, this.strataCfg!.scale, this.strataCfg!.strength);
+      plugin.configure(strata, this.strataCfg!.scale, this.strataCfg!.strength, this.strataCfg!.detail);
     }
     this.rockPbrCount++;
     mesh.material = mat;
@@ -1166,10 +1522,9 @@ export class SherpaScene {
     // buscan depresiones reales (fondos de entrantes, concavidades) y se estampa
     // UNA malla fusionada de matas por chunk, con el mismo ciclo de vida LRU.
     if (this.plantasCfg?.enabled && this.plantasCfg.density > 0) {
-      const hGrid = new Float32Array(vw * vh);
+      // hGrid ya está calculado arriba (compartido con el tinte T55)
       const gxs = new Float32Array(vw);
       const gys = new Float32Array(vh);
-      for (let p = 0; p < vw * vh; p++) hGrid[p] = faceZ - positions[p * 3 + 2]!;
       for (let vi = 0; vi < vw; vi++) gxs[vi] = positions[vi * 3]!;
       for (let vj = 0; vj < vh; vj++) gys[vj] = positions[(vj * vw) * 3 + 1]!;
       const spots = selectPlantSpots({
@@ -1187,6 +1542,10 @@ export class SherpaScene {
         pvd.colors = g.colors;
         pvd.indices = g.indices;
         pvd.applyToMesh(pm);
+        // T55 — BUFFER DE DOBLADO: atributo por vértice (bend, fase) que lee el
+        // plugin de viento en el vertex shader. Stride 2 floats (vec2). El kind
+        // vive DENTRO del VertexBuffer (firma 9.32 de setVerticesBuffer).
+        pm.setVerticesBuffer(new VertexBuffer(this.scene.getEngine(), g.bend, "plantBend", false, false, 2));
         pm.material = this.ensurePlantasMaterial();
         pm.receiveShadows = true;
         pm.isPickable = false;
@@ -1212,6 +1571,11 @@ export class SherpaScene {
       m.backFaceCulling = false;
       m.twoSidedLighting = true;
       this.plantasMat = m;
+      // T55 — VIENTO EN LAS MATAS: plugin de shader (balanceo cosmético, cero
+      // coste de CPU por planta). Config data-driven (vegetacion.viento).
+      this.plantWind = new PlantWindPlugin(m);
+      const rawVeg = (this.reliefRaw as { vegetacion?: { viento?: unknown } } | null)?.vegetacion;
+      this.plantWind.configure(resolvePlantWindCfg(rawVeg?.viento));
     }
     return this.plantasMat;
   }
@@ -1226,6 +1590,11 @@ export class SherpaScene {
       }
     }
     return out;
+  }
+
+  /** T55 SONDA E2E: estado del plugin de viento de la vegetación. */
+  getPlantWindInfo(): { active: boolean; level: number; dir: number; breezeAmpM: number; swayFreq: number; pushM: number } | null {
+    return this.plantWind?.debugInfo() ?? null;
   }
 
   /** Fallback SIN worker: muestrea la región en el hilo principal (~0,3 s). */
@@ -1255,13 +1624,14 @@ export class SherpaScene {
       const bands = num(raw?.bands, 7, 2, 24);
       const warp = num(raw?.warp, 0.55, 0, 1.5);
       const seam = num(raw?.seam, 0.24, 0, 1);
+      const detail = num(raw?.detail, 0, 0, 0.5); // T55: grano fino (0 = off)
       const data = generateStrataColor(sizePx, ROCKWALL_SEED ^ 0x574a44, { bands, warp, seam });
       const tex = RawTexture.CreateRGBATexture(data, sizePx, sizePx, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
       tex.wrapU = Texture.WRAP_ADDRESSMODE; // triplanar: el patrón se REPITE
       tex.wrapV = Texture.WRAP_ADDRESSMODE;
       tex.anisotropicFilteringLevel = 4;
       this.strataTex = tex;
-      this.strataCfg = { scale, strength };
+      this.strataCfg = { scale, strength, detail };
     } catch {
       this.strataTex = null; // la pared funciona sin la capa
     }
@@ -1935,6 +2305,19 @@ export class SherpaScene {
   fxBreak(pos: V3): void { this.makeBurst("brk", "#b0bec5", 30, pos, 0.3, 0.08, 0.9); this.shake(0.05); }
   fxConfetti(pos: V3): void { this.makeBurst("conf", "#e8c547", 70, pos, 0.9, 0.07, 1.6); }
   fxBump(pos: V3): void { this.makeBurst("bump", "#e0d6c0", 8, pos, 0.1, 0.05, 0.4); }
+
+  /** T56 — IMPACTO DE LA CAÍDA DEL RICACHÓN (petición: "la caída realista, el
+   *  ricachón tiene peso"): polvo de pedriz + piedritas, cantidad y radio
+   *  PROPORCIONALES a la velocidad de impacto — el peso se VE, no solo suena. */
+  fxImpact(pos: V3, speed: number): void {
+    const k = Math.min(1, Math.max(0, (speed - 2) / 12));
+    if (k <= 0.02) {
+      this.makeBurst("imp", "#b7a894", 10, pos, 0.22, 0.07, 0.7);
+      return;
+    }
+    this.makeBurst("impDust", "#b7a894", Math.round(14 + k * 40), pos, 0.28 + k * 0.25, 0.09 + k * 0.06, 0.9);
+    this.makeBurst("impRock", "#6f6a62", Math.round(6 + k * 18), pos, 0.24, 0.05, 0.6);
+  }
 
   /** CHISPAS DEL CHICOTE (juice T38, petición "voz + juice restante"): cuando
    *  la cuerda CAPTURA una caída, estallido ámbar en la cintura — el tirón se
