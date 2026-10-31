@@ -31,7 +31,7 @@ import { ColorCurves } from "@babylonjs/core/Materials/colorCurves"; // T63: sat
 import { FxaaPostProcess } from "@babylonjs/core/PostProcesses/fxaaPostProcess"; // GRÁFICOS: antialiasing
 import { clampDpr, hardwareScaleFor } from "./renderQuality"; // T58-A: calidad de render (DPR)
 import { emoteOffset, stepEmote, startEmote, type EmoteSlot } from "../gameplay/emotes"; // T58-D: animaciones puntuales
-import { gripRingColor, gripRingPulses, mergeGripRings, REACH_RING_ALPHA, REACH_RING_COLOR, REACH_RING_POOL, type GripRingEntry, type ReachRingEntry } from "../gameplay/gripRing"; // T65/T66-FB/T67-FB: anillos
+import { buildGripArcGeometry, gripArcFraction, gripRingColor, gripRingPulses, mergeGripRings, REACH_RING_ALPHA, REACH_RING_COLOR, REACH_RING_POOL, type GripRingEntry, type ReachRingEntry } from "../gameplay/gripRing"; // T65/T66-FB/T67-FB/T69: anillos
 import { isRichMood, RICH_BUBBLE_SPEAK_S, type RichMood } from "../gameplay/richMood"; // T66: ánimo del ricachón
 import { composeEmoteBubble, flipRowsRGBA } from "../gameplay/emoteBubble"; // T66-FB: bocadillo de cómic
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
@@ -85,8 +85,11 @@ import {
   type RockwallAnchorIn, type RockwallFeature, type RockwallRegionResult, type RockwallStyle,
 } from "../world/rockwall"; // T43: módulo del jugador (diaclasas) + worker
 import { createRockwallPool, defaultPoolSize, type RockwallPool } from "../world/rockwallPool"; // T67: pool de workers
+import { paintSeatStones } from "../world/rockSeat"; // T68: piedra del apoyo legible bajo cada presa
 import { makeRng } from "../core/rng";
 import { generatePedrizaColor, generateStrataColor } from "../world/strataTexture"; // T44 estratos + T56 pedriza
+import { CLIMATE_GLOSS_LEVEL, generateClimateFields, generateClimateGloss, generateClimateNormal } from "../world/rockClimate"; // T69 clima-piedra
+import { ClimateRockPlugin } from "./climateRockMaterial"; // T69 capa climática triplanar
 import { resolvePlantasCfg, selectPlantSpots, stampTufts, type PlantasCfg } from "../world/plantas"; // T48: vegetación en hundimientos
 import { TriPlanarStrataPlugin } from "./wallStrataMaterial"; // T44: mapeado triplanar
 import { PlantWindPlugin, resolvePlantWindCfg } from "./plantWindMaterial"; // T55: viento en la vegetación
@@ -207,13 +210,16 @@ export class SherpaScene {
   private sunRel = new Vector3(3.5, 9, -6.5);
   private holdMeshes = new Map<string, Mesh>();
   private holdMasters = new Map<string, Mesh>();
-  // T65/T66-FB — anillos sobre las presas: la presa AGARRADA POR LAS MANOS
-  // lleva un anillo de FATIGA (verde→naranja→rojo con la fatiga de su
-  // extremidad, pool de meshes con material propio, máx. 8); las presas
-  // ALCANZABLES libres llevan un FINO CÍRCULO BLANCO estático con alpha por
-  // distancia (pool propio). El resto de la pared NO se marca.
-  private gripFatigue = new Map<string, { mesh: Mesh; mat: StandardMaterial; f: number }>();
-  private gripFatigueSpare: { mesh: Mesh; mat: StandardMaterial }[] = [];
+  // T65/T66-FB/T69 — anillos sobre las presas: la presa AGARRADA POR LAS MANOS
+  // lleva el anillo de FATIGA en dos piezas (T69, petición del jugador: "la
+  // fatiga para llegar al descuelgue debe ser del 100%, lo que se corresponde
+  // con el círculo completo en 360 grados"): una PISTA tenue (el riel del
+  // círculo, para ver cuánto falta) y un ARCO que CRECE desde las 12 hasta
+  // cerrar el círculo exactamente al 100% (= suelte). Las presas ALCANZABLES
+  // libres llevan un FINO CÍRCULO VERDE estático (pool propio). El resto de la
+  // pared NO se marca.
+  private gripFatigue = new Map<string, { arc: Mesh; track: Mesh; mat: StandardMaterial; f: number; frac: number }>();
+  private gripFatigueSpare: { arc: Mesh; track: Mesh; mat: StandardMaterial }[] = [];
   private reachRingPool: { mesh: Mesh; mat: StandardMaterial }[] = [];
   private reachRingUsed = 0;
   private rigVisuals: (RigVisual | null)[] = [null, null];
@@ -420,6 +426,12 @@ export class SherpaScene {
   private strataTex: RawTexture | null = null;
   private strataCfg: { scale: number; strength: number; detail: number } | null = null;
   private strataTried = false;
+  // T69: CAPA CLIMÁTICA (campos de meteorización + normal de fisuras + gloss
+  // de barniz) compartida por todos los chunks + sus plugins (clima en vivo)
+  private climaTex: { fields: RawTexture; normal: RawTexture; gloss: RawTexture } | null = null;
+  private climaCfg: { scale: number; strength: number; freezeY: number } | null = null;
+  private climaTried = false;
+  private climaPlugins: ClimateRockPlugin[] = [];
   // T48: VEGETACIÓN en los hundimientos de la pared (matas por chunk)
   private plantasCfg: PlantasCfg | null = null;
   private plantasMat: PBRMaterial | null = null;
@@ -1795,6 +1807,17 @@ export class SherpaScene {
     // colorMap y el microrelieve en normalMap). T44: MATERIAL PBR DETALLADO —
     // albedo del colorMap horneado, normales para el detalle fino (bump),
     // metálico 0 / rugosidad de piedra + capa de ESTRATOS TRIPANAR encima.
+    // T68 — PIEDRA DEL APOYO: antes de subir el albedo, la escena pinta el
+    // asiento de cada presa (levante interior + junta en el borde ondulado):
+    // la fusión a cota existe en geometría pero con el albedo continuo y luz
+    // baja la presa se fundía con el muro ("no veo los agarres desplazados
+    // sobre la piedra"). Post-paso de escena: el módulo espejado no se toca.
+    paintSeatStones(res.colorMap, res, {
+      anchors: this.rockCtx.anchors,
+      seed: ROCKWALL_SEED,
+      plateauR: this.rockCtx.style.plateauR,
+      seatWobble: this.rockCtx.style.seatWobble,
+    });
     const mat = new PBRMaterial(`rockDM_${c}`, this.scene);
     const cm = RawTexture.CreateRGBATexture(res.colorMap, res.W, res.H, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
     cm.anisotropicFilteringLevel = 4; // la piedrina se ve nítida en ángulo
@@ -1811,6 +1834,17 @@ export class SherpaScene {
     if (strata) {
       const plugin = new TriPlanarStrataPlugin(mat);
       plugin.configure(strata, this.strataCfg!.scale, this.strataCfg!.strength, this.strataCfg!.detail);
+    }
+    // T69 — CAPA CLIMÁTICA: campos de meteorización triplanar (fisura/pátina/
+    // líquenes/barniz) + normal de fisuras + GLOSINOSIDAD climática (la costra
+    // de barniz semipulida, la pátina y los líquenes mates) vía microSurface-
+    // Texture de Babylon. Una sola pareja de texturas para TODOS los chunks.
+    const clima = this.ensureClimateTextures();
+    if (clima) {
+      const plugin = new ClimateRockPlugin(mat);
+      plugin.configure(clima.fields, clima.normal, clima.scale, clima.strength, clima.freezeY);
+      this.climaPlugins.push(plugin);
+      mat.microSurfaceTexture = clima.gloss; // barniz semipulido, pátina mate
     }
     this.rockPbrCount++;
     mesh.material = mat;
@@ -1977,6 +2011,70 @@ export class SherpaScene {
     return this.strataTex;
   }
 
+  /** T69 — CAPA CLIMÁTICA (lazy, una vez para TODA la escena): campos de
+   *  meteorización + normal de fisuras + gloss de barniz (rockClimate.ts,
+   *  tileables y deterministas). Parámetros por datos
+   *  (wall_gen.relief.clima), defaults defensivos; `enabled:false` o datos
+   *  rotos → capa ausente (la pared funciona igual). */
+  private ensureClimateTextures(): { fields: RawTexture; normal: RawTexture; gloss: RawTexture; scale: number; strength: number; freezeY: number } | null {
+    if (this.climaTried) return this.climaTex && this.climaCfg
+      ? { fields: this.climaTex.fields, normal: this.climaTex.normal, gloss: this.climaTex.gloss, scale: this.climaCfg.scale, strength: this.climaCfg.strength, freezeY: this.climaCfg.freezeY }
+      : null;
+    this.climaTried = true;
+    try {
+      const raw = (this.reliefRaw as { clima?: Record<string, unknown> } | null)?.clima;
+      const num = (v: unknown, def: number, min: number, max: number): number =>
+        typeof v === "number" && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : def;
+      const enabled = raw ? raw.enabled !== false : true;
+      if (!enabled) return null;
+      const sizePx = Math.round(num(raw?.sizePx, 512, 128, 1024));
+      const glossPx = 256;
+      const scale = num(raw?.scale, 0.5, 0.05, 4);
+      const strength = num(raw?.strength, 0.85, 0, 1.5);
+      const freezeY = num(raw?.freezeAltitudeM, 14, 0, 400);
+      const seed = (ROCKWALL_SEED ^ 0x9c1a) >>> 0;
+      const fields = RawTexture.CreateRGBATexture(generateClimateFields(sizePx, seed, { strength: Math.min(1, strength) }), sizePx, sizePx, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
+      fields.wrapU = Texture.WRAP_ADDRESSMODE; // triplanar: el patrón se REPITE
+      fields.wrapV = Texture.WRAP_ADDRESSMODE;
+      fields.anisotropicFilteringLevel = 4;
+      const normal = RawTexture.CreateRGBATexture(generateClimateNormal(sizePx, seed), sizePx, sizePx, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
+      normal.wrapU = Texture.WRAP_ADDRESSMODE;
+      normal.wrapV = Texture.WRAP_ADDRESSMODE;
+      normal.anisotropicFilteringLevel = 4;
+      const gloss = RawTexture.CreateRGBATexture(generateClimateGloss(glossPx, seed), glossPx, glossPx, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
+      gloss.wrapU = Texture.WRAP_ADDRESSMODE;
+      gloss.wrapV = Texture.WRAP_ADDRESSMODE;
+      gloss.level = CLIMATE_GLOSS_LEVEL; // el byte guarda g/1.45: devolver la escala real
+      this.climaTex = { fields, normal, gloss };
+      this.climaCfg = { scale, strength, freezeY };
+      return { fields, normal, gloss, scale, strength, freezeY };
+    } catch {
+      this.climaTex = null; // la pared funciona sin la capa
+      return null;
+    }
+  }
+
+  /** T69 SONDA E2E: estado de la capa climática de la piedra (campos horneados
+   *  + clima en vivo con su easing). */
+  getClimateInfo(): { active: boolean; plugins: number; scale: number; strength: number; freezeY: number; wetness: number; frost: number; perPlugin: { wet: number; frost: number; tw: number; tf: number; fy: number; binds: number }[] } {
+    const first = this.climaPlugins[0];
+    const d = first?.dynamics ?? { wetness: 0, frost: 0, targetWet: 0, targetFrost: 0, binds: 0 };
+    return {
+      active: !!this.climaTex,
+      plugins: this.climaPlugins.length,
+      scale: this.climaCfg?.scale ?? 0,
+      strength: this.climaCfg?.strength ?? 0,
+      freezeY: first ? first.freezeY : this.climaCfg?.freezeY ?? 0,
+      wetness: d.wetness,
+      frost: d.frost,
+      perPlugin: this.climaPlugins.map((p) => ({
+        wet: p.dynamics.wetness, frost: p.dynamics.frost,
+        tw: p.dynamics.targetWet, tf: p.dynamics.targetFrost,
+        fy: p.freezeY, binds: p.dynamics.binds,
+      })),
+    };
+  }
+
   /** GRÁFICOS (sonda E2E): estado de la cadena de calidad — tone mapping,
    *  viñeta, FXAA, niebla, cielo y sombras. */
   getGraphicsInfo(): {
@@ -2081,6 +2179,18 @@ export class SherpaScene {
   /** Llamado CADA tick del match (barato): la nieve visible es solo
    *  emitRate + recoloreo cuando cambia la cota/intensidad de verdad. */
   setSnowVisual(active: boolean, intensity: number, lineY: number): void {
+    // T69 — CLIMA EN VIVO sobre la piedra: la nevada húmeda OSCURECE la roca
+    // porosa (wetness) y congela las fisuras por encima de la cota (frost);
+    // el easing real lo hace el plugin en el bind (~1 s de rampa).
+    const k = Math.min(1, Math.max(0, intensity));
+    if (this.climaPlugins.length) {
+      const wet = active ? k * 0.65 : 0;
+      const frost = active ? k : 0;
+      for (const p of this.climaPlugins) p.setDynamics(wet, frost);
+      if (active && Number.isFinite(lineY)) {
+        for (const p of this.climaPlugins) p.setFreezeY(lineY);
+      }
+    }
     this.snowPps = Math.max(60, this.snowPps);
     const rate = active ? Math.round(this.snowPps * Math.min(1, intensity)) : 0;
     this.snowBaseRate = rate; // setWind suma su ventisca ENCIMA
@@ -2327,12 +2437,15 @@ export class SherpaScene {
             dz: this.reliefFaceZ - (h.pos.z + this.rockField.cfg.anchorBackM),
           });
         }
-        // DIACLASAS (T43): cada presa FUNDE la roca a su cota (12 mm detrás
-        // del centro, contrato T40/T41). r modera la atenuación de grietas.
+        // DIACLASAS (T43): cada presa FUNDE la roca a su cota. T68: el asiento
+        // queda anchorBackM DETRÁS del centro de la presa (mesh z = h.pos.z −
+        // anchorBackM), como dictaba el contrato T40 — la presa se ve MONTADA
+        // SOBRE su piedra y no a media tapa (el knob sigue mordiendo la pared
+        // por detrás del asiento, T41). r modera la atenuación de grietas.
         if (this.rockCtx) {
           this.rockCtx.anchors.push({
             x: h.pos.x, y: h.pos.y,
-            hz: this.reliefFaceZ - (h.pos.z + this.rockCtx.style.anchorBackM),
+            hz: this.reliefFaceZ - (h.pos.z - this.rockCtx.style.anchorBackM),
             r: Math.min(0.12, Math.max(0.05, h.radius)),
             kind: "hand", // magnesio en todas las presas visibles
           });
@@ -2410,22 +2523,25 @@ export class SherpaScene {
    *  entrada es una mano viva en una presa con SU fatiga (merge por presa =
    *  peor caso). El color es la rampa gripRingColor (verde→ámbar→rojo→rojo
    *  hondo) y desde el umbral crítico el anillo LATE (aviso físico antes del
-   *  despegue). El recorrido es COMPLETO: el suelte vive en tuning
-   *  (limb.fatigueReleaseAt = 1.0), el anillo siempre llega al rojo.
+   *  despegue). T69 — y el RECORRIDO ES UN ARCO que llena el círculo: crece
+   *  desde las 12 en punto y CIERRA los 360° exactamente al 100% de fatiga
+   *  (fatigueReleaseAt = 1.0 = suelte) sobre una pista tenue que enseña el
+   *  riel completo.
    *  T66-FB — y ALCANCE: `reach` son las presas libres alcanzables (ya capadas
    *  y ordenadas de cerca a lejos por el match): fino círculo VERDE estático.
    *  T67-FB — el jugador pidió volver al verde y SIN transparencia ("nos pasamos
    *  de sutiles… vamos a marcarlos sin transparencia los que podemos
    *  alcanzar"): alpha 1 fijo. Estos círculos NUNCA cambian de color (el
-   *  estado lo cuenta el anillo de fatiga, más grueso). */
+   *  estado lo cuenta el arco de fatiga, más grueso). */
   syncGripRings(entries: readonly GripRingEntry[], reach: readonly ReachRingEntry[] = []): void {
     const want = new Map(mergeGripRings(entries).map((e) => [e.holdId, e.fatigue]));
     // 1. liberar los anillos de fatiga cuyas presas ya no están agarradas
     for (const id of [...this.gripFatigue.keys()]) {
       if (want.has(id)) continue;
       const g = this.gripFatigue.get(id)!;
-      g.mesh.isVisible = false;
-      this.gripFatigueSpare.push({ mesh: g.mesh, mat: g.mat });
+      g.arc.isVisible = false;
+      g.track.isVisible = false;
+      this.gripFatigueSpare.push({ arc: g.arc, track: g.track, mat: g.mat });
       this.gripFatigue.delete(id);
     }
     // 2. colocar/actualizar los activos
@@ -2437,27 +2553,66 @@ export class SherpaScene {
       if (!g) {
         const spare = this.gripFatigueSpare.pop();
         if (spare) {
-          g = { mesh: spare.mesh, mat: spare.mat, f };
+          g = { arc: spare.arc, track: spare.track, mat: spare.mat, f, frac: -1 };
         } else {
-          const mesh = MeshBuilder.CreateTorus(`gripFatigue_${id}`, { diameter: 1, thickness: 0.062, tessellation: 20 }, this.scene);
+          // PISTA: toro entero tenue (el riel del círculo que se va a llenar).
+          // Con disableLighting manda el EMISSIVE (como los anillos de alcance T67).
+          const track = MeshBuilder.CreateTorus(`gripTrack_${id}`, { diameter: 1, thickness: 0.04, tessellation: 20 }, this.scene);
+          const tmat = mat(this.scene, `gripTrackM_${id}`, "#1e4a2a");
+          tmat.emissiveColor = Color3.FromHexString("#1e4a2a");
+          tmat.disableLighting = true;
+          tmat.alpha = 0.5;
+          track.material = tmat;
+          track.rotation.x = Math.PI / 2; // el toro nace tumbado: de pie encarando la cámara
+          track.isPickable = false;
+          track.isVisible = false;
+          // ARCO: toro parcial propio (crece hasta cerrar el círculo)
+          const arc = new Mesh(`gripFatigue_${id}`, this.scene);
+          const vd = new VertexData();
+          const geo = buildGripArcGeometry(1);
+          vd.positions = geo.positions; vd.normals = geo.normals; vd.indices = geo.indices;
+          vd.applyToMesh(arc);
           const fmat = mat(this.scene, `gripFatigueM_${id}`, "#3fd15e");
           fmat.disableLighting = true;
           fmat.alpha = 0.95;
-          mesh.material = fmat;
-          mesh.rotation.x = Math.PI / 2;
-          mesh.isPickable = false;
-          mesh.isVisible = false;
-          g = { mesh, mat: fmat, f };
+          arc.material = fmat;
+          arc.isPickable = false;
+          arc.isVisible = false;
+          g = { arc, track, mat: fmat, f, frac: -1 };
         }
         this.gripFatigue.set(id, g);
       }
       g.f = f;
+      // T69 — ARCO: la geometría SOLO se reconstruye cuando cambia el paso
+      // cuantizado (a 1%/s, cada ~6 s por anillo; 60 pasos = círculo cerrado al 100%)
+      const frac = gripArcFraction(f);
+      const scale = this.holdRingScale(hold);
       const [r, gg, b] = gripRingColor(f);
-      g.mat.emissiveColor.set(r, gg, b);
-      g.mesh.position.set(hold.position.x, hold.position.y, hold.position.z - 0.028);
       const pulse = gripRingPulses(f) ? 1 + Math.sin(now / 160) * 0.14 : 1;
-      g.mesh.scaling.setAll(this.holdRingScale(hold) * pulse * 1.06);
-      g.mesh.isVisible = true;
+      // el color SIEMPRE (a f=0 el arco está oculto y manda la pista, pero el
+      // material nunca queda negro a la vista de una transición)
+      g.mat.emissiveColor.set(r, gg, b);
+      // pista: siempre visible bajo el arco (el riel del recorrido)
+      g.track.position.set(hold.position.x, hold.position.y, hold.position.z - 0.028);
+      g.track.scaling.setAll(scale * pulse * 1.06);
+      g.track.isVisible = true;
+      // arco: reconstruye SOLO si el paso cambió (frac −1 = recién creado)
+      if (frac !== g.frac) {
+        g.frac = frac;
+        if (frac <= 0) {
+          g.arc.isVisible = false;
+        } else {
+          const geo = buildGripArcGeometry(frac);
+          const vd = new VertexData();
+          vd.positions = geo.positions; vd.normals = geo.normals; vd.indices = geo.indices;
+          vd.applyToMesh(g.arc);
+          g.arc.isVisible = true;
+        }
+      }
+      if (frac > 0) {
+        g.arc.position.set(hold.position.x, hold.position.y, hold.position.z - 0.028);
+        g.arc.scaling.setAll(this.holdRingScale(hold) * pulse * 1.06);
+      }
     }
     // 3. anillos de ALCANCE: pool capado (sobran los más lejanos — la lista
     //    llega ordenada de cerca a lejos), VERDE OPACO fijo (T67-FB)
@@ -2491,12 +2646,13 @@ export class SherpaScene {
   }
 
   /** T66-FB/T67-FB SONDA E2E: anillos de alcance visibles (alpha fijo 1 +
-   *  hex verde) + anillos de fatiga activos con su fatiga y color (hex). */
+   *  hex verde) + arcos de fatiga activos con su fatiga, color (hex) y
+   *  fracción de círculo llenada (T69: 1.0 = círculo completo = 360°). */
   gripRingsDebug(): {
     reach: number;
     reachAlpha: number[];
     reachHex: string | null;
-    active: { holdId: string; f: number; hex: string }[];
+    active: { holdId: string; f: number; hex: string; trackHex: string; frac: number }[];
   } {
     const hex = (c: Color3): string =>
       "#" + [c.r, c.g, c.b].map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, "0")).join("");
@@ -2504,6 +2660,8 @@ export class SherpaScene {
       holdId,
       f: Math.round(g.f * 1000) / 1000,
       hex: hex(g.mat.emissiveColor),
+      trackHex: hex((g.track.material as StandardMaterial).emissiveColor),
+      frac: Math.round(g.frac * 1000) / 1000,
     }));
     const reachAlpha: number[] = [];
     let reachHex: string | null = null;
@@ -4423,10 +4581,10 @@ export class SherpaScene {
       if (this.puppet[p]) { this.puppet[p]!.dispose(); this.puppet[p] = null; }
     }
     if (this.richPuppet) { this.richPuppet.dispose(); this.richPuppet = null; } // T62
-    // T65/T66-FB: anillos de agarre (pool de fatiga + pool de alcance)
-    for (const g of this.gripFatigue.values()) g.mesh.dispose();
+    // T65/T66-FB/T69: anillos de agarre (arco + pista, pool de fatiga + alcance)
+    for (const g of this.gripFatigue.values()) { g.arc.dispose(); g.track.dispose(); }
     this.gripFatigue.clear();
-    for (const s of this.gripFatigueSpare) s.mesh.dispose();
+    for (const s of this.gripFatigueSpare) { s.arc.dispose(); s.track.dispose(); }
     this.gripFatigueSpare.length = 0;
     for (const r of this.reachRingPool) r.mesh.dispose();
     this.reachRingPool.length = 0;

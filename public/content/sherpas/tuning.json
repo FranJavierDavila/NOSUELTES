@@ -20,8 +20,9 @@
     "handFatigueOneFootFree": 1.3,
     "handFatigueTwoFeetFree": 1.75,
     "reachFatigueLoss": 0.22,
-    "stallGraceSeconds": 5,
-    "stallFatiguePerSecond": 0.05
+    "stallGraceSeconds": 10,
+    "stallFatiguePerSecond": 0.01,
+    "stallFatigueSoloHandMult": 2.0
   },
   "rope": {
     "segmentMax": 1.5,

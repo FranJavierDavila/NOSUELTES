@@ -71,12 +71,20 @@ export class TriPlanarStrataPlugin extends MaterialPluginBase {
     this._detail = Math.min(0.5, Math.max(0, detail));
     this._detailScaleMul = Math.max(1.5, detailScaleMul);
     this._active = !!tex;
+    // T69-FIX: la ACTIVACIÓN se comunica AL MOMENTO (patrón oficial Babylon —
+    // el clearcoat llama _enable desde su setter): sin _enable el manager no
+    // mete el plugin en _activePlugins, prepareDefines JAMÁS corre y el código
+    // custom se compila fuera. Diagnosticado por sonda en el navegador: el
+    // material de roca tenía _activePlugins = [PBRBRDF] y esta capa llevaba
+    // tiempo muerta en silencio.
+    this._enable(this._active && this._material.shaderLanguage === ShaderLanguage.GLSL);
     this.markAllDefinesAsDirty();
   }
 
   prepareDefines(defines: MaterialDefines, _scene: Scene, _mesh: AbstractMesh): void {
     // WGSL (WebGPU): el código del plugin es GLSL — desactivado en ese backend
     // (la escena arranca WebGL2 primero; el fallback WebGPU pierde solo la capa).
+    // (La ACTIVACIÓN vive en configure(): aquí solo se publica el define.)
     defines.TRISTATA = this._active && this._material.shaderLanguage === ShaderLanguage.GLSL;
   }
 

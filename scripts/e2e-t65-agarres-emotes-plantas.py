@@ -166,9 +166,10 @@ with sync_playwright() as pw:
     check("anillo de fatiga activo sobre la presa agarrada POR LA MANO", ent is not None,
           f"(activos={rg and len(rg['active'])})")
     if ent:
-        rr, gg, bb = hexc(ent["hex"])
-        check("el anillo parte en VERDE (f≈0)", gg > rr and gg > bb,
-              f"(hex={ent['hex']} f={ent['f']})")
+        # T69: a f≈0 el arco está vacío — el riel (pista) es lo visible y es VERDE
+        tr, tgg, tb = hexc(ent.get("trackHex", "#000000"))
+        check("el anillo parte en VERDE (f≈0: pista verde, arco vacío)", tgg > tr and tgg > tb,
+              f"(trackHex={ent.get('trackHex')} f={ent['f']})")
 
     pasos = [(0.05, "verde", lambda c: c[1] > c[0]),
              (0.55, "naranja", lambda c: c[0] > 200 and 100 < c[1] < 210),
@@ -187,6 +188,13 @@ with sync_playwright() as pw:
             continue
         c = hexc(ent["hex"])
         check(f"rampa {nombre} (f={f}): anillo {ent['hex']}", ok_fn(c))
+        # T69 — el ARCO llena la fracción de círculo que dicta SU fatiga
+        # (cuantizada a 1/60 = 0,0167): el 100% CIERRA el círculo completo.
+        # Se compara contra f DE LA ENTRADA (el rig puede mover la fatiga entre
+        # pasos: recuperación/carga — el invariante es arco = fatiga mostrada).
+        fe = ent["f"]
+        check(f"rampa {nombre} (f={f}): arco llena su fracción de 360°",
+              abs(ent.get("frac", -1) - round(fe * 60) / 60) <= 0.011, f"(frac={ent.get('frac')}, f={fe})")
         if nombre == "naranja":
             shot(page, f"{OUT}/t66fb-1-rampa-naranja.png")
         if nombre == "rojo":
@@ -283,6 +291,17 @@ with sync_playwright() as pw:
         nkinds = len(ps["kinds"])
         check(f"la pared cultiva VARIEDAD ({nkinds} arquetipos: {sorted(ps['kinds'])})", nkinds >= 3)
     shot(page, f"{OUT}/t66fb-7-plantas.png")
+
+    # ---------- ESCENARIO D: CAPA CLIMÁTICA DE LA PIEDRA (T69) ----------
+    print("== D. CLIMA-Piedra: meteorización triplanar activa ==")
+    cl = ev(page, "(function(){ return window.__SHERPAS_DEBUG && __SHERPAS_DEBUG.clima ? __SHERPAS_DEBUG.clima() : null; })()")
+    check("sonda de clima-piedra disponible", cl is not None)
+    if cl:
+        check("capa climática HORNEADA y aplicada a los chunks", cl["active"] and cl["plugins"] >= 1,
+              f"(plugins={cl['plugins']}, escala={cl['scale']})")
+        check("el clima en vivo parte reposo (sin nevada: wetness/frost ≈ 0)",
+              cl["wetness"] < 0.05 and cl["frost"] < 0.05, f"(wet={cl['wetness']}, frost={cl['frost']})")
+    shot(page, f"{OUT}/t69-1-clima-piedra.png")
     check("sin errores JS al cierre", len(errors) == 0, f"({errors[:2]})")
     page.close()
 

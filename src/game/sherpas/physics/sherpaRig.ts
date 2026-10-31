@@ -100,12 +100,18 @@ const RECESSED_FATIGUE_PER_M = 0.5;  // fatiga extra por metro de presa RETRASAD
  *  paso de carga. Pura para poder verificarla sin el ruido del colgado. */
 export const recessedFatigueMult = (recessed?: number): number => 1 + (recessed ?? 0) * RECESSED_FATIGUE_PER_M;
 const REACH_LOSS_AT_FULL_FATIGUE = 0.22; // alcance perdido al 100% de fatiga (petición: círculos que se reducen)
-// FATIGA POR TIEMPO EN EL MISMO AGARRE (T64, petición del jugador: "los
-// indicadores de fatiga se disparan si un anclaje no se varía pasados 5
-// segundos, en ese caso cada segundo se incrementa un 5%"). Defaults si el
-// pack no trae los knobs (limb.stallGraceSeconds / limb.stallFatiguePerSecond).
-const STALL_GRACE_SECONDS_DEFAULT = 5;    // s en la misma presa antes de cobrarse
-const STALL_FATIGUE_PER_SECOND_DEFAULT = 0.05; // +5% de fatiga por segundo
+// FATIGA POR TIEMPO EN EL MISMO AGARRE (T64, petición del jugador; T69 la
+// recalibra: "los 5 segundos es demasiado rápido, vamos con incrementos de 10
+// segundos para la fatiga y se va incrementando cada 1 segundo 1% de fatiga").
+// Defaults si el pack no trae los knobs (limb.stallGraceSeconds /
+// limb.stallFatiguePerSecond / limb.stallFatigueSoloHandMult).
+const STALL_GRACE_SECONDS_DEFAULT = 10;   // s en la misma presa antes de cobrarse
+const STALL_FATIGUE_PER_SECOND_DEFAULT = 0.01; // +1% de fatiga por segundo
+// T69 — COLGADO DE UNA SOLA MANO (petición del jugador: "si cada mano tiene su
+// fatiga podemos quedar colgados por 1 sola mano, solo que en ese caso la
+// fatiga se incrementa al doble de velocidad"): una mano soporta TODO el peso
+// — el reloj de estancamiento corre a ×2 (knob limb.stallFatigueSoloHandMult).
+const STALL_SOLO_HAND_MULT_DEFAULT = 2;
 const FART_PELVIS_TRAIL_HZ = 9; // nubes de gas verde por segundo durante el vuelo
 // PIES SIN APOYO (petición del jugador: "si tienen uno o dos pies sin apoyo la
 // fatiga de las manos se incrementa"): colgando de los brazos se sufre MÁS.
@@ -1087,6 +1093,14 @@ export class SherpaRig {
 
     // reparto por configuración: cuelga quien está por encima de la cintura.
     const anchored = LIMBS.filter((l) => this.states.get(l)!.anchored && this.states.get(l)!.holdId);
+    // T69 — MANOS EN CARGA: si solo queda UNA mano anclada (la otra falló o
+    // vuela) cuelga el peso entero de ella → su reloj de estancamiento corre
+    // al DOBLE. Con dos manos el reparto es la regla base (1%/s cada una).
+    // "En carga" = anclada CON presa (la MISMA condición del reparto de arriba:
+    // una mano en viaje de presa no sostiene nada).
+    const handsAnchored = (this.states.get("hand_l")!.anchored && this.states.get("hand_l")!.holdId ? 1 : 0)
+      + (this.states.get("hand_r")!.anchored && this.states.get("hand_r")!.holdId ? 1 : 0);
+    const soloHandMult = handsAnchored === 1 ? (limbT.stallFatigueSoloHandMult ?? STALL_SOLO_HAND_MULT_DEFAULT) : 1;
     const weights = new Map<Limb, number>();
     let wSum = 0;
     for (const limb of anchored) {
@@ -1147,13 +1161,14 @@ export class SherpaRig {
       const supportMult = isHand(limb) ? handFatigueMult : 1;
       st.fatigue = Math.min(1, st.fatigue + Math.max(0, T - 0.6) * limbT.fatigueRate * t.fatigueRateMultiplier * proudMult * recessMult * supportMult * dt);
       if (stalling) {
-        // +5%/s con el pack por defecto (stallFatiguePerSecond). Mientras dura
-        // el estancamiento NO hay recuperación (arriba): el indicador naranja/
-        // rojo sube cada segundo, visible. Gancho futuro (T64): una variable
-        // "resistencia" (peso del ricachón con carga sobre la tabla, comestibles
-        // que reponen energías, presas con sorpresas) entrará como MULTIPLICADOR
-        // de esta tasa sin cambiar el contrato del rig.
-        st.fatigue = Math.min(1, st.fatigue + (limbT.stallFatiguePerSecond ?? STALL_FATIGUE_PER_SECOND_DEFAULT) * dt);
+        // T69: +1%/s con el pack por defecto (stallFatiguePerSecond), ×2 si es
+        // la ÚNICA mano en carga (soloHandMult). Mientras dura el estancamiento
+        // NO hay recuperación (arriba): el arco del anillo crece cada segundo,
+        // visible. Gancho futuro (T64): una variable "resistencia" (peso del
+        // ricachón con carga sobre la tabla, comestibles que reponen energías,
+        // presas con sorpresas) entrará como MULTIPLICADOR de esta tasa sin
+        // cambiar el contrato del rig.
+        st.fatigue = Math.min(1, st.fatigue + (limbT.stallFatiguePerSecond ?? STALL_FATIGUE_PER_SECOND_DEFAULT) * (stallable ? soloHandMult : 1) * dt);
       }
       if (st.fatigue >= limbT.fatigueReleaseAt) {
         this.forceRelease(limb, limbT.reGripLock, "exhaustion");

@@ -1,12 +1,16 @@
 /**
- * T64 — FATIGA POR TIEMPO EN EL MISMO AGARRE (petición del jugador):
- * "los indicadores de fatiga se disparan si un anclaje no se varía pasados 5
- * segundos, en ese caso cada segundo se incrementa un 5%".
+ * T64 — FATIGA POR TIEMPO EN EL MISMO AGARRE (petición del jugador) RECALIBRADA
+ * en T69: "los 5 segundos es demasiado rápido, vamos con incrementos de 10
+ * segundos para la fatiga y se va incrementando cada 1 segundo 1% de fatiga.
+ * La fatiga para llegar al descuelgue debe ser del 100% (círculo completo,
+ * 360°). Si cada mano tiene su fatiga podemos quedar colgados por 1 sola mano,
+ * solo que en ese caso la fatiga se incrementa al doble de velocidad".
  *
  * Núcleo puro (sin Babylon), mismo arnés que mecanicas2: rig + anclajes +
  * generador con semilla. La tasa de estancamiento es knob del pack
- * (tuning.limb.stallGraceSeconds / stallFatiguePerSecond; aquí se fija a mano
- * para aislar la aritmética y se prueban también los DEFAULTS del rig).
+ * (tuning.limb.stallGraceSeconds / stallFatiguePerSecond /
+ * stallFatigueSoloHandMult; aquí se fija a mano para aislar la aritmética y se
+ * prueban también los DEFAULTS del rig).
  */
 import { describe, it, expect, beforeAll } from "vitest";
 import { readFileSync } from "node:fs";
@@ -80,9 +84,17 @@ const settle = (rig: SherpaRig, seconds: number, dt = 1 / 60): void => {
   for (let i = 0, n = Math.round(seconds / dt); i < n; i++) rig.step(dt, 1);
 };
 
-describe("T64 · fatiga por tiempo en el mismo agarre (regla del jugador: 5 s → +5%/s)", () => {
+/** tasa efectiva de estancamiento (fatiga por segundo YA estancado): el
+ *  invariante del rig es fatiga = max(0, stallSeconds − gracia) × tasa, así
+ *  que la tasa se lee de dos medidas y no depende de cuándo arrancó el reloj. */
+const stallRate = (st: { fatigue: number; stallSeconds: number }, grace: number): number => {
+  const estancado = Math.max(0, st.stallSeconds - grace);
+  return estancado > 0.5 ? st.fatigue / estancado : 0;
+};
 
-  it("durante la gracia (5 s) NO hay fatiga de estancamiento; después la barra sube ~+5%/s", () => {
+describe("T64/T69 · fatiga por tiempo en el mismo agarre (regla del jugador: 10 s → +1%/s)", () => {
+
+  it("durante la gracia (10 s) NO hay fatiga de estancamiento; después la barra sube ~+1%/s", () => {
     // fatigueRate 0 + agarre enorme: el término de tensión queda anulado y la
     // recuperación (T<0,3) mantiene fatiga 0 antes de la gracia → la ÚNICA
     // fuente de fatiga posible es el estancamiento (aislación limpia).
@@ -93,20 +105,20 @@ describe("T64 · fatiga por tiempo en el mismo agarre (regla del jugador: 5 s �
     const st = rig.states.get("hand_l")!;
     expect(st.anchored).toBe(true);
 
-    // ventana ANTES de la gracia (total 4,5 s < 5 s): fatiga 0
-    settle(rig, 3.5);
-    expect(st.stallSeconds).toBeGreaterThan(4);
+    // ventana ANTES de la gracia (total 9,5 s < 10 s): fatiga 0
+    settle(rig, 8.5);
+    expect(st.stallSeconds).toBeGreaterThan(9);
     expect(st.fatigue).toBe(0); // sin deuda y T≈0 → recupera a 0
 
     const f0 = st.fatigue;
-    settle(rig, 3); // total 7,5 s → estancado ~2,5 s
-    expect(st.stallSeconds).toBeGreaterThan(6.5);
+    settle(rig, 3); // total 12,5 s → estancado ~2,5 s
+    expect(st.stallSeconds).toBeGreaterThan(11.5);
     const delta = st.fatigue - f0;
-    expect(delta).toBeGreaterThan(0.1);  // ≈ 0,05 × 2,5
-    expect(delta).toBeLessThan(0.15);
+    expect(delta).toBeGreaterThan(0.015); // ≈ 0,01 × 2,5
+    expect(delta).toBeLessThan(0.05);
   });
 
-  it("con los knobs por defecto del pack (5 s, 0,05/s) el número cuadra segundo a segundo", () => {
+  it("con los knobs por defecto del pack (10 s, 0,01/s) el número cuadra segundo a segundo", () => {
     // knobs presentes en tuning.json. INVARIANTE exacto (auto-corregido contra
     // el reloj real, que arranca al completar el viaje de la extremidad):
     // fatiga = max(0, stallSeconds − gracia) × tasa (la stall es la única fuente).
@@ -115,19 +127,20 @@ describe("T64 · fatiga por tiempo en el mismo agarre (regla del jugador: 5 s �
     grab(rig, anchors, "hand_l", v3(p.x + 0.3, p.y, Z()), "stall_b");
     settle(rig, 6.5);
     const st = rig.states.get("hand_l")!;
-    settle(rig, 2);
-    expect(st.stallSeconds).toBeGreaterThan(6);
-    const estancado = Math.max(0, st.stallSeconds - 5);
-    expect(st.fatigue).toBeCloseTo(0.05 * estancado, 1);
+    settle(rig, 6);
+    expect(st.stallSeconds).toBeGreaterThan(11);
+    const estancado = Math.max(0, st.stallSeconds - 10);
+    expect(estancado).toBeGreaterThan(1);
+    expect(st.fatigue).toBeCloseTo(0.01 * estancado, 2);
   });
 
   it("cambiar a una presa DISTINTA resetea el contador de estancamiento", () => {
     const { rig, anchors } = buildRig(777, { fatigueRate: 0, baseGripHand: 1e6, baseGripFoot: 1e6 });
     const p = handPos(rig);
     grab(rig, anchors, "hand_l", v3(p.x, p.y, Z()), "stall_c1");
-    settle(rig, 6);
+    settle(rig, 12);
     const st = rig.states.get("hand_l")!;
-    expect(st.stallSeconds).toBeGreaterThan(5);
+    expect(st.stallSeconds).toBeGreaterThan(10);
     // variar de verdad: presa nueva medio metro más arriba
     grab(rig, anchors, "hand_l", v3(p.x, p.y + 0.5, Z()), "stall_c2");
     settle(rig, 0.5);
@@ -141,11 +154,11 @@ describe("T64 · fatiga por tiempo en el mismo agarre (regla del jugador: 5 s �
     const p = handPos(rig);
     // presa DESPLAZADA (lejos del empate del imán con la presa de arranque)
     grab(rig, anchors, "hand_l", v3(p.x + 0.4, p.y, Z()), "stall_d");
-    settle(rig, 6);
+    settle(rig, 12);
     const st = rig.states.get("hand_l")!;
     expect(rig.holdIdOf("hand_l")).toBe("stall_d");
     const antes = st.stallSeconds;
-    expect(antes).toBeGreaterThan(5);
+    expect(antes).toBeGreaterThan(10);
     // re-agarrar EXACTAMENTE la misma presa por el pipeline real de arrastre
     // (el auto-agarre elegiría la más cercana, que puede ser otra)
     expect(rig.beginDrag("hand_l")).toBe(true);
@@ -157,7 +170,7 @@ describe("T64 · fatiga por tiempo en el mismo agarre (regla del jugador: 5 s �
     expect(st.stallSeconds).toBeGreaterThanOrEqual(antes); // la deuda persiste
   });
 
-  it("sin anclaje el contador no corre; el agotamiento estancado SUELTA la extremidad (exhaustion)", () => {
+  it("sin anclaje el contador no corre; el agotamiento estancado SUELTA la extremidad AL 100% (exhaustion = descuelgue)", () => {
     const { rig, anchors } = buildRig(4242, { fatigueRate: 0, baseGripHand: 1e6, baseGripFoot: 1e6 });
     const p = handPos(rig);
     grab(rig, anchors, "hand_l", v3(p.x, p.y, Z()), "stall_e");
@@ -169,32 +182,111 @@ describe("T64 · fatiga por tiempo en el mismo agarre (regla del jugador: 5 s �
     settle(rig, 2);
     expect(st.stallSeconds).toBe(sLibre);
 
-    // de 0 a 1 con 0,05/s ≈ 20 s + 5 s de gracia ≈ 25 s → a los 30 s debe haber soltado
+    // SOLO MANO (la otra no está anclada): el reloj corre ×2 → 0,02/s.
+    // De 0 a 1 (descuelgue = círculo completo) ≈ 50 s + 10 s de gracia →
+    // a los 90 s debe haber soltado con fatiga EXACTAMENTE 1.0.
     rig.setGrip("hand_l", true);
+    rig.setGrip("hand_r", false); // el rig nace con presas de arranque: suéltalas
+    rig.setGrip("foot_l", false);
+    rig.setGrip("foot_r", false);
     let exhaustion = false;
-    for (let i = 0; i < Math.round(30 / (1 / 60)); i++) {
+    for (let i = 0; i < Math.round(90 / (1 / 60)); i++) {
       const r = rig.step(1 / 60, 1);
       if (r.released.some((x) => x.cause === "exhaustion")) { exhaustion = true; break; }
     }
-    expect(exhaustion).toBe(true); // el estancamiento AGOTA y suelta
+    expect(exhaustion).toBe(true); // el estancamiento AGOTA al 100% y suelta
+    expect(st.fatigue).toBe(1);    // fatigaReleaseAt = 1.0: círculo completo
     // (el auto-agarre puede recoger otra presa al instante: comportamiento del juego)
     rig.setGrip("hand_l", false);
     settle(rig, 0.2);
     expect(st.anchored).toBe(false);
   });
 
-  it("sin knobs en el pack el rig aplica los DEFAULTS (5 s / 0,05/s)", () => {
+  it("sin knobs en el pack el rig aplica los DEFAULTS (10 s / 0,01/s)", () => {
     const { rig, anchors } = buildRig(4242, { fatigueRate: 0, baseGripHand: 1e6, baseGripFoot: 1e6, stallGraceSeconds: undefined, stallFatiguePerSecond: undefined });
     const p = handPos(rig);
     grab(rig, anchors, "hand_l", v3(p.x + 0.3, p.y, Z()), "stall_f");
     settle(rig, 1);
     const st = rig.states.get("hand_l")!;
-    settle(rig, 3.5); // total ~4,5 s < gracia por defecto (5 s)
-    expect(st.fatigue).toBe(0);
+    settle(rig, 9.5); // total ~10,5 s: la gracia por defecto (10 s) recién pasada
+    expect(st.fatigue).toBeLessThan(0.005); // el reloj apenas arrancó
     settle(rig, 2.2);
-    const estancado = Math.max(0, st.stallSeconds - 5);
+    const estancado = Math.max(0, st.stallSeconds - 10);
     expect(estancado).toBeGreaterThan(1);
-    expect(st.fatigue).toBeCloseTo(0.05 * estancado, 1);
+    expect(st.fatigue).toBeCloseTo(0.01 * estancado, 2);
+  });
+});
+
+describe("T69 · COLGADO DE UNA SOLA MANO: el reloj de estancamiento corre AL DOBLE", () => {
+
+  it("misma presa, mismo tiempo: una mano sola acumula ×2 que una de dos manos (0,02/s vs 0,01/s)", () => {
+    // dos rigs IDÉNTICOS (misma semilla): A cuelga de UNA mano, B de dos.
+    // fatigueRate 0 + agarre enorme aíslan el reloj de estancamiento.
+    const a = buildRig(4242, { fatigueRate: 0, baseGripHand: 1e6, baseGripFoot: 1e6 });
+    const pa = handPos(a.rig);
+    grab(a.rig, a.anchors, "hand_l", v3(pa.x + 0.3, pa.y, Z()), "solo_a");
+    // SOLO UNA MANO en carga: el rig nace con presas de arranque auto-ancladas
+    // (la otra mano y los pies) — hay que SOLTARLAS para el escenario real
+    // "colgado por 1 sola mano". Sin anclaje no vuelven solas (T64).
+    a.rig.setGrip("hand_r", false);
+    a.rig.setGrip("foot_l", false);
+    a.rig.setGrip("foot_r", false);
+    const b = buildRig(4242, { fatigueRate: 0, baseGripHand: 1e6, baseGripFoot: 1e6 });
+    const pb = handPos(b.rig);
+    grab(b.rig, b.anchors, "hand_l", v3(pb.x + 0.3, pb.y, Z()), "duo_l");
+    grab(b.rig, b.anchors, "hand_r", v3(pb.x - 0.3, pb.y, Z()), "duo_r");
+    settle(a.rig, 1); settle(b.rig, 1);
+    settle(a.rig, 15); settle(b.rig, 15);
+    const sa = a.rig.states.get("hand_l")!;
+    const sb = b.rig.states.get("hand_l")!;
+    expect(sa.anchored).toBe(true);
+    expect(sb.anchored).toBe(true);
+    const ra = stallRate(sa, 10);
+    const rb = stallRate(sb, 10);
+    expect(rb).toBeGreaterThan(0.008);            // la base: ~0,01/s
+    expect(rb).toBeLessThan(0.014);
+    expect(ra).toBeGreaterThan(0.017);            // la sola: ~0,02/s (×2)
+    expect(ra).toBeLessThan(0.026);
+    expect(ra / rb).toBeGreaterThan(1.7);         // y el cociente ≈ 2
+    expect(ra / rb).toBeLessThan(2.3);
+  });
+
+  it("el multiplicador es knob (stallFatigueSoloHandMult=3 → ×3) y sin knob el DEFAULT es ×2", () => {
+    const a = buildRig(4242, { fatigueRate: 0, baseGripHand: 1e6, baseGripFoot: 1e6, stallFatigueSoloHandMult: 3 });
+    const pa = handPos(a.rig);
+    grab(a.rig, a.anchors, "hand_l", v3(pa.x + 0.3, pa.y, Z()), "solo3_a");
+    a.rig.setGrip("hand_r", false);
+    a.rig.setGrip("foot_l", false);
+    a.rig.setGrip("foot_r", false);
+    const b = buildRig(4242, { fatigueRate: 0, baseGripHand: 1e6, baseGripFoot: 1e6, stallFatigueSoloHandMult: undefined });
+    const pb = handPos(b.rig);
+    grab(b.rig, b.anchors, "hand_l", v3(pb.x + 0.3, pb.y, Z()), "soloD_b");
+    b.rig.setGrip("hand_r", false);
+    b.rig.setGrip("foot_l", false);
+    b.rig.setGrip("foot_r", false);
+    settle(a.rig, 1); settle(b.rig, 1);
+    settle(a.rig, 15); settle(b.rig, 15);
+    const ra = stallRate(a.rig.states.get("hand_l")!, 10);
+    const rd = stallRate(b.rig.states.get("hand_l")!, 10);
+    expect(ra).toBeGreaterThan(0.026);            // knob 3 → ~0,03/s
+    expect(ra).toBeLessThan(0.036);
+    expect(rd).toBeGreaterThan(0.017);            // default ×2 → ~0,02/s
+    expect(rd).toBeLessThan(0.026);
+  });
+
+  it("dos manos en carga NO se cobran el multiplicador (cada una a la tasa base)", () => {
+    const b = buildRig(4242, { fatigueRate: 0, baseGripHand: 1e6, baseGripFoot: 1e6 });
+    const pb = handPos(b.rig);
+    grab(b.rig, b.anchors, "hand_l", v3(pb.x + 0.3, pb.y, Z()), "duo2_l");
+    grab(b.rig, b.anchors, "hand_r", v3(pb.x - 0.3, pb.y, Z()), "duo2_r");
+    settle(b.rig, 1);
+    settle(b.rig, 15);
+    const rl = stallRate(b.rig.states.get("hand_l")!, 10);
+    const rr = stallRate(b.rig.states.get("hand_r")!, 10);
+    expect(rl).toBeGreaterThan(0.008);
+    expect(rl).toBeLessThan(0.014);
+    expect(rr).toBeGreaterThan(0.008);
+    expect(rr).toBeLessThan(0.014);
   });
 });
 
@@ -215,16 +307,16 @@ describe("T66-FB · la fatiga de estancamiento es SOLO DE LAS MANOS", () => {
     settle(rig, 1);
     expect(hand.anchored).toBe(true);
     expect(foot.anchored).toBe(true);
-    settle(rig, 9); // la gracia (5 s) hace rato que pasó
-    // CONTROL: la mano está estancada y su fatiga SUBE
-    expect(hand.stallSeconds).toBeGreaterThan(5);
-    expect(hand.fatigue).toBeGreaterThan(0.1);
+    settle(rig, 19); // la gracia (10 s) hace rato que pasó: estancado ~10 s
+    // CONTROL: la mano está estancada y su fatiga SUBE (a 0,01/s: ~0,1)
+    expect(hand.stallSeconds).toBeGreaterThan(10);
+    expect(hand.fatigue).toBeGreaterThan(0.05);
     // EL PIE: ni reloj ni fatiga — como hace dos iteraciones
     expect(foot.stallSeconds).toBe(0);
     expect(foot.stallHoldId).toBeNull();
     expect(foot.fatigue).toBe(0);
     expect(foot.anchored).toBe(true); // y no suelta
-    settle(rig, 6); // 15 s colgado del pie: sigue igual
+    settle(rig, 6); // 26 s colgado del pie: sigue igual
     expect(foot.fatigue).toBe(0);
     expect(foot.anchored).toBe(true);
   });

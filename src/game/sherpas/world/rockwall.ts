@@ -52,6 +52,21 @@ const sstep = (a: number, b: number, x: number): number => {
 const clampN = (x: number, a: number, b: number): number => (x < a ? a : x > b ? b : x);
 const mixN = (a: number, b: number, t: number): number => a + (b - a) * t;
 
+/**
+ * T68 — Radio del borde del ASIENTO de un anclaje en (x,y): la distancia real
+ * a la que la fusión alcanza plateauR (pasada 1: dp = dist·wob, borde en
+ * dp = plateauR ⇒ dist = plateauR / wob), con el MISMO ruido (pn, semilla
+ * sd+81+k) que ondula la plataforma. La escena lo usa para pintar la piedra
+ * del apoyo sobre el albedo sin duplicar el ruido ni desincronizarse del
+ * relieve. Determinista; no altera ningún output del módulo.
+ */
+export function seatRadiusAt(
+  x: number, y: number, k: number, sd: number, plateauR: number, seatWobble: number,
+): number {
+  const wob = 1 + seatWobble * 0.3 * pn(x * 6.1 + k * 4.7, y * 6.1, sd + 81 + k);
+  return plateauR / wob;
+}
+
 /** Ruido de gradiente 2D, ≈ [-1,1] (copia exacta del módulo). */
 function pn(x: number, y: number, s: number): number {
   const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi, u = fade(xf), v = fade(yf);

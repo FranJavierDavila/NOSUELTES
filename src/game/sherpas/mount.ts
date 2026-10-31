@@ -355,14 +355,32 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         } | null;
         return sc?.plantStatsDebug?.() ?? null;
       },
-      /** T65/T66-FB/T67-FB ANILLOS: alcance visibles (nº + alpha fijo + hex
-       *  verde) + fatiga activa con color (sonda E2E). La pared NO se marca
+      /** T65/T66-FB/T67-FB/T69 ANILLOS: alcance visibles (nº + alpha fijo + hex
+       *  verde) + fatiga activa con color y FRACCIÓN del círculo (T69: 1 = 360°,
+       *  el arco cierra exactamente al suelte) (sonda E2E). La pared NO se marca
        *  entera, solo las presas alcanzables (círculo verde OPACO). */
-      gripRings: (): { reach: number; reachAlpha: number[]; reachHex: string | null; active: { holdId: string; f: number; hex: string }[] } | null => {
+      gripRings: (): { reach: number; reachAlpha: number[]; reachHex: string | null; active: { holdId: string; f: number; hex: string; trackHex: string; frac: number }[] } | null => {
         const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
-          gripRingsDebug?: () => { reach: number; reachAlpha: number[]; reachHex: string | null; active: { holdId: string; f: number; hex: string }[] };
+          gripRingsDebug?: () => { reach: number; reachAlpha: number[]; reachHex: string | null; active: { holdId: string; f: number; hex: string; trackHex: string; frac: number }[] };
         } | null;
         return sc?.gripRingsDebug?.() ?? null;
+      },
+      /** T69 NEVADA FORZADA (E2E): cambia el modo del SnowSystem en caliente
+       *  ("clear" | "snow" | "snow_low") para verificar el clima en vivo. */
+      forceSnow: (mode: string): boolean => {
+        const m = state.match as unknown as { snow?: { setMode?: (m: "clear" | "snow" | "snow_low") => void } } | null;
+        if (!m?.snow?.setMode) return false;
+        if (mode !== "clear" && mode !== "snow" && mode !== "snow_low") return false;
+        m.snow.setMode(mode);
+        return true;
+      },
+      /** T69 CLIMA-PIEDRA: capa climática activa (chunks con plugin) y clima en
+       *  vivo (wetness/frost con su easing, cota fría) (sonda E2E). */
+      clima: (): { active: boolean; plugins: number; scale: number; strength: number; freezeY: number; wetness: number; frost: number; perPlugin: { wet: number; frost: number; tw: number; tf: number; fy: number; binds: number }[] } | null => {
+        const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
+          getClimateInfo?: () => { active: boolean; plugins: number; scale: number; strength: number; freezeY: number; wetness: number; frost: number; perPlugin: { wet: number; frost: number; tw: number; tf: number; fy: number; binds: number }[] };
+        } | null;
+        return sc?.getClimateInfo?.() ?? null;
       },
       /** T65: fijar la fatiga de una extremidad (E2E: recorrer la rampa entera
        *  verde→naranja→rojo sin esperar 20 s de estancamiento real). */

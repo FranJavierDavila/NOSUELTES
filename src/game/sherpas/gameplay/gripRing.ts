@@ -89,6 +89,83 @@ export function mergeGripRings(entries: readonly GripRingEntry[]): GripRingEntry
   return [...byHold.entries()].map(([holdId, fatigue]) => ({ holdId, fatigue }));
 }
 
+// T69 — EL ANILLO SE LLENA COMO UN CÍRCULO (petición del jugador: "la fatiga
+// para llegar al descuelgue debe ser del 100%, lo que se corresponde con el
+// círculo completo en 360 grados"): el recorrido del anillo YA no es un toro
+// entero recoloreado — es un ARCO que crece desde las 12 en punto hasta
+// CERRAR el círculo exactamente al 100% (= fatigueReleaseAt 1.0 = suelte).
+// La fracción es la fatiga MISMA (f=0,45 → 162°; f=1 → 360°) y se cuantiza
+// en pasos finos para que la escena solo reconstruya geometría de vez en
+// cuando (a 1%/s, un paso cada pocos segundos).
+
+/** Pasos de cuantización del arco: 60 → pasos de 6° (resolución sobrada a
+ *  1%/s: la geometría se reconstruye cada ~6 s de estancamiento, no cada
+ *  frame). El 100% SIEMPRE cae en un paso exacto (60/60 = círculo cerrado). */
+export const GRIP_ARC_STEPS = 60;
+
+/** Ángulo de arranque del arco: ARRIBA (12 en punto) y sentido horario. */
+export const GRIP_ARC_START = Math.PI / 2;
+
+/** Fracción de círculo (0..1) que pinta una fatiga f, cuantizada a pasos de
+ *  1/60. f=1 → exactamente 1 (el anillo cierra el círculo completo al soltar).
+ *  Determinista, sin estado; NaN y fuera de rango → clampeados. */
+export function gripArcFraction(fatigue: number): number {
+  // no-finito: +∞/−∞ clampean a 1/0, NaN a 0 (Infinity>0 → true)
+  const f = clamp01(Number.isFinite(fatigue) ? fatigue : fatigue > 0 ? 1 : 0);
+  return Math.round(f * GRIP_ARC_STEPS) / GRIP_ARC_STEPS;
+}
+
+// ---------- geometría del ARCO (pura: la escena solo la sube a Babylon) ----------
+
+export interface ArcGeometry {
+  positions: Float32Array;
+  normals: Float32Array;
+  indices: Uint32Array;
+  /** segmentos de barrido usados (para aserciones y sonidas E2E). */
+  sweepSegs: number;
+}
+
+/** Toro PARCIAL de radio de centro R con sección circular de radio r, barrido
+ *  `frac`×2π empezando en GRIP_ARC_START (12 en punto) y girando en sentido
+ *  HORARIO visto desde +Z (la cámara). El tubo mira a la cámara: el círculo
+ *  vive en el plano XY — la escena NO necesita rotarlo (el CreateTorus de
+ *  Babylon nace tumbado y ahí se le aplicaba rotation.x=π/2; aquí nace de pie).
+ *  frac=1 → anillo CERRADO (barrido completo, sin hueco). Determinista. */
+export function buildGripArcGeometry(frac: number, ringSegs = 72, tubeSegs = 12, R = 0.5, r = 0.031): ArcGeometry {
+  const f = clamp01(Number.isFinite(frac) ? frac : 0);
+  const sweepSegs = Math.max(1, Math.round(f * ringSegs)); // ≥1: siempre hay arco
+  const span = f * Math.PI * 2;
+  const vertsPerRing = tubeSegs + 1;
+  const positions = new Float32Array((sweepSegs + 1) * vertsPerRing * 3);
+  const normals = new Float32Array((sweepSegs + 1) * vertsPerRing * 3);
+  const indices = new Uint32Array(sweepSegs * tubeSegs * 6);
+  for (let s = 0; s <= sweepSegs; s++) {
+    // horario: el ángulo DECRECE desde GRIP_ARC_START
+    const th = GRIP_ARC_START - (s / sweepSegs) * span;
+    const cx = Math.cos(th), cy = Math.sin(th);
+    for (let t = 0; t <= tubeSegs; t++) {
+      const ph = (t / tubeSegs) * Math.PI * 2;
+      const cp = Math.cos(ph), sp = Math.sin(ph);
+      const p = (s * vertsPerRing + t) * 3;
+      positions[p] = (R + r * cp) * cx;
+      positions[p + 1] = (R + r * cp) * cy;
+      positions[p + 2] = r * sp;
+      normals[p] = cp * cx;
+      normals[p + 1] = cp * cy;
+      normals[p + 2] = sp;
+    }
+  }
+  let q = 0;
+  for (let s = 0; s < sweepSegs; s++) {
+    for (let t = 0; t < tubeSegs; t++) {
+      const a = s * vertsPerRing + t, b = a + 1, c = a + vertsPerRing + 1, d = a + vertsPerRing;
+      indices[q++] = a; indices[q++] = c; indices[q++] = b;
+      indices[q++] = a; indices[q++] = d; indices[q++] = c;
+    }
+  }
+  return { positions, normals, indices, sweepSegs };
+}
+
 // ---------- T66-FB/T67-FB — ANILLOS DE ALCANCE (círculo verde OPACO) ----------
 
 /** Tamaño del POOL de anillos de alcance en escena (sobran los que falten:

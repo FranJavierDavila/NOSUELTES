@@ -2,9 +2,11 @@
 """E2E T64 — ADIÓS NO SUELTES (1 jugador) + FATIGA POR TIEMPO EN EL MISMO AGARRE.
 (1) MENÚ DIRECTO: la página monta SHERPAS AL LÍMITE sin lanzador; no queda ni
     rastro de "ELIGE TU ASCENSO", la tarjeta "NO SUELTES" ni el prototipo viejo.
-(2) FATIGA POR TIEMPO (regla del jugador: 5 s sin variar → +5 %/s): en partida
-    real, las extremidades ancladas a la misma presa ven su indicador SUBIR con
-    los segundos (sonda rope: f = fatiga, s = segundos en la misma presa).
+(2) FATIGA POR TIEMPO (T69, regla del jugador: 10 s sin variar → +1 %/s; el
+    descuelgue AL 100% = círculo completo 360°; y COLGADO DE UNA SOLA MANO el
+    reloj corre AL DOBLE): en partida real, las manos ancladas a la misma presa
+    ven su indicador SUBIR con los segundos (sonda rope: f = fatiga, s =
+    segundos en la misma presa).
 (3) EL INDICADOR SE DISPARA: la fatiga cruza el umbral de aviso (naranja) con
     el estancamiento y las capturas muestran las barras subiendo.
 (4) REGRESIÓN: sin errores JS y capturas con luminancia válida."""
@@ -127,29 +129,29 @@ with sync_playwright() as pw:
     page.close()
 
     # ---------- ESCENARIO B: fatiga por tiempo en partida real ----------
-    print("== B. FATIGA POR TIEMPO: 5 s SIN VARIAR → EL INDICADOR SUBE +5 %/s ==")
+    print("== B. FATIGA POR TIEMPO: 10 s SIN VARIAR → EL INDICADOR SUBE +1 %/s ==")
     page = browser.new_page(viewport={"width": 960, "height": 600})
     errors = []
     page.on("pageerror", lambda e: errors.append(str(e)))
     start_match(page)
 
-    # espera a que una mano esté anclada y ESTANCADA (s >= 5,5 s de sim)
+    # espera a que una mano esté anclada y ESTANCADA (s >= 10,5 s de sim)
     r = None
     t0 = time.time()
-    while time.time() - t0 < 180:
+    while time.time() - t0 < 240:
         r = rope(page)
         if r:
             manos = [l for l in r["limbs"][:2] if l and l["a"]]
-            if manos and max(l["s"] for l in manos) >= 5.5:
+            if manos and max(l["s"] for l in manos) >= 10.5:
                 break
         page.wait_for_timeout(1500)
-    # la sonda redondea s a 1 decimal: la gracia (5,5) puede leerse EXACTA —
+    # la sonda redondea s a 1 decimal: la gracia (10,5) puede leerse EXACTA —
     # se acepta >= (el estancamiento ya corre: f > 0 lo demuestra)
-    check("mano anclada y estancada tras la gracia (s >= 5,5)", bool(r) and any(l and l["a"] and l["s"] >= 5.5 for l in r["limbs"][:2]), f"({r and r['limbs']})")
+    check("mano anclada y estancada tras la gracia (s >= 10,5)", bool(r) and any(l and l["a"] and l["s"] >= 10.5 for l in r["limbs"][:2]), f"({r and r['limbs']})")
 
-    # mide la SUBIDA durante ~3 s de sim (el estancamiento suma 5 %/s; la
-    # tensión de colgado solo puede AÑADIR — por eso la cota es >= 0,12)
-    manos = [l for l in (r or {}).get("limbs", [])[:2] if l and l["a"] and l["s"] >= 5.5]
+    # mide la SUBIDA durante ~3 s de sim (el estancamiento suma 1 %/s; la
+    # tensión de colgado solo puede AÑADIR — la cota cuenta el redondeo)
+    manos = [l for l in (r or {}).get("limbs", [])[:2] if l and l["a"] and l["s"] >= 10.5]
     idx = 0
     f0, s0 = manos[0]["f"], manos[0]["s"]
     shot(page, f"{OUT}/t64-1-fatiga-inicial.png")
@@ -169,12 +171,14 @@ with sync_playwright() as pw:
         page.wait_for_timeout(1200)
     ds, df = s1 - s0, f1 - f0
     check(f"el estancamiento avanza (Δs = {ds:.1f} s)", ds >= 2.0)
-    check(f"el indicador SUBE con los segundos (Δf = {df:+.2f} en {ds:.1f} s)", df >= 0.10, f"(esperado ≥ 5%/s × Δs ≈ {0.05 * ds:.2f})")
+    check(f"el indicador SUBE con los segundos (Δf = {df:+.2f} en {ds:.1f} s)", df >= 0.015, f"(esperado ≈ 1%/s × Δs ≈ {0.01 * ds:.3f})")
     if ds > 0:
         tasa = df / ds
-        # la sonda redondea (f a 2 decimales, s a 1): tolera ±0,005 de jitter;
-        # la tasa EXACTA 0,05/s la fijan los tests unitarios (fatiga-tiempo).
-        check(f"tasa observada {tasa:.3f}/s ≥ 0,05/s (regla del jugador)", tasa >= 0.045)
+        # la sonda redondea (f a 2 decimales, s a 1): tolera jitter de ±0,005;
+        # la tasa EXACTA 0,01/s la fijan los tests unitarios (fatiga-tiempo).
+        # BANDA: por abajo, la regla del jugador (≥ ~1%/s); por arriba, una
+        # regresión a la tasa vieja (5%/s) se delataría sola.
+        check(f"tasa observada {tasa:.3f}/s en banda [0,006, 0,030] (regla T69: 1 %/s)", 0.006 <= tasa <= 0.030)
 
     # EL AVISO NARANJA: se sigue polleando hasta que la fatiga máxima de las
     # manos cruce warnAt del pack (0,45) — la barra visible debe dispararse.
@@ -192,6 +196,61 @@ with sync_playwright() as pw:
     l1 = shot(page, f"{OUT}/t64-3-fatiga-alta.png")
     check("captura de partida con luminancia válida", 8 < l1 < 250, f"(luma={l1:.0f})")
     check("sin errores JS en partida", len(errors) == 0, f"({errors[:2]})")
+
+    # ---------- ESCENARIO C: COLGADO DE UNA SOLA MANO → EL RELOJ AL DOBLE ----------
+    # T69 (petición literal): "si cada mano tiene su fatiga podemos quedar
+    # colgados por 1 sola mano, solo que en ese caso la fatiga se incrementa al
+    # doble de velocidad". Forzamos el agotamiento de la otra mano (fatiga 1.0
+    # = suelte) y medimos la tasa del superviviente: ~0,02/s (×2).
+    print("== C. UNA SOLA MANO: LA FATIGA CORRE AL DOBLE ==")
+    r = rope(page)
+    manos = [l for l in (r or {}).get("limbs", [])[:2] if l and l["a"]]
+    check("hay manos ancladas para forzar el escenario", len(manos) >= 1)
+    if len(manos) >= 1:
+        # la mano a sacrificar: la MÁS fatigada que siga anclada (si solo hay
+        # una, se sacrifica esa y el superviviente es la que re-agarre... no:
+        # se sacrifica la MENOS fatigada SOLO si hay dos; con una, se fuerza la
+        # otra a 1.0 igualmente y el ancla queda sola)
+        ev(page, "__SHERPAS_DEBUG.fatigue(0, 'hand_r', 1.0)")
+        # espera: a lo sumo UNA mano anclada (la forzada soltó) y que haya s crecida
+        t0 = time.time()
+        r = None
+        while time.time() - t0 < 60:
+            r = rope(page)
+            if r:
+                vivas = [l for l in r["limbs"][:2] if l and l["a"]]
+                if len(vivas) == 1 and vivas[0]["s"] >= 1.0:
+                    break
+            page.wait_for_timeout(1200)
+        vivas = [l for l in (r or {}).get("limbs", [])[:2] if l and l["a"]] if r else []
+        check("colgado de UNA sola mano (la otra se soltó al 100%)", len(vivas) == 1, f"({vivas})")
+        if len(vivas) == 1:
+            solo = vivas[0]
+            f0, s0 = solo["f"], solo["s"]
+            t0 = time.time()
+            f1, s1 = f0, s0
+            while time.time() - t0 < 120:
+                r = rope(page)
+                if r:
+                    vivas = [l for l in r["limbs"][:2] if l and l["a"]]
+                    if len(vivas) != 1:
+                        break  # re-agarró: la medida termina aquí
+                    cand = vivas[0]
+                    if cand["s"] >= s0 + 5.0:
+                        f1, s1 = cand["f"], cand["s"]
+                        break
+                    f1, s1 = cand["f"], cand["s"]
+                page.wait_for_timeout(1200)
+            ds, df = s1 - s0, f1 - f0
+            if ds > 0:
+                tasa = df / ds
+                # la tasa EXACTA (0,01×2 = 0,02/s) la fijan los tests unitarios;
+                # aquí basta la regla: el doble de la base (≥ ~1,7%/s medido).
+                # SIN cota superior: la tensión de colgar de UNA mano (T>0,6)
+                # añade su fatiga de carga física por encima del reloj.
+                check(f"tasa en solitario {tasa:.3f}/s ≥ 0,017 (el doble que la base 0,01)", tasa >= 0.017)
+            else:
+                check("la mano en solitario siguió estancada (Δs > 0)", False, "(sin Δs)")
     page.close()
 
     browser.close()

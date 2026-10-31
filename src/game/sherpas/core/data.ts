@@ -21,21 +21,26 @@ export interface LimbTuning {
    *  reducen por la fatiga"): fracción de alcance que se pierde con la
    *  extremidad al 100% de fatiga. Ausente → 0,22 (constante del rig). */
   reachFatigueLoss?: number;
-  /** FATIGA POR TIEMPO EN EL MISMO AGARRE (T64, petición del jugador: "los
-   *  indicadores de fatiga se disparan si un anclaje no se varía pasados 5
-   *  segundos, en ese caso cada segundo se incrementa un 5%").
-   *  stallGraceSeconds: segundos seguidos en la MISMA presa antes de que el
-   *  estancamiento empiece a cobrarse (cambiar de presa resetea el contador;
+  /** FATIGA POR TIEMPO EN EL MISMO AGARRE (T64, petición del jugador; T69 la
+   *  recalibra: "los 5 segundos es demasiado rápido, vamos con incrementos de
+   *  10 segundos para la fatiga y se va incrementando cada 1 segundo 1% de
+   *  fatiga"; el descuelgue sigue al 100% = círculo completo, fatigueReleaseAt
+   *  1.0). stallGraceSeconds: segundos seguidos en la MISMA presa antes de que
+   *  el estancamiento empiece a cobrarse (cambiar de presa resetea el contador;
    *  re-agarrar la misma NO lo resetea).
    *  stallFatiguePerSecond: fatiga/s que suma la extremidad estancada (0..1).
-   *  Mientras dura el estancamiento la extremidad NO recupera (la barra sube
-   *  cada segundo, visible en el HUD).
+   *  Mientras dura el estancamiento la extremidad NO recupera (el arco del
+   *  anillo crece cada segundo, visible en el HUD).
+   *  stallFatigueSoloHandMult (T69): multiplicador del reloj cuando la mano
+   *  estancada es la ÚNICA en carga — "podemos quedar colgados por 1 sola mano,
+   *  solo que en ese caso la fatiga se incrementa al doble de velocidad".
    *  A futuro: una variable "resistencia" (peso del ricachón con carga,
    *  comestibles que reponen energías, presas con sorpresas) se colgará como
    *  multiplicador de stallFatiguePerSecond sin tocar este contrato.
-   *  Ausentes → 5 s y 0,05/s (constantes del rig). */
+   *  Ausentes → 10 s, 0,01/s y ×2 (constantes del rig). */
   stallGraceSeconds?: number;
   stallFatiguePerSecond?: number;
+  stallFatigueSoloHandMult?: number;
 }
 export interface RopeTuning { segmentMax: number; totalMax: number; overstretchAt: number; visualNodes: number; nodeRadius: number; slackGravity: number; iterations: number; nodeMass: number; nodeDamping: number; slackFactor: number; maxCatchSpeed: number; maxCorrectionPerTick: number; waistEffectiveMass: number; /** COLA libre de la cuerda visual: tramos que cuelgan del cabo de la tabla (petición: "un metro hacia abajo en ambos lados"). */ tailNodes?: number; tailLen?: number; /** cuerda de MÁS del dibujo (m): sin holgura la cadena verlet queda tensa y parece un palo. */ visualSlackM?: number }
 export interface RichManTuning { mass: number; foodBonus: number; massTransitionSeconds: number; harnessOffsetY: number; bumpWallSpeed: number; bumpImpulseToRope: number }
@@ -459,7 +464,7 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
           baseGripHand: posNum, baseGripFoot: posNum, armReach: posNum, legReach: posNum, mass: posNum,
           overloadTension: posNum, fatigueReleaseAt: posNum, highTension: { type: "number", exclusiveMinimum: 0, maximum: 1 },
           handFatigueOneFootFree: posNum, handFatigueTwoFeetFree: posNum, reachFatigueLoss: posNum,
-          stallGraceSeconds: posNum, stallFatiguePerSecond: posNum,
+          stallGraceSeconds: posNum, stallFatiguePerSecond: posNum, stallFatigueSoloHandMult: posNum,
         } },
         rope: { type: "object", required: ["segmentMax", "totalMax", "overstretchAt", "visualNodes"], properties: {
           segmentMax: posNum, totalMax: posNum, overstretchAt: { type: "number", exclusiveMinimum: 0, maximum: 1 },
