@@ -403,13 +403,15 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         return sc?.emoteDebug?.() ?? null;
       },
       /** T58-E A SACO: estado de cuerda del rig (sonda de diagnóstico). */
-      rope: (p: number): { state: string; haulDone: boolean; released: boolean; mash: boolean; limbs: ({ a: boolean; w: boolean; lock: number } | null)[] } | null => {
+      rope: (p: number): { state: string; haulDone: boolean; released: boolean; mash: boolean; limbs: ({ a: boolean; w: boolean; lock: number; f: number; s: number } | null)[] } | null => {
         const rig = state.match?.["sherpas"][p] as unknown as {
           ropeState?: string; haulDone?: boolean; ropeReleased?: boolean; ropeMash?: unknown;
         } | undefined;
         const limbs = (["hand_l", "hand_r", "foot_l", "foot_r"] as const).map((l) => {
           const st = rig?.["states"]?.get?.(l);
-          return st ? { a: !!st.anchored, w: !!rig?.["gripWanted"]?.[l], lock: Math.round((st.lockedFor ?? 0) * 10) / 10 } : null;
+          // T64: f = fatiga 0..1 (la barra naranja/roja del HUD), s = segundos
+          // seguidos en la MISMA presa (estancamiento: pasados 5 s, +5%/s).
+          return st ? { a: !!st.anchored, w: !!rig?.["gripWanted"]?.[l], lock: Math.round((st.lockedFor ?? 0) * 10) / 10, f: Math.round((st.fatigue ?? 0) * 100) / 100, s: Math.round((st.stallSeconds ?? 0) * 10) / 10 } : null;
         });
         return rig ? {
           state: rig.ropeState ?? "?", haulDone: !!rig.haulDone,

@@ -6,33 +6,6 @@
   "bodyProfiles": [
     "standard_humanoid"
   ],
-  "walls": [
-    "wall_basic_01",
-    "wall_champ_01",
-    "wall_champ_02",
-    "wall_champ_03",
-    "wall_champ_04",
-    "wall_champ_05",
-    "wall_circuit_01",
-    "wall_circuit_02",
-    "wall_circuit_03",
-    "wall_circuit_04",
-    "wall_circuit_05"
-  ],
-  "challenges": [
-    "championship_stage_1",
-    "championship_stage_2",
-    "championship_stage_3",
-    "championship_stage_4",
-    "championship_stage_5",
-    "circuit_stage_1",
-    "circuit_stage_2",
-    "circuit_stage_3",
-    "circuit_stage_4",
-    "circuit_stage_5",
-    "challenge_reach_top",
-    "challenge_stabilize_pose",
-    "challenge_recover_swing",
-    "challenge_speed_run"
-  ]
+  "walls": [],
+  "challenges": []
 }

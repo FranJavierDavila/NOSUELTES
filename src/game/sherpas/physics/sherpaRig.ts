@@ -100,6 +100,12 @@ const RECESSED_FATIGUE_PER_M = 0.5;  // fatiga extra por metro de presa RETRASAD
  *  paso de carga. Pura para poder verificarla sin el ruido del colgado. */
 export const recessedFatigueMult = (recessed?: number): number => 1 + (recessed ?? 0) * RECESSED_FATIGUE_PER_M;
 const REACH_LOSS_AT_FULL_FATIGUE = 0.22; // alcance perdido al 100% de fatiga (petición: círculos que se reducen)
+// FATIGA POR TIEMPO EN EL MISMO AGARRE (T64, petición del jugador: "los
+// indicadores de fatiga se disparan si un anclaje no se varía pasados 5
+// segundos, en ese caso cada segundo se incrementa un 5%"). Defaults si el
+// pack no trae los knobs (limb.stallGraceSeconds / limb.stallFatiguePerSecond).
+const STALL_GRACE_SECONDS_DEFAULT = 5;    // s en la misma presa antes de cobrarse
+const STALL_FATIGUE_PER_SECOND_DEFAULT = 0.05; // +5% de fatiga por segundo
 const FART_PELVIS_TRAIL_HZ = 9; // nubes de gas verde por segundo durante el vuelo
 // PIES SIN APOYO (petición del jugador: "si tienen uno o dos pies sin apoyo la
 // fatiga de las manos se incrementa"): colgando de los brazos se sufre MÁS.
@@ -121,6 +127,12 @@ export interface LimbGripState {
   target: V3 | null;
   /** segundos LLEVADOS agarrado a su presa actual (placas de hielo resbalan). */
   gripSeconds: number;
+  /** T64 FATIGA POR TIEMPO: segundos seguidos en la MISMA presa (se resetea
+   *  solo al cambiar a una presa DISTINTA; re-agarrar la misma no borra la
+   *  deuda — variar de verdad o pagar) e id de esa presa para detectar el
+   *  cambio. stallSeconds > graceSeconds → la barra sube por segundo. */
+  stallSeconds: number;
+  stallHoldId: string | null;
 }
 
 export interface SherpaGripTuning {
@@ -311,6 +323,7 @@ export class SherpaRig {
       this.states.set(limb, {
         limb, anchored: false, holdId: null, traveling: false, travelTime: 0,
         tension: 0, fatigue: 0, overloadTimer: 0, lockedFor: 0, target: null, gripSeconds: 0,
+        stallSeconds: 0, stallHoldId: null,
       });
     }
     this.lastResult = emptyResult();
@@ -1095,7 +1108,14 @@ export class SherpaRig {
       } else {
         st.overloadTimer = Math.max(0, st.overloadTimer - dt * 2);
       }
-      if (T < 0.3) st.fatigue = Math.max(0, st.fatigue - limbT.recoverRate * dt);
+      // T64 FATIGA POR TIEMPO EN EL MISMO AGARRE: el contador corre mientras la
+      // extremidad cuelga de la MISMA presa; cambiar a una presa DISTINTA lo
+      // resetea (re-agarrar la misma NO — no se ha variado nada, no se paga la
+      // deuda con un truco). Pasada la gracia, la barra sube por segundo.
+      if (st.holdId !== st.stallHoldId) { st.stallSeconds = 0; st.stallHoldId = st.holdId; }
+      st.stallSeconds += dt;
+      const stalling = st.stallSeconds > (limbT.stallGraceSeconds ?? STALL_GRACE_SECONDS_DEFAULT);
+      if (T < 0.3 && !stalling) st.fatigue = Math.max(0, st.fatigue - limbT.recoverRate * dt);
       // SALIENTES (pared irregular): agarrarse a una presa adelantada (pequeño
       // techo) fatiga MÁS — proporcional a la profundidad adelantada.
       const proudMult = 1 + (anchor.hold.proud ?? 0) * SALIENTE_FATIGUE_PER_M;
@@ -1104,6 +1124,15 @@ export class SherpaRig {
       // manos: multiplicador por PIES SIN APOYO (ver arriba; pies ×1).
       const supportMult = isHand(limb) ? handFatigueMult : 1;
       st.fatigue = Math.min(1, st.fatigue + Math.max(0, T - 0.6) * limbT.fatigueRate * t.fatigueRateMultiplier * proudMult * recessMult * supportMult * dt);
+      if (stalling) {
+        // +5%/s con el pack por defecto (stallFatiguePerSecond). Mientras dura
+        // el estancamiento NO hay recuperación (arriba): el indicador naranja/
+        // rojo sube cada segundo, visible. Gancho futuro (T64): una variable
+        // "resistencia" (peso del ricachón con carga sobre la tabla, comestibles
+        // que reponen energías, presas con sorpresas) entrará como MULTIPLICADOR
+        // de esta tasa sin cambiar el contrato del rig.
+        st.fatigue = Math.min(1, st.fatigue + (limbT.stallFatiguePerSecond ?? STALL_FATIGUE_PER_SECOND_DEFAULT) * dt);
+      }
       if (st.fatigue >= limbT.fatigueReleaseAt) {
         this.forceRelease(limb, limbT.reGripLock, "exhaustion");
         released.push({ limb, cause: "exhaustion" });

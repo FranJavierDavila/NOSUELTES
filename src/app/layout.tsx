@@ -14,17 +14,17 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "NO SUELTES - Prototipo ragdoll",
+  title: "SHERPAS AL LÍMITE",
   description:
-    "Prototipo 3D de control fisico de un personaje ragdoll: mueve, fija y estabiliza extremidades para resolver una pared de escalada. TypeScript + Babylon.js, contenido data-driven.",
-  keywords: ["NO SUELTES", "prototipo", "ragdoll", "fisica", "Babylon.js", "escalada", "videojuego"],
+    "Cooperativo de escalada para 2 jugadores: dos sherpas ragdoll suben al Everest cargando con un ricachón colgado de la cuerda. TypeScript + Babylon.js, contenido data-driven.",
+  keywords: ["SHERPAS AL LÍMITE", "cooperativo", "ragdoll", "fisica", "Babylon.js", "escalada", "videojuego", "Everest"],
   icons: {
     icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
   },
   openGraph: {
-    title: "NO SUELTES - Prototipo ragdoll",
-    description: "Control fisico de un personaje ragdoll en una pared de escalada",
-    siteName: "NO SUELTES",
+    title: "SHERPAS AL LÍMITE",
+    description: "Dos sherpas ragdoll suben al Everest cargando con un ricachón colgado de la cuerda",
+    siteName: "SHERPAS AL LÍMITE",
     type: "website",
   },
 };
@@ -35,7 +35,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="es" suppressHydrationWarning>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
       >

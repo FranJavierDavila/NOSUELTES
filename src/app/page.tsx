@@ -1,5 +1,5 @@
-import GameLauncher from "@/components/game/GameLauncher";
+import SherpaMount from "@/components/game/SherpaMount";
 
 export default function Home() {
-  return <GameLauncher />;
+  return <SherpaMount />;
 }
