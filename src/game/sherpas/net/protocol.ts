@@ -44,8 +44,9 @@ export interface NetSnapSherpa {
   /** 45 números: particles[0..14].pos xyz (el guest interpola ENTRE snapshots). */
   p: number[];
   aim: [number, number];         // x,y del punto apuntado (z = wallFrontZ)
-  /** 4 estados de extremidad en orden LIMBS (hand_l, hand_r, foot_l, foot_r). */
-  limbs: { t: number; f: number; a: boolean }[];
+  /** 4 estados de extremidad en orden LIMBS (hand_l, hand_r, foot_l, foot_r).
+   *  T65: `h` = id de la presa agarrada (para los anillos de agarre del guest). */
+  limbs: { t: number; f: number; h: string | null; a: boolean }[];
   ropeState: string;
   belaying: boolean;
   fartCharge: boolean;
@@ -85,8 +86,8 @@ export interface NetSnapshot {
     c: [number, number, number]; ang: number; shake: number;
     na: number[]; nb: number[];
   } | null;
-  /** ricachón: 11 cuerpos planos (RM 0..10) + gesto. */
-  rich: { b: number[]; g: string; seated: boolean };
+  /** ricachón: 11 cuerpos planos (RM 0..10) + gesto. T66: `m` = ánimo (emote). */
+  rich: { b: number[]; g: string; seated: boolean; m: string };
   boxes: { count: number; side: number } | null;
   drone: { p: [number, number, number]; pkg: boolean; frac: number } | null;
   birds: { id: number; kind: string; x: number; y: number; z: number; phase: string }[];

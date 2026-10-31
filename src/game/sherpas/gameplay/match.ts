@@ -31,6 +31,8 @@ import { WallGenerator, type CampZone } from "../world/wallGenerator";
 import { CheckpointSystem, type Checkpoint } from "../world/checkpoints";
 import { CampSystem, saveAscent, type AscentStats, type SavedAscent } from "../world/camps";
 import { PointerDrag } from "../input/drag";
+import type { GripRingEntry } from "./gripRing"; // T65: anillos de agarre
+import { initialRichMood, stepRichMood, type RichMoodState } from "./richMood"; // T66: ánimo del ricachón
 import { Matrix } from "@babylonjs/core/Maths/math.vector";
 import type { SherpaScene } from "../presentation/scene";
 import type { SherpaHud, HudStartChoice, HudTickState, MinimapHold } from "../presentation/hud";
@@ -163,6 +165,13 @@ export class SherpasMatch {
   private fallTuning: FallingTuning;
   private snowWarned = false;
   private fallHitCount = 0;
+  // T65 — ANILLOS DE AGARRE: las presas agarradas pintan la fatiga de su extremidad
+  // T66 — ÁNIMO DEL RICACHÓN (los 8 emoticonos del emotionos.zip)
+  private richMood: RichMoodState = initialRichMood();
+  private richImpactUntil = 0; // sorpresa: "¿qué ha sido eso?" (golpes, batacazos)
+  private richSummitUntil = 0; // soberbia temporal al alcanzar campamento
+  private plankCenterPrev: V3 | null = null;
+  private plankSpeedMs = 0;
 
   constructor(deps: SherpasMatchDeps) {
     this.d = deps;
@@ -740,6 +749,7 @@ export class SherpasMatch {
             f.o.hitDone = true;
             this.rich.impulseAll(v3((this.fallRng.next() < 0.5 ? -1 : 1) * this.fallTuning.plankWobble, 0.5, 0));
             this.brain.panic();
+            this.richImpactUntil = this.simTime + 1.2; // T66: ¡objeto a la tabla!
             this.d.hud.subtitle(this.d.hud.fmt("hud.fallHit", { obj: this.d.hud.t(`falling.${f.o.kind}`) }), 2.6);
             this.d.audio.play("thud");
             this.fallHitCount++;
@@ -844,6 +854,32 @@ export class SherpasMatch {
       },
     });
     const ps = this.plankState;
+    // T66 — VELOCIDAD DE LA TABLA (m/s): arrastrados rápido, el rico se enfada;
+    // sacudidos de verdad (vaivén de la tabla) se pone furioso. Media
+    // instantánea del desplazamiento del centro entre ticks.
+    if (ps) {
+      if (this.plankCenterPrev && dt > 1e-4) {
+        this.plankSpeedMs = Math.hypot(ps.center.x - this.plankCenterPrev.x, ps.center.y - this.plankCenterPrev.y) / dt;
+      }
+      this.plankCenterPrev = { x: ps.center.x, y: ps.center.y, z: ps.center.z };
+    } else {
+      this.plankSpeedMs = 0;
+      this.plankCenterPrev = null;
+    }
+    // T66 — ÁNIMO: contexto de simulación → uno de los 8 emoticonos (con
+    // prioridad e histéresis en richMood.ts). El snapshot lleva `rich.m` y la
+    // escena lo pinta delante de la cara del modelo.
+    this.richMood = stepRichMood(this.richMood, {
+      gesture: this.rich.gesture,
+      state: this.brain.state,
+      seated: this.rich.seated,
+      standing: this.brain.state === "de_pie" || this.brain.state === "caminando",
+      fell: !!ps?.fellOff,
+      impactS: Math.max(0, this.richImpactUntil - this.simTime),
+      speedMs: this.plankSpeedMs,
+      storm: !!this.weather.storm,
+      summit: this.simTime < this.richSummitUntil,
+    }, dt);
     // T44 — VOZ REAL POR ESCORA (petición: "...o la tabla se inclina bastante"):
     // al alcanzar la escora dramática UNA VEZ por episodio suelta una voz real
     // del banco del jugador (rearmado al recuperarse + cooldown global).
@@ -939,12 +975,17 @@ export class SherpasMatch {
       this.rich.pose(ps.center, ps.angle, ps.slide, this.simTime);
     }
     const rmInfo = this.rich.step(dt);
-    if (rmInfo.bumpWall > 1) this.d.bus.emit("RichBumpWall", { speed: rmInfo.bumpWall });
+    if (rmInfo.bumpWall > 1) {
+      this.d.bus.emit("RichBumpWall", { speed: rmInfo.bumpWall });
+      // T66: batacazo contra la pared → el rico se lleva un susto (sorpresa)
+      this.richImpactUntil = this.simTime + 0.9;
+    }
     // IMPACTO de la caída del ricachón: golpe seco + sacudida de cámara (una vez).
     // T56 — CAÍDA REALISTA: sacudida y polvo PROPORCIONALES a la velocidad de
     // impacto (el peso se VE — fxImpact con pedriz —, no solo se oye).
     if (rmInfo.floorHit && this.richFellHandled && !this.richFellImpactDone) {
       this.richFellImpactDone = true;
+      this.richImpactUntil = this.simTime + 1.1; // T66: aterrizaje feo → sorpresa
       const speed = this.rich.speed();
       this.d.scene.shake(this.d.hud.wantsReduceShake ? 0.02 : Math.min(0.12, 0.03 + speed * 0.004));
       this.d.scene.fxImpact(this.rich.pelvis(), speed);
@@ -1652,6 +1693,18 @@ export class SherpasMatch {
       s.syncPlank(this.plankState.center, this.plankState.angle + this.plankState.angleShake, this.plankLenM);
     }
     s.syncRichMan(this.rich, this.alpha);
+    // T65 — ANILLOS DE AGARRE: cada presa ocupada muestra la fatiga de su
+    // extremidad (verde→ámbar→rojo; la escena fusiona por presa el peor caso).
+    const gripEntries: GripRingEntry[] = [];
+    for (const p of [0, 1] as const) {
+      for (const l of LIMBS) {
+        const st = this.sherpas[p].states.get(l)!;
+        if (st.anchored && st.holdId) gripEntries.push({ holdId: st.holdId, fatigue: st.fatigue });
+      }
+    }
+    s.syncGripRings(gripEntries);
+    // T66 — ÁNIMO del ricachón (billboard delante de la cara)
+    s.setRichMood(this.richMood.mood);
     const t0 = this.trash[0];
     s.syncTrash(t0 && t0.alive ? t0.pos : null, this.simTime * 6);
     s.syncUrine(this.urine ? this.urine.particles.map((p) => ({ pos: p.pos, life: p.life })) : null);
@@ -1749,7 +1802,7 @@ export class SherpasMatch {
         aim: [rig.aim.x, rig.aim.y],
         limbs: LIMBS.map((l) => {
           const s = rig.states.get(l)!;
-          return { t: s.tension, f: s.fatigue, a: s.anchored };
+          return { t: s.tension, f: s.fatigue, h: s.holdId ?? null, a: s.anchored };
         }),
         ropeState: rig.ropeState,
         belaying: rig.belaying,
@@ -1805,7 +1858,7 @@ export class SherpasMatch {
         na: flat(pk.nodesA),
         nb: flat(pk.nodesB),
       } : null,
-      rich: { b: rb, g: this.rich.gesture, seated: this.rich.seated },
+      rich: { b: rb, g: this.rich.gesture, seated: this.rich.seated, m: this.richMood.mood }, // T66: ánimo
       boxes: this.boxes ? { count: this.boxes.count, side: this.boxes.side } : null,
       drone: this.drone ? (() => {
         const rp = this.drone.renderPos();

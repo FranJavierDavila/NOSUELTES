@@ -31,6 +31,8 @@ import { ColorCurves } from "@babylonjs/core/Materials/colorCurves"; // T63: sat
 import { FxaaPostProcess } from "@babylonjs/core/PostProcesses/fxaaPostProcess"; // GRÁFICOS: antialiasing
 import { clampDpr, hardwareScaleFor } from "./renderQuality"; // T58-A: calidad de render (DPR)
 import { emoteOffset, stepEmote, startEmote, type EmoteSlot } from "../gameplay/emotes"; // T58-D: animaciones puntuales
+import { gripRingColor, gripRingPulses, mergeGripRings, type GripRingEntry } from "../gameplay/gripRing"; // T65: anillos de agarre
+import { isRichMood, type RichMood } from "../gameplay/richMood"; // T66: ánimo del ricachón
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import type { Material } from "@babylonjs/core/Materials/material"; // T61: PBR|Standard en huesos
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial"; // T44: pared PBR detallada
@@ -203,6 +205,13 @@ export class SherpaScene {
   private sunRel = new Vector3(3.5, 9, -6.5);
   private holdMeshes = new Map<string, Mesh>();
   private holdMasters = new Map<string, Mesh>();
+  // T65 — ANILLOS sobre los agarres: un anillo VERDE sutil por presa (se ve
+  // dónde se puede agarrar) + anillos de FATIGA para las presas agarradas
+  // (verde→naranja→rojo con la fatiga de su extremidad, gripRing.ts).
+  private gripRingMaster: Mesh | null = null;
+  private holdRings = new Map<string, InstancedMesh>();
+  private gripFatigue = new Map<string, { mesh: Mesh; mat: StandardMaterial; f: number }>();
+  private gripFatigueSpare: { mesh: Mesh; mat: StandardMaterial }[] = [];
   private rigVisuals: (RigVisual | null)[] = [null, null];
   // T49 — MODELO GLB DE LOS ESCALADORES: la física POSEA el esqueleto Mixamo
   // (climberPoseMath + skinnedClimber). La carga es ASÍNCRONA y arranca con el
@@ -224,6 +233,17 @@ export class SherpaScene {
   // por su física de 11 cuerpos vía richJoints15. Fallback: cápsulas de siempre.
   private richPuppet: SherpaPuppetInstance | null = null;
   private richPuppetTried = false;
+  // T66 — EMOTICONO-BOCADILLO del ricachón: billboard con el PNG del ánimo
+  // delante de la cara (anclado a la cabeza, SIN tocar geometría ni animación).
+  private richEmote: Mesh | null = null;
+  private richEmoteMat: StandardMaterial | null = null;
+  private richEmoteTex = new Map<string, Texture>();
+  private richEmoteTexReady = new Map<string, boolean>();
+  private richEmoteMood: RichMood | null = null;
+  private richEmoteShownAt = 0;
+  /** T66: ánimo FIJADO por depuración/E2E — manda sobre el de la simulación
+   *  (el match llama setRichMood cada frame; el pin evita el pisado). */
+  private richMoodPin: RichMood | null = null;
   private climberRig: (SherpaSpawnRig | null)[] = [null, null];
   private climberPendingSwap: [boolean, boolean] = [false, false];
   private richVisual: {
@@ -394,7 +414,7 @@ export class SherpaScene {
   private plantasCfg: PlantasCfg | null = null;
   private plantasMat: PBRMaterial | null = null;
   private plantasTotal = 0;
-  private plantasSpots = new Map<number, { x: number; y: number; z: number; scale: number }[]>();
+  private plantasSpots = new Map<number, { x: number; y: number; z: number; scale: number; kind?: string }[]>();
   private plantWind: PlantWindPlugin | null = null; // T55: plugin de viento en matas
   private rockTintCfg: RockTintCfg | null = null; // T55: tinte de roca por vértice
   // T56 — BASE CAMP: faldones de continuidad lateral + pedriz de piedra + cabaña
@@ -1818,7 +1838,7 @@ export class SherpaScene {
         pm.freezeWorldMatrix();
         this.shadowGen?.addShadowCaster(pm, false); // sombritas de las matas
         this.reliefMeshes.set(c, { mesh, plants: pm, plantsN: spots.length, cells: vw * vh, tris: chunkTris });
-        this.plantasSpots.set(c, spots.map((s) => ({ x: s.x, y: s.y, z: s.z, scale: s.scale })));
+        this.plantasSpots.set(c, spots.map((s) => ({ x: s.x, y: s.y, z: s.z, scale: s.scale, kind: s.kind })));
         this.plantasTotal += spots.length;
       }
     }
@@ -1856,6 +1876,19 @@ export class SherpaScene {
       }
     }
     return out;
+  }
+
+  /** T67 SONDA E2E: variedad de arquetipos vivos (hierba/helecho/arbusto/
+   *  campanula/musgo/cojin) — "la pared ya no repite una sola mata". */
+  plantStatsDebug(): { total: number; kinds: Record<string, number> } {
+    const kinds: Record<string, number> = {};
+    for (const list of this.plantasSpots.values()) {
+      for (const s of list) {
+        const k = s.kind ?? "hierba";
+        kinds[k] = (kinds[k] ?? 0) + 1;
+      }
+    }
+    return { total: this.plantasTotal, kinds };
   }
 
   /** T57 SONDA E2E: piezas del puppet por jugador (mundo, m) + nº mallas.
@@ -2322,7 +2355,99 @@ export class SherpaScene {
       // LOSA SUELTA: vuelco determinista (parece a punto de ceder)
       if (rec.tilt[0] !== 0 || rec.tilt[1] !== 0) inst.rotation.set(rec.tilt[0], 0, rec.tilt[1]);
       this.holdMeshes.set(h.id, inst as unknown as Mesh);
+      // T65 — ANILLO INDICADOR: verde sutil sobre CADA presa ("un indicador a
+      // modo de círculo verde sobre los agarres para que se aprecien un poco
+      // mejor"). Un solo master + instancias (1 draw call batched); cuando la
+      // presa se agarra, syncGripRings lo sustituye por el anillo de fatiga.
+      if (!this.gripRingMaster) this.gripRingMaster = this.buildGripRingMaster();
+      const ring = this.gripRingMaster.createInstance(`gripRing_${h.id}`);
+      ring.position.set(h.pos.x, h.pos.y, h.pos.z - 0.018); // un pelo delante de la presa
+      ring.scaling.setAll(Math.min(0.62, Math.max(0.28, h.radius * 2.5)));
+      ring.isPickable = false;
+      this.holdRings.set(h.id, ring);
     }
+  }
+
+  /** T65 — MASTER del anillo de agarre: toro fino autoiluminado (se ve sobre
+   *  roca, nieve y sombra). El color lo pinta cada instancia… compartiendo
+   *  material mientras está en reposo (verde); las agarradas usan su anillo. */
+  private buildGripRingMaster(): Mesh {
+    const m = MeshBuilder.CreateTorus("gripRingMaster", { diameter: 1, thickness: 0.085, tessellation: 20 }, this.scene);
+    const mm = mat(this.scene, "gripRingM", "#3fd15e");
+    const [r, g, b] = gripRingColor(0);
+    mm.emissiveColor = new Color3(r, g, b);
+    mm.disableLighting = true;
+    mm.alpha = 0.9; // sutil: indica sin tapar la presa
+    m.material = mm;
+    m.rotation.x = Math.PI / 2; // el toro nace tumbado: de pie encarando la cámara
+    m.isVisible = false; // solo las instancias se ven (patrón de los masters)
+    m.isPickable = false;
+    return m;
+  }
+
+  /** T65 — ANILLOS DE FATIGA sobre las presas agarradas: cada entrada es una
+   *  extremidad viva en una presa con SU fatiga (merge por presa = peor caso).
+   *  El anillo estático de esa presa cede su sitio; al soltar, vuelve. El
+   *  color es la rampa gripRingColor (verde→ámbar→rojo→rojo hondo) y desde el
+   *  umbral crítico el anillo LATE (aviso físico antes del despegue). */
+  syncGripRings(entries: readonly GripRingEntry[]): void {
+    const want = new Map(mergeGripRings(entries).map((e) => [e.holdId, e.fatigue]));
+    // 1. liberar los anillos de fatiga cuyas presas ya no están agarradas
+    for (const id of [...this.gripFatigue.keys()]) {
+      if (want.has(id)) continue;
+      const g = this.gripFatigue.get(id)!;
+      g.mesh.isVisible = false;
+      this.gripFatigueSpare.push({ mesh: g.mesh, mat: g.mat });
+      this.gripFatigue.delete(id);
+      const inst = this.holdRings.get(id);
+      if (inst) inst.isVisible = true; // el estático vuelve a su sitio
+    }
+    // 2. colocar/actualizar los activos
+    const now = performance.now();
+    for (const [id, f] of want) {
+      const inst = this.holdRings.get(id);
+      if (!inst) continue; // presa desconocida (snapshot truncado): nada que pintar
+      let g = this.gripFatigue.get(id);
+      if (!g) {
+        const spare = this.gripFatigueSpare.pop();
+        if (spare) {
+          g = { mesh: spare.mesh, mat: spare.mat, f };
+        } else {
+          const mesh = MeshBuilder.CreateTorus(`gripFatigue_${id}`, { diameter: 1, thickness: 0.095, tessellation: 20 }, this.scene);
+          const fmat = mat(this.scene, `gripFatigueM_${id}`, "#3fd15e");
+          fmat.disableLighting = true;
+          fmat.alpha = 0.95;
+          mesh.material = fmat;
+          mesh.rotation.x = Math.PI / 2;
+          mesh.isPickable = false;
+          mesh.isVisible = false;
+          g = { mesh, mat: fmat, f };
+        }
+        this.gripFatigue.set(id, g);
+        inst.isVisible = false; // el estático cede su sitio
+      }
+      g.f = f;
+      const [r, gg, b] = gripRingColor(f);
+      g.mat.emissiveColor.set(r, gg, b);
+      const hold = this.holdMeshes.get(id);
+      if (hold) g.mesh.position.set(hold.position.x, hold.position.y, hold.position.z - 0.028);
+      const pulse = gripRingPulses(f) ? 1 + Math.sin(now / 160) * 0.14 : 1;
+      g.mesh.scaling.setAll(Math.max(0.05, inst.scaling.x) * pulse * 1.06);
+      g.mesh.isVisible = true;
+    }
+  }
+
+  /** T65 SONDA E2E: nº de anillos estáticos + anillos de fatiga activos con
+   *  su fatiga y color aplicado (hex) — "la rampa se VE en el mundo". */
+  gripRingsDebug(): { static: number; active: { holdId: string; f: number; hex: string }[] } {
+    const hex = (c: Color3): string =>
+      "#" + [c.r, c.g, c.b].map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, "0")).join("");
+    const active = [...this.gripFatigue.entries()].map(([holdId, g]) => ({
+      holdId,
+      f: Math.round(g.f * 1000) / 1000,
+      hex: hex(g.mat.emissiveColor),
+    }));
+    return { static: this.holdRings.size, active };
   }
 
   /** T63 — MASTER de presa desde la receta (esferas/cajas fusionadas con
@@ -2926,6 +3051,10 @@ export class SherpaScene {
     this.richVisual.book.dispose();
     this.richVisual.phone.dispose();
     this.richVisual = null;
+    // T66: el emoticono muere con el ricachón (reaparece con el siguiente spawn)
+    if (this.richEmote) { this.richEmote.dispose(); this.richEmote = null; }
+    if (this.richEmoteMat) { this.richEmoteMat.dispose(); this.richEmoteMat = null; }
+    this.richEmoteMood = null;
     this.applyRichPuppetVisibility(); // sin match, la marioneta se esconde
   }
 
@@ -2992,6 +3121,124 @@ export class SherpaScene {
     };
   }
 
+  // ---------- T66 — EMOTICONO-BOCADILLO DEL RICACHÓN ----------
+
+  /** Fija el ánimo a mostrar (los 8 de emotionos.zip; null/nulo = oculto).
+   *  `pin=true` (depuración/E2E): CONGELA ese ánimo por encima del que la
+   *  simulación empuja cada frame; un pin inválido no toca nada. Carga LAZY
+   *  de su PNG y reinicia el pop de aparición. */
+  setRichMood(mood: string | null, pin = false): void {
+    if (pin) {
+      if (!isRichMood(mood)) return; // ánimo desconocido: ignora, no rompe la cara
+      this.richMoodPin = mood;
+    }
+    const m = this.richMoodPin ?? (isRichMood(mood) ? mood : null);
+    if (m === this.richEmoteMood) return;
+    this.richEmoteMood = m;
+    if (!m) return;
+    if (!this.richEmote) this.buildRichEmote();
+    if (!this.richEmote || !this.richEmoteMat) return;
+    const tex = this.ensureRichEmoteTexture(m);
+    if (!tex) return;
+    this.richEmoteMat.emissiveTexture = tex;
+    this.richEmoteMat.opacityTexture = tex; // el alpha del PNG recorta el círculo
+    this.richEmoteShownAt = performance.now();
+  }
+
+  /** Carga LAZY del PNG del ánimo. LECCIÓN T66 (doble): la Texture por URL no
+   *  enlazaba RGB en este pipeline (disco blanco/negro según slot) y la
+   *  DynamicTexture (canvas) subía a GPU con el alpha pisado. El camino
+   *  DETERMINISTA es el del mapa de roca (T40): canvas propio → getImageData
+   *  → RawTexture RGBA — bytes crudos, cero magia de upload. */
+  private ensureRichEmoteTexture(m: RichMood): Texture | null {
+    const cached = this.richEmoteTex.get(m);
+    if (cached) return cached;
+    if (typeof document === "undefined") return null;
+    const img = new Image();
+    img.src = `/models/sherpas/emotes/r_${m}.png`;
+    // marcador temporal: hasta que el PNG decodifique, la sonda texReady=false
+    // y el plano muestra el material base (blanco) — pocas frames a 4 fps.
+    img.onload = () => {
+      if (this.disposed) return;
+      const S = img.naturalWidth || 512;
+      const cv = document.createElement("canvas");
+      cv.width = S;
+      cv.height = S;
+      const ctx = cv.getContext("2d");
+      if (!ctx) return;
+      ctx.drawImage(img, 0, 0);
+      const data = new Uint8Array(ctx.getImageData(0, 0, S, S).data); // RGBA crudo
+      const rt = RawTexture.CreateRGBATexture(data, S, S, this.scene);
+      rt.wrapU = Texture.CLAMP_ADDRESSMODE;
+      rt.wrapV = Texture.CLAMP_ADDRESSMODE;
+      rt.updateSamplingMode(Texture.BILINEAR_SAMPLINGMODE);
+      this.richEmoteTex.set(m, rt);
+      this.richEmoteTexReady.set(m, true);
+      // si este mood sigue en cara, recalienta el material con SU textura
+      if (this.richEmoteMood === m && this.richEmoteMat) {
+        this.richEmoteMat.emissiveTexture = rt;
+        this.richEmoteMat.opacityTexture = rt;
+        this.richEmoteShownAt = performance.now(); // pop de aparición con la cara ya lista
+      }
+    };
+    img.onerror = () => {
+      if (this.disposed) return;
+      // sin PNG: círculo plano ámbar (nunca romper la cara)
+      const S = 64;
+      const data = new Uint8Array(S * S * 4);
+      for (let y = 0; y < S; y++) {
+        for (let x = 0; x < S; x++) {
+          const i = (y * S + x) * 4;
+          const inside = Math.hypot(x - S / 2 + 0.5, y - S / 2 + 0.5) < S / 2 - 2;
+          data[i] = 242; data[i + 1] = 193; data[i + 2] = 78; data[i + 3] = inside ? 255 : 0;
+        }
+      }
+      const rt = RawTexture.CreateRGBATexture(data, S, S, this.scene);
+      this.richEmoteTex.set(m, rt);
+      this.richEmoteTexReady.set(m, true);
+      if (this.richEmoteMood === m && this.richEmoteMat) {
+        this.richEmoteMat.emissiveTexture = rt;
+        this.richEmoteMat.opacityTexture = rt;
+      }
+    };
+    return null; // la textura llega ASÍNCRONA (el pop se reinicia al llegar)
+  }
+
+  /** Plano-billboard delante de la cara: "anclarlos a la cara pero
+   *  ligeramente separados para que no interfieran con la geometría ni con
+   *  la animación" — flota SIEMPRE de cara a cámara, un palmo por delante. */
+  private buildRichEmote(): void {
+    const plane = MeshBuilder.CreatePlane("richEmote", { size: 0.42 }, this.scene);
+    const emm = mat(this.scene, "richEmoteM", "#ffffff");
+    emm.disableLighting = true; // autoiluminado: se lee a contraluz y de noche
+    // LECCIÓN T66 (el shader SUMA): emissiveColor = vEmissiveColor + tex.rgb →
+    // con blanco todo clampea a blanco y la cara desaparece. El sprite no
+    // iluminado lleva emissiveColor NEGRO: la textura ES la luz.
+    emm.emissiveColor = new Color3(0, 0, 0);
+    emm.diffuseColor = new Color3(0, 0, 0);
+    emm.specularColor = new Color3(0, 0, 0);
+    emm.backFaceCulling = false;
+    emm.alpha = 0.999; // mezcla alpha (la del PNG llega por opacityTexture)
+    plane.material = emm;
+    plane.billboardMode = Mesh.BILLBOARDMODE_ALL;
+    plane.isPickable = false;
+    plane.isVisible = false;
+    this.richEmote = plane;
+    this.richEmoteMat = emm;
+  }
+
+  /** T66 SONDA E2E: ánimo mostrado + visibilidad + textura DIBUJADA (el PNG a
+   *  4 fps tarda varios frames en decodificar: sin esto la cara sale blanca). */
+  richMoodDebug(): { mood: string | null; visible: boolean; texReady: boolean; loaded: number } {
+    const ready = this.richEmoteMood ? (this.richEmoteTexReady.get(this.richEmoteMood) ?? false) : false;
+    return {
+      mood: this.richEmoteMood,
+      visible: !!this.richEmote && this.richEmote.isEnabled() && this.richEmote.isVisible && !!this.richEmoteMat?.emissiveTexture,
+      texReady: ready,
+      loaded: this.richEmoteTex.size,
+    };
+  }
+
   syncRichMan(sim: RichManRenderView, alpha: number): void {
     const lerp = (i: number): V3 => {
       const b = sim.bodies[i];
@@ -3037,6 +3284,29 @@ export class SherpaScene {
     vis.brim.position.set(headP.x, headP.y + (sleeping ? brimY * 0.5 : brimY), headP.z + (sleeping ? -0.125 : 0));
     vis.glasses.position.set(headP.x, headP.y + glassesY, headP.z + glassesZ);
     vis.glasses.setEnabled(!sleeping); // a dormir, gafas fuera
+    // T66 — EMOTICONO-MÁSCARA: delante de la cara (MÁS adelante que las gafas:
+    // nada interseca con la cabeza del modelo, el sombrero ni la animación).
+    // Pop de aparición (easeOutBack) + bob suave: se siente vivo, no pegado.
+    if (this.richEmote && this.richEmoteMat) {
+      const emoteOn = !!this.richEmoteMood && !!this.richEmoteMat.emissiveTexture;
+      // OJO: `enabled` NO basta — el plano nace isVisible=false (el render lo
+      // excluye igualmente). La visibilidad del billboard manda aquí.
+      this.richEmote.setEnabled(emoteOn);
+      this.richEmote.isVisible = emoteOn;
+      if (emoteOn) {
+        const gordoE = this.richPuppet ? 1 : 0;
+        const nowE = performance.now();
+        this.richEmote.position.set(
+          headP.x,
+          headP.y + (gordoE ? 0.085 : 0.06) + Math.sin(nowE / 420) * 0.007,
+          headP.z + (gordoE ? -0.315 : -0.215),
+        );
+        const pop = Math.min(1, (nowE - this.richEmoteShownAt) / 300);
+        const c1 = 1.70158;
+        const back = 1 + (c1 + 1) * Math.pow(pop - 1, 3) + c1 * Math.pow(pop - 1, 2);
+        this.richEmote.scaling.setAll(0.62 + 0.38 * back);
+      }
+    }
     // props de gesto: visibles SOLO en su estado (el gesto se lee mejor con
     // objeto en mano: bocadillo al comer, copita al brindar, libro al leer,
     // teléfono pegado a la oreja)
@@ -4042,6 +4312,18 @@ export class SherpaScene {
       if (this.puppet[p]) { this.puppet[p]!.dispose(); this.puppet[p] = null; }
     }
     if (this.richPuppet) { this.richPuppet.dispose(); this.richPuppet = null; } // T62
+    // T65: anillos de agarre (las instancias mueren con su master)
+    if (this.gripRingMaster) { this.gripRingMaster.dispose(); this.gripRingMaster = null; }
+    this.holdRings.clear();
+    for (const g of this.gripFatigue.values()) g.mesh.dispose();
+    this.gripFatigue.clear();
+    for (const s of this.gripFatigueSpare) s.mesh.dispose();
+    this.gripFatigueSpare.length = 0;
+    // T66: emoticono (texturas compartidas mueren con la escena)
+    if (this.richEmote) { this.richEmote.dispose(); this.richEmote = null; }
+    if (this.richEmoteMat) { this.richEmoteMat.dispose(); this.richEmoteMat = null; }
+    this.richEmoteTex.clear();
+    this.richEmoteMood = null;
     this.destroyWorker();
     this.strataTex?.dispose(); // T44: capa de estratos compartida (los chunks no la tocan)
     this.strataTex = null;

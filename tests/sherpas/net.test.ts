@@ -12,7 +12,7 @@ const snap = (tick: number, x = 0): NetSnapshot => ({
   a: { p: Array.from({ length: 45 }, (_, i) => x + i), aim: [0, 1], limbs: [], ropeState: "climbing", belaying: false, fartCharge: false, fartFlying: false, mash: null, waist: [0, 0, 0] },
   b: { p: Array.from({ length: 45 }, (_, i) => x + i), aim: [0, 1], limbs: [], ropeState: "climbing", belaying: false, fartCharge: false, fartFlying: false, mash: null, waist: [0, 0, 0] },
   plank: null,
-  rich: { b: Array.from({ length: 33 }, () => 0), g: "idle", seated: true },
+  rich: { b: Array.from({ length: 33 }, () => 0), g: "idle", seated: true, m: "dudoso" },
   boxes: null, drone: null, birds: [], trash: null,
   wind: { dir: 1, level: 0.2 }, storm: false,
   hud: null, ev: [],

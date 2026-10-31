@@ -235,7 +235,18 @@ export class GuestRunner {
       b.prev.x = prev.rich.b[i * 3]!; b.prev.y = prev.rich.b[i * 3 + 1]!; b.prev.z = prev.rich.b[i * 3 + 2]!;
     }
     this.richView.gesture = cur.rich.g;
+    // T66: el guest ve la MISMA cara del ricachón (ánimo viaja en el snapshot)
+    s.setRichMood(cur.rich.m ?? null);
     s.syncRichMan(this.richView, 1);
+    // T65: anillos de agarre del guest — las presas ocupadas del snapshot
+    // pintan la fatiga de su extremidad (mismo rampa que el host).
+    const rings: { holdId: string; fatigue: number }[] = [];
+    for (const sh of [cur.a, cur.b]) {
+      for (const l of sh.limbs) {
+        if (l.a && l.h) rings.push({ holdId: l.h, fatigue: l.f });
+      }
+    }
+    s.syncGripRings(rings);
 
     // ---- tabla + cuerdas + cajas + dron + pájaros + basura ----
     if (cur.plank && prev.plank) {

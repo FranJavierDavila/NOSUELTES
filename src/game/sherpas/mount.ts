@@ -348,6 +348,44 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         } | null;
         return sc?.plantasDebug?.() ?? [];
       },
+      /** T67 VARIEDAD: matas por arquetipo (hierba/helecho/arbusto/campanula/musgo/cojin). */
+      plantStats: (): { total: number; kinds: Record<string, number> } | null => {
+        const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
+          plantStatsDebug?: () => { total: number; kinds: Record<string, number> };
+        } | null;
+        return sc?.plantStatsDebug?.() ?? null;
+      },
+      /** T65 ANILLOS DE AGARRE: estáticos + activos con fatiga y color (sonda E2E). */
+      gripRings: (): { static: number; active: { holdId: string; f: number; hex: string }[] } | null => {
+        const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
+          gripRingsDebug?: () => { static: number; active: { holdId: string; f: number; hex: string }[] };
+        } | null;
+        return sc?.gripRingsDebug?.() ?? null;
+      },
+      /** T65: fijar la fatiga de una extremidad (E2E: recorrer la rampa entera
+       *  verde→naranja→rojo sin esperar 20 s de estancamiento real). */
+      fatigue: (p: number, limb: string, f: number): boolean => {
+        const rig = state.match?.["sherpas"][p] as unknown as {
+          states?: Map<string, { fatigue: number }>;
+        } | undefined;
+        const st = rig?.states?.get?.(limb);
+        if (!st) return false;
+        st.fatigue = Math.min(1, Math.max(0, Number.isFinite(f) ? f : 0));
+        return true;
+      },
+      /** T66 ÁNIMO DEL RICACHÓN: leer (sin args) o forzar (con nombre) para E2E. */
+      richMood: (m?: string): { mood: string | null; visible: boolean; loaded: number } | boolean | null => {
+        const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
+          setRichMood?: (m: string | null, pin?: boolean) => void;
+          richMoodDebug?: () => { mood: string | null; visible: boolean; loaded: number };
+        } | null;
+        if (m !== undefined) {
+          if (!sc?.setRichMood) return false;
+          sc.setRichMood(m, true); // pin: manda sobre el ánimo de la simulación
+          return true;
+        }
+        return sc?.richMoodDebug?.() ?? null;
+      },
       /** T56 BASE CAMP: pedriz + faldones + cabaña (sonda E2E). */
       baseCamp: (): Record<string, unknown> | null => {
         const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
@@ -403,7 +441,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         return sc?.emoteDebug?.() ?? null;
       },
       /** T58-E A SACO: estado de cuerda del rig (sonda de diagnóstico). */
-      rope: (p: number): { state: string; haulDone: boolean; released: boolean; mash: boolean; limbs: ({ a: boolean; w: boolean; lock: number; f: number; s: number } | null)[] } | null => {
+      rope: (p: number): { state: string; haulDone: boolean; released: boolean; mash: boolean; limbs: ({ a: boolean; w: boolean; lock: number; f: number; s: number; h: string | null } | null)[] } | null => {
         const rig = state.match?.["sherpas"][p] as unknown as {
           ropeState?: string; haulDone?: boolean; ropeReleased?: boolean; ropeMash?: unknown;
         } | undefined;
@@ -411,7 +449,8 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
           const st = rig?.["states"]?.get?.(l);
           // T64: f = fatiga 0..1 (la barra naranja/roja del HUD), s = segundos
           // seguidos en la MISMA presa (estancamiento: pasados 5 s, +5%/s).
-          return st ? { a: !!st.anchored, w: !!rig?.["gripWanted"]?.[l], lock: Math.round((st.lockedFor ?? 0) * 10) / 10, f: Math.round((st.fatigue ?? 0) * 100) / 100, s: Math.round((st.stallSeconds ?? 0) * 10) / 10 } : null;
+          // T65: h = id de la presa (para cruzar con el anillo de agarre).
+          return st ? { a: !!st.anchored, w: !!rig?.["gripWanted"]?.[l], lock: Math.round((st.lockedFor ?? 0) * 10) / 10, f: Math.round((st.fatigue ?? 0) * 100) / 100, s: Math.round((st.stallSeconds ?? 0) * 10) / 10, h: st.holdId ?? null } : null;
         });
         return rig ? {
           state: rig.ropeState ?? "?", haulDone: !!rig.haulDone,
