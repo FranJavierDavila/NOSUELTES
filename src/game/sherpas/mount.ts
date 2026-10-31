@@ -355,12 +355,12 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         } | null;
         return sc?.plantStatsDebug?.() ?? null;
       },
-      /** T65/T66-FB ANILLOS: alcance visibles (nº + alphas) + fatiga activa con
-       *  color (sonda E2E). El `static` global de T65 ya no existe: la pared NO
-       *  se marca entera, solo las presas alcanzables (círculo blanco). */
-      gripRings: (): { reach: number; reachAlpha: number[]; active: { holdId: string; f: number; hex: string }[] } | null => {
+      /** T65/T66-FB/T67-FB ANILLOS: alcance visibles (nº + alpha fijo + hex
+       *  verde) + fatiga activa con color (sonda E2E). La pared NO se marca
+       *  entera, solo las presas alcanzables (círculo verde OPACO). */
+      gripRings: (): { reach: number; reachAlpha: number[]; reachHex: string | null; active: { holdId: string; f: number; hex: string }[] } | null => {
         const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
-          gripRingsDebug?: () => { reach: number; reachAlpha: number[]; active: { holdId: string; f: number; hex: string }[] };
+          gripRingsDebug?: () => { reach: number; reachAlpha: number[]; reachHex: string | null; active: { holdId: string; f: number; hex: string }[] };
         } | null;
         return sc?.gripRingsDebug?.() ?? null;
       },

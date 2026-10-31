@@ -12,22 +12,20 @@
 //     solo se suelta con fatiga 1.0 (tuning limb.fatigueReleaseAt), así que el
 //     anillo siempre llega al rojo antes del despegue.
 //
-// T66-FEEDBACK (petición del jugador): "los círculos de los agarres deben ser
-// más sutiles, no se deben ver tanto; verlos todos resulta muy molesto; podemos
-// mostrar solo los que estén a nuestro alcance… si los agarres son alcanzables
-// se marcan con un fino círculo blanco, el resto no se marca… estas marcas no
-// cambian: el cambio ya lo indica el propio agarre del escalador".
+// T67-FEEDBACK (nueva petición del jugador): los blancos SUTILES se quedaban
+// cortos ("ahora nos pasamos de sutiles, casi no se notan los círculos blancos,
+// que volveremos a poner verdes; vamos a marcarlos sin transparencia los que
+// podemos alcanzar"). Vuelta al VERDE y OPACOS:
 //  2. ALCANCE: las presas ALCANZABLES (dentro del alcance real de una
-//     extremidad libre) llevan un FINO CÍRCULO BLANCO estático con transparencia
-//     por distancia (cerca = más presente, al borde = casi invisible). Las
-//     presas lejanas NO se marcan. El círculo blanco NUNCA cambia de color: el
-//     estado lo cuenta el anillo de fatiga sobre la presa agarrada.
+//     extremidad libre) llevan un círculo VERDE SIN transparencia (alpha 1).
+//     Las presas lejanas NO se marcan. El círculo verde de alcance NUNCA
+//     cambia de color: el estado lo cuenta el anillo de fatiga sobre la presa
+//     agarrada (que sigue siendo más GRUESO y late en crítico).
 //
 // El anillo vive en la escena (presentation/scene.ts): la fatiga en un POOL
 // pequeño de meshes con material propio (máx. 8, una por presa agarrada por
-// las manos) y el alcance en otro pool de anillos blancos finos (máx. 24) con
-// alpha individual. El color/alpha lo calcula AQUÍ (puro y testeable); la
-// escena solo lo aplica.
+// las manos) y el alcance en otro pool de anillos verdes finos (máx. 24). El
+// color/alpha lo calcula AQUÍ (puro y testeable); la escena solo lo aplica.
 
 /** Fatiga (0..1) en la que el anillo pasa de verde a ÁMBAR (aviso). */
 export const GRIP_WARN_F = 0.45;
@@ -91,25 +89,19 @@ export function mergeGripRings(entries: readonly GripRingEntry[]): GripRingEntry
   return [...byHold.entries()].map(([holdId, fatigue]) => ({ holdId, fatigue }));
 }
 
-// ---------- T66-FEEDBACK — ANILLOS DE ALCANCE (fino círculo blanco) ----------
+// ---------- T66-FB/T67-FB — ANILLOS DE ALCANCE (círculo verde OPACO) ----------
 
 /** Tamaño del POOL de anillos de alcance en escena (sobran los que falten:
  *  se muestran los más CERCANOS). 24 cubre de sobra lo alcanzable a la vez. */
 export const REACH_RING_POOL = 24;
 
-/** Transparencia del anillo blanco: pegado a la extremidad (d01=0) es más
- *  presente y en el borde del alcance (d01=1) casi desaparece. Sutil SIEMPRE:
- *  es una ayuda de proximidad, no un semáforo. */
-export const REACH_ALPHA_NEAR = 0.55;
-export const REACH_ALPHA_FAR = 0.14;
+/** T67-FB: SIN transparencia — el alcanzable se marca CON TODO. La ordenación
+ *  por distancia (d01) sigue decidiendo QUÉ 24 se pintan cuando hay más. */
+export const REACH_RING_ALPHA = 1;
 
-/** Alpha [0..1] del anillo blanco según distancia NORMALIZADA al alcance
- *  (0 = a la punta/raíz de la extremidad, 1 = en el borde exacto). Lineal y
- *  clampeada: determinista, sin estado. */
-export function reachRingAlpha(d01: number): number {
-  const d = clamp01(Number.isFinite(d01) ? d01 : 1);
-  return REACH_ALPHA_NEAR + (REACH_ALPHA_FAR - REACH_ALPHA_NEAR) * d;
-}
+/** Color del círculo de alcance: el MISMO verde que arranca la rampa de
+ *  fatiga (coherencia: "esta presa la puedes coger"). [r,g,b] 0..1. */
+export const REACH_RING_COLOR: readonly [number, number, number] = [0.24, 0.82, 0.37];
 
 /** Una extremidad SONDEANDO la pared: dos puntos válidos (raíz de cadena y
  *  punta actual — la misma pareja que usa canReach) y su alcance efectivo en

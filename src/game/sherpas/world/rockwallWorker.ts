@@ -3,14 +3,18 @@
 // El módulo rockwall.ts es puro (sin motor): mismo código en worker y en el
 // fallback síncrono de la escena.
 //
-// Mensaje de entrada:  { jobId, job: RockwallRegionJob }
-// Mensaje de salida:   { jobId, res?: RockwallRegionResult, error?: string }
+// T67: también genera TROZOS (generateChunk, job.chunk = true) — la API de
+// pared alta del módulo nuevo del jugador; el POOL (rockwallPool.ts) reparte
+// esos jobs entre varios hilos.
+//
+// Mensaje de entrada:  { jobId, job: RockwallRegionJob & { chunk?: boolean } }
+// Mensaje de salida:   { jobId, res?: RockwallRegionResult | RockwallChunkResult, error?: string }
 
-import { sampleRegion, type RockwallRegionResult } from "./rockwall";
+import { generateChunk, sampleRegion, type RockwallChunkResult, type RockwallRegionJob, type RockwallRegionResult } from "./rockwall";
 
 interface RockwallWorkerRequest {
   jobId: number;
-  job: Parameters<typeof sampleRegion>[0];
+  job: RockwallRegionJob & { chunk?: boolean };
 }
 
 const ctx = self as unknown as {
@@ -21,7 +25,7 @@ const ctx = self as unknown as {
 ctx.onmessage = (ev: MessageEvent<RockwallWorkerRequest>) => {
   const { jobId, job } = ev.data;
   try {
-    const res: RockwallRegionResult = sampleRegion(job);
+    const res: RockwallRegionResult | RockwallChunkResult = job.chunk ? generateChunk(job) : sampleRegion(job);
     ctx.postMessage({ jobId, res }, [res.height.buffer, res.normalMap.buffer, res.colorMap.buffer]);
   } catch (err) {
     ctx.postMessage({ jobId, error: err instanceof Error ? err.message : String(err) });

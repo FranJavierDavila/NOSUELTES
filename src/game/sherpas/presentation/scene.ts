@@ -31,7 +31,7 @@ import { ColorCurves } from "@babylonjs/core/Materials/colorCurves"; // T63: sat
 import { FxaaPostProcess } from "@babylonjs/core/PostProcesses/fxaaPostProcess"; // GRÁFICOS: antialiasing
 import { clampDpr, hardwareScaleFor } from "./renderQuality"; // T58-A: calidad de render (DPR)
 import { emoteOffset, stepEmote, startEmote, type EmoteSlot } from "../gameplay/emotes"; // T58-D: animaciones puntuales
-import { gripRingColor, gripRingPulses, mergeGripRings, reachRingAlpha, REACH_RING_POOL, type GripRingEntry, type ReachRingEntry } from "../gameplay/gripRing"; // T65/T66-FB: anillos
+import { gripRingColor, gripRingPulses, mergeGripRings, REACH_RING_ALPHA, REACH_RING_COLOR, REACH_RING_POOL, type GripRingEntry, type ReachRingEntry } from "../gameplay/gripRing"; // T65/T66-FB/T67-FB: anillos
 import { isRichMood, RICH_BUBBLE_SPEAK_S, type RichMood } from "../gameplay/richMood"; // T66: ánimo del ricachón
 import { composeEmoteBubble, flipRowsRGBA } from "../gameplay/emoteBubble"; // T66-FB: bocadillo de cómic
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
@@ -84,6 +84,7 @@ import {
   buildSideSkirts, ROCKWALL_SEED, rockwallStyleFromData, sampleRegion,
   type RockwallAnchorIn, type RockwallFeature, type RockwallRegionResult, type RockwallStyle,
 } from "../world/rockwall"; // T43: módulo del jugador (diaclasas) + worker
+import { createRockwallPool, defaultPoolSize, type RockwallPool } from "../world/rockwallPool"; // T67: pool de workers
 import { makeRng } from "../core/rng";
 import { generatePedrizaColor, generateStrataColor } from "../world/strataTexture"; // T44 estratos + T56 pedriza
 import { resolvePlantasCfg, selectPlantSpots, stampTufts, type PlantasCfg } from "../world/plantas"; // T48: vegetación en hundimientos
@@ -411,7 +412,10 @@ export class SherpaScene {
   // la región visible — en un WEB WORKER con buffers transferidos (sin copias
   // ni tirones), con fallback síncrono de 1 chunk/frame si no hay worker.
   private rockCtx: { style: RockwallStyle; anchors: RockwallAnchorIn[]; features: RockwallFeature[] } | null = null;
-  private rockWorker: Worker | null = null;
+  // T67: POOL de workers (hasta 4, núcleos-1) en vez de un worker único — los
+  // trozos de pared se generan en paralelo (puerto del rockwall.pool.js del
+  // jugador). null o agotado → fallback síncrono (cola de 1 chunk/frame).
+  private rockPool: RockwallPool | null = null;
   // T44: textura de ESTRATOS superpuesta (triplanar) compartida por los chunks
   private strataTex: RawTexture | null = null;
   private strataCfg: { scale: number; strength: number; detail: number } | null = null;
@@ -434,6 +438,7 @@ export class SherpaScene {
   /** materiales PBR de roca creados (sonda E2E: material/triplanar/normales). */
   private rockPbrCount = 0;
   private rockWorkerDead = false;
+  private rockWorkerFails = 0; // T67: fallos consecutivos del pool (≥3 → sync)
   private rockJobSeq = 0;
   private rockJobs = new Map<number, number>(); // jobId → chunk (resultado en vuelo)
   private rockJobByChunk = new Map<number, number>(); // chunk → jobId (stale/disposal)
@@ -510,17 +515,22 @@ export class SherpaScene {
     lamp.diffuse = new Color3(1.0, 0.86, 0.62);
     lamp.specular = new Color3(0.08, 0.07, 0.05);
     this.headlamp = lamp;
-    // T43: worker de generación de roca (diaclasas). Si el entorno no lo
-    // soporta, el juego funciona igual por el camino síncrono (1 chunk/frame).
+    // T43/T67: POOL de workers de generación de roca (puerto del rockwall.pool.js
+    // del jugador): los chunks se reparten entre VARIOS hilos (núcleos-1, máx 4)
+    // — una pared alta en trozos se genera en paralelo y el streaming deja de
+    // encolar todo en un solo worker. Si el entorno no soporta workers, el juego
+    // funciona igual por el camino síncrono (1 chunk/frame).
     try {
       if (typeof Worker !== "undefined") {
-        this.rockWorker = new Worker(new URL("../world/rockwallWorker.ts", import.meta.url), { type: "module" });
-        this.rockWorker.onmessage = (ev: MessageEvent) =>
-          this.onRockChunkBuffers(ev.data as { jobId: number; res?: RockwallRegionResult; error?: string });
-        this.rockWorker.onerror = () => this.rockWorkerFailed();
+        this.rockPool = createRockwallPool(
+          () => new Worker(new URL("../world/rockwallWorker.ts", import.meta.url), { type: "module" }),
+          defaultPoolSize(),
+          (msg) => this.onRockChunkBuffers(msg as { jobId: number; res?: RockwallRegionResult; error?: string }),
+          () => this.rockWorkerFailed(),
+        );
       }
     } catch {
-      this.rockWorker = null; // fallback síncrono
+      this.rockPool = null; // fallback síncrono
     }
     const sg = new ShadowGenerator(1024, dir);
     // PERF: PCF en vez de Blur Exponential (el ESM renderiza el mapa + pasadas
@@ -1627,8 +1637,8 @@ export class SherpaScene {
     const jobId = this.rockJobSeq++;
     this.rockJobByChunk.set(c, jobId);
     this.rockJobs.set(jobId, c);
-    if (this.rockWorker && !this.rockWorkerDead) {
-      this.rockWorker.postMessage(this.rockJobPayload(jobId, c));
+    if (this.rockPool && !this.rockWorkerDead) {
+      this.rockPool.post(this.rockJobPayload(jobId, c));
     } else {
       this.rockSyncQueue.push(c);
     }
@@ -1642,11 +1652,11 @@ export class SherpaScene {
   }
 
   private rockWorkerFailed(): void {
-    // worker roto (bundler/entorno): los chunks en vuelo se regeneran síncronos
+    // pool roto (bundler/entorno): los chunks en vuelo se regeneran síncronos
     if (this.rockWorkerDead) return;
     this.rockWorkerDead = true;
-    try { this.rockWorker?.terminate(); } catch { /* ya muerto */ }
-    this.rockWorker = null;
+    try { this.rockPool?.terminate(); } catch { /* ya muerto */ }
+    this.rockPool = null;
     for (const c of this.rockJobByChunk.keys()) this.rockSyncQueue.push(c);
     this.rockJobByChunk.clear();
     this.rockJobs.clear();
@@ -1659,11 +1669,15 @@ export class SherpaScene {
     this.rockJobByChunk.delete(c);
     if (msg.error || !msg.res) {
       console.warn("[rockwall] chunk fallido → fallback síncrono:", msg.error ?? "sin buffers");
-      this.rockWorkerFailed();
+      // T67: un chunk con error NO mata el pool (puede ser un dato raro de ese
+      // job); 3 fallos seguidos sí (script del worker tóxico) → sync global.
+      this.rockWorkerFails++;
+      if (this.rockWorkerFails >= 3) this.rockWorkerFailed();
       this.rockSyncQueue.push(c);
       this.rockJobByChunk.set(c, this.rockJobSeq++); // re-reservado para la cola sync
       return;
     }
+    this.rockWorkerFails = 0;
     if (this.reliefMeshes.has(c)) return;
     this.buildRockChunkMesh(c, msg.res);
   }
@@ -2026,7 +2040,7 @@ export class SherpaScene {
    *  T43: algoritmo, estado del worker y cola pendiente. */
   getReliefInfo(): {
     chunks: number; cells: number; tris: number; builds: number; algorithm: string; viewBand: number;
-    worker: boolean; pending: number; plants: number;
+    worker: boolean; workers: number; pending: number; plants: number;
     strataTones?: number; strataToneStrength?: number; strataSeamDark?: number;
   } {
     let cells = 0, tris = 0;
@@ -2038,7 +2052,8 @@ export class SherpaScene {
       algorithm: this.rockCtx ? "diaclasas" : (this.rockField ? "estratificada" : (this.reliefCfg?.algorithm ?? "off")),
       viewBand: Number.isFinite(this.reliefLastCamY) && this.reliefCfg
         ? Math.floor(this.reliefLastCamY / this.reliefCfg.chunkHeightM) : -1,
-      worker: this.rockWorker !== null && !this.rockWorkerDead,
+      worker: this.rockPool !== null && !this.rockWorkerDead,
+      workers: this.rockWorkerDead ? 0 : (this.rockPool?.size ?? 0),
       pending: this.rockJobs.size + this.rockSyncQueue.length,
       plants: Math.max(0, this.plantasTotal),
       strataTones: this.rockField?.cfg.strataTones.length,
@@ -2047,10 +2062,10 @@ export class SherpaScene {
     };
   }
 
-  /** T43: termina recursos no-GC (worker de roca); lo llama dispose(). */
+  /** T43: termina recursos no-GC (pool de workers de roca); lo llama dispose(). */
   private destroyWorker(): void {
-    try { this.rockWorker?.terminate(); } catch { /* noop */ }
-    this.rockWorker = null;
+    try { this.rockPool?.terminate(); } catch { /* noop */ }
+    this.rockPool = null;
     this.rockJobs.clear();
     this.rockJobByChunk.clear();
     this.rockSyncQueue.length = 0;
@@ -2361,25 +2376,26 @@ export class SherpaScene {
       // LOSA SUELTA: vuelco determinista (parece a punto de ceder)
       if (rec.tilt[0] !== 0 || rec.tilt[1] !== 0) inst.rotation.set(rec.tilt[0], 0, rec.tilt[1]);
       this.holdMeshes.set(h.id, inst as unknown as Mesh);
-      // T66-FB — SIN anillo estático por presa: ver TODOS los círculos resultaba
+      // T67-FB — SIN anillo estático por presa: ver TODOS los círculos resultaba
       // molesto ("los círculos de los agarres deben ser más sutiles, no se deben
       // ver tanto; verlos todos resulta muy molesto"). Ahora la escena pinta en
-      // cada frame SOLO las presas alcanzables (fino círculo blanco, pool) y
+      // cada frame SOLO las presas alcanzables (círculo verde opaco, pool) y
       // las agarradas por las manos (anillo de fatiga): syncGripRings.
     }
   }
 
-  /** T66-FB — Crea (si hace falta) el anillo i-ésimo del POOL de alcance:
-   *  toro FINO blanco autoiluminado (se ve sobre roca, nieve y sombra) con
-   *  material PROPIO por instancia (la transparencia depende de la distancia). */
+  /** T67-FB — Crea (si hace falta) el anillo i-ésimo del POOL de alcance:
+   *  toro fino VERDE autoiluminado (se ve sobre roca, nieve y sombra) y OPACO
+   *  (alpha 1, sin blending: petición del jugador tras los blancos sutiles)
+   *  con material PROPIO por instancia. */
   private ensureReachRing(i: number): { mesh: Mesh; mat: StandardMaterial } {
     let e = this.reachRingPool[i];
     if (!e) {
       const mesh = MeshBuilder.CreateTorus(`reachRing_${i}`, { diameter: 1, thickness: 0.038, tessellation: 24 }, this.scene);
-      const mm = mat(this.scene, `reachRingM_${i}`, "#ffffff");
-      mm.emissiveColor = new Color3(1, 1, 1);
+      const mm = mat(this.scene, `reachRingM_${i}`, "#3dd15e");
+      mm.emissiveColor = new Color3(REACH_RING_COLOR[0], REACH_RING_COLOR[1], REACH_RING_COLOR[2]);
       mm.disableLighting = true;
-      mm.alpha = 0.35; // nominal: se SOBREESCRIBE cada frame con reachRingAlpha(d01)
+      mm.alpha = REACH_RING_ALPHA; // 1 = opaco (sin blending: alpha ≥ 1 no lo activa)
       mesh.material = mm;
       mesh.rotation.x = Math.PI / 2; // el toro nace tumbado: de pie encarando la cámara
       mesh.isPickable = false;
@@ -2397,9 +2413,11 @@ export class SherpaScene {
    *  despegue). El recorrido es COMPLETO: el suelte vive en tuning
    *  (limb.fatigueReleaseAt = 1.0), el anillo siempre llega al rojo.
    *  T66-FB — y ALCANCE: `reach` son las presas libres alcanzables (ya capadas
-   *  y ordenadas de cerca a lejos por el match): fino círculo BLANCO estático
-   *  con transparencia por distancia; el resto de la pared no se marca y estos
-   *  círculos NUNCA cambian de color (el estado lo cuenta el anillo de fatiga). */
+   *  y ordenadas de cerca a lejos por el match): fino círculo VERDE estático.
+   *  T67-FB — el jugador pidió volver al verde y SIN transparencia ("nos pasamos
+   *  de sutiles… vamos a marcarlos sin transparencia los que podemos
+   *  alcanzar"): alpha 1 fijo. Estos círculos NUNCA cambian de color (el
+   *  estado lo cuenta el anillo de fatiga, más grueso). */
   syncGripRings(entries: readonly GripRingEntry[], reach: readonly ReachRingEntry[] = []): void {
     const want = new Map(mergeGripRings(entries).map((e) => [e.holdId, e.fatigue]));
     // 1. liberar los anillos de fatiga cuyas presas ya no están agarradas
@@ -2442,7 +2460,7 @@ export class SherpaScene {
       g.mesh.isVisible = true;
     }
     // 3. anillos de ALCANCE: pool capado (sobran los más lejanos — la lista
-    // llega ordenada de cerca a lejos), alpha por distancia, color fijo blanco
+    //    llega ordenada de cerca a lejos), VERDE OPACO fijo (T67-FB)
     const cap = Math.min(REACH_RING_POOL, reach.length);
     for (let i = 0; i < cap; i++) {
       const e = reach[i]!;
@@ -2454,7 +2472,6 @@ export class SherpaScene {
         continue;
       }
       const ring = this.ensureReachRing(i);
-      ring.mat.alpha = reachRingAlpha(e.d01);
       ring.mesh.position.set(hold.position.x, hold.position.y, hold.position.z - 0.022);
       ring.mesh.scaling.setAll(this.holdRingScale(hold));
       ring.mesh.isVisible = true;
@@ -2473,11 +2490,12 @@ export class SherpaScene {
     return Math.min(0.62, Math.max(0.28, r * 2.5));
   }
 
-  /** T66-FB SONDA E2E: anillos de alcance visibles (con alpha) + anillos de
-   *  fatiga activos con su fatiga y color aplicado (hex). */
+  /** T66-FB/T67-FB SONDA E2E: anillos de alcance visibles (alpha fijo 1 +
+   *  hex verde) + anillos de fatiga activos con su fatiga y color (hex). */
   gripRingsDebug(): {
     reach: number;
     reachAlpha: number[];
+    reachHex: string | null;
     active: { holdId: string; f: number; hex: string }[];
   } {
     const hex = (c: Color3): string =>
@@ -2488,11 +2506,15 @@ export class SherpaScene {
       hex: hex(g.mat.emissiveColor),
     }));
     const reachAlpha: number[] = [];
+    let reachHex: string | null = null;
     for (let i = 0; i < this.reachRingUsed; i++) {
       const e = this.reachRingPool[i];
-      if (e && e.mesh.isVisible) reachAlpha.push(Math.round(e.mat.alpha * 1000) / 1000);
+      if (e && e.mesh.isVisible) {
+        reachAlpha.push(Math.round(e.mat.alpha * 1000) / 1000);
+        if (reachHex === null) reachHex = hex(e.mat.emissiveColor);
+      }
     }
-    return { reach: reachAlpha.length, reachAlpha, active };
+    return { reach: reachAlpha.length, reachAlpha, reachHex, active };
   }
 
   /** T63 — MASTER de presa desde la receta (esferas/cajas fusionadas con

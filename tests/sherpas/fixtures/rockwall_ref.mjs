@@ -17,7 +17,7 @@
  * ANCLAJES (entrada)
  *   x, y     metros sobre la pared (origen abajo-izquierda)
  *   kind     'hand' | 'foot'            (por defecto 'hand')
- *   shape    'jug'|'crimp'|'sloper'|'pocket'|'pinch'   (opcional; si falta se elige de forma determinista por seed)
+ *   shape    'jug'|'crimp'|'sloper'|'pocket'|'pinch'   (opcional; si falta se elige por POSICIÓN del anclaje (cm) + seed — T67)
  *   r        tamaño de la presa en metros (por defecto 0.09 mano, 0.06 pie)
  *
  * IDEA CLAVE (enfoque inverso): bajo cada anclaje se levanta una plataforma de roca y se funde su presa; las
@@ -149,10 +149,13 @@ export function generate(o = {}) {
   }));
   const bid = new Float32Array(N); // id de bloque (capa media) para variar el tono por bloque
 
-  const A = P.anchors.map((a, k) => {
+  const A = P.anchors.map((a) => {
     const kind = a.kind || 'hand', r = a.r || (kind === 'foot' ? .06 : .09),
       L = kind === 'foot' ? ['crimp', 'sloper', 'jug'] : ['jug', 'crimp', 'sloper', 'pocket', 'pinch'],
-      shape = HOLD_SHAPES[a.shape] ? a.shape : L[Math.floor(H3(k, 5, sd) * L.length)];
+      // T67: forma por defecto por POSICIÓN del anclaje (cuantizada a cm), no
+      // por orden en la lista — petición del módulo nuevo del jugador (misma
+      // regla que rockwall.ts:prepareAnchors).
+      shape = HOLD_SHAPES[a.shape] ? a.shape : L[Math.floor(H3(Math.round(a.x * 100), Math.round(a.y * 100), sd) * L.length)];
     return { x: a.x, y: a.y, kind, r, shape, fn: HOLD_SHAPES[shape](r), R2: 20.25 * r * r }; // radio de influencia 4.5 r
   });
 

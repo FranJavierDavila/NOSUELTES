@@ -7,15 +7,18 @@
  * verifica que la RAMPA cubre [0,1] completa.
  *
  * T66-FEEDBACK — ALCANCE: "mostrar solo los que estén a nuestro alcance… si
- * los agarres son alcanzables se marcan con un fino círculo blanco, el resto
- * no se marca… estas marcas no cambian" — alpha por distancia y recolección
- * de presas alcanzables (puros).
+ * los agarres son alcanzables se marcan, el resto no se marca… estas marcas no
+ * cambian" — recolección de presas alcanzables (pura).
+ *
+ * T67-FEEDBACK — VERDE OPACO: "nos pasamos de sutiles, casi no se notan los
+ * círculos blancos (que volveremos a poner verdes); vamos a marcarlos sin
+ * transparencia los que podemos alcanzar" — el anillo de alcance vuelve al
+ * VERDE (el mismo que arranca la rampa de fatiga) y SIN transparencia.
  */
 import { describe, it, expect } from "vitest";
 import {
   gripRingColor, gripRingPulses, mergeGripRings, GRIP_WARN_F, GRIP_DANGER_F,
-  reachRingAlpha, collectReachRings, REACH_RING_POOL,
-  REACH_ALPHA_NEAR, REACH_ALPHA_FAR,
+  collectReachRings, REACH_RING_POOL, REACH_RING_ALPHA, REACH_RING_COLOR,
   type GripRingEntry, type ReachLimbProbe, type ReachHoldView,
 } from "../../src/game/sherpas/gameplay/gripRing";
 
@@ -114,27 +117,16 @@ describe("mergeGripRings — una presa, la fatiga PEOR de sus extremidades", () 
   });
 });
 
-describe("reachRingAlpha — transparencia del círculo blanco por distancia (T66-FB)", () => {
-  it("sutil SIEMPRE: cerca más presente, en el borde casi invisible, nunca opaco", () => {
-    expect(reachRingAlpha(0)).toBeCloseTo(REACH_ALPHA_NEAR, 9);
-    expect(reachRingAlpha(1)).toBeCloseTo(REACH_ALPHA_FAR, 9);
-    expect(REACH_ALPHA_NEAR).toBeLessThan(0.7);  // ni de lejos un semáforo
-    expect(REACH_ALPHA_FAR).toBeGreaterThan(0);  // y el borde aún se intuye
+describe("REACH_RING_ALPHA/COLOR — círculo verde y OPACO (T67-FB)", () => {
+  it("SIN transparencia: alpha 1 exacto (petición tras los blancos sutiles)", () => {
+    expect(REACH_RING_ALPHA).toBe(1);
   });
 
-  it("monótona decreciente y continua (sin saltos)", () => {
-    let prev = Infinity;
-    for (let i = 0; i <= 100; i++) {
-      const a = reachRingAlpha(i / 100);
-      expect(a).toBeLessThanOrEqual(prev + 1e-9);
-      prev = a;
-    }
-  });
-
-  it("fuera de rango se CLAMPEA (y NaN tratado como borde)", () => {
-    expect(reachRingAlpha(-0.5)).toEqual(reachRingAlpha(0));
-    expect(reachRingAlpha(1.5)).toEqual(reachRingAlpha(1));
-    expect(Number.isFinite(reachRingAlpha(Number.NaN))).toBe(true);
+  it("VERDE coherente con la rampa de fatiga: igual al color de f=0 y dominante verde", () => {
+    const [r, g, b] = REACH_RING_COLOR;
+    expect(g).toBeGreaterThan(r); // dominante verde
+    expect(g).toBeGreaterThan(b);
+    expect(REACH_RING_COLOR).toEqual(gripRingColor(0)); // el MISMO verde de presa fresca
   });
 });
 

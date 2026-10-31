@@ -356,11 +356,17 @@ function rectBlend(ft: RockwallFeature, x: number, y: number): number {
 }
 
 function prepareAnchors(list: RockwallAnchorIn[], style: RockwallStyle, sd: number): AnchorPre[] {
-  return list.map((a, k) => {
+  return list.map((a) => {
     const kind = a.kind === "foot" ? "foot" : "hand";
     const r = typeof a.r === "number" && Number.isFinite(a.r) && a.r > 0 ? a.r : kind === "foot" ? 0.06 : 0.09;
     const pool = kind === "foot" ? ["crimp", "sloper", "jug"] : ["jug", "crimp", "sloper", "pocket", "pinch"];
-    const shape = a.shape && HOLD_SHAPES[a.shape] ? a.shape : pool[Math.floor(H3(k, 5, sd) * pool.length) % pool.length];
+    // T67 (regla del módulo nuevo del jugador): la forma por defecto se elige
+    // según la POSICIÓN del anclaje (cuantizada a cm), no según su orden en la
+    // lista — un anclaje tiene SIEMPRE la misma forma aunque cambie el trozo
+    // (chunk) o el orden de la lista. Nota: por eso algunas presas por defecto
+    // cambian respecto a versiones anteriores (aviso del propio módulo).
+    const qx = Math.round(a.x * 100), qy = Math.round(a.y * 100);
+    const shape = a.shape && HOLD_SHAPES[a.shape] ? a.shape : pool[Math.floor(H3(qx, qy, sd) * pool.length) % pool.length];
     // modo juego (hz): SIN bulto de forma (la presa visual es malla); modo
     // fiel: forma aditiva exacta al módulo original.
     const fn = a.hz === undefined ? HOLD_SHAPES[shape]!(r) : null;
@@ -636,6 +642,178 @@ export function generate(o: RockwallGenerateOptions = {}): {
     return { x: a.x, y: a.y, z: hp[j * WP + i]!, nx: -gx / l, ny: -gy / l, nz: 1 / l, kind: a.kind, shape: a.shape, r: a.r };
   });
   return { W, H, s: cell, height: res.height, normalMap: res.normalMap, colorMap: res.colorMap, anchors };
+}
+
+// ---------- T67 — PARED ALTA POR TROZOS (API del módulo nuevo del jugador) ----------
+//
+// generateChunk({ origin: { x, y }, W, H, cell, … }) genera UN TROZO que encaja
+// SIN COSTURA con sus vecinos:
+//  · La retícula es GLOBAL (múltiplos exactos de cell desde 0) y el padding
+//    alimenta normales/AO con vecinos reales cruzando la frontera: la fila de
+//    borde compartida sale IDÉNTICA y la capa triplanar de la escena (que
+//    trabaja en coordenadas globales) continúa de un trozo al siguiente.
+//  · Trozos APILADOS separan sus orígenes (H-1)*cell en y; los LATERALES,
+//    (W-1)*cell en x (pool.generateTall hace lo primero).
+//  · Se le pasan TODOS los anclajes y el trozo devuelve SOLO LOS SUYOS (los
+//    que caen dentro de su rectángulo, con margen de media celda), siempre en
+//    coordenadas globales y con su z/normal sobre la roca real. Un anclaje
+//    EXACTAMENTE en una frontera compartida puede aparecer en ambos trozos
+//    (el integrador deduplica por identidad si le importa).
+
+export interface RockwallChunkOptions {
+  seed?: number;
+  /** dimensiones del trozo en MUESTRAS (641×961 ≈ 6,4×9,6 m a cell 0,01). */
+  W?: number;
+  H?: number;
+  cell?: number;
+  /** esquina inferior-izquierda del trozo en coordenadas de juego (m). Se
+   *  SNAPEA a la retícula global: el origen devuelto es el real del grid. */
+  origin?: { x: number; y: number };
+  style?: Partial<RockwallStyle> | null;
+  anchors?: RockwallAnchorIn[];
+  features?: RockwallFeature[];
+  flipNormalRG?: boolean;
+}
+
+export interface RockwallChunkResult extends RockwallRegionResult {
+  /** origen REAL del grid interior (snapado a la retícula global, m). Con él
+   *  el trozo se COLOCA SOLO: la malla no necesita saber nada más. */
+  origin: { x: number; y: number };
+  /** celda en metros (alias de `cell`, API del módulo del jugador). */
+  s: number;
+  /** SOLO los anclajes del trozo, coordenadas GLOBALES, z/normal reales. */
+  anchors: RockwallAnchorOut[];
+}
+
+/** Un TROZO de pared anclado en `origin`. Internamente delega en sampleRegion
+ *  (pura en (x,y,seed) → continuidad EXACTA garantizada por construcción). */
+export function generateChunk(o: RockwallChunkOptions = {}): RockwallChunkResult {
+  const cell = num(o.cell, 0.01, 0.004, 0.05);
+  const W = Math.max(2, Math.round(num(o.W, 641, 8, 4096)));
+  const H = Math.max(2, Math.round(num(o.H, 961, 8, 8192)));
+  const ox = o.origin && Number.isFinite(o.origin.x) ? o.origin.x : 0;
+  const oy = o.origin && Number.isFinite(o.origin.y) ? o.origin.y : 0;
+  const res = sampleRegion({
+    seed: num(o.seed, 1, -(2 ** 31 - 1), 2 ** 31 - 1),
+    cell,
+    x0: ox, x1: ox + (W - 1) * cell,
+    y0: oy, y1: oy + (H - 1) * cell,
+    pad: 20, // normales/AO con vecinos reales cruzando la frontera del trozo
+    flipNormalRG: o.flipNormalRG,
+    style: o.style,
+    anchors: o.anchors,
+    features: o.features,
+  });
+  // Anclajes DEL TROZO: rectángulo interior con margen de media celda; z y
+  // normal leídas del grid PADRADO (en el borde hay vecinos reales por el pad).
+  const S0 = rockwallStyleFromData(o.style ?? null);
+  const pre = prepareAnchors(o.anchors ?? [], S0, res.seed);
+  const xEnd = res.x0 + (res.W - 1) * cell, yEnd = res.y0 + (res.H - 1) * cell;
+  const eps = cell * 0.5 + 1e-9;
+  const anchors: RockwallAnchorOut[] = [];
+  for (const a of pre) {
+    if (a.x < res.x0 - eps || a.x > xEnd + eps || a.y < res.y0 - eps || a.y > yEnd + eps) continue;
+    const ci = clampN(Math.round((a.x - res.x0) / cell), 1, res.W - 2);
+    const cj = clampN(Math.round((a.y - res.y0) / cell), 1, res.H - 2);
+    const pi = (cj + res.pad) * res.WP + (ci + res.pad);
+    const gx = (res.height[pi + 1]! - res.height[pi - 1]!) / (2 * cell);
+    const gy = (res.height[pi + res.WP]! - res.height[pi - res.WP]!) / (2 * cell);
+    const l = Math.hypot(gx, gy, 1);
+    anchors.push({ x: a.x, y: a.y, z: res.height[pi]!, nx: -gx / l, ny: -gy / l, nz: 1 / l, kind: a.kind, shape: a.shape, r: a.r });
+  }
+  return { ...res, origin: { x: res.x0, y: res.y0 }, s: cell, anchors };
+}
+
+// ---------- T67 — UTILIDADES PARA EL JUEGO: muestreo + heightfield ----------
+
+/** Entrada mínima para muestrear una pared generada (serve `generate` —sin
+ *  pad, origen 0— y `generateChunk` —grid padrado con origen—). */
+export interface RockwallSamplable {
+  x0?: number;
+  y0?: number;
+  W: number;
+  H: number;
+  cell?: number;
+  s?: number;
+  pad?: number;
+  WP?: number;
+  HP?: number;
+  height: Float32Array;
+}
+
+/** Punto muestreado: altura h-space (hacia el escalador; en Babylon la cara
+ *  vive en z_malla = faceZ − h) y normal en el MARCO DEL MÓDULO (+z hacia el
+ *  escalador), igual que los anclajes de generate(). */
+export interface RockwallSample {
+  z: number;
+  nx: number;
+  ny: number;
+  nz: number;
+}
+
+/** sampleWall(wall, x, y): altura y normal en CUALQUIER punto de la pared
+ *  (bilinear sobre el grid) — para IK, raycasts y sondas de física. Fuera de
+ *  los límites interiores devuelve null (el llamador decide). Pura. */
+export function sampleWall(wall: RockwallSamplable, x: number, y: number): RockwallSample | null {
+  const cell = wall.cell ?? wall.s ?? 0.01;
+  const x0 = wall.x0 ?? 0, y0 = wall.y0 ?? 0;
+  const pad = wall.pad ?? 0;
+  const WP = wall.WP ?? wall.W;
+  const h = wall.height;
+  const u = (x - x0) / cell, v = (y - y0) / cell;
+  if (!(u >= 0 && u <= wall.W - 1 && v >= 0 && v <= wall.H - 1)) return null;
+  // altura bilinear (índices de grid clampeados: los bordes no se salen)
+  const at = (uu: number, vv: number): number => {
+    const cu = Math.min(wall.W - 1, Math.max(0, uu)), cv = Math.min(wall.H - 1, Math.max(0, vv));
+    const i = Math.floor(cu), j = Math.floor(cv);
+    const i2 = Math.min(wall.W - 1, i + 1), j2 = Math.min(wall.H - 1, j + 1);
+    const tu = cu - i, tv = cv - j;
+    const z00 = h[(j + pad) * WP + (i + pad)]!, z10 = h[(j + pad) * WP + (i2 + pad)]!;
+    const z01 = h[(j2 + pad) * WP + (i + pad)]!, z11 = h[(j2 + pad) * WP + (i2 + pad)]!;
+    return (z00 * (1 - tu) + z10 * tu) * (1 - tv) + (z01 * (1 - tu) + z11 * tu) * tv;
+  };
+  const z = at(u, v);
+  const gx = (at(u + 1, v) - at(u - 1, v)) / (2 * cell); // paso = 1 celda
+  const gy = (at(u, v + 1) - at(u, v - 1)) / (2 * cell);
+  const l = Math.hypot(gx, gy, 1);
+  return { z, nx: -gx / l, ny: -gy / l, nz: 1 / l };
+}
+
+export interface RockwallHeightfield {
+  x0: number;
+  y0: number;
+  /** separación de muestras en METROS (0.04 = 4 cm). */
+  step: number;
+  nx: number;
+  ny: number;
+  /** nx*ny alturas h-space (fila j = y0 + j*step, columna i = x0 + i*step). */
+  height: Float32Array;
+  /** celda del grid ORIGINAL (información para el consumidor). */
+  cell: number;
+}
+
+/** toHeightfield(wall, 4): rejilla REDUCIDA (cada 4 cm por defecto) lista para
+ *  un colisionador de físicas. OJO EJES: aquí la profundidad es +z (h-space,
+ *  hacia el escalador) — cada motor la querrá orientada a su manera; en
+ *  nuestro juego Babylon la cara vive en z_malla = faceZ − h. Nuestra física
+ *  es PBD propio (sin colisionador externo), así que la rejilla se entrega
+ *  PURA y testeada para quien la monte (Havok heightfield, etc.). */
+export function toHeightfield(wall: RockwallSamplable, stepCm = 4): RockwallHeightfield {
+  const cell = wall.cell ?? wall.s ?? 0.01;
+  const x0 = wall.x0 ?? 0, y0 = wall.y0 ?? 0;
+  const step = Math.min(0.5, Math.max(0.005, (Number.isFinite(stepCm) ? stepCm : 4) / 100));
+  const spanX = (wall.W - 1) * cell, spanY = (wall.H - 1) * cell;
+  const nx = Math.max(2, Math.floor(spanX / step + 1e-9) + 1);
+  const ny = Math.max(2, Math.floor(spanY / step + 1e-9) + 1);
+  const height = new Float32Array(nx * ny);
+  for (let j = 0; j < ny; j++) {
+    const y = y0 + Math.min(spanY, j * step);
+    for (let i = 0; i < nx; i++) {
+      const x = x0 + Math.min(spanX, i * step);
+      height[j * nx + i] = sampleWall(wall, x, y)!.z; // dentro de límites: nunca null
+    }
+  }
+  return { x0, y0, step, nx, ny, height, cell };
 }
 
 // ---------- T58-B: MACIZO LATERAL POR CHUNK (petición: "las paredes de

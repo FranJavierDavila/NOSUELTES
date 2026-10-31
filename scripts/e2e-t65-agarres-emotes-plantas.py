@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""E2E T66-FB — ANILLOS DE ALCANCE · FATIGA SOLO EN LAS MANOS · BOCADILLO DE CÓMIC.
-(1) ANILLOS DE ALCANCE (T66-FB): la pared YA NO se marca entera — solo las
-    presas ALCANZABLES llevan un fino círculo BLANCO con transparencia por
-    distancia (cerca = más visible), capadas al pool y estáticas (no cambian de
-    color: el estado lo cuenta el anillo de fatiga).
+"""E2E T67-FB — ANILLOS VERDES OPACOS · FATIGA SOLO EN LAS MANOS · BOCADILLO.
+(1) ANILLOS DE ALCANCE (T67-FB): solo las presas ALCANZABLES se marcan, ahora
+    con círculo VERDE y SIN transparencia (alpha 1 exacto; el jugador se pasó
+    de sutil con los blancos). Estáticos: no cambian de color (el estado lo
+    cuenta el anillo de fatiga, más grueso).
 (2) FATIGA SOLO MANOS: la presa agarrada por una MANO recorre la rampa COMPLETA
     verde→naranja→rojo y suelta al 100% (fatigueReleaseAt=1.0); un PIE no pinta
     anillo ni cansa por estancamiento (quedan como hacía dos iteraciones).
 (3) BOCADILLO DEL RICACHÓN (T66-FB): los 8 emoticonos de emotionos.zip sirven
     por HTTP; el bocadillo NO está siempre visible — solo cuando "habla"
     (visible ⇒ speaking salvo pin); el pin de E2E lo congela para capturarlo.
-(4) PLANTAS (T67, regresión): arquetipos vivos con variedad.
+(4) PLANTAS (T66, regresión): arquetipos vivos con variedad.
 (5) REGRESIÓN: sin errores JS y capturas con luminancia válida."""
 import sys
 import time
@@ -117,7 +117,7 @@ with sync_playwright() as pw:
     ])
 
     # ---------- ESCENARIO A: ANILLOS DE ALCANCE + FATIGA (SOLO MANOS) ----------
-    print("== A. ALCANCE: fino círculo blanco solo en las presas cercanas ==")
+    print("== A. ALCANCE: círculo VERDE OPACO solo en las presas cercanas ==")
     page = browser.new_page(viewport={"width": 960, "height": 600})
     errors = []
     page.on("pageerror", lambda e: errors.append(str(e)))
@@ -129,12 +129,17 @@ with sync_playwright() as pw:
           bool(rg) and 0 < rg.get("reach", 0) <= 24,
           f"(reach={rg and rg.get('reach')})")
     alphas = (rg or {}).get("reachAlpha", [])
-    check("transparencia por DISTANCIA: el más cercano más visible que el lejano",
-          len(alphas) >= 2 and alphas[0] > alphas[-1],
-          f"(cerca={alphas[:1]} lejos={alphas[-1:]})")
-    check("SUTIL: incluso el más visible es translúcido (alpha < 0,7)",
-          bool(alphas) and max(alphas) < 0.7, f"(max={alphas and max(alphas)})")
-    shot(page, f"{OUT}/t66fb-0-alcance-blanco.png")
+    check("SIN transparencia (T67-FB): TODOS los anillos de alcance van a alpha 1",
+          bool(alphas) and all(abs(a - 1.0) < 1e-6 for a in alphas),
+          f"(alphas={alphas[:3]}… n={len(alphas)})")
+    hx = (rg or {}).get("reachHex") or ""
+    if hx:
+        r_, g_, b_ = hexc(hx)
+        check("VERDE: el anillo de alcance es verde (dominante G)", g_ > r_ and g_ > b_,
+              f"(hex={hx})")
+    else:
+        check("VERDE: hex del anillo de alcance presente", False)
+    shot(page, f"{OUT}/t67-0-alcance-verde.png")
 
     # FATIGA: la presa agarrada por la MANO recorre la rampa completa
     r = None

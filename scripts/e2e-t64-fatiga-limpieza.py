@@ -143,11 +143,13 @@ with sync_playwright() as pw:
             if manos and max(l["s"] for l in manos) >= 5.5:
                 break
         page.wait_for_timeout(1500)
-    check("mano anclada y estancada tras la gracia (s > 5,5)", bool(r) and any(l and l["a"] and l["s"] > 5.5 for l in r["limbs"][:2]), f"({r and r['limbs']})")
+    # la sonda redondea s a 1 decimal: la gracia (5,5) puede leerse EXACTA —
+    # se acepta >= (el estancamiento ya corre: f > 0 lo demuestra)
+    check("mano anclada y estancada tras la gracia (s >= 5,5)", bool(r) and any(l and l["a"] and l["s"] >= 5.5 for l in r["limbs"][:2]), f"({r and r['limbs']})")
 
     # mide la SUBIDA durante ~3 s de sim (el estancamiento suma 5 %/s; la
     # tensión de colgado solo puede AÑADIR — por eso la cota es >= 0,12)
-    manos = [l for l in (r or {}).get("limbs", [])[:2] if l and l["a"] and l["s"] > 5.5]
+    manos = [l for l in (r or {}).get("limbs", [])[:2] if l and l["a"] and l["s"] >= 5.5]
     idx = 0
     f0, s0 = manos[0]["f"], manos[0]["s"]
     shot(page, f"{OUT}/t64-1-fatiga-inicial.png")
