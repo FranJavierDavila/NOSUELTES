@@ -27,6 +27,7 @@ import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData"; // RELIEVE 
 import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture"; // MAPA DE ROCA procedural (T40)
 import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator"; // LUZ Y SOMBRA (profundidad)
 import { ImageProcessingConfiguration } from "@babylonjs/core/Materials/imageProcessingConfiguration"; // GRÁFICOS: ACES + viñeta
+import { ColorCurves } from "@babylonjs/core/Materials/colorCurves"; // T63: saturación global (viveza)
 import { FxaaPostProcess } from "@babylonjs/core/PostProcesses/fxaaPostProcess"; // GRÁFICOS: antialiasing
 import { clampDpr, hardwareScaleFor } from "./renderQuality"; // T58-A: calidad de render (DPR)
 import { emoteOffset, stepEmote, startEmote, type EmoteSlot } from "../gameplay/emotes"; // T58-D: animaciones puntuales
@@ -100,6 +101,9 @@ import {
 import { generateRopeColor, generateRopeNormalRGBA } from "../world/ropeTexture"; // T62: cuerda con bandas
 import { generateWoodColor, generateWoodNormalRGBA } from "../world/woodTexture"; // T62: madera del tablón
 import { richJoints15 } from "./richJoints"; // T62: ricachón poseído por la física de 11 cuerpos
+import {
+  holdShapeRecipe, holdUsesWallRock, holdVariantForId, type HoldShapeRecipe,
+} from "../world/holdShapes"; // T63: presas naturales (bulto/losa/carámbano) por receta
 
 interface Bone { a: number; b: number; mesh: Mesh; rest: number; offY?: number }
 interface RigVisual { bones: Bone[]; head: Mesh; roots: Mesh[] }
@@ -302,6 +306,13 @@ export class SherpaScene {
   /** T62 — NEVADA sobre el macizo lateral (fuera del mapa de chunks: el
    *  planificador no debe verlo; mismo tinte, base restaurable). */
   private massifSnow: { mesh: Mesh; base: Float32Array | null } | null = null;
+  /** T63 — NEVADA LEGIBLE: niebla y suelo encalados mientras nieva (base
+   *  guardada del preset de hora para restaurar al despejar). */
+  private baseFogColor: Color3 | null = null;
+  private baseFogDensity = -1;
+  private floorMat: PBRMaterial | null = null;
+  private floorBase: Color3 | null = null;
+  private ledgeSnow: { mesh: Mesh; base: Color3 }[] = [];
   /** T62 — MATERIAL del tablón (madera real, creado perezoso). */
   private plankMat: PBRMaterial | null = null;
   // T61 — OBJETOS QUE CAEN: master por tipo + instancias sincronizadas
@@ -514,7 +525,14 @@ export class SherpaScene {
     ip.toneMappingEnabled = true;
     ip.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES;
     ip.exposure = 1.28; // compensa la compresión ACES (el tono de roca T42/T44 se conserva)
-    ip.contrast = 1.12;
+    ip.contrast = 1.16; // T63: un pelín más de mordiente (imagen plana pedida)
+    // T63 — VIVEZA (petición: "la imagen me parece muy plana y uniforme, le
+    // falta color y viveza"): saturación global suave (+10) — el HDRI PBR
+    // entrega luz correcta pero DESATADA; esto la reanima sin postrear.
+    ip.colorCurvesEnabled = true;
+    const cc = new ColorCurves();
+    cc.globalSaturation = 10;
+    ip.colorCurves = cc;
     ip.vignetteEnabled = true; // viñeta sutil: foco en la pareja de escalada
     ip.vignetteWeight = 1.5;
     ip.vignetteStretch = 0.4;
@@ -527,20 +545,24 @@ export class SherpaScene {
       new FxaaPostProcess("fxaa", 1.0, this.camera);
     }
     this.fxTexture = this.makeDotTexture();
-    this.snowSystem = new ParticleSystem("snow", 600, this.scene);
+    // T63 — COPOS LEGIBLES: el jugador no veía la nevada (emisor al pie, copos
+    // de 2-6 cm, intensidad 0 bajo la cota). Emisor que sigue a la cámara (lo
+    // recoloca setWind cada frame), caja de emisión ANCHA (llena el encuadre,
+    // con profundidad para parallax) y copos de 3-8,5 cm.
+    this.snowSystem = new ParticleSystem("snow", 1600, this.scene);
     this.snowSystem.particleTexture = this.fxTexture.clone();
-    this.snowSystem.emitter = new Vector3(0, 3, -0.6);
-    this.snowSystem.minEmitBox = new Vector3(-6, 4, -0.5);
-    this.snowSystem.maxEmitBox = new Vector3(6, 4, 0.5);
-    this.snowSystem.color1 = new Color4(1, 1, 1, 0.8);
-    this.snowSystem.color2 = new Color4(0.85, 0.9, 1, 0.8);
+    this.snowSystem.emitter = new Vector3(0, 3, -1.1);
+    this.snowSystem.minEmitBox = new Vector3(-9, 4, -2.4);
+    this.snowSystem.maxEmitBox = new Vector3(9, 4, 0.9);
+    this.snowSystem.color1 = new Color4(1, 1, 1, 0.9);
+    this.snowSystem.color2 = new Color4(0.85, 0.9, 1, 0.9);
     this.snowSystem.colorDead = new Color4(1, 1, 1, 0);
-    this.snowSystem.minSize = 0.02; this.snowSystem.maxSize = 0.06;
-    this.snowSystem.minLifeTime = 4; this.snowSystem.maxLifeTime = 7;
+    this.snowSystem.minSize = 0.03; this.snowSystem.maxSize = 0.085;
+    this.snowSystem.minLifeTime = 3.2; this.snowSystem.maxLifeTime = 6;
     this.snowSystem.emitRate = 0;
     this.snowSystem.direction1 = new Vector3(-0.2, -1, 0);
     this.snowSystem.direction2 = new Vector3(0.2, -1, 0);
-    this.snowSystem.minEmitPower = 0.4; this.snowSystem.maxEmitPower = 1.1;
+    this.snowSystem.minEmitPower = 0.5; this.snowSystem.maxEmitPower = 1.35;
     this.snowSystem.start();
 
     // pool de RAYAS de viento: boxes finos horizontales, brillantes (emissive,
@@ -679,7 +701,7 @@ export class SherpaScene {
     this.snowSystem.maxEmitPower = 1.1 + level * 3;
     this.snowSystem.emitRate = this.snowBaseRate + (on ? 150 * level : 0);
     const se = this.snowSystem.emitter as Vector3;
-    se.set(cam.x, cam.y + 2.5, -0.6);
+    se.set(cam.x, cam.y + 3.2, -1.1); // T63: algo más alto y al frente (parallax)
 
     // rayas: N activas según el nivel, integradas a mano, envolvente en x
     const active = on ? Math.round(8 + (SherpaScene.STREAK_POOL - 8) * level) : 0;
@@ -905,7 +927,11 @@ export class SherpaScene {
 
     const floor = MeshBuilder.CreateGround("floor", { width: 40, height: 24 }, this.scene);
     floor.position.y = -0.02;
-    floor.material = matPBR(this.scene, "snowFloor", "#dfe8ee", { rough: 0.78 });
+    // T63 — VIVEZA: pradera alpina bajo la pared (antes losa lavada #dfe8ee que
+    // sumaba al conjunto plano y uniforme). La nevada la ENCALA (setSnowVisual).
+    this.floorMat = matPBR(this.scene, "snowFloor", "#79a054", { rough: 0.9 });
+    this.floorBase = this.floorMat.albedoColor.clone();
+    floor.material = this.floorMat;
     floor.receiveShadows = true;
     floor.freezeWorldMatrix();
 
@@ -913,7 +939,10 @@ export class SherpaScene {
     for (const zone of layout.campZones) {
       const ledge = MeshBuilder.CreateBox(`ledge_${zone.campId}`, { width: 4.6, height: 0.24, depth: 1.1 }, this.scene);
       ledge.position.set(0, zone.yBase + 0.12, 0.16); // (T41) frente a la cara retrasada
-      ledge.material = matPBR(this.scene, `ledgeM_${zone.campId}`, "#e8edf2", { rough: 0.7 });
+      const lm = matPBR(this.scene, `ledgeM_${zone.campId}`, "#e8edf2", { rough: 0.7 });
+      ledge.material = lm;
+      // T63: las cornisas TAMBIÉN acumulan nieve (blanqueo por altura en setSnowVisual)
+      this.ledgeSnow.push({ mesh: ledge, base: lm.albedoColor.clone() });
       ledge.receiveShadows = true;
       ledge.freezeWorldMatrix();
     }
@@ -2002,6 +2031,28 @@ export class SherpaScene {
     const rate = active ? Math.round(this.snowPps * Math.min(1, intensity)) : 0;
     this.snowBaseRate = rate; // setWind suma su ventisca ENCIMA
     this.snowSystem.emitRate = rate;
+    // T63 — ATMÓSFERA DE NEVADA: niebla más clara y densa mientras nieva (la
+    // base viene del preset de hora; la tormenta manda cuando está activa).
+    if (this.baseFogColor && !this.stormMode) {
+      const k = Math.min(1, intensity) * 0.6;
+      const snowFog = Color3.FromHexString("#e6edf4");
+      this.scene.fogColor = Color3.Lerp(this.baseFogColor, snowFog, k);
+      this.scene.fogDensity = this.baseFogDensity * (1 + 0.28 * Math.min(1, intensity));
+    }
+    // SUELO + CORNISAS: la pradera se ENCALA de abajo a arriba con la cota.
+    if (this.floorMat && this.floorBase) {
+      const k = active ? Math.min(0.9, Math.max(0.12, intensity) * 0.75) : 0;
+      this.floorMat.albedoColor = Color3.Lerp(this.floorBase, Color3.FromHexString("#f4f8fb"), k);
+    }
+    if (this.ledgeSnow.length && lineY !== Number.POSITIVE_INFINITY && active) {
+      for (const l of this.ledgeSnow) {
+        const t = Math.min(1, Math.max(0, (l.mesh.position.y - (lineY - 1.2)) / 6));
+        const k = t * t * (3 - 2 * t) * Math.min(1, intensity * 1.4) * 0.85;
+        (l.mesh.material as PBRMaterial).albedoColor = Color3.Lerp(l.base, Color3.FromHexString("#f4f8fb"), k);
+      }
+    } else if (this.ledgeSnow.length) {
+      for (const l of this.ledgeSnow) (l.mesh.material as PBRMaterial).albedoColor = l.base.clone();
+    }
     const want = active && intensity > 0.15;
     const changed = !want
       ? this.snowLineApplied !== -1 || this.snowySwaps.size > 0
@@ -2017,8 +2068,10 @@ export class SherpaScene {
     return { swaps: this.snowySwaps.size, lineY: Math.round(this.snowLineApplied * 10) / 10, pps: this.snowBaseRate };
   }
 
-  /** Marca la cota: presas por encima → instancia BLANCA (master nevado);
-   *  roca de los chunks vivos → tinte por vértice (la pared queda manchada). */
+  /** Marca la cota: presas por encima → INSTANCIA BLANCA del master nevado
+   *  (fix T63: antes se recolocaba el ÚNICO master — con varias presas sobre
+   *  la cota solo la última llevaba nieve y el resto DESAPARECÍA); roca de
+   *  los chunks vivos → tinte por vértice (la pared queda manchada). */
   private applySnowline(lineY: number, intensity: number): void {
     for (const [id, inst] of this.holdMeshes) {
       const y = inst.position.y;
@@ -2028,10 +2081,13 @@ export class SherpaScene {
       if (want) {
         const snowy = this.snowyMasterFor(String((inst.metadata as { holdType?: string } | null)?.holdType ?? "rock_firm"));
         if (!snowy) continue;
-        snowy.position.copyFrom(inst.position);
-        snowy.scaling.copyFrom(inst.scaling);
+        const cap = snowy.createInstance(`snow_${id}`);
+        cap.position.copyFrom(inst.position);
+        cap.scaling.copyFrom(inst.scaling);
+        cap.rotation.copyFrom(inst.rotation);
+        cap.isVisible = true;
         inst.isVisible = false;
-        this.snowySwaps.set(id, snowy);
+        this.snowySwaps.set(id, cap as unknown as Mesh);
       } else {
         const s = this.snowySwaps.get(id);
         if (s) s.dispose();
@@ -2042,12 +2098,27 @@ export class SherpaScene {
     this.tintSnowOnRelief(lineY, intensity);
   }
 
-  /** Master nevado por tipo (esfera blanca rugosa, un material compartido). */
+  /** Master nevado por tipo: MUÑÓN de nieve (3 esferas fundidas, color por
+   *  vértice) — una capucha que pesa, no una bola clavada. Instanciable. */
   private snowyMasterFor(type: string): Mesh | null {
     let m = this.snowyMasters.get(type);
-    if (m) return m.isVisible ? m : null;
+    if (m) return m;
     try {
-      m = MeshBuilder.CreateSphere(`snowHoldMaster_${type}`, { diameter: 0.24, segments: 8 }, this.scene);
+      const a = MeshBuilder.CreateSphere(`snowA_${type}`, { diameter: 0.26, segments: 7 }, this.scene);
+      const b = MeshBuilder.CreateSphere(`snowB_${type}`, { diameter: 0.17, segments: 6 }, this.scene);
+      b.position.set(0.06, 0.07, 0.01);
+      const c = MeshBuilder.CreateSphere(`snowC_${type}`, { diameter: 0.12, segments: 5 }, this.scene);
+      c.position.set(-0.07, 0.05, -0.02);
+      for (const [p, tint] of [[a, [0.96, 0.97, 0.99]], [b, [1, 1, 1]], [c, [0.92, 0.94, 0.98]]] as const) {
+        const n = p.getTotalVertices();
+        const col = new Float32Array(n * 4);
+        for (let i = 0; i < n; i++) {
+          col[i * 4] = tint[0]; col[i * 4 + 1] = tint[1]; col[i * 4 + 2] = tint[2]; col[i * 4 + 3] = 1;
+        }
+        p.setVerticesData(VertexBuffer.ColorKind, col);
+      }
+      m = Mesh.MergeMeshes([a, b, c], true, true, undefined, false, false)!;
+      m.name = `snowHoldMaster_${type}`;
       m.material = matPBR(this.scene, `snowHoldM_${type}`, "#eef3f7", { rough: 0.5 });
       m.isVisible = false;
       m.receiveShadows = true;
@@ -2092,11 +2163,11 @@ export class SherpaScene {
       const x = pos[i];
       let k = 0;
       if (!clearing) {
-        const t = Math.min(1, Math.max(0, (y - (lineY - 0.4)) / 5.4));
+        const t = Math.min(1, Math.max(0, (y - (lineY - 1.2)) / 6.2));
         const cap = t * t * (3 - 2 * t) * capK;
         // parcheo determinista por posición (la nieve no cubre uniforme)
-        const jit = 0.55 + 0.45 * (Math.abs(Math.sin(x * 12.9898 + y * 78.233) * 43758.5453) % 1);
-        k = Math.min(0.9, cap * jit);
+        const jit = 0.62 + 0.38 * (Math.abs(Math.sin(x * 12.9898 + y * 78.233) * 43758.5453) % 1);
+        k = Math.min(0.94, cap * jit);
       }
       if (k > 0.02) {
         out[vi] = src[vi]! + (0.97 - src[vi]!) * k;
@@ -2229,15 +2300,15 @@ export class SherpaScene {
     }
     for (const h of holds) {
       if (this.holdMeshes.has(h.id)) continue;
-      const hex = colors[h.type] ?? TYPE_COLORS[h.type] ?? "#8d99ae";
-      let master = this.holdMasters.get(h.type);
+      const typeHex = colors[h.type] ?? TYPE_COLORS[h.type] ?? "#8d99ae";
+      // T63 — PRESAS NATURALES: la forma sale de la receta del tipo y la
+      // VARIANTE del hash del id (3 siluetas por tipo: la pared no se clona).
+      const variant = holdVariantForId(h.id) % 3;
+      const key = `${h.type}#${variant}`;
+      let master = this.holdMasters.get(key);
       if (!master) {
-        master = MeshBuilder.CreateSphere(`holdMaster_${h.type}`, { diameter: 0.22, segments: 8 }, this.scene);
-        // T61: presas en PBR (relleno HDRI; rugosidad según tipo de agarre)
-        master.material = matPBR(this.scene, `holdM_${h.type}`, hex, { rough: h.type === "ice" || h.type === "ice_plate" || h.type === "snow" ? 0.35 : 0.62 });
-        master.isVisible = false;
-        master.receiveShadows = true; // las presas reciben la sombra de los cuerpos
-        this.holdMasters.set(h.type, master);
+        master = this.buildHoldMaster(h.type, key, holdShapeRecipe(h.type, variant, typeHex), typeHex);
+        this.holdMasters.set(key, master);
       }
       const inst = master.createInstance(`hold_${h.id}`);
       inst.position.set(h.pos.x, h.pos.y, h.pos.z);
@@ -2245,17 +2316,88 @@ export class SherpaScene {
       // PRESAS PROFUNDAS (T41, petición del jugador: "hacer los puntos de
       // agarre más profundos"): el knob se ESTIRA en z hasta morder la pared —
       // la presa se ve encajada en la roca, no flotando pegada a ella.
+      const rec = holdShapeRecipe(h.type, variant, typeHex);
       inst.scaling.z = 1.5;
-      // (fix Task 21: la línea setDirection(undefined) crasheaba — eliminada)
-      // PRESA SORPRESA (Super Flatulencia): MÁS GRANDE y brillante — se ve
-      // desde lejos que "esa presa es distinta" (petición del jugador).
-      if (h.type === "surprise_fart") {
-        inst.scaling.setAll(1.45);
-        const im = inst.material as StandardMaterial | null;
-        if (im) im.emissiveColor = Color3.FromHexString("#1d7a35");
-      }
+      if (rec.scale !== 1) inst.scaling.multiplyInPlace(new Vector3(rec.scale, rec.scale, rec.scale));
+      // LOSA SUELTA: vuelco determinista (parece a punto de ceder)
+      if (rec.tilt[0] !== 0 || rec.tilt[1] !== 0) inst.rotation.set(rec.tilt[0], 0, rec.tilt[1]);
       this.holdMeshes.set(h.id, inst as unknown as Mesh);
     }
+  }
+
+  /** T63 — MASTER de presa desde la receta (esferas/cajas fusionadas con
+   *  COLOR POR VÉRTICE: tinte del trozo, magnesio blanco, grietas oscuras).
+   *  La roca usa el MATERIAL DEL MURO (UV triplanar de mundo → la presa ES
+   *  piedra de la misma pared); hielo/nieve/brillo llevan material propio. */
+  private buildHoldMaster(type: string, key: string, rec: HoldShapeRecipe, typeHex: string): Mesh {
+    const parts: Mesh[] = [];
+    for (const p of rec.parts) {
+      const m = MeshBuilder.CreateSphere(`hp_${key}`, {
+        diameter: 2, diameterX: p.rx * 2, diameterY: p.ry * 2, diameterZ: p.rz * 2, segments: 7,
+      }, this.scene);
+      m.position.set(p.x, p.y, p.z);
+      this.paintVertices(m, p.tint);
+      parts.push(m);
+    }
+    if (rec.chalk) {
+      const c = MeshBuilder.CreateSphere(`chalk_${key}`, {
+        diameter: 2, diameterX: rec.chalk.rx * 2, diameterY: rec.chalk.ry * 2, diameterZ: rec.chalk.rz * 2, segments: 6,
+      }, this.scene);
+      c.position.set(rec.chalk.x, rec.chalk.y, rec.chalk.z);
+      this.paintVertices(c, [0.95, 0.94, 0.9]); // magnesio
+      parts.push(c);
+    }
+    for (const cr of rec.cracks) {
+      const b = MeshBuilder.CreateBox(`crack_${key}`, { width: cr.w, height: cr.h, depth: cr.d }, this.scene);
+      b.position.set(cr.x, cr.y, cr.z);
+      b.rotation.y = cr.ry;
+      b.rotation.z = cr.rz;
+      this.paintVertices(b, [0.16, 0.13, 0.1]); // grieta oscura
+      parts.push(b);
+    }
+    const merged = parts.length > 1
+      ? Mesh.MergeMeshes(parts, true, true, undefined, false, false)!
+      : parts[0]!;
+    merged.name = `holdMaster_${key}`;
+    merged.isVisible = false;
+    merged.receiveShadows = true;
+    if (holdUsesWallRock(type)) {
+      // MISMA piedra que el muro (UV de mundo: continuidad total de textura);
+      // el tinte por vértice porta la identificación del tipo.
+      merged.material = this.ensureBaseRockMaterial();
+    } else {
+      const m = matPBR(this.scene, `holdM_${key}`, typeHex, { rough: rec.rough, alpha: rec.alpha < 1 ? rec.alpha : undefined });
+      if (rec.emissive) m.emissiveColor = new Color3(rec.emissive[0], rec.emissive[1], rec.emissive[2]);
+      merged.material = m;
+    }
+    merged.metadata = { holdType: type, natural: true };
+    return merged;
+  }
+
+  /** Rellena el buffer de color por vértice de UNA malla con un tinte plano. */
+  private paintVertices(m: Mesh, tint: [number, number, number]): void {
+    const n = m.getTotalVertices();
+    const col = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) {
+      col[i * 4] = tint[0]; col[i * 4 + 1] = tint[1]; col[i * 4 + 2] = tint[2]; col[i * 4 + 3] = 1;
+    }
+    m.setVerticesData(VertexBuffer.ColorKind, col);
+  }
+
+  /** SONDA E2E T63 — estadística de presas naturales (masters con receta,
+   *  magnesio, grietas, variantes). */
+  getHoldStats(): { masters: number; types: number; chalk: boolean; cracks: boolean; natural: boolean } {
+    let types = 0, chalk = false, cracks = false, natural = false;
+    const seen = new Set<string>();
+    for (const [key, m] of this.holdMasters) {
+      seen.add(key.split("#")[0] ?? key);
+      const md = m.metadata as { holdType?: string; natural?: boolean } | null;
+      if (md?.natural) natural = true;
+      if (md?.holdType === "rock_firm") chalk = true;
+      if (md?.holdType === "rock_loose") cracks = true;
+    }
+    types = seen.size;
+    return { masters: this.holdMasters.size, types, chalk, cracks, natural };
   }
 
   removeHold(id: string): void {
@@ -2270,7 +2412,10 @@ export class SherpaScene {
 
   setHoldWet(id: string): void {
     const m = this.holdMeshes.get(id);
-    if (m && m.material) (m.material as StandardMaterial).diffuseColor = Color3.FromHexString(TYPE_COLORS.ice_urine);
+    if (!m || !m.material) return;
+    // T63: la roca COMPARTE el material del muro — mancharlo pintaría la pared.
+    if (m.material === this.baseRockMat) return;
+    (m.material as PBRMaterial).albedoColor = Color3.FromHexString(TYPE_COLORS.ice_urine);
   }
 
   // ---------- sherpas ----------
@@ -3366,6 +3511,9 @@ export class SherpaScene {
     if (this.headlamp) this.headlamp.intensity = p.headlamp && !this.stormMode ? 1.15 : this.headlamp.intensity * 0.2;
     this.scene.fogColor = Color3.FromHexString(p.fogColor);
     this.scene.fogDensity = p.fogDensity;
+    // T63: la nevada parte SIEMPRE de la niebla del preset (base restaurable)
+    this.baseFogColor = Color3.FromHexString(p.fogColor);
+    this.baseFogDensity = p.fogDensity;
     this.scene.clearColor = Color4.FromHexString(p.ambient + "FF");
     const ip = this.scene.imageProcessingConfiguration;
     if (typeof p.exposure === "number") ip.exposure = p.exposure;
@@ -3403,7 +3551,7 @@ export class SherpaScene {
       this.envUrl = URL.createObjectURL(new Blob([bytes as unknown as BlobPart], { type: "image/vnd.radiance" }));
       const env = new HDRCubeTexture(this.envUrl, this.scene, 128, false, true, false, true);
       this.scene.environmentTexture = env;
-      this.scene.environmentIntensity = p.stars ? 0.4 : 0.85;
+      this.scene.environmentIntensity = p.stars ? 0.4 : 0.9; // T63: IBL algo más vivo de día
       const old = this.envTexture;
       this.envTexture = env;
       if (old) old.dispose();

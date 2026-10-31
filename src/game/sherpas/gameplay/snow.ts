@@ -5,10 +5,14 @@
 // la física (fatiga extra) los aplica match/escena. Sin azar propio: la
 // nieve no necesita rng y así es determinista y trivialmente testeable.
 //
-// Cota de nieve (snowline): por debajo no cae nada; por encima la intensidad
-// crece con la altura (suave, smoothstep) hasta el pleno. La modalidad
-// "nevada de prueba" baja la cota para poder VALIDAR el efecto desde una
-// partida corta sin escalar 40 m (petición explícita del jugador).
+// Cota de nieve (snowline): T63 — CUANDO NIEVA, NIEVA EN TODA LA PARED (el
+// jugador veía el decorado "Nevada" sin un solo copo: la intensidad era 0 por
+// debajo de la cota y el emisor estaba clavado al pie). La cota gobierna DÓNDE
+// SE POSA (acumulación que blanquea pared y presas), no dónde cae: bajo la
+// cota la intensidad de caída es base 0.55 y sobre ella sube hasta pleno.
+// Cota por defecto BAJADA a 12 m: el decorado nevado se LEE nevado desde la
+// primera pantalla (y sigue siendo más rugoso arriba). La modalidad "validar"
+// (cota 6 m) queda para ventisca al pie y sondas E2E.
 
 export type SnowMode = "clear" | "snow" | "snow_low";
 
@@ -28,13 +32,16 @@ export interface SnowTuning {
 }
 
 export const SNOW_DEFAULTS: SnowTuning = {
-  snowlineM: 40,
-  testSnowlineM: 12,
+  snowlineM: 12,
+  testSnowlineM: 6,
   rampSeconds: 2.5,
   fatigueMultiplier: 1.5,
   slipChanceOnGrip: 0.3,
   particlesPerSecond: 420,
 };
+
+/** Intensidad de CAÍDA bajo la cota (nieva en todo el frame; T63). */
+export const SNOW_BASE_FALL = 0.55;
 
 export interface SnowStep {
   /** intensidad 0..1+ actual (0 = sin nieve visible). */
@@ -93,10 +100,11 @@ export class SnowSystem {
       }
       return { intensity: this.intensity, snowlineM: this.line, lineChanged };
     }
-    // por encima de la cota: base 0.55 y pleno +18 m más arriba (temporal).
+    // T63: bajo la cota NIEVA (caída base SNOW_BASE_FALL); sobre la cota la
+    // caída crece con la altura (banda de 10 m hasta el pleno).
     const target = altitudeM <= this.line
-      ? 0
-      : 0.55 + 0.45 * smooth01(this.line, this.line + 18, altitudeM);
+      ? SNOW_BASE_FALL
+      : SNOW_BASE_FALL + (1 - SNOW_BASE_FALL) * smooth01(this.line, this.line + 10, altitudeM);
     const rate = dt / Math.max(0.01, this.t.rampSeconds);
     if (this.intensity < target) this.intensity = Math.min(target, this.intensity + rate);
     else this.intensity = Math.max(target, this.intensity - rate);

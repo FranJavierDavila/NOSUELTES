@@ -362,6 +362,14 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         } | null;
         return sc?.getRichPuppetInfo?.() ?? null;
       },
+      /** T63 ANCLAJES NATURALES: recetas estampadas (masters, magnesio,
+       *  grietas, variantes) — sonda E2E. */
+      holdStats: (): Record<string, unknown> | null => {
+        const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
+          getHoldStats?: () => Record<string, unknown>;
+        } | null;
+        return sc?.getHoldStats?.() ?? null;
+      },
       /** T56 CAÍDA DEL RICACHÓN: estado de la caída (sonda E2E: aterriza en el
        *  pedriz con impacto; el respawn llega después). */
       richFall: (): Record<string, unknown> | null => {

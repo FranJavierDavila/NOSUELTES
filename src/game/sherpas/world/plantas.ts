@@ -175,6 +175,15 @@ export interface PlantasGeom {
 
 const PLANT_N = [0, 0.349, -0.937]; // normal outward+up aproximada (pared vertical)
 
+/** T63 — PALETA DE FLORES alpina (amarillo, magenta, rojo amapola, blanco):
+ *  salpica color sobre la piedra sin dejar de ser natural. */
+const FLOWER_PALETTE: [number, number, number][] = [
+  [0.95, 0.87, 0.32], // amarillo ranúnculo
+  [0.9, 0.35, 0.62], // magenta alpino
+  [0.92, 0.42, 0.28], // rojo amapola
+  [0.97, 0.95, 0.88], // blanco estrella
+];
+
 /** Matas → geometría fusionada (un mesh por chunk). Cada mata: 8-11 hojas
  *  triangulares (dos tintes verdes + flor pálida ocasional), giradas en el
  *  plano de la pared y con inclinación hacia FUERA (−z, hacia el escalador). */
@@ -223,13 +232,17 @@ export function stampTufts(spots: PlantSpot[], seed = 0x71d): PlantasGeom {
       }
       const base = pos.length / 3;
       // tintes VIVOS (vidilla pedida): base verde oscura → punta verde clara;
-      // flor pálida ocasional que destaca sobre la piedra gris
-      const br = 0.20 + s.tone * 0.16;
-      const bg = 0.34 + s.tone * 0.14;
-      const bb = 0.10 + s.tone * 0.06;
+      // T63 — FLORES MULTICOLOR (petición: "le falta color y viveza"): la mata
+      // florida elige color de la paleta alpina por hash de SU posición —
+      // determinista (misma pared → mismos colores) y sin tocar el rng.
+      const br = 0.2 + s.tone * 0.16;
+      const bg = 0.36 + s.tone * 0.14;
+      const bb = 0.11 + s.tone * 0.06;
       let tr: number, tg: number, tb: number;
       if (s.flower) {
-        tr = 0.93; tg = 0.84; tb = 0.38;
+        const fh = Math.abs(Math.sin(s.x * 12.9898 + s.y * 78.233 + s.z * 37.719) * 43758.5453) % 1;
+        const fi = Math.floor(fh * FLOWER_PALETTE.length) % FLOWER_PALETTE.length;
+        [tr, tg, tb] = FLOWER_PALETTE[fi]!;
       } else {
         tr = 0.42 + s.tone * 0.22; tg = 0.62 + s.tone * 0.16; tb = 0.18 + s.tone * 0.07;
       }

@@ -171,7 +171,7 @@
   "flattenRadiusM": 0.26,
   "anchorBackM": 0.012,
   "baseColor": "#a39a8a",
-  "toneVar": 0.22,
+  "toneVar": 0.26,
   "grainVar": 0.1,
   "aoStrength": 0.32,
   "textureSizePx": 512,
@@ -181,14 +181,14 @@
   "naturalMaxM": 0.18,
   "bumpStrength": 1.0,
   "strataTones": [
-   "#c2b08d",
-   "#8a867c",
-   "#a87f57",
-   "#b8ae98",
-   "#6a6255",
-   "#7e8a94"
+   "#cbb488",
+   "#8f8a76",
+   "#ba8450",
+   "#cdbf98",
+   "#6f6352",
+   "#95a5b0"
   ],
-  "strataToneStrength": 0.85,
+  "strataToneStrength": 0.92,
   "strataSeamDark": 0.18,
   "rockwall": {
    "cell": 0.01,
@@ -336,7 +336,7 @@
    "skyDarken": 0.1,
    "macroAmount": 0.08,
    "macroFreqM": 0.06,
-   "lichenAmount": 0.3,
+   "lichenAmount": 0.38,
    "lichenScaleM": 0.9,
    "seed": 4711
   },

@@ -36,16 +36,18 @@ export interface DaycycleTuning {
 export const DAY_PRESETS: Record<string, DayPreset> = {
   dia: {
     sunDir: [-0.35, -1, 0.6],
-    sunColor: "#fff2d9",
+    sunColor: "#fff1cb",
     sunIntensity: 1.15,
-    hemiColor: "#d1e0ff",
+    hemiColor: "#d6e6ff",
     hemiIntensity: 0.62,
     fillIntensity: 1.15,
-    fogColor: "#9eb5ca",
+    fogColor: "#a9c9e6",
     fogDensity: 0.012,
-    skyTop: "#17334f",
-    skyMid: "#3f6f99",
-    skyBottom: "#7fa6bd",
+    // T63 — DÍA ALPINO VIVO (petición: "la imagen es muy plana, le falta
+    // color"): azul saturado arriba, horizonte luminoso — antes cielo lavado.
+    skyTop: "#1c5cb0",
+    skyMid: "#4f97dd",
+    skyBottom: "#c9e9ff",
     ambient: "#0e1217",
     stars: false,
     headlamp: false,

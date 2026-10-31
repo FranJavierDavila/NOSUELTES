@@ -4,6 +4,7 @@
 // la integración (fatiga extra, golpes) se verifican en la E2E.
 import { describe, expect, it } from "vitest";
 import {
+  SNOW_BASE_FALL,
   SNOW_DEFAULTS, SnowSystem,
 } from "../../src/game/sherpas/gameplay/snow";
 import {
@@ -34,17 +35,17 @@ describe("T61 — SnowSystem (nevada a cotas altas)", () => {
     expect(s.snowline).toBe(Infinity);
   });
 
-  it("nevada real: por debajo de la cota seco, por encima nieva y CRECE con la altura", () => {
+  it("T63: CUANDO NIEVA, NIEVA EN TODA LA PARED — bajo la cota cae (base 0.55), sobre la cota crece a pleno", () => {
     const s = new SnowSystem(SNOW_DEFAULTS);
     s.setMode("snow");
     expect(s.snowline).toBe(SNOW_DEFAULTS.snowlineM);
     for (let i = 0; i < 400; i++) s.step(1 / 60, SNOW_DEFAULTS.snowlineM - 5);
-    expect(s.level).toBe(0); // bajo la cota no cae nada
-    for (let i = 0; i < 400; i++) s.step(1 / 60, SNOW_DEFAULTS.snowlineM + 6);
+    expect(s.level).toBeCloseTo(SNOW_BASE_FALL, 5); // bajo la cota TAMBIÉN cae
+    for (let i = 0; i < 400; i++) s.step(1 / 60, SNOW_DEFAULTS.snowlineM + 5);
     const base = s.level;
-    expect(base).toBeGreaterThan(0.3);
+    expect(base).toBeGreaterThan(SNOW_BASE_FALL); // más alto = más nieve
     for (let i = 0; i < 400; i++) s.step(1 / 60, SNOW_DEFAULTS.snowlineM + 40);
-    expect(s.level).toBeGreaterThan(base); // más alto = más nieve
+    expect(s.level).toBeGreaterThan(base);
     expect(s.level).toBeLessThanOrEqual(1);
   });
 
@@ -64,6 +65,16 @@ describe("T61 — SnowSystem (nevada a cotas altas)", () => {
     expect(s.level).toBe(1);
     expect(s.snowline).toBeLessThanOrEqual(21.4);
     expect(s.snowline).toBeGreaterThanOrEqual(6);
+  });
+
+  it("T63: la COTA SOLO gobierna la acumulación — capAt(0) neutro aunque caiga nieve", () => {
+    const s = new SnowSystem(SNOW_DEFAULTS);
+    s.setMode("snow");
+    for (let i = 0; i < 400; i++) s.step(1 / 60, 2); // equipo al pie: CAE nieve…
+    expect(s.level).toBeCloseTo(SNOW_BASE_FALL, 5);
+    expect(s.capAt(0)).toBe(0); // …pero a esa altura no se POSA
+    expect(s.fatigueAt(0)).toBe(1);
+    expect(s.capAt(SNOW_DEFAULTS.snowlineM + 1)).toBeGreaterThan(0); // arriba sí
   });
 
   it("capAt/fatigueAt: fuera de nieve neutro; sobre presas nevadas fatiga extra", () => {
