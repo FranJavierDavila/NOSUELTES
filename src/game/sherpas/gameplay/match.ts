@@ -32,7 +32,10 @@ import { CheckpointSystem, type Checkpoint } from "../world/checkpoints";
 import { CampSystem, saveAscent, type AscentStats, type SavedAscent } from "../world/camps";
 import { PointerDrag } from "../input/drag";
 import type { GripRingEntry } from "./gripRing"; // T65: anillos de agarre
-import { initialRichMood, stepRichMood, type RichMoodState } from "./richMood"; // T66: ánimo del ricachón
+import {
+  collectReachRings, REACH_RING_POOL, type ReachHoldView, type ReachLimbProbe, type ReachRingEntry,
+} from "./gripRing"; // T66-FB: anillos blancos de alcance
+import { initialRichMood, richBubbleVisible, stepRichMood, type RichMoodState } from "./richMood"; // T66: ánimo del ricachón
 import { Matrix } from "@babylonjs/core/Maths/math.vector";
 import type { SherpaScene } from "../presentation/scene";
 import type { SherpaHud, HudStartChoice, HudTickState, MinimapHold } from "../presentation/hud";
@@ -165,13 +168,17 @@ export class SherpasMatch {
   private fallTuning: FallingTuning;
   private snowWarned = false;
   private fallHitCount = 0;
-  // T65 — ANILLOS DE AGARRE: las presas agarradas pintan la fatiga de su extremidad
-  // T66 — ÁNIMO DEL RICACHÓN (los 8 emoticonos del emotionos.zip)
+  // T65 — ANILLOS DE AGARRE: las presas agarradas por LAS MANOS pintan la
+  // fatiga de su extremidad (T66-FB: los pies ya no cansan → sin anillo).
+  // T66-FB — ANILLOS DE ALCANCE: presas cercanas con fino círculo blanco.
   private richMood: RichMoodState = initialRichMood();
   private richImpactUntil = 0; // sorpresa: "¿qué ha sido eso?" (golpes, batacazos)
   private richSummitUntil = 0; // soberbia temporal al alcanzar campamento
   private plankCenterPrev: V3 | null = null;
   private plankSpeedMs = 0;
+  private lastReachRings: ReachRingEntry[] = []; // para el snapshot de red (rr)
+  private holdsView: ReachHoldView[] = []; // cache de presas para sondear alcance
+  private holdsViewAt = -1; // refresco temporizado (la pared crece al subir)
 
   constructor(deps: SherpasMatchDeps) {
     this.d = deps;
@@ -1693,18 +1700,46 @@ export class SherpasMatch {
       s.syncPlank(this.plankState.center, this.plankState.angle + this.plankState.angleShake, this.plankLenM);
     }
     s.syncRichMan(this.rich, this.alpha);
-    // T65 — ANILLOS DE AGARRE: cada presa ocupada muestra la fatiga de su
-    // extremidad (verde→ámbar→rojo; la escena fusiona por presa el peor caso).
+    // T65/T66-FB — ANILLOS DE AGARRE: SOLO LAS MANOS pintan la fatiga de su
+    // presa (verde→ámbar→rojo; la escena fusiona por presa el peor caso). Los
+    // pies ya no cansan por estancamiento → nada que pintar en ellos.
+    // Y ALCANCE: las presas libres dentro del alcance real de cualquier
+    // extremidad llevan un fino círculo blanco (alpha por distancia).
     const gripEntries: GripRingEntry[] = [];
+    const limbProbes: ReachLimbProbe[] = [];
+    for (const p of [0, 1] as const) {
+      const rig = this.sherpas[p];
+      for (const l of ["hand_l", "hand_r"] as const) {
+        const st = rig.states.get(l)!;
+        if (st.anchored && st.holdId) gripEntries.push({ holdId: st.holdId, fatigue: st.fatigue });
+      }
+      for (const l of LIMBS) {
+        const rp = rig.reachProbe(l);
+        limbProbes.push({ ax: rp.a.x, ay: rp.a.y, az: rp.a.z, bx: rp.b.x, by: rp.b.y, bz: rp.b.z, reachM: rp.reachM });
+      }
+    }
+    // cache de presas para el sondeo (la pared crece al subir: refresco 1 s)
+    const nowMs = performance.now();
+    if (this.holdsViewAt < 0 || nowMs - this.holdsViewAt > 1000) {
+      this.holdsView = this.gen.allGeneratedHolds().map((h) => ({ id: h.id, x: h.pos.x, y: h.pos.y, z: h.pos.z }));
+      this.holdsViewAt = nowMs;
+    }
+    // presas OCUPADAS fuera (las agarradas por manos ya tienen su anillo de
+    // fatiga; las de pies no se marcan: están en uso)
+    const occupied = new Set<string>();
     for (const p of [0, 1] as const) {
       for (const l of LIMBS) {
         const st = this.sherpas[p].states.get(l)!;
-        if (st.anchored && st.holdId) gripEntries.push({ holdId: st.holdId, fatigue: st.fatigue });
+        if (st.anchored && st.holdId) occupied.add(st.holdId);
       }
     }
-    s.syncGripRings(gripEntries);
-    // T66 — ÁNIMO del ricachón (billboard delante de la cara)
-    s.setRichMood(this.richMood.mood);
+    const freeHolds = occupied.size > 0 ? this.holdsView.filter((h) => !occupied.has(h.id)) : this.holdsView;
+    const reachRings = collectReachRings(freeHolds, limbProbes);
+    this.lastReachRings = reachRings; // el snapshot de red lleva rr (el guest replica)
+    s.syncGripRings(gripEntries, reachRings);
+    // T66 — ÁNIMO del ricachón: la escena SOLO muestra el bocadillo mientras
+    // "habla" (ventana say tras cada cambio de ánimo; el pin de E2E manda).
+    s.setRichMood(this.richMood.mood, false, richBubbleVisible(this.richMood));
     const t0 = this.trash[0];
     s.syncTrash(t0 && t0.alive ? t0.pos : null, this.simTime * 6);
     s.syncUrine(this.urine ? this.urine.particles.map((p) => ({ pos: p.pos, life: p.life })) : null);
@@ -1858,7 +1893,14 @@ export class SherpasMatch {
         na: flat(pk.nodesA),
         nb: flat(pk.nodesB),
       } : null,
-      rich: { b: rb, g: this.rich.gesture, seated: this.rich.seated, m: this.richMood.mood }, // T66: ánimo
+      // T66: ánimo (`m`) y ventana de habla (`s`, bocadillo solo cuando habla)
+      rich: {
+        b: rb, g: this.rich.gesture, seated: this.rich.seated, m: this.richMood.mood,
+        s: Math.round(this.richMood.say * 10) / 10,
+      },
+      // T66-FB: anillos de alcance (presas cercanas con círculo blanco) — el
+      // guest replica EXACTAMENTE lo que ve el host sin repetir la física.
+      rr: this.lastReachRings.slice(0, REACH_RING_POOL).map((r) => ({ i: r.id, d: Math.round(r.d01 * 100) / 100 })),
       boxes: this.boxes ? { count: this.boxes.count, side: this.boxes.side } : null,
       drone: this.drone ? (() => {
         const rp = this.drone.renderPos();

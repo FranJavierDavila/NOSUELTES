@@ -31,8 +31,9 @@ import { ColorCurves } from "@babylonjs/core/Materials/colorCurves"; // T63: sat
 import { FxaaPostProcess } from "@babylonjs/core/PostProcesses/fxaaPostProcess"; // GRÁFICOS: antialiasing
 import { clampDpr, hardwareScaleFor } from "./renderQuality"; // T58-A: calidad de render (DPR)
 import { emoteOffset, stepEmote, startEmote, type EmoteSlot } from "../gameplay/emotes"; // T58-D: animaciones puntuales
-import { gripRingColor, gripRingPulses, mergeGripRings, type GripRingEntry } from "../gameplay/gripRing"; // T65: anillos de agarre
-import { isRichMood, type RichMood } from "../gameplay/richMood"; // T66: ánimo del ricachón
+import { gripRingColor, gripRingPulses, mergeGripRings, reachRingAlpha, REACH_RING_POOL, type GripRingEntry, type ReachRingEntry } from "../gameplay/gripRing"; // T65/T66-FB: anillos
+import { isRichMood, RICH_BUBBLE_SPEAK_S, type RichMood } from "../gameplay/richMood"; // T66: ánimo del ricachón
+import { composeEmoteBubble, flipRowsRGBA } from "../gameplay/emoteBubble"; // T66-FB: bocadillo de cómic
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import type { Material } from "@babylonjs/core/Materials/material"; // T61: PBR|Standard en huesos
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial"; // T44: pared PBR detallada
@@ -205,13 +206,15 @@ export class SherpaScene {
   private sunRel = new Vector3(3.5, 9, -6.5);
   private holdMeshes = new Map<string, Mesh>();
   private holdMasters = new Map<string, Mesh>();
-  // T65 — ANILLOS sobre los agarres: un anillo VERDE sutil por presa (se ve
-  // dónde se puede agarrar) + anillos de FATIGA para las presas agarradas
-  // (verde→naranja→rojo con la fatiga de su extremidad, gripRing.ts).
-  private gripRingMaster: Mesh | null = null;
-  private holdRings = new Map<string, InstancedMesh>();
+  // T65/T66-FB — anillos sobre las presas: la presa AGARRADA POR LAS MANOS
+  // lleva un anillo de FATIGA (verde→naranja→rojo con la fatiga de su
+  // extremidad, pool de meshes con material propio, máx. 8); las presas
+  // ALCANZABLES libres llevan un FINO CÍRCULO BLANCO estático con alpha por
+  // distancia (pool propio). El resto de la pared NO se marca.
   private gripFatigue = new Map<string, { mesh: Mesh; mat: StandardMaterial; f: number }>();
   private gripFatigueSpare: { mesh: Mesh; mat: StandardMaterial }[] = [];
+  private reachRingPool: { mesh: Mesh; mat: StandardMaterial }[] = [];
+  private reachRingUsed = 0;
   private rigVisuals: (RigVisual | null)[] = [null, null];
   // T49 — MODELO GLB DE LOS ESCALADORES: la física POSEA el esqueleto Mixamo
   // (climberPoseMath + skinnedClimber). La carga es ASÍNCRONA y arranca con el
@@ -241,6 +244,9 @@ export class SherpaScene {
   private richEmoteTexReady = new Map<string, boolean>();
   private richEmoteMood: RichMood | null = null;
   private richEmoteShownAt = 0;
+  /** T66-FB: ventana de "habla" — el bocadillo SOLO se ve hasta este instante
+   *  (keep-alive mientras la simulación diga say > 0; el pin de E2E lo ignora). */
+  private richEmoteSpeakUntil = 0;
   /** T66: ánimo FIJADO por depuración/E2E — manda sobre el de la simulación
    *  (el match llama setRichMood cada frame; el pin evita el pisado). */
   private richMoodPin: RichMood | null = null;
@@ -2345,7 +2351,7 @@ export class SherpaScene {
       }
       const inst = master.createInstance(`hold_${h.id}`);
       inst.position.set(h.pos.x, h.pos.y, h.pos.z);
-      inst.metadata = { holdType: h.type }; // T61: para los swaps nevados
+      inst.metadata = { holdType: h.type, holdRadius: h.radius }; // T61 swaps + T66-FB anillos
       // PRESAS PROFUNDAS (T41, petición del jugador: "hacer los puntos de
       // agarre más profundos"): el knob se ESTIRA en z hasta morder la pared —
       // la presa se ve encajada en la roca, no flotando pegada a ella.
@@ -2355,42 +2361,46 @@ export class SherpaScene {
       // LOSA SUELTA: vuelco determinista (parece a punto de ceder)
       if (rec.tilt[0] !== 0 || rec.tilt[1] !== 0) inst.rotation.set(rec.tilt[0], 0, rec.tilt[1]);
       this.holdMeshes.set(h.id, inst as unknown as Mesh);
-      // T65 — ANILLO INDICADOR: verde sutil sobre CADA presa ("un indicador a
-      // modo de círculo verde sobre los agarres para que se aprecien un poco
-      // mejor"). Un solo master + instancias (1 draw call batched); cuando la
-      // presa se agarra, syncGripRings lo sustituye por el anillo de fatiga.
-      if (!this.gripRingMaster) this.gripRingMaster = this.buildGripRingMaster();
-      const ring = this.gripRingMaster.createInstance(`gripRing_${h.id}`);
-      ring.position.set(h.pos.x, h.pos.y, h.pos.z - 0.018); // un pelo delante de la presa
-      ring.scaling.setAll(Math.min(0.62, Math.max(0.28, h.radius * 2.5)));
-      ring.isPickable = false;
-      this.holdRings.set(h.id, ring);
+      // T66-FB — SIN anillo estático por presa: ver TODOS los círculos resultaba
+      // molesto ("los círculos de los agarres deben ser más sutiles, no se deben
+      // ver tanto; verlos todos resulta muy molesto"). Ahora la escena pinta en
+      // cada frame SOLO las presas alcanzables (fino círculo blanco, pool) y
+      // las agarradas por las manos (anillo de fatiga): syncGripRings.
     }
   }
 
-  /** T65 — MASTER del anillo de agarre: toro fino autoiluminado (se ve sobre
-   *  roca, nieve y sombra). El color lo pinta cada instancia… compartiendo
-   *  material mientras está en reposo (verde); las agarradas usan su anillo. */
-  private buildGripRingMaster(): Mesh {
-    const m = MeshBuilder.CreateTorus("gripRingMaster", { diameter: 1, thickness: 0.085, tessellation: 20 }, this.scene);
-    const mm = mat(this.scene, "gripRingM", "#3fd15e");
-    const [r, g, b] = gripRingColor(0);
-    mm.emissiveColor = new Color3(r, g, b);
-    mm.disableLighting = true;
-    mm.alpha = 0.9; // sutil: indica sin tapar la presa
-    m.material = mm;
-    m.rotation.x = Math.PI / 2; // el toro nace tumbado: de pie encarando la cámara
-    m.isVisible = false; // solo las instancias se ven (patrón de los masters)
-    m.isPickable = false;
-    return m;
+  /** T66-FB — Crea (si hace falta) el anillo i-ésimo del POOL de alcance:
+   *  toro FINO blanco autoiluminado (se ve sobre roca, nieve y sombra) con
+   *  material PROPIO por instancia (la transparencia depende de la distancia). */
+  private ensureReachRing(i: number): { mesh: Mesh; mat: StandardMaterial } {
+    let e = this.reachRingPool[i];
+    if (!e) {
+      const mesh = MeshBuilder.CreateTorus(`reachRing_${i}`, { diameter: 1, thickness: 0.038, tessellation: 24 }, this.scene);
+      const mm = mat(this.scene, `reachRingM_${i}`, "#ffffff");
+      mm.emissiveColor = new Color3(1, 1, 1);
+      mm.disableLighting = true;
+      mm.alpha = 0.35; // nominal: se SOBREESCRIBE cada frame con reachRingAlpha(d01)
+      mesh.material = mm;
+      mesh.rotation.x = Math.PI / 2; // el toro nace tumbado: de pie encarando la cámara
+      mesh.isPickable = false;
+      mesh.isVisible = false;
+      e = { mesh, mat: mm };
+      this.reachRingPool[i] = e;
+    }
+    return e;
   }
 
-  /** T65 — ANILLOS DE FATIGA sobre las presas agarradas: cada entrada es una
-   *  extremidad viva en una presa con SU fatiga (merge por presa = peor caso).
-   *  El anillo estático de esa presa cede su sitio; al soltar, vuelve. El
-   *  color es la rampa gripRingColor (verde→ámbar→rojo→rojo hondo) y desde el
-   *  umbral crítico el anillo LATE (aviso físico antes del despegue). */
-  syncGripRings(entries: readonly GripRingEntry[]): void {
+  /** T65 — anillo de FATIGA sobre las presas agarradas POR LAS MANOS: cada
+   *  entrada es una mano viva en una presa con SU fatiga (merge por presa =
+   *  peor caso). El color es la rampa gripRingColor (verde→ámbar→rojo→rojo
+   *  hondo) y desde el umbral crítico el anillo LATE (aviso físico antes del
+   *  despegue). El recorrido es COMPLETO: el suelte vive en tuning
+   *  (limb.fatigueReleaseAt = 1.0), el anillo siempre llega al rojo.
+   *  T66-FB — y ALCANCE: `reach` son las presas libres alcanzables (ya capadas
+   *  y ordenadas de cerca a lejos por el match): fino círculo BLANCO estático
+   *  con transparencia por distancia; el resto de la pared no se marca y estos
+   *  círculos NUNCA cambian de color (el estado lo cuenta el anillo de fatiga). */
+  syncGripRings(entries: readonly GripRingEntry[], reach: readonly ReachRingEntry[] = []): void {
     const want = new Map(mergeGripRings(entries).map((e) => [e.holdId, e.fatigue]));
     // 1. liberar los anillos de fatiga cuyas presas ya no están agarradas
     for (const id of [...this.gripFatigue.keys()]) {
@@ -2399,21 +2409,19 @@ export class SherpaScene {
       g.mesh.isVisible = false;
       this.gripFatigueSpare.push({ mesh: g.mesh, mat: g.mat });
       this.gripFatigue.delete(id);
-      const inst = this.holdRings.get(id);
-      if (inst) inst.isVisible = true; // el estático vuelve a su sitio
     }
     // 2. colocar/actualizar los activos
     const now = performance.now();
     for (const [id, f] of want) {
-      const inst = this.holdRings.get(id);
-      if (!inst) continue; // presa desconocida (snapshot truncado): nada que pintar
+      const hold = this.holdMeshes.get(id);
+      if (!hold) continue; // presa desconocida (snapshot truncado): nada que pintar
       let g = this.gripFatigue.get(id);
       if (!g) {
         const spare = this.gripFatigueSpare.pop();
         if (spare) {
           g = { mesh: spare.mesh, mat: spare.mat, f };
         } else {
-          const mesh = MeshBuilder.CreateTorus(`gripFatigue_${id}`, { diameter: 1, thickness: 0.095, tessellation: 20 }, this.scene);
+          const mesh = MeshBuilder.CreateTorus(`gripFatigue_${id}`, { diameter: 1, thickness: 0.062, tessellation: 20 }, this.scene);
           const fmat = mat(this.scene, `gripFatigueM_${id}`, "#3fd15e");
           fmat.disableLighting = true;
           fmat.alpha = 0.95;
@@ -2424,22 +2432,54 @@ export class SherpaScene {
           g = { mesh, mat: fmat, f };
         }
         this.gripFatigue.set(id, g);
-        inst.isVisible = false; // el estático cede su sitio
       }
       g.f = f;
       const [r, gg, b] = gripRingColor(f);
       g.mat.emissiveColor.set(r, gg, b);
-      const hold = this.holdMeshes.get(id);
-      if (hold) g.mesh.position.set(hold.position.x, hold.position.y, hold.position.z - 0.028);
+      g.mesh.position.set(hold.position.x, hold.position.y, hold.position.z - 0.028);
       const pulse = gripRingPulses(f) ? 1 + Math.sin(now / 160) * 0.14 : 1;
-      g.mesh.scaling.setAll(Math.max(0.05, inst.scaling.x) * pulse * 1.06);
+      g.mesh.scaling.setAll(this.holdRingScale(hold) * pulse * 1.06);
       g.mesh.isVisible = true;
     }
+    // 3. anillos de ALCANCE: pool capado (sobran los más lejanos — la lista
+    // llega ordenada de cerca a lejos), alpha por distancia, color fijo blanco
+    const cap = Math.min(REACH_RING_POOL, reach.length);
+    for (let i = 0; i < cap; i++) {
+      const e = reach[i]!;
+      const hold = this.holdMeshes.get(e.id);
+      if (!hold) {
+        // presa desconocida (snapshot truncado): apaga el slot, no dejes rastro
+        const stale = this.reachRingPool[i];
+        if (stale) stale.mesh.isVisible = false;
+        continue;
+      }
+      const ring = this.ensureReachRing(i);
+      ring.mat.alpha = reachRingAlpha(e.d01);
+      ring.mesh.position.set(hold.position.x, hold.position.y, hold.position.z - 0.022);
+      ring.mesh.scaling.setAll(this.holdRingScale(hold));
+      ring.mesh.isVisible = true;
+    }
+    for (let i = cap; i < this.reachRingPool.length; i++) {
+      this.reachRingPool[i]!.mesh.isVisible = false;
+    }
+    this.reachRingUsed = cap;
   }
 
-  /** T65 SONDA E2E: nº de anillos estáticos + anillos de fatiga activos con
-   *  su fatiga y color aplicado (hex) — "la rampa se VE en el mundo". */
-  gripRingsDebug(): { static: number; active: { holdId: string; f: number; hex: string }[] } {
+  /** Tamaño del anillo para una presa (radio de presa → diámetro del anillo):
+   *  la MISMA receta de T65 (radio × 2,5, acotado 0,28-0,62) leída del
+   *  metadata que addHolds clava en cada instancia. */
+  private holdRingScale(hold: Mesh): number {
+    const r = (hold.metadata as { holdRadius?: number } | null)?.holdRadius ?? 0.14;
+    return Math.min(0.62, Math.max(0.28, r * 2.5));
+  }
+
+  /** T66-FB SONDA E2E: anillos de alcance visibles (con alpha) + anillos de
+   *  fatiga activos con su fatiga y color aplicado (hex). */
+  gripRingsDebug(): {
+    reach: number;
+    reachAlpha: number[];
+    active: { holdId: string; f: number; hex: string }[];
+  } {
     const hex = (c: Color3): string =>
       "#" + [c.r, c.g, c.b].map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, "0")).join("");
     const active = [...this.gripFatigue.entries()].map(([holdId, g]) => ({
@@ -2447,7 +2487,12 @@ export class SherpaScene {
       f: Math.round(g.f * 1000) / 1000,
       hex: hex(g.mat.emissiveColor),
     }));
-    return { static: this.holdRings.size, active };
+    const reachAlpha: number[] = [];
+    for (let i = 0; i < this.reachRingUsed; i++) {
+      const e = this.reachRingPool[i];
+      if (e && e.mesh.isVisible) reachAlpha.push(Math.round(e.mat.alpha * 1000) / 1000);
+    }
+    return { reach: reachAlpha.length, reachAlpha, active };
   }
 
   /** T63 — MASTER de presa desde la receta (esferas/cajas fusionadas con
@@ -3125,14 +3170,18 @@ export class SherpaScene {
 
   /** Fija el ánimo a mostrar (los 8 de emotionos.zip; null/nulo = oculto).
    *  `pin=true` (depuración/E2E): CONGELA ese ánimo por encima del que la
-   *  simulación empuja cada frame; un pin inválido no toca nada. Carga LAZY
-   *  de su PNG y reinicia el pop de aparición. */
-  setRichMood(mood: string | null, pin = false): void {
+   *  simulación empuja cada frame y mantiene el bocadillo SIEMPRE visible; un
+   *  pin inválido no toca nada. `speak=true` (simulación): mantiene viva la
+   *  ventana de "habla" — fuera de ella el bocadillo NO se ve (T66-FB: solo
+   *  cuando el Ricachón habla). Carga LAZY de su PNG y reinicia el pop. */
+  setRichMood(mood: string | null, pin = false, speak = false): void {
     if (pin) {
       if (!isRichMood(mood)) return; // ánimo desconocido: ignora, no rompe la cara
       this.richMoodPin = mood;
     }
     const m = this.richMoodPin ?? (isRichMood(mood) ? mood : null);
+    const nowMs = performance.now();
+    if (speak) this.richEmoteSpeakUntil = Math.max(this.richEmoteSpeakUntil, nowMs + 300); // keep-alive
     if (m === this.richEmoteMood) return;
     this.richEmoteMood = m;
     if (!m) return;
@@ -3142,7 +3191,7 @@ export class SherpaScene {
     if (!tex) return;
     this.richEmoteMat.emissiveTexture = tex;
     this.richEmoteMat.opacityTexture = tex; // el alpha del PNG recorta el círculo
-    this.richEmoteShownAt = performance.now();
+    this.richEmoteShownAt = nowMs;
   }
 
   /** Carga LAZY del PNG del ánimo. LECCIÓN T66 (doble): la Texture por URL no
@@ -3168,7 +3217,13 @@ export class SherpaScene {
       if (!ctx) return;
       ctx.drawImage(img, 0, 0);
       const data = new Uint8Array(ctx.getImageData(0, 0, S, S).data); // RGBA crudo
-      const rt = RawTexture.CreateRGBATexture(data, S, S, this.scene);
+      // T66-FB — BOCADILLO DE CÓMIC: el dibujo se compone DENTRO de un globo
+      // blanco con contorno y cola (composeEmoteBubble) y el buffer se VOLTEA
+      // (flipRowsRGBA): WebGL sube la fila 0 como la de ABAJO y sin voltear la
+      // cara salía patas arriba (la lección de esta ronda de feedback).
+      const composed = composeEmoteBubble(data, S);
+      const flipped = flipRowsRGBA(composed, S, S);
+      const rt = RawTexture.CreateRGBATexture(flipped, S, S, this.scene);
       rt.wrapU = Texture.CLAMP_ADDRESSMODE;
       rt.wrapV = Texture.CLAMP_ADDRESSMODE;
       rt.updateSamplingMode(Texture.BILINEAR_SAMPLINGMODE);
@@ -3183,7 +3238,8 @@ export class SherpaScene {
     };
     img.onerror = () => {
       if (this.disposed) return;
-      // sin PNG: círculo plano ámbar (nunca romper la cara)
+      // sin PNG: globo plano ámbar con cola (nunca romper la cara) — también
+      // volteado, la misma receta
       const S = 64;
       const data = new Uint8Array(S * S * 4);
       for (let y = 0; y < S; y++) {
@@ -3193,7 +3249,8 @@ export class SherpaScene {
           data[i] = 242; data[i + 1] = 193; data[i + 2] = 78; data[i + 3] = inside ? 255 : 0;
         }
       }
-      const rt = RawTexture.CreateRGBATexture(data, S, S, this.scene);
+      const flipped = flipRowsRGBA(data, S, S);
+      const rt = RawTexture.CreateRGBATexture(flipped, S, S, this.scene);
       this.richEmoteTex.set(m, rt);
       this.richEmoteTexReady.set(m, true);
       if (this.richEmoteMood === m && this.richEmoteMat) {
@@ -3204,11 +3261,12 @@ export class SherpaScene {
     return null; // la textura llega ASÍNCRONA (el pop se reinicia al llegar)
   }
 
-  /** Plano-billboard delante de la cara: "anclarlos a la cara pero
-   *  ligeramente separados para que no interfieran con la geometría ni con
-   *  la animación" — flota SIEMPRE de cara a cámara, un palmo por delante. */
+  /** Plano-billboard del BOCADILLO (T66-FB): "colocar no encima de la cara
+   *  sino como un globo ligeramente arriba hacia un lado, como el típico
+   *  bocadillo de los comics" — el OFFSET lo pone syncRichMan (relativo a
+   *  cámara); aquí solo nace el plano, siempre de cara a cámara. */
   private buildRichEmote(): void {
-    const plane = MeshBuilder.CreatePlane("richEmote", { size: 0.42 }, this.scene);
+    const plane = MeshBuilder.CreatePlane("richEmote", { size: 0.52 }, this.scene);
     const emm = mat(this.scene, "richEmoteM", "#ffffff");
     emm.disableLighting = true; // autoiluminado: se lee a contraluz y de noche
     // LECCIÓN T66 (el shader SUMA): emissiveColor = vEmissiveColor + tex.rgb →
@@ -3228,14 +3286,20 @@ export class SherpaScene {
   }
 
   /** T66 SONDA E2E: ánimo mostrado + visibilidad + textura DIBUJADA (el PNG a
-   *  4 fps tarda varios frames en decodificar: sin esto la cara sale blanca). */
-  richMoodDebug(): { mood: string | null; visible: boolean; texReady: boolean; loaded: number } {
+   *  4 fps tarda varios frames en decodificar: sin esto la cara sale blanca).
+   *  T66-FB: `pinned` y `speaking` para verificar el "SOLO cuando habla". */
+  richMoodDebug(): {
+    mood: string | null; visible: boolean; texReady: boolean; loaded: number;
+    pinned: boolean; speaking: boolean;
+  } {
     const ready = this.richEmoteMood ? (this.richEmoteTexReady.get(this.richEmoteMood) ?? false) : false;
     return {
       mood: this.richEmoteMood,
       visible: !!this.richEmote && this.richEmote.isEnabled() && this.richEmote.isVisible && !!this.richEmoteMat?.emissiveTexture,
       texReady: ready,
       loaded: this.richEmoteTex.size,
+      pinned: this.richMoodPin !== null,
+      speaking: performance.now() < this.richEmoteSpeakUntil,
     };
   }
 
@@ -3284,22 +3348,47 @@ export class SherpaScene {
     vis.brim.position.set(headP.x, headP.y + (sleeping ? brimY * 0.5 : brimY), headP.z + (sleeping ? -0.125 : 0));
     vis.glasses.position.set(headP.x, headP.y + glassesY, headP.z + glassesZ);
     vis.glasses.setEnabled(!sleeping); // a dormir, gafas fuera
-    // T66 — EMOTICONO-MÁSCARA: delante de la cara (MÁS adelante que las gafas:
-    // nada interseca con la cabeza del modelo, el sombrero ni la animación).
-    // Pop de aparición (easeOutBack) + bob suave: se siente vivo, no pegado.
+    // T66-FB — BOCADILLO DE CÓMIC: NO encima de la cara, sino como un globo
+    // LIGERAMENTE ARRIBA HACIA UN LADO (offset derecho-arriba relativo a
+    // cámara: gire la cámara como gire, el globo sigue viéndose arriba a la
+    // derecha de la cabeza — la cola del bocadillo apunta abajo-izquierda, a
+    // la cara). Y SOLO cuando el Ricachón habla: sin ventana de habla activa
+    // (ni pin de depuración) el plano NO se ve.
     if (this.richEmote && this.richEmoteMat) {
-      const emoteOn = !!this.richEmoteMood && !!this.richEmoteMat.emissiveTexture;
+      const nowE = performance.now();
+      const pinned = this.richMoodPin !== null;
+      const emoteOn =
+        !!this.richEmoteMood && !!this.richEmoteMat.emissiveTexture &&
+        (pinned || nowE < this.richEmoteSpeakUntil);
       // OJO: `enabled` NO basta — el plano nace isVisible=false (el render lo
       // excluye igualmente). La visibilidad del billboard manda aquí.
       this.richEmote.setEnabled(emoteOn);
       this.richEmote.isVisible = emoteOn;
       if (emoteOn) {
-        const gordoE = this.richPuppet ? 1 : 0;
-        const nowE = performance.now();
+        const cam = this.scene.activeCamera;
+        // base de cámara (BABYLON LEFT-HANDED): right = up-mundo × f (f = hacia
+        // la cabeza) y up = f × right — el ORDEN importa: con R × f el "up"
+        // salía invertido y el bocadillo colgaba POR DEBAJO de la cabeza.
+        let rx = 1, ry = 0, rz = 0, ux = 0, uy = 1, uz = 0;
+        let fx = 0, fy = 0, fz = -1;
+        if (cam) {
+          fx = headP.x - cam.position.x; fy = headP.y - cam.position.y; fz = headP.z - cam.position.z;
+          const fl = Math.hypot(fx, fy, fz) || 1;
+          fx /= fl; fy /= fl; fz /= fl;
+          // right = up(0,1,0) × f
+          rx = fz; ry = 0; rz = -fx;
+          const rl = Math.hypot(rx, ry, rz) || 1;
+          rx /= rl; ry /= rl; rz /= rl;
+          // up = f × right (left-handed: así queda "arriba en pantalla")
+          ux = fy * rz - fz * ry; uy = fz * rx - fx * rz; uz = fx * ry - fy * rx;
+        }
+        const SIDE = 0.38;   // hacia un lado (derecha en pantalla)
+        const UP = 0.52;     // ligeramente arriba
+        const FWD = 0.1;     // un palmo hacia la cámara: nada interseca con la cabeza
         this.richEmote.position.set(
-          headP.x,
-          headP.y + (gordoE ? 0.085 : 0.06) + Math.sin(nowE / 420) * 0.007,
-          headP.z + (gordoE ? -0.315 : -0.215),
+          headP.x + rx * SIDE + ux * UP - fx * FWD,
+          headP.y + ry * SIDE + uy * UP - fy * FWD + Math.sin(nowE / 460) * 0.006,
+          headP.z + rz * SIDE + uz * UP - fz * FWD,
         );
         const pop = Math.min(1, (nowE - this.richEmoteShownAt) / 300);
         const c1 = 1.70158;
@@ -4312,13 +4401,14 @@ export class SherpaScene {
       if (this.puppet[p]) { this.puppet[p]!.dispose(); this.puppet[p] = null; }
     }
     if (this.richPuppet) { this.richPuppet.dispose(); this.richPuppet = null; } // T62
-    // T65: anillos de agarre (las instancias mueren con su master)
-    if (this.gripRingMaster) { this.gripRingMaster.dispose(); this.gripRingMaster = null; }
-    this.holdRings.clear();
+    // T65/T66-FB: anillos de agarre (pool de fatiga + pool de alcance)
     for (const g of this.gripFatigue.values()) g.mesh.dispose();
     this.gripFatigue.clear();
     for (const s of this.gripFatigueSpare) s.mesh.dispose();
     this.gripFatigueSpare.length = 0;
+    for (const r of this.reachRingPool) r.mesh.dispose();
+    this.reachRingPool.length = 0;
+    this.reachRingUsed = 0;
     // T66: emoticono (texturas compartidas mueren con la escena)
     if (this.richEmote) { this.richEmote.dispose(); this.richEmote = null; }
     if (this.richEmoteMat) { this.richEmoteMat.dispose(); this.richEmoteMat = null; }

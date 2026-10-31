@@ -235,18 +235,22 @@ export class GuestRunner {
       b.prev.x = prev.rich.b[i * 3]!; b.prev.y = prev.rich.b[i * 3 + 1]!; b.prev.z = prev.rich.b[i * 3 + 2]!;
     }
     this.richView.gesture = cur.rich.g;
-    // T66: el guest ve la MISMA cara del ricachón (ánimo viaja en el snapshot)
-    s.setRichMood(cur.rich.m ?? null);
+    // T66: el guest ve la MISMA cara del ricachón (ánimo + ventana de habla
+    // viajan en el snapshot: bocadillo visible SOLO mientras rich.s > 0)
+    s.setRichMood(cur.rich.m ?? null, false, (cur.rich.s ?? 0) > 0);
     s.syncRichMan(this.richView, 1);
-    // T65: anillos de agarre del guest — las presas ocupadas del snapshot
-    // pintan la fatiga de su extremidad (mismo rampa que el host).
+    // T65: anillos de agarre del guest — las presas ocupadas por LAS MANOS del
+    // snapshot pintan la fatiga de su extremidad (mismo rampa que el host). El
+    // orden de `limbs` es LIMBS (hand_l, hand_r, foot_l, foot_r): índices 0-1.
     const rings: { holdId: string; fatigue: number }[] = [];
     for (const sh of [cur.a, cur.b]) {
-      for (const l of sh.limbs) {
-        if (l.a && l.h) rings.push({ holdId: l.h, fatigue: l.f });
-      }
+      sh.limbs.forEach((l, li) => {
+        if (li <= 1 && l.a && l.h) rings.push({ holdId: l.h, fatigue: l.f });
+      });
     }
-    s.syncGripRings(rings);
+    // T66-FB: anillos de alcance — el host ya sondeó la pared con su física;
+    // el guest pinta EXACTAMENTE la misma lista de presas cercanas.
+    s.syncGripRings(rings, (cur.rr ?? []).map((r) => ({ id: r.i, d01: r.d })));
 
     // ---- tabla + cuerdas + cajas + dron + pájaros + basura ----
     if (cur.plank && prev.plank) {

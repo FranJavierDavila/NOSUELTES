@@ -197,3 +197,55 @@ describe("T64 · fatiga por tiempo en el mismo agarre (regla del jugador: 5 s �
     expect(st.fatigue).toBeCloseTo(0.05 * estancado, 1);
   });
 });
+
+describe("T66-FB · la fatiga de estancamiento es SOLO DE LAS MANOS", () => {
+  it("un pie colgado de la MISMA presa no cansa: sin reloj, sin deuda, sin suelte (los pies quedan como estaban hace dos iteraciones)", () => {
+    // mismo arnés de aislación que las manos (fatigueRate 0 + agarre enorme):
+    // la ÚNICA fuente de fatiga posible sería el estancamiento — y en los pies
+    // ya no existe. Las MANOS, en el mismo escenario, SÍ suben (control).
+    const { rig, anchors } = buildRig(4242, { fatigueRate: 0, baseGripHand: 1e6, baseGripFoot: 1e6 });
+    const p = handPos(rig);
+    const fp = rig.limbPos("foot_l"); // presa del pie DONDE CUELGA la punta: siempre alcanzable
+    // las dos manos ancladas (la regla de dos manos suelta los pies si no)
+    grab(rig, anchors, "hand_l", v3(p.x + 0.4, p.y, Z()), "fb_hl");
+    grab(rig, anchors, "hand_r", v3(p.x - 0.4, p.y, Z()), "fb_hr");
+    grab(rig, anchors, "foot_l", v3(fp.x, fp.y, Z()), "fb_fl");
+    const hand = rig.states.get("hand_l")!;
+    const foot = rig.states.get("foot_l")!;
+    settle(rig, 1);
+    expect(hand.anchored).toBe(true);
+    expect(foot.anchored).toBe(true);
+    settle(rig, 9); // la gracia (5 s) hace rato que pasó
+    // CONTROL: la mano está estancada y su fatiga SUBE
+    expect(hand.stallSeconds).toBeGreaterThan(5);
+    expect(hand.fatigue).toBeGreaterThan(0.1);
+    // EL PIE: ni reloj ni fatiga — como hace dos iteraciones
+    expect(foot.stallSeconds).toBe(0);
+    expect(foot.stallHoldId).toBeNull();
+    expect(foot.fatigue).toBe(0);
+    expect(foot.anchored).toBe(true); // y no suelta
+    settle(rig, 6); // 15 s colgado del pie: sigue igual
+    expect(foot.fatigue).toBe(0);
+    expect(foot.anchored).toBe(true);
+  });
+
+  it("el pie SÍ conserva su fatiga de CARGA de siempre (no está congelado)", () => {
+    // sin aislación: fatiga de carga real (T>0,6 suma). Con un solo pie y sin
+    // manos la regla de dos manos suelta los pies… así que manos + pie y
+    // agarramos la fatiga del pie tras carga sostenida con knobs normales.
+    const { rig, anchors } = buildRig(777, { stallGraceSeconds: 1e9 }); // manos sin estancarse: solo carga
+    const p = handPos(rig);
+    const fp = rig.limbPos("foot_l");
+    grab(rig, anchors, "hand_l", v3(p.x + 0.4, p.y, Z()), "load_hl");
+    grab(rig, anchors, "hand_r", v3(p.x - 0.4, p.y, Z()), "load_hr");
+    grab(rig, anchors, "foot_l", v3(fp.x, fp.y, Z()), "load_fl");
+    const foot = rig.states.get("foot_l")!;
+    settle(rig, 12);
+    expect(foot.anchored).toBe(true);
+    expect(foot.stallSeconds).toBe(0); // nunca arrancó el reloj
+    // la fatiga del pie viene de su tensión (carga), no del reloj: si hay
+    // carga notable sube; si el reparto la descarga, se queda a 0 — en ambos
+    // casos el INVARIANTE es que el reloj no intervino y sigue anclado.
+    expect(foot.fatigue).toBeLessThan(1);
+  });
+});

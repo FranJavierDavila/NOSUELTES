@@ -355,10 +355,12 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         } | null;
         return sc?.plantStatsDebug?.() ?? null;
       },
-      /** T65 ANILLOS DE AGARRE: estáticos + activos con fatiga y color (sonda E2E). */
-      gripRings: (): { static: number; active: { holdId: string; f: number; hex: string }[] } | null => {
+      /** T65/T66-FB ANILLOS: alcance visibles (nº + alphas) + fatiga activa con
+       *  color (sonda E2E). El `static` global de T65 ya no existe: la pared NO
+       *  se marca entera, solo las presas alcanzables (círculo blanco). */
+      gripRings: (): { reach: number; reachAlpha: number[]; active: { holdId: string; f: number; hex: string }[] } | null => {
         const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
-          gripRingsDebug?: () => { static: number; active: { holdId: string; f: number; hex: string }[] };
+          gripRingsDebug?: () => { reach: number; reachAlpha: number[]; active: { holdId: string; f: number; hex: string }[] };
         } | null;
         return sc?.gripRingsDebug?.() ?? null;
       },
@@ -373,11 +375,12 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         st.fatigue = Math.min(1, Math.max(0, Number.isFinite(f) ? f : 0));
         return true;
       },
-      /** T66 ÁNIMO DEL RICACHÓN: leer (sin args) o forzar (con nombre) para E2E. */
-      richMood: (m?: string): { mood: string | null; visible: boolean; loaded: number } | boolean | null => {
+      /** T66 ÁNIMO DEL RICACHÓN: leer (sin args) o forzar (con nombre) para E2E.
+       *  El pin manda sobre la simulación Y mantiene el bocadillo visible. */
+      richMood: (m?: string): { mood: string | null; visible: boolean; loaded: number; pinned: boolean; speaking: boolean } | boolean | null => {
         const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
-          setRichMood?: (m: string | null, pin?: boolean) => void;
-          richMoodDebug?: () => { mood: string | null; visible: boolean; loaded: number };
+          setRichMood?: (m: string | null, pin?: boolean, speak?: boolean) => void;
+          richMoodDebug?: () => { mood: string | null; visible: boolean; loaded: number; pinned: boolean; speaking: boolean };
         } | null;
         if (m !== undefined) {
           if (!sc?.setRichMood) return false;

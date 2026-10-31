@@ -6,17 +6,28 @@
 // completar el recorrido completo antes de soltarse".
 //
 // DOS funciones:
-//  1. VISIBILIDAD: TODA presa lleva un anillo verde sutil (se ve mejor dónde
-//     se puede agarrar). Es estático: comparte un único material.
-//  2. FATIGA: la presa AGARRADA pinta su anillo con la fatiga de la extremidad
-//     que cuelga de ella — verde (recién agarrada) → ámbar (aviso) → rojo
-//     (crítico) → rojo profundo (a punto de soltar). El recorrido es COMPLETO:
-//     el agarre solo se suelta con fatiga 1.0 (tuning limb.fatigueReleaseAt),
-//     así que el anillo siempre llega al rojo antes del despegue.
+//  1. FATIGA: la presa AGARRADA POR LAS MANOS pinta su anillo con la fatiga de
+//     la extremidad — verde (recién agarrada) → ámbar (aviso) → rojo (crítico)
+//     → rojo profundo (a punto de soltar). El recorrido es COMPLETO: el agarre
+//     solo se suelta con fatiga 1.0 (tuning limb.fatigueReleaseAt), así que el
+//     anillo siempre llega al rojo antes del despegue.
 //
-// El anillo vive en la escena (presentation/scene.ts) como instancias del
-// mismo master; el color de fatiga lo calcula AQUÍ (puro y testeable) y la
-// escena solo lo aplica al material de su pequeño grupo de anillos activos.
+// T66-FEEDBACK (petición del jugador): "los círculos de los agarres deben ser
+// más sutiles, no se deben ver tanto; verlos todos resulta muy molesto; podemos
+// mostrar solo los que estén a nuestro alcance… si los agarres son alcanzables
+// se marcan con un fino círculo blanco, el resto no se marca… estas marcas no
+// cambian: el cambio ya lo indica el propio agarre del escalador".
+//  2. ALCANCE: las presas ALCANZABLES (dentro del alcance real de una
+//     extremidad libre) llevan un FINO CÍRCULO BLANCO estático con transparencia
+//     por distancia (cerca = más presente, al borde = casi invisible). Las
+//     presas lejanas NO se marcan. El círculo blanco NUNCA cambia de color: el
+//     estado lo cuenta el anillo de fatiga sobre la presa agarrada.
+//
+// El anillo vive en la escena (presentation/scene.ts): la fatiga en un POOL
+// pequeño de meshes con material propio (máx. 8, una por presa agarrada por
+// las manos) y el alcance en otro pool de anillos blancos finos (máx. 24) con
+// alpha individual. El color/alpha lo calcula AQUÍ (puro y testeable); la
+// escena solo lo aplica.
 
 /** Fatiga (0..1) en la que el anillo pasa de verde a ÁMBAR (aviso). */
 export const GRIP_WARN_F = 0.45;
@@ -78,4 +89,70 @@ export function mergeGripRings(entries: readonly GripRingEntry[]): GripRingEntry
     if (prev === undefined || f > prev) byHold.set(e.holdId, f);
   }
   return [...byHold.entries()].map(([holdId, fatigue]) => ({ holdId, fatigue }));
+}
+
+// ---------- T66-FEEDBACK — ANILLOS DE ALCANCE (fino círculo blanco) ----------
+
+/** Tamaño del POOL de anillos de alcance en escena (sobran los que falten:
+ *  se muestran los más CERCANOS). 24 cubre de sobra lo alcanzable a la vez. */
+export const REACH_RING_POOL = 24;
+
+/** Transparencia del anillo blanco: pegado a la extremidad (d01=0) es más
+ *  presente y en el borde del alcance (d01=1) casi desaparece. Sutil SIEMPRE:
+ *  es una ayuda de proximidad, no un semáforo. */
+export const REACH_ALPHA_NEAR = 0.55;
+export const REACH_ALPHA_FAR = 0.14;
+
+/** Alpha [0..1] del anillo blanco según distancia NORMALIZADA al alcance
+ *  (0 = a la punta/raíz de la extremidad, 1 = en el borde exacto). Lineal y
+ *  clampeada: determinista, sin estado. */
+export function reachRingAlpha(d01: number): number {
+  const d = clamp01(Number.isFinite(d01) ? d01 : 1);
+  return REACH_ALPHA_NEAR + (REACH_ALPHA_FAR - REACH_ALPHA_NEAR) * d;
+}
+
+/** Una extremidad SONDEANDO la pared: dos puntos válidos (raíz de cadena y
+ *  punta actual — la misma pareja que usa canReach) y su alcance efectivo en
+ *  metros YA reducido por la fatiga (fatiguedReach). Todo plano/serializable. */
+export interface ReachLimbProbe {
+  ax: number; ay: number; az: number; // raíz de la cadena (hombro/cadera)
+  bx: number; by: number; bz: number; // punta actual de la extremidad
+  reachM: number;                     // alcance efectivo (fatigado)
+}
+
+/** Presa mínima para sondear (posición + id). El llamador ya filtra ocupadas. */
+export interface ReachHoldView {
+  id: string;
+  x: number; y: number; z: number;
+}
+
+export interface ReachRingEntry {
+  id: string;
+  /** distancia normalizada 0..1 dentro del alcance de la extremidad MÁS
+   *  cercana (goberna la transparencia). */
+  d01: number;
+}
+
+/** Presas alcanzables con su distancia normalizada (la MÍNIMA entre todas las
+ *  extremidades de ambos escaladores). Sin cap: el cap del pool lo aplica la
+ *  escena; aquí se devuelve TODO lo alcanzable ordenado de cerca a lejos. */
+export function collectReachRings(
+  holds: readonly ReachHoldView[],
+  limbs: readonly ReachLimbProbe[],
+): ReachRingEntry[] {
+  const out: ReachRingEntry[] = [];
+  for (const h of holds) {
+    if (!h || typeof h.id !== "string" || h.id.length === 0) continue;
+    let best = Infinity;
+    for (const l of limbs) {
+      if (!l || !(l.reachM > 0)) continue;
+      const dA = Math.hypot(h.x - l.ax, h.y - l.ay, h.z - l.az);
+      const dB = Math.hypot(h.x - l.bx, h.y - l.by, h.z - l.bz);
+      const d = Math.min(dA, dB);
+      if (d <= l.reachM && d / l.reachM < best) best = d / l.reachM;
+    }
+    if (best < Infinity) out.push({ id: h.id, d01: best });
+  }
+  out.sort((a, b) => a.d01 - b.d01 || (a.id < b.id ? -1 : 1)); // cerca primero (estable)
+  return out;
 }

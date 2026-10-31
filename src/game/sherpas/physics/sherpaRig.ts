@@ -127,10 +127,12 @@ export interface LimbGripState {
   target: V3 | null;
   /** segundos LLEVADOS agarrado a su presa actual (placas de hielo resbalan). */
   gripSeconds: number;
-  /** T64 FATIGA POR TIEMPO: segundos seguidos en la MISMA presa (se resetea
-   *  solo al cambiar a una presa DISTINTA; re-agarrar la misma no borra la
-   *  deuda — variar de verdad o pagar) e id de esa presa para detectar el
-   *  cambio. stallSeconds > graceSeconds → la barra sube por segundo. */
+  /** T64 FATIGA POR TIEMPO (SOLO MANOS, T66-feedback): segundos seguidos en
+   *  la MISMA presa (se resetea solo al cambiar a una presa DISTINTA; re-
+   *  agarrar la misma no borra la deuda — variar de verdad o pagar) e id de
+   *  esa presa para detectar el cambio. stallSeconds > graceSeconds → la barra
+   *  sube por segundo. Los PIES no lo usan (quedan a cero: su fatiga es la de
+   *  carga de siempre). */
   stallSeconds: number;
   stallHoldId: string | null;
 }
@@ -519,6 +521,18 @@ export class SherpaRig {
     const maxLen = this.fatiguedReach(limb);
     if (vLen(vSub(pos, this.rig.particles[CHAIN_ROOT[limb]].pos)) <= maxLen) return true;
     return vLen(vSub(pos, this.limbPt[limb])) <= maxLen;
+  }
+
+  /** T66-FEEDBACK — SONDA DE ALCANCE de una extremidad (para los anillos
+   *  blancos de las presas cercanas): los DOS puntos que usa canReach (raíz de
+   *  la cadena y punta actual) y el alcance efectivo YA reducido por fatiga.
+   *  Todo plano: el match lo convierte en ReachLimbProbe sin tocar el rig. */
+  reachProbe(limb: Limb): { a: V3; b: V3; reachM: number } {
+    return {
+      a: vClone(this.rig.particles[CHAIN_ROOT[limb]].pos),
+      b: vClone(this.limbPt[limb]),
+      reachM: this.fatiguedReach(limb),
+    };
   }
 
   /** Alcance visual máximo de la extremidad desde su raíz MIENTRAS ARRASTRA:
@@ -1108,13 +1122,21 @@ export class SherpaRig {
       } else {
         st.overloadTimer = Math.max(0, st.overloadTimer - dt * 2);
       }
-      // T64 FATIGA POR TIEMPO EN EL MISMO AGARRE: el contador corre mientras la
-      // extremidad cuelga de la MISMA presa; cambiar a una presa DISTINTA lo
+      // T64 FATIGA POR TIEMPO EN EL MISMO AGARRE — SOLO EN LAS MANOS
+      // (T66-FEEDBACK, petición literal: "cada agarre va incrementando su
+      // fatiga, pero solo en las manos; los pies no cumplen esta regla y
+      // quedan como estaban hace dos iteraciones"). El contador corre mientras
+      // la MANO cuelga de la MISMA presa; cambiar a una presa DISTINTA lo
       // resetea (re-agarrar la misma NO — no se ha variado nada, no se paga la
       // deuda con un truco). Pasada la gracia, la barra sube por segundo.
-      if (st.holdId !== st.stallHoldId) { st.stallSeconds = 0; st.stallHoldId = st.holdId; }
-      st.stallSeconds += dt;
-      const stalling = st.stallSeconds > (limbT.stallGraceSeconds ?? STALL_GRACE_SECONDS_DEFAULT);
+      // Los PIES conservan la fatiga de carga de siempre (T>0,6) y su
+      // recuperación normal: sin reloj de estancamiento ni deuda.
+      const stallable = isHand(limb);
+      if (stallable) {
+        if (st.holdId !== st.stallHoldId) { st.stallSeconds = 0; st.stallHoldId = st.holdId; }
+        st.stallSeconds += dt;
+      }
+      const stalling = stallable && st.stallSeconds > (limbT.stallGraceSeconds ?? STALL_GRACE_SECONDS_DEFAULT);
       if (T < 0.3 && !stalling) st.fatigue = Math.max(0, st.fatigue - limbT.recoverRate * dt);
       // SALIENTES (pared irregular): agarrarse a una presa adelantada (pequeño
       // techo) fatiga MÁS — proporcional a la profundidad adelantada.

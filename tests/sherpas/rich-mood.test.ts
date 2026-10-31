@@ -7,7 +7,8 @@
 import { describe, it, expect } from "vitest";
 import {
   desiredRichMood, stepRichMood, initialRichMood, isRichMood, RICH_MOODS,
-  RICH_MOOD_HOLD_S, type RichMoodCtx, type RichMoodState,
+  RICH_MOOD_HOLD_S, RICH_BUBBLE_SPEAK_S, richBubbleVisible,
+  type RichMoodCtx, type RichMoodState,
 } from "../../src/game/sherpas/gameplay/richMood";
 
 /** Contexto base: sentado tranquilo en su tabla. */
@@ -138,5 +139,63 @@ describe("stepRichMood — histéresis (la cara no parpadea)", () => {
     expect(s.mood).toBe("sorpresa");
     for (let i = 0; i < 60; i++) tick({ state: "comiendo" }); // 2 s: el susto aguanta su candado y suelta
     expect(s.mood).toBe("alegre"); // vuelve a la tranquilidad (no salta a dudoso)
+  });
+});
+
+describe("T66-FB · el bocadillo SOLO cuando el Ricachón habla (say/RICH_BUBBLE_SPEAK_S)", () => {
+  it("al arrancar NO habla: el ánimo de fábrica está callado (no siempre visible)", () => {
+    const s = initialRichMood();
+    expect(s.mood).toBe("dudoso");
+    expect(s.say).toBe(0);
+    expect(richBubbleVisible(s)).toBe(false); // "no deben estar siempre visibles"
+  });
+
+  it("cada CAMBIO de ánimo abre la ventana de habla (aparece el bocadillo)", () => {
+    let s = initialRichMood();
+    s = stepRichMood(s, ctxBase({ state: "comiendo" }), 1 / 60);
+    expect(s.mood).toBe("alegre");
+    expect(s.say).toBeCloseTo(RICH_BUBBLE_SPEAK_S, 5);
+    expect(richBubbleVisible(s)).toBe(true);
+  });
+
+  it("la ventana se GASTA: pasado RICH_BUBBLE_SPEAK_S calla aunque el ánimo siga", () => {
+    let s = initialRichMood();
+    s = stepRichMood(s, ctxBase({ state: "comiendo" }), 1 / 60); // alegre: habla
+    for (let i = 0; i < Math.round(RICH_BUBBLE_SPEAK_S / 0.1) + 2; i++) {
+      s = stepRichMood(s, ctxBase({ state: "comiendo" }), 0.1);
+    }
+    expect(s.mood).toBe("alegre");            // el ánimo persiste…
+    expect(s.say).toBe(0);                    // …pero ya no habla
+    expect(richBubbleVisible(s)).toBe(false);
+  });
+
+  it("un cambio DURANTE la ventana renueva el bocadillo (frase nueva)", () => {
+    let s = initialRichMood();
+    s = stepRichMood(s, ctxBase({ state: "comiendo" }), 0.1);          // alegre
+    s = stepRichMood(s, ctxBase({ impactS: 1, state: "comiendo" }), 0.1); // susto (prioridad mayor)
+    expect(s.mood).toBe("sorpresa");
+    expect(s.say).toBeCloseTo(RICH_BUBBLE_SPEAK_S, 5); // ventana FRESCA
+  });
+
+  it("sin cambio el say nunca se recicla: monótono decreciente hasta 0", () => {
+    let s = initialRichMood();
+    s = stepRichMood(s, ctxBase({ state: "comiendo" }), 0.1);
+    let prev = s.say;
+    for (let i = 0; i < 40; i++) {
+      s = stepRichMood(s, ctxBase({ state: "comiendo" }), 0.1);
+      expect(s.say).toBeLessThanOrEqual(prev);
+      prev = s.say;
+    }
+    expect(s.say).toBe(0);
+  });
+
+  it("dt raro (negativo/NaN/enorme) deja say finito y acotado", () => {
+    let s = initialRichMood();
+    s = stepRichMood(s, ctxBase({ state: "comiendo" }), -1);
+    s = stepRichMood(s, ctxBase({ state: "comiendo" }), Number.NaN);
+    s = stepRichMood(s, ctxBase({ state: "comiendo" }), 99);
+    expect(Number.isFinite(s.say)).toBe(true);
+    expect(s.say).toBeGreaterThanOrEqual(0);
+    expect(s.say).toBeLessThanOrEqual(RICH_BUBBLE_SPEAK_S + 1e-9);
   });
 });

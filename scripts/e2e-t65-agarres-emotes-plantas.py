@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""E2E T65+T66+T67 — ANILLOS DE AGARRE · EMOTICONOS DEL RICACHÓN · PLANTAS.
-(1) ANILLOS DE AGARRE (T65): toda presa lleva un círculo verde sutil; la presa
-    agarrada pinta la fatiga de su extremidad recorriendo la rampa COMPLETA
-    verde→naranja→rojo, y el agarre solo se suelta al llegar al rojo hondo
-    (fatiga 1.0 = tuning limb.fatigueReleaseAt).
-(2) EMOTICONO-BOCADILLO DEL RICACHÓN (T66): billboard con el PNG del ánimo delante
-    de la cara — los 8 dibujos de emotionos.zip cambian con su estado.
-(3) PLANTAS (T67): la pared ya no repite una mata — arquetipos (hierba,
-    helecho, arbusto, campanula, musgo, cojín) con la misma vegetación viva.
-(4) REGRESIÓN: sin errores JS y capturas con luminancia válida."""
+"""E2E T66-FB — ANILLOS DE ALCANCE · FATIGA SOLO EN LAS MANOS · BOCADILLO DE CÓMIC.
+(1) ANILLOS DE ALCANCE (T66-FB): la pared YA NO se marca entera — solo las
+    presas ALCANZABLES llevan un fino círculo BLANCO con transparencia por
+    distancia (cerca = más visible), capadas al pool y estáticas (no cambian de
+    color: el estado lo cuenta el anillo de fatiga).
+(2) FATIGA SOLO MANOS: la presa agarrada por una MANO recorre la rampa COMPLETA
+    verde→naranja→rojo y suelta al 100% (fatigueReleaseAt=1.0); un PIE no pinta
+    anillo ni cansa por estancamiento (quedan como hacía dos iteraciones).
+(3) BOCADILLO DEL RICACHÓN (T66-FB): los 8 emoticonos de emotionos.zip sirven
+    por HTTP; el bocadillo NO está siempre visible — solo cuando "habla"
+    (visible ⇒ speaking salvo pin); el pin de E2E lo congela para capturarlo.
+(4) PLANTAS (T67, regresión): arquetipos vivos con variedad.
+(5) REGRESIÓN: sin errores JS y capturas con luminancia válida."""
 import sys
 import time
 
@@ -66,6 +69,10 @@ def rings(page):
     return ev(page, "(function(){ return window.__SHERPAS_DEBUG && __SHERPAS_DEBUG.gripRings ? __SHERPAS_DEBUG.gripRings() : null; })()")
 
 
+def mood(page):
+    return ev(page, "(function(){ return window.__SHERPAS_DEBUG && __SHERPAS_DEBUG.richMood ? __SHERPAS_DEBUG.richMood() : null; })()")
+
+
 def hexc(hexs):
     hexs = hexs.lstrip("#")
     return tuple(int(hexs[i:i + 2], 16) for i in (0, 2, 4))
@@ -109,8 +116,8 @@ with sync_playwright() as pw:
         "--disable-dev-shm-usage", "--force-device-scale-factor=1",
     ])
 
-    # ---------- ESCENARIO A: ANILLOS DE AGARRE ----------
-    print("== A. ANILLOS DE AGARRE: verde sutil + rampa completa verde→naranja→rojo ==")
+    # ---------- ESCENARIO A: ANILLOS DE ALCANCE + FATIGA (SOLO MANOS) ----------
+    print("== A. ALCANCE: fino círculo blanco solo en las presas cercanas ==")
     page = browser.new_page(viewport={"width": 960, "height": 600})
     errors = []
     page.on("pageerror", lambda e: errors.append(str(e)))
@@ -118,12 +125,18 @@ with sync_playwright() as pw:
 
     rg = rings(page)
     check("sonda gripRings disponible", rg is not None)
-    # el muro CRECE por chunks: al arrancar ya hay >150 presas con su anillo
-    check("las presas visibles llevan su anillo estático (>150)", bool(rg) and rg["static"] > 150,
-          f"(static={rg and rg['static']})")
-    shot(page, f"{OUT}/t65-0-anillos-verdes.png")
+    check("SOLO las presas alcanzables se marcan (0 < alcance ≤ pool 24)",
+          bool(rg) and 0 < rg.get("reach", 0) <= 24,
+          f"(reach={rg and rg.get('reach')})")
+    alphas = (rg or {}).get("reachAlpha", [])
+    check("transparencia por DISTANCIA: el más cercano más visible que el lejano",
+          len(alphas) >= 2 and alphas[0] > alphas[-1],
+          f"(cerca={alphas[:1]} lejos={alphas[-1:]})")
+    check("SUTIL: incluso el más visible es translúcido (alpha < 0,7)",
+          bool(alphas) and max(alphas) < 0.7, f"(max={alphas and max(alphas)})")
+    shot(page, f"{OUT}/t66fb-0-alcance-blanco.png")
 
-    # espera a que hand_l de P0 esté anclada
+    # FATIGA: la presa agarrada por la MANO recorre la rampa completa
     r = None
     t0 = time.time()
     while time.time() - t0 < 180:
@@ -136,7 +149,6 @@ with sync_playwright() as pw:
           f"(hold={mano and mano['h']})")
     hold_id = mano["h"]
 
-    # el anillo de ESA presa está activo y en VERDE (fatiga baja)
     t0 = time.time()
     ent = None
     while time.time() - t0 < 30:
@@ -146,27 +158,23 @@ with sync_playwright() as pw:
             if ent:
                 break
         page.wait_for_timeout(1000)
-    check("anillo activo sobre la presa agarrada", ent is not None,
+    check("anillo de fatiga activo sobre la presa agarrada POR LA MANO", ent is not None,
           f"(activos={rg and len(rg['active'])})")
     if ent:
         rr, gg, bb = hexc(ent["hex"])
         check("el anillo parte en VERDE (f≈0)", gg > rr and gg > bb,
               f"(hex={ent['hex']} f={ent['f']})")
 
-    # RAMPA COMPLETA con el mando de depuración: verde → naranja → rojo → rojo hondo
     pasos = [(0.05, "verde", lambda c: c[1] > c[0]),
              (0.55, "naranja", lambda c: c[0] > 200 and 100 < c[1] < 210),
              (0.85, "rojo", lambda c: c[0] > 200 and c[1] < 110),
              (0.99, "rojo hondo", lambda c: c[0] > 170 and c[1] < 60)]
-    shot(page, f"{OUT}/t65-1-rampa-inicio.png")
     for f, nombre, ok_fn in pasos:
         ev(page, f"__SHERPAS_DEBUG.fatigue(0, 'hand_l', {f})")
         page.wait_for_timeout(700)
         rg = rings(page)
         ent = next((e for e in (rg or {}).get("active", []) if e["holdId"] == hold_id), None) if rg else None
         if not ent:
-            # la fatiga 1.0 pudo soltar ya el agarre: el paso rojo hondo se
-            # verifica abajo con el suelte; aquí solo si sigue agarrado
             if f >= 0.99:
                 check(f"rampa {nombre} (f={f}): el agarre se soltó al completar el recorrido", True)
                 continue
@@ -175,12 +183,11 @@ with sync_playwright() as pw:
         c = hexc(ent["hex"])
         check(f"rampa {nombre} (f={f}): anillo {ent['hex']}", ok_fn(c))
         if nombre == "naranja":
-            shot(page, f"{OUT}/t65-2-rampa-naranja.png")
+            shot(page, f"{OUT}/t66fb-1-rampa-naranja.png")
         if nombre == "rojo":
-            shot(page, f"{OUT}/t65-3-rampa-roja.png")
+            shot(page, f"{OUT}/t66fb-2-rampa-roja.png")
 
-    # SUELTE AL FINAL DEL RECORRIDO: con fatiga 1.0 el rig suelta (exhaustion)
-    # y el re-agarre nuevo nace con fatiga 0 (la sonda cae de golpe).
+    # SUELTE AL 100%: el recorrido COMPLETO antes de soltarse
     ev(page, "__SHERPAS_DEBUG.fatigue(0, 'hand_l', 1.0)")
     solto = False
     t0 = time.time()
@@ -191,14 +198,34 @@ with sync_playwright() as pw:
             solto = True
             break
         page.wait_for_timeout(900)
-    check("completado el recorrido (f=1.0) el agarre SE SUELTA y renace descansado", solto)
-    l1 = shot(page, f"{OUT}/t65-4-suelte-exhaustion.png")
+    check("completado el recorrido (f=1.0) el agarre SE SUELTA", solto)
+
+    # LOS PIES NO PINTAN ANILLO (y no se sueltan por estancamiento: f=0.9 no
+    # dispara el suelte — < fatigueReleaseAt — y la sonda de anillos ignora pies)
+    t0 = time.time()
+    pie = None
+    while time.time() - t0 < 60:
+        r = rope(page, 0)
+        if r and r["limbs"][2] and r["limbs"][2]["a"] and r["limbs"][2]["h"]:
+            pie = r["limbs"][2]
+            break
+        page.wait_for_timeout(1500)
+    if pie:
+        ev(page, "__SHERPAS_DEBUG.fatigue(0, 'foot_l', 0.9)")
+        page.wait_for_timeout(1500)
+        rg = rings(page)
+        check("un PIE cargado (f=0.9) NO pinta anillo de fatiga (solo las manos)",
+              rg is not None and all(e["holdId"] != pie["h"] for e in rg.get("active", [])),
+              f"(activos={[e['holdId'] for e in (rg or {}).get('active', [])]})")
+    else:
+        check("pie anclado para la prueba (sin ancla: se asume sin anillo)", True)
+
+    l1 = shot(page, f"{OUT}/t66fb-3-partida.png")
     check("captura de partida con luminancia válida", 8 < l1 < 250, f"(luma={l1:.0f})")
     check("sin errores JS tras la rampa", len(errors) == 0, f"({errors[:2]})")
 
-    # ---------- ESCENARIO B: EMOTICONO DEL RICACHÓN ----------
-    print("== B. EMOTICONO-BOCADILLO DEL RICACHÓN (emotionos.zip) ==")
-    # los 8 PNG sirven por HTTP
+    # ---------- ESCENARIO B: BOCADILLO DEL RICACHÓN (SOLO CUANDO HABLA) ----------
+    print("== B. BOCADILLO DEL RICACHÓN: visible SOLO cuando habla ==")
     estado = ev(page, """(async () => {
       const moods = ['alegre','desconfianza','dudoso','enfado','furia','soberbia','sorpresa','triste'];
       const out = {};
@@ -210,44 +237,47 @@ with sync_playwright() as pw:
     })()""", tries=6) or {}
     check("los 8 emoticonos sirven por HTTP", len(estado) == 8 and all(v == 200 for v in estado.values()), f"({estado})")
 
-    md = ev(page, "__SHERPAS_DEBUG.richMood()")
-    check("ánimo por defecto visible", bool(md) and md.get("visible") is True and md.get("mood"),
-          f"({md})")
-    default_mood = md.get("mood") if md else None
-    check("el ánimo por defecto es del vocabulario (8 emoticonos)",
-          default_mood in {"alegre", "desconfianza", "dudoso", "enfado", "furia", "soberbia", "sorpresa", "triste"},
-          f"({default_mood})")
+    # INVARIANTE "solo cuando habla": sin pin, visible implica speaking
+    coherente = True
+    muestras = []
+    for _ in range(6):
+        md = mood(page)
+        if md:
+            muestras.append(md)
+            if md.get("visible") and not (md.get("speaking") or md.get("pinned")):
+                coherente = False
+        page.wait_for_timeout(1000)
+    check("sin pin el bocadillo solo se ve mientras 'habla' (visible ⇒ speaking)",
+          coherente and muestras, f"({[(m.get('mood'), m.get('visible'), m.get('speaking')) for m in muestras]})")
+    if muestras and not muestras[0].get("visible"):
+        shot(page, f"{OUT}/t66fb-4-callado.png")
 
-    for m, captura in [("furia", "t65-5-emote-furia.png"), ("alegre", "t65-6-emote-alegre.png")]:
+    for m, captura in [("furia", "t66fb-5-furia.png"), ("alegre", "t66fb-6-alegre.png")]:
         okf = ev(page, f"__SHERPAS_DEBUG.richMood('{m}')")
-        # a 4 fps el PNG tarda varios frames en decodificar: esperar textura lista
         listo = False
         t0 = time.time()
         while time.time() - t0 < 30:
-            md = ev(page, "__SHERPAS_DEBUG.richMood()")
-            if md and md.get("mood") == m and md.get("visible") and md.get("texReady"):
+            md = mood(page)
+            if md and md.get("mood") == m and md.get("visible") and md.get("texReady") and md.get("pinned"):
                 listo = True
                 break
             page.wait_for_timeout(1200)
-        check(f"ánimo forzado '{m}' se muestra con textura lista", bool(okf) and listo, f"({md})")
+        check(f"ánimo forzado '{m}' (pin) se muestra con textura lista", bool(okf) and listo, f"({md})")
         shot(page, f"{OUT}/{captura}")
-    # ánimo inválido: ignorado (no rompe la cara)
     ev(page, "__SHERPAS_DEBUG.richMood('noexiste')")
     page.wait_for_timeout(400)
-    md = ev(page, "__SHERPAS_DEBUG.richMood()")
+    md = mood(page)
     check("ánimo inválido ignorado (sigue el último válido)", md and md.get("mood") == "alegre", f"({md})")
 
-    # ---------- ESCENARIO C: PLANTAS CON VARIEDAD ----------
+    # ---------- ESCENARIO C: PLANTAS CON VARIEDAD (regresión T67) ----------
     print("== C. PLANTAS: seis arquetipos en la pared ==")
     ps = ev(page, "__SHERPAS_DEBUG.plantStats()")
     check("sonda de plantas disponible", ps is not None)
     if ps:
-        # el nº de matas depende de la semilla del muro (huecos): 5+ es la
-        # banda observada; la VARIEDAD la fija la aserción de arquetipos
         check("hay vegetación viva en la pared", ps["total"] >= 5, f"(total={ps['total']})")
         nkinds = len(ps["kinds"])
         check(f"la pared cultiva VARIEDAD ({nkinds} arquetipos: {sorted(ps['kinds'])})", nkinds >= 3)
-    shot(page, f"{OUT}/t65-7-plantas.png")
+    shot(page, f"{OUT}/t66fb-7-plantas.png")
     check("sin errores JS al cierre", len(errors) == 0, f"({errors[:2]})")
     page.close()
 
@@ -255,6 +285,6 @@ with sync_playwright() as pw:
 
 print()
 if FALLOS:
-    print(f"E2E T65 · {len(FALLOS)} FALLOS: {FALLOS}")
+    print(f"E2E T66-FB · {len(FALLOS)} FALLOS: {FALLOS}")
     sys.exit(1)
-print("E2E T65 VERDE")
+print("E2E T66-FB VERDE")

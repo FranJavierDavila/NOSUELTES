@@ -16,8 +16,13 @@
 //  - HISTÉRESIS: cada ánimo aguanta en cara un mínimo (RICH_MOOD_HOLD_S) —
 //    sin esto, con gestos que cambian cada segundo la cara parpadearía.
 //    Un ánimo MÁS prioritario SIEMPRE entra antes (el susto no espera).
-// El dibujo (billboard delante de la cara) lo estampa la escena; el mood viaja
-// en el snapshot de red (rich.m) para que el invitado vea la misma cara.
+//  - HABLA (T66-feedback): el emoticón NO está siempre visible — SOLO cuando
+//    el ricachón tiene algo que decir. Cada CAMBIO de ánimo es una "frase":
+//    el bocadillo aparece RICH_BUBBLE_SPEAK_S y se esconde hasta la siguiente
+//    (el reposo por defecto, dudoso de fábrica, no dice nada al arrancar).
+// El dibujo (bocadillo-billboard arriba y a un lado de la cara) lo estampa la
+// escena; el mood y la ventana de habla viajan en el snapshot de red (rich.m /
+// rich.s) para que el invitado vea la misma cara.
 
 export type RichMood =
   | "alegre" | "desconfianza" | "dudoso" | "enfado"
@@ -32,6 +37,11 @@ export const RICH_MOODS: readonly RichMood[] = [
 /** Segundos mínimos que un ánimo aguanta en cara frente a otro de prioridad
  *  menor o igual (histéresis; un prioridad mayor entra igualmente). */
 export const RICH_MOOD_HOLD_S = 1.5;
+
+/** T66-FEEDBACK — Segundos que el BOCADILLO se ve tras cada cambio de ánimo
+ *  ("SOLO cuando el Ricachón habla"). Pasado ese tiempo se esconde aunque el
+ *  ánimo siga en cara: calla hasta que pasa algo nuevo que comentar. */
+export const RICH_BUBBLE_SPEAK_S = 2.6;
 
 /** Prioridad (MAYOR = pisa a los demás). El susto manda: nadie es más urgente
  *  que "¿qué ha sido eso?". */
@@ -75,10 +85,17 @@ export interface RichMoodState {
   t: number;
   /** tiempo (s) que aún aguanta el ánimo frente a cambios de prioridad ≤. */
   lock: number;
+  /** T66-FEEDBACK: tiempo (s) que AÚN queda de bocadillo en pantalla ("está
+   *  hablando"). 0 = callado: el emoticón NO se ve. Arranca a 0: al empezar la
+   *  partida el ricachón está en el suyo y no dice nada. */
+  say: number;
 }
 
-/** Ánimo de fábrica: el rico, sentado en su tabla, con dudas de todo esto. */
-export const initialRichMood = (): RichMoodState => ({ mood: "dudoso", t: 0, lock: 0 });
+/** Ánimo de fábrica: el rico, sentado en su tabla, CALLADO (sin bocadillo). */
+export const initialRichMood = (): RichMoodState => ({ mood: "dudoso", t: 0, lock: 0, say: 0 });
+
+/** ¿Está "hablando"? (el bocadillo se ve mientras quede say > 0). */
+export const richBubbleVisible = (s: RichMoodState): boolean => s.say > 0;
 
 /** Traduce el contexto a ánimo DESEADO (sin histéresis). Primera coincidencia
  *  de arriba abajo (orden = urgencia). */
@@ -114,17 +131,20 @@ export function desiredRichMood(ctx: RichMoodCtx): RichMood {
 
 /** Avanza el estado anímico un tick. HISTÉRESIS: el ánimo en curso aguanta
  *  RICH_MOOD_HOLD_S frente a deseos de prioridad ≤; uno MÁS prioritario entra
- *  al momento (el susto no hace cola). Impacto y velocidad ya vienen del ctx
- *  (el llamador decae impactS con dt). Determinista y sin reloj de pared. */
+ *  al momento (el susto no hace cola). HABLA: cada CAMBIO de ánimo abre la
+ *  ventana del bocadillo (RICH_BUBBLE_SPEAK_S); sin cambio, la ventana se
+ *  gasta. Impacto y velocidad ya vienen del ctx (el llamador decae impactS
+ *  con dt). Determinista y sin reloj de pared. */
 export function stepRichMood(s: RichMoodState, ctx: RichMoodCtx, dt: number): RichMoodState {
   const dts = Math.max(0, Math.min(0.5, Number.isFinite(dt) ? dt : 0));
   const want = desiredRichMood(ctx);
   const t = s.t + dts;
   const lock = Math.max(0, s.lock - dts);
-  if (want === s.mood) return { mood: s.mood, t, lock };
+  const say = Math.max(0, s.say - dts);
+  if (want === s.mood) return { mood: s.mood, t, lock, say };
   const canChange = lock <= 0 || PRIORITY[want] > PRIORITY[s.mood];
-  if (!canChange) return { mood: s.mood, t, lock };
-  return { mood: want, t: 0, lock: RICH_MOOD_HOLD_S };
+  if (!canChange) return { mood: s.mood, t, lock, say };
+  return { mood: want, t: 0, lock: RICH_MOOD_HOLD_S, say: RICH_BUBBLE_SPEAK_S };
 }
 
 /** ¿Es un mood válido? (snapshot de red: datos que llegan por cable). */
