@@ -19,6 +19,10 @@ export interface NetSessionParams {
   wallFrontZ: number;
   wallWidthM: number;
   wallHeightM: number;
+  /** T61: hora del día y clima elegidos por el host — el guest REPLICA el
+   *  ambiente (cielo/sol/HDRI + nevada) para jugar en el mismo mundo. */
+  daytime: string;
+  snow: string;
 }
 
 /** Input remoto del GUEST (jugador 2): eje CRUDO (el host escala con dt suyo),

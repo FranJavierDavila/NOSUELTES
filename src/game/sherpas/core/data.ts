@@ -3,6 +3,9 @@
 import Ajv, { type ValidateFunction } from "ajv";
 import type { Limb } from "./bus";
 import type { ReliefData } from "../world/wallRelief";
+import type { SnowTuning } from "../gameplay/snow";
+import type { DaycycleTuning } from "../gameplay/daycycle";
+import type { FallingTuning } from "../events/falling";
 export type { ReliefData } from "../world/wallRelief";
 
 export interface TickData { fixedDeltaSeconds: number; maxStepsPerFrame: number }
@@ -126,6 +129,12 @@ export interface TuningData {
   };
   anchors: { attachSeconds: number; defaultMaxForceHand: number; defaultMaxForceFoot: number; loadSpikeWindow: number };
   weather: WeatherTuning;
+  /** T61 NEVADA (cota, fatiga extra). Ausente → SNOW_DEFAULTS. */
+  snow?: SnowTuning;
+  /** T61 HORA DEL DÍA (presets de sol/cielo/niebla). Ausente → día de siempre. */
+  daycycle?: DaycycleTuning;
+  /** T61 OBJETOS QUE CAEN (balística/impacto). Ausente → FALLING_DEFAULTS. */
+  falling?: FallingTuning;
   fart?: FartTuning;
   boxes?: BoxesTuning;
   condor?: CondorTuning;
@@ -458,6 +467,21 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
         } },
         condor: { type: "object", required: ["massKg"], properties: { massKg: posNum, perchSecondsMin: posNum, perchSecondsMax: posNum, offsetFrac: num } },
         drone: { type: "object", required: ["massKgMin", "massKgMax", "speedMs", "hoverSeconds"], properties: { massKgMin: posNum, massKgMax: posNum, speedMs: posNum, hoverSeconds: posNum } },
+        snow: { type: "object", required: ["snowlineM", "testSnowlineM"], properties: {
+          snowlineM: posNum, testSnowlineM: posNum, rampSeconds: posNum, fatigueMultiplier: posNum,
+          slipChanceOnGrip: { type: "number", exclusiveMinimum: 0, maximum: 1 }, particlesPerSecond: posNum,
+        } },
+        daycycle: { type: "object", required: ["presets"], properties: { presets: { type: "object", minProperties: 1, additionalProperties: { type: "object", required: ["sunDir", "sunColor", "sunIntensity"], properties: {
+          sunDir: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3 },
+          sunColor: { type: "string" }, sunIntensity: num, hemiColor: { type: "string" }, hemiIntensity: num,
+          fillIntensity: num, fogColor: { type: "string" }, fogDensity: posNum,
+          skyTop: { type: "string" }, skyMid: { type: "string" }, skyBottom: { type: "string" }, ambient: { type: "string" },
+          stars: { type: "boolean" }, headlamp: { type: "boolean" }, exposure: num,
+        } } } } },
+        falling: { type: "object", required: ["spawnAboveM", "minAltitudeM"], properties: {
+          spawnAboveM: posNum, climberKickM: posNum, climberFatigue: posNum, plankWobble: posNum,
+          minAltitudeM: posNum,
+        } },
         checkpoint: { type: "object", required: ["stepM", "reachedPropina"], properties: { stepM: posNum, reachedPropina: num } },
         coop: { type: "object", required: ["anchorMinGrips", "belayCatchDropM", "impulseRisePerSecondM", "impulseSeconds", "impulseCooldownS"], properties: {
           anchorMinGrips: { type: "integer", minimum: 1, maximum: 8 }, belayCatchDropM: posNum, belayCatchFatigue: posNum,

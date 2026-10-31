@@ -10,6 +10,7 @@ import { SherpaHud, type HudStartChoice } from "./presentation/hud";
 import { InputManager } from "./input/input";
 import { SherpasMatch } from "./gameplay/match";
 import { browserStore, markOnboardingSeen, shouldShowOnboarding } from "./gameplay/onboarding";
+import { resolveDayPreset } from "./gameplay/daycycle"; // T61: hora del día (vista previa del menú)
 import { HostNet, GuestNet } from "./net/netClient";
 import { HostInputMixer } from "./net/remoteInput";
 import { GuestRunner } from "./net/guestRunner";
@@ -261,6 +262,8 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         difficulty: choice.difficulty,
         lang: choice.lang,
         resume: choice.resume,
+        daytime: choice.daytime ?? "dia", // T61: el guest replica el ambiente
+        snow: choice.weather ?? "clear",
         ...info,
       });
       const evs: { n: string; p: Record<string, unknown> }[] = [];
@@ -272,7 +275,13 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         state.hostNet.sendSnapshot(state.match.captureSnapshot({ ev }));
       }, Math.max(20, Math.round(1000 / hz)));
     }
-    // hook de depuración E2E (solo lectura, salvo setAim: herramienta de pruebas).
+    installDebug();
+  };
+
+  /** hook de depuración E2E (solo lectura, salvo setAim: herramienta de pruebas).
+   *  T61: se instala UNA vez al arrancar (también da sonda en el MENÚ: graphics,
+   *  baseCamp, sun…) y beginInner lo reutiliza sin recrearlo. */
+  const installDebug = (): void => {
     (window as unknown as Record<string, unknown>).__SHERPAS_DEBUG = {
       net: (): Record<string, unknown> => ({
         hasGuest: state.hostNet?.hasGuest ?? false,
@@ -551,6 +560,11 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     // "¿Cómo se juega?" del menú lo reabre (y también marca visto: lo ha
     // leído). Sin almacén disponible (modo privado) se muestra igualmente.
     const store = browserStore();
+    // T61: la URL manda sobre lo persistido (?clima=snow_low&hora=noche) —
+    // validación y E2E deterministas sin tocar el menú.
+    const qp = new URLSearchParams(window.location.search);
+    const qpWeather = qp.get("clima") ?? qp.get("weather") ?? undefined;
+    const qpDaytime = qp.get("hora") ?? qp.get("daytime") ?? undefined;
     const startAscent = (choice: HudStartChoice): void => {
       void begin(choice).catch((err) => {
         console.error("fallo al iniciar la ascensión:", err instanceof Error ? err.stack : err);
@@ -564,6 +578,15 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
       saveCampLabel,
       onHowToDone: () => markOnboardingSeen(store),
       onNet: showNetPanel,
+      // T61 — VISTA PREVIA EN VIVO: cambiar clima/hora en el menú se VE en la
+      // pared de fondo (la nevada cae y el sol se mueve al instante).
+      onWeather: (id) => {
+        if (id === "clear") state.scene?.setSnowVisual(false, 0, Number.POSITIVE_INFINITY);
+        else state.scene?.setSnowVisual(true, 0.85, 1.1); // nevada visible al pie de la pared
+      },
+      onDaytime: (id) => state.scene?.setDaytime(id, resolveDayPreset(data.tuning.daycycle, id)),
+      defaultWeather: qpWeather ?? undefined,
+      defaultDaytime: qpDaytime ?? undefined,
       onGo: (choice) => {
         if (shouldShowOnboarding(store)) {
           hud.showOnboarding({
@@ -576,6 +599,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     });
   };
 
+  installDebug(); // T61: sonda disponible también en el MENÚ (graphics/baseCamp/sun)
   await showMenu();
 
   return {

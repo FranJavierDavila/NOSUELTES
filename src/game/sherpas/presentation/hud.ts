@@ -8,11 +8,17 @@ import {
   ONBOARDING_STEPS, advanceOnboarding, openOnboarding, skipOnboarding,
   type OnboardingState,
 } from "../gameplay/onboarding";
+import { DAYTIME_IDS } from "../gameplay/daycycle"; // T61: selector de hora del día
 
 export type Lang = "es" | "en";
 export type BalanceUiState = "equilibrado" | "aviso" | "desequilibrado";
 
-export interface HudStartChoice { difficulty: string; seed: number; lang: Lang; resume: boolean; mute: boolean; daltonism: boolean; reduceShake: boolean; disablePee: boolean }
+/** T61 — opciones del selector de clima (claves de menu.weather.*). */
+export const WEATHER_IDS = ["clear", "snow", "snow_low"] as const;
+export const WEATHER_PREF_KEY = "ns.weather.v1";
+export const DAYTIME_PREF_KEY = "ns.daytime.v1";
+
+export interface HudStartChoice { difficulty: string; seed: number; lang: Lang; resume: boolean; mute: boolean; daltonism: boolean; reduceShake: boolean; disablePee: boolean; /** T61: clima (clear/snow/snow_low) y hora del día (dia/atardecer/noche). */ weather: string; daytime: string }
 
 export interface HudLimbsState { tension: number; fatigue: number; anchored: boolean }
 
@@ -187,8 +193,24 @@ export class SherpaHud {
   private reduceShake = false;
   private mute = false;
   private disablePee = false;
-  private opts?: { onGo: (c: HudStartChoice) => void; onHowToDone?: () => void; onNet?: () => void };
+  private opts?: { onGo: (c: HudStartChoice) => void; onHowToDone?: () => void; onNet?: () => void; onWeather?: (id: string) => void; onDaytime?: (id: string) => void };
   private choice: Partial<HudStartChoice> = { lang: "es" };
+
+  // T61 — AJUSTES PERSISTENTES de clima/hora (localStorage defensivo, patrón
+  // onboarding: un storage roto NUNCA rompe el menú).
+  private prefStore(): Storage | null {
+    try { return typeof localStorage !== "undefined" ? localStorage : null; } catch { return null; }
+  }
+  private loadPref(key: string, valid: readonly string[], fallback: string): string {
+    try {
+      const v = this.prefStore()?.getItem(key) ?? null;
+      if (!v) return fallback;
+      return valid.includes(v) ? v : fallback;
+    } catch { return fallback; }
+  }
+  private savePref(key: string, value: string): void {
+    try { this.prefStore()?.setItem(key, value); } catch { /* modo privado: inocuo */ }
+  }
   /** T59: estado del asistente de onboarding (núcleo puro de gameplay). */
   private ob: OnboardingState = openOnboarding();
 
@@ -689,9 +711,13 @@ export class SherpaHud {
     if (box) { box.textContent = code; box.classList.remove("hidden"); }
   }
 
-  showStart(opts: { difficulties: string[]; defaultPreset: string; seed: number; saveCampLabel: string | null; onGo: (c: HudStartChoice) => void; onHowToDone?: () => void; onNet?: () => void }): void {
-    this.opts = { onGo: opts.onGo, onHowToDone: opts.onHowToDone, onNet: opts.onNet };
-    this.choice = { lang: this.lang, resume: false, mute: false, daltonism: false, reduceShake: false, disablePee: false, difficulty: opts.defaultPreset, seed: opts.seed };
+  showStart(opts: { difficulties: string[]; defaultPreset: string; seed: number; saveCampLabel: string | null; onGo: (c: HudStartChoice) => void; onHowToDone?: () => void; onNet?: () => void; onWeather?: (id: string) => void; onDaytime?: (id: string) => void; defaultWeather?: string; defaultDaytime?: string }): void {
+    this.opts = { onGo: opts.onGo, onHowToDone: opts.onHowToDone, onNet: opts.onNet, onWeather: opts.onWeather, onDaytime: opts.onDaytime };
+    // T61: clima y hora PERSISTEN entre sesiones (localStorage defensivo); la
+    // URL (?clima= / ?hora=) manda si el mount la trae — E2E determinista.
+    const weather0 = opts.defaultWeather ?? this.loadPref(WEATHER_PREF_KEY, WEATHER_IDS, "clear");
+    const daytime0 = opts.defaultDaytime ?? this.loadPref(DAYTIME_PREF_KEY, DAYTIME_IDS, "dia");
+    this.choice = { lang: this.lang, resume: false, mute: false, daltonism: false, reduceShake: false, disablePee: false, difficulty: opts.defaultPreset, seed: opts.seed, weather: weather0, daytime: daytime0 };
     const el = this.el.start!;
     el.innerHTML = `<div class="panel">
       <h1>⛰️ ${esc(this.t("menu.title"))}</h1>
@@ -699,6 +725,8 @@ export class SherpaHud {
       ${opts.saveCampLabel ? `<div class="row"><button data-a="resume">${esc(this.fmt("menu.resume", { camp: opts.saveCampLabel }))}</button><button data-a="new">${esc(this.t("menu.newAscent"))}</button></div>` : ""}
       <div class="row" data-a="resumeRow"><label>${esc(this.t("menu.difficulty"))}</label><span data-a="diffs"></span></div>
       <div class="row"><label>${esc(this.t("menu.language"))}</label><span data-a="langs"></span></div>
+      <div class="row"><label>${esc(this.t("menu.weather"))}</label><span data-a="weathers"></span></div>
+      <div class="row"><label>${esc(this.t("menu.daytime"))}</label><span data-a="daytimes"></span></div>
       <div class="row"><label>Semilla</label><input type="number" data-a="seed" value="${opts.seed}" step="1" min="0" max="999999"><button data-a="dice">🎲</button></div>
       <div class="row" style="gap:14px">
         <span class="chk"><input type="checkbox" data-a="mute" id="ck_m"><label for="ck_m">${esc(this.t("settings.mute"))}</label></span>
@@ -724,6 +752,36 @@ export class SherpaHud {
       diffs.appendChild(b);
     }
     const langs = el.querySelector("[data-a=langs]")!;
+    // T61 — SELECTOR DE CLIMA (Despejado / Nevada / Nevada de validación)
+    const weathers = el.querySelector("[data-a=weathers]")!;
+    for (const w of WEATHER_IDS) {
+      const b = document.createElement("button");
+      b.textContent = this.t(`menu.weather.${w}`);
+      b.dataset.w = w;
+      if (w === weather0) b.classList.add("sel");
+      b.onclick = () => {
+        this.choice.weather = w;
+        this.savePref(WEATHER_PREF_KEY, w);
+        weathers.querySelectorAll("button").forEach((x) => x.classList.toggle("sel", x === b));
+        this.opts?.onWeather?.(w);
+      };
+      weathers.appendChild(b);
+    }
+    // T61 — SELECTOR DE HORA (Día / Atardecer / Noche): vista previa EN VIVO
+    const daytimes = el.querySelector("[data-a=daytimes]")!;
+    for (const d of DAYTIME_IDS) {
+      const b = document.createElement("button");
+      b.textContent = this.t(`menu.daytime.${d}`);
+      b.dataset.d = d;
+      if (d === daytime0) b.classList.add("sel");
+      b.onclick = () => {
+        this.choice.daytime = d;
+        this.savePref(DAYTIME_PREF_KEY, d);
+        daytimes.querySelectorAll("button").forEach((x) => x.classList.toggle("sel", x === b));
+        this.opts?.onDaytime?.(d);
+      };
+      daytimes.appendChild(b);
+    }
     for (const l of ["es", "en"] as Lang[]) {
       const b = document.createElement("button");
       b.textContent = l.toUpperCase();

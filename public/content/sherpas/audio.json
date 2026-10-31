@@ -146,6 +146,19 @@
       "kind": "fart",
       "dur": 0.75,
       "gain": 0.42
+    },
+    "whoosh": {
+      "kind": "tone",
+      "dur": 0.85,
+      "gain": 0.16,
+      "hzStart": 1500,
+      "hzEnd": 260,
+      "pitchDown": true
+    },
+    "splat": {
+      "kind": "noise",
+      "dur": 0.16,
+      "gain": 0.3
     }
   },
   "voice": {

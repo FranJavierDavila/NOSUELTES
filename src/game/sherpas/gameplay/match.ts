@@ -5,7 +5,7 @@
 import type { SherpasData, PhaseData } from "../core/data";
 import { LIMBS } from "../core/data";
 import type { EventBus, Limb, SherpasEvents } from "../core/bus";
-import { makeRng } from "../core/rng";
+import { makeRng, type Rng } from "../core/rng";
 import { SherpaRig } from "../physics/sherpaRig";
 import { AnchorSystem, type AnchorInstance, type HoldInstance } from "../physics/anchors";
 import { PlankSystem, PLANK_DEFAULTS, type PlankState } from "../physics/plank";
@@ -21,6 +21,12 @@ import { EventDirector, type DirectorContext } from "../events/director";
 import { spawnTrash, stepTrash, spawnUrine, stepUrine, type TrashProjectile, type UrineEffect } from "../events/effects";
 import { BalanceMonitor, TeamFallWatcher, PropinaMeter, newStats } from "./coop";
 import { WeatherSystem } from "./weather";
+import { SnowSystem } from "./snow"; // T61: nevada a cotas altas
+import { resolveDayPreset } from "./daycycle"; // T61: hora del día
+import {
+  FALLING_KINDS, makeFallingObject, stepFallingObject, classifyFallingHit, bounceOffWall,
+  FALLING_DEFAULTS, type FallingObject, type FallingTuning,
+} from "../events/falling"; // T61: objetos que caen
 import { WallGenerator, type CampZone } from "../world/wallGenerator";
 import { CheckpointSystem, type Checkpoint } from "../world/checkpoints";
 import { CampSystem, saveAscent, type AscentStats, type SavedAscent } from "../world/camps";
@@ -149,6 +155,14 @@ export class SherpasMatch {
   private dragCursor: V3 | null = null;
   /** el anillo de apuntado de teclado solo se muestra si se usó hace poco. */
   private kbAimUntil: [number, number] = [0, 0];
+  // T61 — NEVADA + OBJETOS QUE CAEN
+  private snow: SnowSystem;
+  private falling: { id: number; o: FallingObject }[] = [];
+  private fallSeq = 0;
+  private fallRng: Rng;
+  private fallTuning: FallingTuning;
+  private snowWarned = false;
+  private fallHitCount = 0;
 
   constructor(deps: SherpasMatchDeps) {
     this.d = deps;
@@ -274,6 +288,16 @@ export class SherpasMatch {
     this.balance = new BalanceMonitor(this.data.tuning, deps.bus);
     this.teamFall = new TeamFallWatcher(this.data.tuning, deps.bus);
     this.weather = new WeatherSystem(this.data.tuning.weather, seed);
+    // T61 — NEVADA (elección del menú: despejado / nevada / nevada de validación)
+    // y HORA DEL DÍA (sol/cielo/HDRI según el preset elegido).
+    this.snow = new SnowSystem(this.data.tuning.snow);
+    this.snow.setMode(deps.choice.weather === "snow" ? "snow" : deps.choice.weather === "snow_low" ? "snow_low" : "clear");
+    this.fallTuning = { ...FALLING_DEFAULTS, ...(this.data.tuning.falling ?? {}) };
+    this.fallRng = makeRng(seed ^ 0xf41a);
+    deps.scene.setDaytime(
+      deps.choice.daytime ?? "dia",
+      resolveDayPreset(this.data.tuning.daycycle, deps.choice.daytime ?? "dia"),
+    );
     this.propina = new PropinaMeter(this.data.hud);
     this.camps = new CampSystem(deps.bus, this.gen);
     this.director = new EventDirector(
@@ -527,6 +551,15 @@ export class SherpasMatch {
       const info = this.sherpas[p].step(dt, 1);
       for (const r of info.released) this.d.bus.emit("LimbReleased", { playerId: p, limb: r.limb, cause: r.cause });
       for (const g of info.gripped) this.d.bus.emit("LimbGripped", { playerId: p, limb: g.limb, anchorId: g.anchor.hold.id });
+      // T61 — NIEVE RESBALADIZA: clavar una presa nevada puede ESCURRIRSE
+      // (micro-resbalón con lock corto: molesta y gracioso, nunca letal).
+      for (const g of info.gripped) {
+        if (this.snow.fatigueAt(g.anchor.hold.pos.y) > 1 && this.fallRng.next() < this.snow.slipChance) {
+          this.sherpas[p].forceRelease(g.limb, 0.5, "player");
+          this.d.hud.subtitle(this.d.hud.t("hud.snowSlip"), 2.2);
+          this.d.audio.play("rustle");
+        }
+      }
       if (info.slippedByTwoHands) {
         // regla de dos manos: aviso legible + susto del ricachón (doc 6.2).
         this.d.audio.play("fall");
@@ -666,6 +699,62 @@ export class SherpasMatch {
       // — sacudir sí, despachar al ricachón NO (petición del jugador).
       windShake = wdir * wl;
     }
+
+    // T61 — NEVADA: intensidad por altura (suave) + aviso único + recoloreo de
+    // presas/roca (la presentación solo actúa cuando cambia algo REAL).
+    const sev = this.snow.step(dt, windAlt);
+    this.d.scene.setSnowVisual(sev.intensity > 0.02, sev.intensity, sev.snowlineM);
+    if (!this.snowWarned && sev.intensity > 0.4) {
+      this.snowWarned = true;
+      this.d.audio.play("wind_warn");
+      this.d.hud.subtitle(this.d.hud.t("hud.snowWarn"), 3.4);
+    }
+    // T61 — FATIGA EN NIEVE: extremidades clavadas en presas nevadas se cansan
+    // antes (multiplicador data-driven; la nieve DIFICULTA la escalada).
+    if (sev.intensity > 0.3) {
+      for (const s of this.sherpas) {
+        for (const limb of LIMBS) {
+          const st = s.states.get(limb)!;
+          if (!st.anchored || !st.holdId) continue;
+          const hold = this.anchors.holds.get(st.holdId);
+          const mult = hold ? this.snow.fatigueAt(hold.pos.y) : 1;
+          if (mult > 1) st.fatigue = Math.min(1, st.fatigue + (mult - 1) * this.data.tuning.limb.fatigueRate * dt);
+        }
+      }
+    }
+
+    // T61 — OBJETOS QUE CAEN (evento rockfall): balística pura + golpes.
+    if (this.falling.length) {
+      const waists = [{ waist: this.sherpas[0].waist() }, { waist: this.sherpas[1].waist() }];
+      const pose = this.plankState && !this.plankState.fellOff
+        ? { center: this.plankState.center, halfLen: this.plankLenM / 2, angle: this.plankState.angle }
+        : null;
+      for (const f of this.falling) {
+        stepFallingObject(f.o, dt);
+        const hit = classifyFallingHit(f.o, waists, pose, this.wallFrontZ);
+        if (hit) {
+          if (hit.kind === "climber") {
+            f.o.hitDone = true;
+            this.applyFallingHit(f.o, hit.player);
+          } else if (hit.kind === "plank") {
+            f.o.hitDone = true;
+            this.rich.impulseAll(v3((this.fallRng.next() < 0.5 ? -1 : 1) * this.fallTuning.plankWobble, 0.5, 0));
+            this.brain.panic();
+            this.d.hud.subtitle(this.d.hud.fmt("hud.fallHit", { obj: this.d.hud.t(`falling.${f.o.kind}`) }), 2.6);
+            this.d.audio.play("thud");
+            this.fallHitCount++;
+          } else {
+            bounceOffWall(f.o, this.wallFrontZ); // golpe sordo: sigue cayendo
+          }
+        }
+        if (f.o.pos.y <= 0.06) {
+          f.o.alive = false;
+          this.d.audio.play("splat");
+        }
+      }
+      this.falling = this.falling.filter((f) => f.o.alive && f.o.pos.y > -6);
+    }
+    this.d.scene.syncFallingObjects(this.falling.map((f) => ({ id: f.id, kind: f.o.kind, pos: f.o.pos, rot: f.o.rot })));
 
     // AVISOS DE FATIGA (papel claro de los indicadores, petición del jugador):
     // el chip pasa a rojo parpadeante y se anuncia UNA vez por episodio.
@@ -1294,6 +1383,8 @@ export class SherpasMatch {
         this.brain.panic();
         this.richScareVoice();
       },
+      // T61 — OBJETOS QUE CAEN: el evento "rockfall" los pide por datos.
+      spawnFallingObject: () => this.spawnFallingObject(),
       insultContext: () => {
         // CINE DE CAÍDA (congelado/respawn): sin insultos de relleno — pisarían
         // el subtítulo del GRITO de la caída ("¡¡CABRONEEEEESSSS!!") en el
@@ -1480,6 +1571,7 @@ export class SherpasMatch {
         : p.eventId === "cajas" ? "hud.boxesTelegraph"
         : p.eventId === "condor" ? "hud.condorTelegraph"
         : p.eventId === "drone" ? "hud.droneTelegraph"
+        : p.eventId === "rockfall" ? "hud.rockfallTelegraph"
         : p.eventId.startsWith("bird") ? "hud.birdTelegraph"
         : p.eventId === "kick" ? "hud.kickTelegraph" : null;
       if (key) this.d.hud.telegraph(this.d.hud.t(key), Math.max(0.8, p.seconds));
@@ -1910,6 +2002,11 @@ export class SherpasMatch {
       relief: this.d.scene.getReliefInfo(),
       // rachas de viento (sonda E2E)
       weather: { phase: this.weather.state, dir: this.weather.dir, level: Math.round(this.weather.windLevel * 100) / 100, storm: this.weather.storm },
+      // T61 (sonda E2E): nevada, objetos que caen y hora del día
+      snow: { mode: this.snow.modeName, level: Math.round(this.snow.level * 100) / 100, lineM: Number.isFinite(this.snow.snowline) ? Math.round(this.snow.snowline) : null },
+      falling: this.falling.map((f) => ({ kind: f.o.kind, y: Math.round(f.o.pos.y * 10) / 10, hit: f.o.hitDone })),
+      fallHits: this.fallHitCount,
+      daytime: this.d.scene.getDaytime(),
       // Task 31 (sonda E2E): cajas, flatulencia, salientes, hielo resbaladizo
       boxes: this.boxes ? { count: this.boxes.count, side: this.boxes.side, massKg: this.boxes.count * (this.data.tuning.boxes?.massPerBoxKg ?? 9) } : null,
       condor: this.birds.condorCargo().length ? { kg: this.birds.condorCargo()[0].kg } : null,
@@ -1949,6 +2046,46 @@ export class SherpasMatch {
     });
   }
 
+  /** T61 — OBJETOS QUE CAEN: nace ENCIMA de un escalador (o la tabla) y cae.
+   *  Nada en el campamento (minAltitudeM): se aprende a subir tranquilo.
+   *  `forced` (sonda E2E) apunta EXACTO al escalador: determinista. */
+  private spawnFallingObject(forced = false): void {
+    const t = this.fallTuning;
+    const p = (this.fallRng.next() < 0.5 ? 0 : 1) as 0 | 1;
+    const waist = this.sherpas[p].waist();
+    if (waist.y < t.minAltitudeM) return;
+    const kind = FALLING_KINDS[Math.floor(this.fallRng.next() * FALLING_KINDS.length) % FALLING_KINDS.length] ?? "maceta";
+    const radius = t.radiusByKind[kind] ?? 0.3;
+    const pos = v3(
+      forced ? waist.x : waist.x + (this.fallRng.next() - 0.5) * 1.6,
+      waist.y + t.spawnAboveM,
+      forced ? waist.z - 0.15 : this.wallFrontZ - 0.75,
+    );
+    this.falling.push({ id: ++this.fallSeq, o: makeFallingObject(kind, pos, radius, forced ? 0 : (this.fallRng.next() - 0.5) * 0.8) });
+    this.d.hud.subtitle(this.d.hud.t("hud.fallWarn"), 2.0);
+    this.d.audio.play("whoosh");
+  }
+
+  /** Impacto sobre un escalador: empujón real (pos+prev, como el viento),
+   *  fatiga instantánea, susto del ricachón y subtítulo absurdo. */
+  private applyFallingHit(o: FallingObject, p: 0 | 1): void {
+    const s = this.sherpas[p];
+    const dir = Math.sign(s.waist().x - o.pos.x) || (this.fallRng.next() < 0.5 ? -1 : 1);
+    const kick = this.fallTuning.climberKickM;
+    for (const pt of s.rig.particles) {
+      pt.pos = vAdd(pt.pos, v3(dir * kick, 0, -0.08));
+      pt.prev = vAdd(pt.prev, v3(dir * kick * 0.6, 0, -0.05));
+    }
+    for (const limb of LIMBS) {
+      const st = s.states.get(limb)!;
+      st.fatigue = Math.min(1, st.fatigue + this.fallTuning.climberFatigue);
+    }
+    this.brain.panic();
+    this.d.hud.subtitle(this.d.hud.fmt("hud.fallHit", { obj: this.d.hud.t(`falling.${o.kind}`) }), 2.8);
+    this.d.audio.play("bump");
+    this.fallHitCount++;
+  }
+
   private phaseProgress(): number {
     const span = this.gen.layout.phaseSpans.find((s) => s.phase === this.phaseId);
     if (!span) return 1;
@@ -1958,7 +2095,7 @@ export class SherpasMatch {
 
   /** Sonda E2E (solo pruebas, como setAim): fuerza los eventos del Task 31
    *  para verificar su presentación sin esperar al azar del director. */
-  debugForce(what: "boxes" | "condor" | "storm" | "fart" | "drone" | "subir" | "subir2" | "caida_rico" | "caida" | "ancla" | "impulso" | "voz", player: 0 | 1 = 0): boolean {
+  debugForce(what: "boxes" | "condor" | "storm" | "fart" | "drone" | "subir" | "subir2" | "caida_rico" | "caida" | "ancla" | "impulso" | "voz" | "nieve" | "nieve_off" | "rockfall" | "dia" | "atardecer" | "noche", player: 0 | 1 = 0): boolean {
     switch (what) {
       case "voz":
         // SONDA E2E T44: suelta UNA voz real del banco (ignora cooldown) —
@@ -1998,6 +2135,23 @@ export class SherpasMatch {
         return this.birds.spawn("condor", this.directorCtx().condorOptions());
       case "storm":
         this.weather.debugForceStorm();
+        return true;
+      case "nieve":
+        // SONDA E2E/VALIDACIÓN T61: nieva YA a la altura del equipo (la cota
+        // baja a la banda actual y la intensidad salta a pleno).
+        this.snow.debugForceAt(Math.min(this.sherpas[0].waist().y, this.sherpas[1].waist().y));
+        this.snowWarned = false;
+        return true;
+      case "nieve_off":
+        this.snow.setMode("clear");
+        return true;
+      case "rockfall":
+        this.spawnFallingObject(true); // sonda: cae EXACTO sobre la víctima
+        return true;
+      case "dia":
+      case "atardecer":
+      case "noche":
+        this.d.scene.setDaytime(what, resolveDayPreset(this.data.tuning.daycycle, what));
         return true;
       case "fart":
         this.sherpas[player ?? 0].fartCharge = true; // el disparo lo hace la tecla F/P

@@ -34,6 +34,9 @@ export interface DirectorContext {
    *  al lado del ricachón — descompensación aérea. Opcional: los tests
    *  construyen contextos parciales. */
   spawnDrone?: () => void;
+  /** T61 OBJETOS QUE CAEN (petición del jugador): macetas/termos/momos/peces
+   *  desde arriba que golpean a escaladores y tabla. Opcional (tests). */
+  spawnFallingObject?: () => void;
 }
 
 const HARD_EVENT_SAFETY_WINDOW_S = 1.2;
@@ -217,6 +220,14 @@ export class EventDirector {
         // DRON REPARTIDOR (petición del jugador): deja una sorpresa PESADA
         // junto al ricachón — los pesos en la tabla descompensan.
         this.ctx.spawnDrone?.();
+        this.finish(def);
+        break;
+      }
+      case "rockfall": {
+        // T61 — OBJETOS QUE CAEN (petición del jugador): macetas, termos de té
+        // de mantequilla, momos gigantes y peces congelados llueven de vez en
+        // cuando desde arriba. El match elige víctima y balística.
+        this.ctx.spawnFallingObject?.();
         this.finish(def);
         break;
       }

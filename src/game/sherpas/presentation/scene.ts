@@ -31,9 +31,17 @@ import { FxaaPostProcess } from "@babylonjs/core/PostProcesses/fxaaPostProcess";
 import { clampDpr, hardwareScaleFor } from "./renderQuality"; // T58-A: calidad de render (DPR)
 import { emoteOffset, stepEmote, startEmote, type EmoteSlot } from "../gameplay/emotes"; // T58-D: animaciones puntuales
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
+import type { Material } from "@babylonjs/core/Materials/material"; // T61: PBR|Standard en huesos
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial"; // T44: pared PBR detallada
 import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
+import { HDRCubeTexture } from "@babylonjs/core/Materials/Textures/hdrCubeTexture"; // T61: iluminación HDRI (IBL)
+import "@babylonjs/core/Materials/Textures/Loaders/hdrTextureLoader"; // T61: plugin .hdr (panorama RGBE)
+import { PointLight } from "@babylonjs/core/Lights/pointLight"; // T61: frontal nocturno (escaladas de noche)
 import { ParticleSystem } from "@babylonjs/core/Particles/particleSystem";
+import { generateSkyHdrBytes } from "./hdrSky"; // T61: HDRI procedural (puro)
+import { resolveDayPreset, DAY_PRESETS, type DayPreset, type DaytimeId } from "../gameplay/daycycle"; // T61: hora del día
+import type { FallingKind } from "../events/falling"; // T61: objetos que caen (dibujo)
+import { FALLING_KINDS } from "../events/falling";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
 import { Vector3, Quaternion, Matrix } from "@babylonjs/core/Maths/math.vector";
@@ -104,6 +112,25 @@ function mat(scene: Scene, name: string, hex: string, opts?: { alpha?: number })
   m.specularColor = new Color3(0.08, 0.08, 0.08);
   if (opts?.alpha !== undefined) m.alpha = opts.alpha;
   return m;
+}
+
+/** T61 — MATERIAL PBR: conversión de los materiales del juego a render físico
+ *  (petición: "pasar los materiales a PBR"). Albedo plano + rugosidad; el
+ *  relleno coherente lo aporta el HDRI (scene.environmentTexture). */
+function matPBR(scene: Scene, name: string, hex: string, opts?: { rough?: number; metal?: number; alpha?: number }): PBRMaterial {
+  const m = new PBRMaterial(name, scene);
+  m.albedoColor = Color3.FromHexString(hex);
+  m.metallic = opts?.metal ?? 0;
+  m.roughness = opts?.rough ?? 0.85;
+  if (opts?.alpha !== undefined) { m.alpha = opts.alpha; m.alphaMode = 2; }
+  return m;
+}
+
+/** hex → lineal (aprox. sRGB→lineal) para el HDRI procedural. */
+function hexToLin(hex: string): [number, number, number] {
+  const c = Color3.FromHexString(hex);
+  const lin = (v: number): number => Math.pow(Math.min(1, Math.max(0, v)), 2.2);
+  return [lin(c.r), lin(c.g), lin(c.b)];
 }
 
 /** T56 — FUSIÓN de geometrías puras de baseCamp.ts (faldones izq+der en UNA
@@ -245,7 +272,26 @@ export class SherpaScene {
   private skyDome: Mesh | null = null;
   private skyMatDay: StandardMaterial | null = null;
   private skyMatStorm: StandardMaterial | null = null;
+  private skyMatSunset: StandardMaterial | null = null;
+  private skyMatNight: StandardMaterial | null = null;
   private skyMatActive: StandardMaterial | null = null;
+  // T61 — HORA DEL DÍA + HDRI: preset activo, IBL procedural y frontal nocturno
+  private daytimeId: DaytimeId = "dia";
+  private dayPreset: DayPreset = DAY_PRESETS.dia;
+  private envTexture: HDRCubeTexture | null = null;
+  private envUrl: string | null = null;
+  private headlamp: PointLight | null = null;
+  // T61 — NEVADA: cota aplicada a presas/roca (recolor por vértice) + originales
+  private snowPps = 420;
+  private snowLineApplied = -1;
+  private snowIntensityApplied = -1;
+  private snowyMasters = new Map<string, Mesh>();
+  private snowySwaps = new Map<string, Mesh>();
+  private reliefBaseColors = new Map<number, Float32Array>();
+  // T61 — OBJETOS QUE CAEN: master por tipo + instancias sincronizadas
+  private fallingKinds = new Map<string, Mesh>();
+  private fallingMeshes = new Map<number, Mesh>();
+  private fallingSeq = 0;
   private fxaaOn = false;
   private fogDay = new Color3(0.62, 0.71, 0.79);
   private fogStorm = new Color3(0.08, 0.1, 0.15);
@@ -329,7 +375,7 @@ export class SherpaScene {
   private baseRockMat: PBRMaterial | null = null; // material COMPARTIDO pedriz+faldones
   private flagWind: PlantWindPlugin | null = null; // viento propio de los banderines
   private flagMat: PBRMaterial | null = null;
-  private baseCampStats = { enabled: false, screeTris: 0, spurTris: 0, rocks: 0, cabinPieces: 0, flags: 0, smoke: false, pedrizaTex: false };
+  private baseCampStats = { enabled: false, screeTris: 0, spurTris: 0, rocks: 0, cabinPieces: 0, flags: 0, smoke: false, pedrizaTex: false, massifTris: 0 };
   /** T55 SONDA E2E: nº de chunks de roca con tinte por vértice aplicado. */
   rockTintChunks = 0;
   /** materiales PBR de roca creados (sonda E2E: material/triplanar/normales). */
@@ -403,6 +449,14 @@ export class SherpaScene {
     fill.specular = new Color3(0, 0, 0); // sin brillo extra: solo difusa
     fill.includedOnlyMeshes = [];
     this.rockFill = fill;
+    // T61 — FRONTAL NOCTURNO: luz cálida pegada a los escaladores para que las
+    // escaladas de NOCHE sean jugables (el preset de noche la enciende; día → 0).
+    const lamp = new PointLight("headlamp", new Vector3(0, 3, -2.2), this.scene);
+    lamp.intensity = 0;
+    lamp.range = 10;
+    lamp.diffuse = new Color3(1.0, 0.86, 0.62);
+    lamp.specular = new Color3(0.08, 0.07, 0.05);
+    this.headlamp = lamp;
     // T43: worker de generación de roca (diaclasas). Si el entorno no lo
     // soporta, el juego funciona igual por el camino síncrono (1 chunk/frame).
     try {
@@ -722,8 +776,8 @@ export class SherpaScene {
     // se comía ese presupuesto y la pared salía plana). Las piernas siguen
     // respirando: el techo del relieve natural (zCeilM) manda ENTRE anclajes.
     const bodyBack = this.rockCtx ? this.rockCtx.style.bodyBackM : 0;
-    const rock = mat(this.scene, "rock", rc ? rc.backColor : "#3c4652");
-    rock.diffuseTexture = null;
+    // T61: cuerpo del muro en PBR (el albedo plano + HDRI sustituyen al lambert)
+    const rock = matPBR(this.scene, "rock", rc ? rc.backColor : "#3c4652", { rough: 0.95 });
     // PERF (60 FPS): la roca estática se FUNDE en un mesh por material — 1 draw
     // call y 1 renderizador de aristas en vez de uno por bloque (con ~12
     // entrantes eran 50+ mallas × 2 pasadas). El merge hornea las matrices y
@@ -785,10 +839,9 @@ export class SherpaScene {
     // exactamente donde el generador dejó las presas RETRASADAS.
     // PERF: materiales COMPARTIDOS (el color era idéntico por banda) + fusión.
     const entranteMats = {
-      dark: mat(this.scene, "entranteM", "#232a33"),
-      lip: mat(this.scene, "entranteLipM", "#525d69"),
+      dark: matPBR(this.scene, "entranteM", "#232a33", { rough: 0.98 }),
+      lip: matPBR(this.scene, "entranteLipM", "#525d69", { rough: 0.9 }),
     };
-    entranteMats.dark.specularColor = new Color3(0.01, 0.01, 0.01);
     const entBacks: Mesh[] = [];
     const entLips: Mesh[] = [];
     for (const h of holes) {
@@ -832,7 +885,7 @@ export class SherpaScene {
 
     const floor = MeshBuilder.CreateGround("floor", { width: 40, height: 24 }, this.scene);
     floor.position.y = -0.02;
-    floor.material = mat(this.scene, "snowFloor", "#dfe8ee");
+    floor.material = matPBR(this.scene, "snowFloor", "#dfe8ee", { rough: 0.78 });
     floor.receiveShadows = true;
     floor.freezeWorldMatrix();
 
@@ -840,7 +893,7 @@ export class SherpaScene {
     for (const zone of layout.campZones) {
       const ledge = MeshBuilder.CreateBox(`ledge_${zone.campId}`, { width: 4.6, height: 0.24, depth: 1.1 }, this.scene);
       ledge.position.set(0, zone.yBase + 0.12, 0.16); // (T41) frente a la cara retrasada
-      ledge.material = mat(this.scene, `ledgeM_${zone.campId}`, "#e8edf2");
+      ledge.material = matPBR(this.scene, `ledgeM_${zone.campId}`, "#e8edf2", { rough: 0.7 });
       ledge.receiveShadows = true;
       ledge.freezeWorldMatrix();
     }
@@ -850,8 +903,7 @@ export class SherpaScene {
     // el bombo COMO ROCA (silueta irregular, textura continua) — las cajas
     // rectas solo existen para la teselación clásica.
     const salientBoxes: Mesh[] = [];
-    const salRock = mat(this.scene, "salienteM", "#46525f");
-    salRock.specularColor = new Color3(0.03, 0.03, 0.03);
+    const salRock = matPBR(this.scene, "salienteM", "#46525f", { rough: 0.92 });
     for (const s of this.rockField ? [] : layout.salientes) {
       const w = s.xMax - s.xMin;
       const depth = wallFaceZ - s.z + 0.06; // del muro al frente del saliente
@@ -893,6 +945,70 @@ export class SherpaScene {
     // T56 — BASE CAMP: faldones de continuidad lateral + pedriz de piedra +
     // cabaña sherpa de partida (todo estático y fusionado: coste por frame ≈ 0).
     this.buildBaseCamp();
+    // T61 — MACIZOS LATERALES: sella los huecos que quedaban A LOS LADOS de la
+    // pared (al orbitar a ±75° se veía el vacío tras el canto de la pared: la
+    // montaña continúa a ambos lados). Ver abajo; sonda E2E en getBaseCampInfo.
+    this.buildSideMassifs(wallW / 2, wallFaceZ, wallTop);
+  }
+
+  /** T61 — MACIZOS LATERALES (petición: "tapar los huecos que quedan en los
+   *  lados de ambas paredes de los muros"). Dos volúmenes de roca (uno por
+   *  lado) que nacen DENTRO del muro (sin costura visible) y continúan hacia
+   *  fuera y hacia atrás: desde cualquier órbita permitida (yaw ≤ 75°, pitch
+   *  ±50°) ya no se ve el vacío. Silueta irregular con contrafuertes; material
+   *  PBR de pedriza con estratos triplanar EN ESPACIO MUNDO (continuidad de
+   *  tono con los faldones). 3 mallas fusionadas en total: coste ≈ 0. */
+  private buildSideMassifs(halfW: number, faceZ: number, topY: number): void {
+    const baseMat = this.ensureBaseRockMaterial();
+    const rng = makeRng(0x61d15);
+    const height = topY + 8;
+    const all: Mesh[] = [];
+    for (const dir of [-1, 1] as const) {
+      const parts: Mesh[] = [];
+      const inner = dir * (halfW - 0.35); // enterrado en el muro: sin rendija
+      const outer = dir * (halfW + 7.4);
+      const w = Math.abs(outer - inner);
+      // cuerpo principal: cara frontal a z = −0.35 (detrás de las presas, que
+      // sobresalen hasta ≈ −0.64) y fondo a z = +3.9 — la cámara (z ≤ −1 en la
+      // órbita extrema) JAMÁS entra en él.
+      const main = MeshBuilder.CreateBox(`massif${dir}_main`, { width: w, height, depth: 4.25 }, this.scene);
+      main.position.set((inner + outer) / 2, height / 2 - 2, faceZ + 2.075);
+      main.receiveShadows = true;
+      main.material = baseMat;
+      main.freezeWorldMatrix();
+      parts.push(main);
+      // contrafuertes: bultos de silueta a cotas variadas (deterministas);
+      // la cara queda ≈ −0.55: apenas delante del mortero, detrás de las presas
+      const nRibs = 5;
+      for (let i = 0; i < nRibs; i++) {
+        const y = 2 + (i + rng.next() * 0.7) * (height * 0.82) / nRibs;
+        const rw = 1.8 + rng.next() * 2.2;
+        const rh = 6 + rng.next() * 13;
+        const rd = 0.8 + rng.next() * 0.5;
+        const xOut = dir * (halfW + 0.4 + rng.next() * 4.6);
+        const rib = MeshBuilder.CreateBox(`massif${dir}_rib${i}`, { width: rw, height: rh, depth: rd }, this.scene);
+        rib.position.set(xOut, y + rh / 2 - 1, faceZ - 0.25 + rd / 2 - rng.next() * 0.12);
+        rib.receiveShadows = true;
+        rib.material = baseMat;
+        rib.freezeWorldMatrix();
+        parts.push(rib);
+      }
+      const mergedSide = Mesh.MergeMeshes(parts, true, true, undefined, false, false)!;
+      mergedSide.name = `sideMassif${dir}`;
+      mergedSide.freezeWorldMatrix();
+      all.push(mergedSide);
+    }
+    // TAPA TRASERA: cierra la vista por detrás de la pared (vista libre alta)
+    const back = MeshBuilder.CreateBox("massifBack", { width: (halfW + 7.4) * 2, height, depth: 2.6 }, this.scene);
+    back.position.set(0, height / 2 - 2, 5.2);
+    back.receiveShadows = true;
+    back.material = baseMat;
+    back.freezeWorldMatrix();
+    all.push(back);
+    const merged = Mesh.MergeMeshes(all, true, true, undefined, false, false)!;
+    merged.name = "sideMassifs";
+    merged.freezeWorldMatrix();
+    this.baseCampStats.massifTris = Math.round(merged.getTotalIndices() / 3);
   }
 
   // ---------- T56 BASE CAMP: pedriz + faldones + cabaña sherpa ----------
@@ -958,8 +1074,7 @@ export class SherpaScene {
 
     // ROCAS SUELTAS: 3 masters low-poly deformados + instancias sembradas
     // (fuera de la franja de caída y de la cabaña): 3 draw calls.
-    const rockMat = mat(this.scene, "screeRockM", "#6f6a62");
-    rockMat.specularColor = new Color3(0.04, 0.04, 0.04);
+    const rockMat = matPBR(this.scene, "screeRockM", "#6f6a62", { rough: 0.95 });
     const masters: Mesh[] = [];
     const rngR = makeRng((cfg.seed ^ 0x0770) >>> 0);
     for (let k = 0; k < 3; k++) {
@@ -1038,12 +1153,12 @@ export class SherpaScene {
     root.position.set(SherpaScene.CABIN_POS.x, 0, SherpaScene.CABIN_POS.z);
     root.rotation.y = SherpaScene.CABIN_POS.ry;
 
-    // materiales compartidos (estilo de siempre: mat() con specular bajo)
-    const mats: Record<CabinMat, StandardMaterial> = {
-      stone: mat(this.scene, "cabinStone", "#8a8378"),
-      wood: mat(this.scene, "cabinWood", "#7a5a3a"),
-      woodDark: mat(this.scene, "cabinWoodDark", "#4f3a28"),
-      roof: mat(this.scene, "cabinRoof", "#45403b"),
+    // materiales compartidos (T61: PBR con HDRI; el cristal conserva alfa)
+    const mats: Record<CabinMat, StandardMaterial | PBRMaterial> = {
+      stone: matPBR(this.scene, "cabinStone", "#8a8378", { rough: 0.92 }),
+      wood: matPBR(this.scene, "cabinWood", "#7a5a3a", { rough: 0.8 }),
+      woodDark: matPBR(this.scene, "cabinWoodDark", "#4f3a28", { rough: 0.85 }),
+      roof: matPBR(this.scene, "cabinRoof", "#45403b", { rough: 0.9 }),
       glass: (() => {
         const g = mat(this.scene, "cabinGlass", "#9fc7d8", { alpha: 0.55 });
         g.emissiveColor = new Color3(0.12, 0.16, 0.18); // luz interior tenue
@@ -1206,8 +1321,9 @@ export class SherpaScene {
     return new Vector3(pos.x + p[0]! * c + p[2]! * s, p[1], pos.z - p[0]! * s + p[2]! * c);
   }
 
-  /** T56 SONDA E2E: estado del base camp (pedriz/faldones/cabaña/banderines). */
-  getBaseCampInfo(): { enabled: boolean; screeTris: number; spurTris: number; rocks: number; cabinPieces: number; flags: number; smoke: boolean; pedrizaTex: boolean; flagWindActive: boolean } {
+  /** T56 SONDA E2E: estado del base camp (pedriz/faldones/cabaña/banderines).
+   *  T61: añade el sellado lateral (massifTris). */
+  getBaseCampInfo(): { enabled: boolean; screeTris: number; spurTris: number; rocks: number; cabinPieces: number; flags: number; smoke: boolean; pedrizaTex: boolean; flagWindActive: boolean; massifTris: number } {
     return { ...this.baseCampStats, flagWindActive: this.flagWind?.debugInfo().active ?? false };
   }
 
@@ -1765,6 +1881,8 @@ export class SherpaScene {
     /** T58-A: nitidez — DPR efectivo, escala lógica (1 = nativo FÍSICO) y
      *  píxeles reales del backbuffer vs píxeles CSS del canvas. */
     dpr: number; scaleLevel: number; renderW: number; renderH: number; clientW: number; clientH: number;
+    /** T61: HDRI + hora del día (sonda E2E). */
+    environment: boolean; daytime: string;
   } {
     const ip = this.scene.imageProcessingConfiguration;
     return {
@@ -1784,6 +1902,8 @@ export class SherpaScene {
       renderH: this.engine.getRenderHeight(),
       clientW: this.engine.getRenderWidth() * this.engine.getHardwareScalingLevel(),
       clientH: this.engine.getRenderHeight() * this.engine.getHardwareScalingLevel(),
+      environment: !!this.scene.environmentTexture,
+      daytime: this.daytimeId,
     };
   }
 
@@ -1851,6 +1971,188 @@ export class SherpaScene {
     this.snowSystem.emitRate = perSecond;
   }
 
+  // ---------- T61 — NEVADA (partículas + presas encaladas + roca manchada) ----------
+
+  /** Llamado CADA tick del match (barato): la nieve visible es solo
+   *  emitRate + recoloreo cuando cambia la cota/intensidad de verdad. */
+  setSnowVisual(active: boolean, intensity: number, lineY: number): void {
+    this.snowPps = Math.max(60, this.snowPps);
+    const rate = active ? Math.round(this.snowPps * Math.min(1, intensity)) : 0;
+    this.snowBaseRate = rate; // setWind suma su ventisca ENCIMA
+    this.snowSystem.emitRate = rate;
+    const want = active && intensity > 0.15;
+    const changed = !want
+      ? this.snowLineApplied !== -1 || this.snowySwaps.size > 0
+      : Math.abs(lineY - this.snowLineApplied) > 0.9 || Math.abs(intensity - this.snowIntensityApplied) > 0.2;
+    if (!changed) return;
+    this.applySnowline(want ? lineY : Number.POSITIVE_INFINITY, intensity);
+    this.snowLineApplied = want ? lineY : -1;
+    this.snowIntensityApplied = intensity;
+  }
+
+  /** Sonda E2E: cuántas presas llevan capucha de nieve y a qué cota. */
+  getSnowInfo(): { swaps: number; lineY: number; pps: number } {
+    return { swaps: this.snowySwaps.size, lineY: Math.round(this.snowLineApplied * 10) / 10, pps: this.snowBaseRate };
+  }
+
+  /** Marca la cota: presas por encima → instancia BLANCA (master nevado);
+   *  roca de los chunks vivos → tinte por vértice (la pared queda manchada). */
+  private applySnowline(lineY: number, intensity: number): void {
+    for (const [id, inst] of this.holdMeshes) {
+      const y = inst.position.y;
+      const want = lineY !== Number.POSITIVE_INFINITY && y >= lineY;
+      const cur = this.snowySwaps.has(id);
+      if (want === cur) continue;
+      if (want) {
+        const snowy = this.snowyMasterFor(String((inst.metadata as { holdType?: string } | null)?.holdType ?? "rock_firm"));
+        if (!snowy) continue;
+        snowy.position.copyFrom(inst.position);
+        snowy.scaling.copyFrom(inst.scaling);
+        inst.isVisible = false;
+        this.snowySwaps.set(id, snowy);
+      } else {
+        const s = this.snowySwaps.get(id);
+        if (s) s.dispose();
+        this.snowySwaps.delete(id);
+        inst.isVisible = true;
+      }
+    }
+    this.tintSnowOnRelief(lineY, intensity);
+  }
+
+  /** Master nevado por tipo (esfera blanca rugosa, un material compartido). */
+  private snowyMasterFor(type: string): Mesh | null {
+    let m = this.snowyMasters.get(type);
+    if (m) return m.isVisible ? m : null;
+    try {
+      m = MeshBuilder.CreateSphere(`snowHoldMaster_${type}`, { diameter: 0.24, segments: 8 }, this.scene);
+      m.material = matPBR(this.scene, `snowHoldM_${type}`, "#eef3f7", { rough: 0.5 });
+      m.isVisible = false;
+      m.receiveShadows = true;
+      this.snowyMasters.set(type, m);
+      return m;
+    } catch {
+      return null;
+    }
+  }
+
+  /** MANCHAS DE NIEVE en la roca: tinte por vértice de los chunks vivos.
+   *  Guarda los colores originales para restaurar al despejar. */
+  private tintSnowOnRelief(lineY: number, intensity: number): void {
+    const capK = Math.min(1, intensity * 1.4);
+    const clearing = lineY === Number.POSITIVE_INFINITY;
+    for (const [chunk, e] of this.reliefMeshes) {
+      const pos = e.mesh.getVerticesData(VertexBuffer.PositionKind);
+      const col = e.mesh.getVerticesData(VertexBuffer.ColorKind);
+      if (!pos || !col) continue;
+      let base = this.reliefBaseColors.get(chunk);
+      if (!base) {
+        base = new Float32Array(col);
+        this.reliefBaseColors.set(chunk, base);
+      }
+      const src = base; // siempre desde el ORIGINAL (idempotente)
+      const out = new Float32Array(col.length);
+      let changed = false;
+      for (let i = 0, vi = 0; i < pos.length; i += 3, vi += 4) {
+        const y = pos[i + 1];
+        const x = pos[i];
+        let k = 0;
+        if (!clearing) {
+          const t = Math.min(1, Math.max(0, (y - (lineY - 0.4)) / 5.4));
+          const cap = t * t * (3 - 2 * t) * capK;
+          // parcheo determinista por posición (la nieve no cubre uniforme)
+          const jit = 0.55 + 0.45 * (Math.abs(Math.sin(x * 12.9898 + y * 78.233) * 43758.5453) % 1);
+          k = Math.min(0.9, cap * jit);
+        }
+        if (k > 0.02) {
+          out[vi] = src[vi] + (0.97 - src[vi]) * k;
+          out[vi + 1] = src[vi + 1] + (0.98 - src[vi + 1]) * k;
+          out[vi + 2] = src[vi + 2] + (1.0 - src[vi + 2]) * k;
+          out[vi + 3] = src[vi + 3];
+          changed = true;
+        } else {
+          out[vi] = src[vi]; out[vi + 1] = src[vi + 1]; out[vi + 2] = src[vi + 2]; out[vi + 3] = src[vi + 3];
+          if (col[vi] !== src[vi] || col[vi + 1] !== src[vi + 1] || col[vi + 2] !== src[vi + 2]) changed = true;
+        }
+      }
+      if (changed) e.mesh.updateVerticesData(VertexBuffer.ColorKind, out);
+      if (clearing) this.reliefBaseColors.delete(chunk);
+    }
+  }
+
+  // ---------- T61 — OBJETOS QUE CAEN (dibujo) ----------
+
+  /** Espeja el estado puro del match: 1 instancia por objeto, creada/destruida
+   *  aquí; posición/rotación exactas de la balística. */
+  syncFallingObjects(list: { id: number; kind: string; pos: V3; rot: V3 }[]): void {
+    const seen = new Set<number>();
+    for (const f of list) {
+      seen.add(f.id);
+      let m = this.fallingMeshes.get(f.id);
+      if (!m) {
+        m = this.makeFallingMesh(f.kind);
+        this.fallingMeshes.set(f.id, m);
+      }
+      m.position.set(f.pos.x, f.pos.y, f.pos.z);
+      m.rotation.set(f.rot.x, f.rot.y, f.rot.z);
+    }
+    for (const [id, m] of this.fallingMeshes) {
+      if (!seen.has(id)) { m.dispose(); this.fallingMeshes.delete(id); }
+    }
+  }
+
+  getFallingCount(): number { return this.fallingMeshes.size; }
+
+  /** Master por tipo de objeto (mallas absurdas fusionadas, PBR).
+   *  maceta / termo / momo gigante / pez congelado. */
+  private makeFallingMesh(kind: string): Mesh {
+    let master = this.fallingKinds.get(kind);
+    if (!master) {
+      const parts: Mesh[] = [];
+      let material: PBRMaterial;
+      if (kind === "maceta") {
+        material = matPBR(this.scene, "fallMacetaM", "#b4623a", { rough: 0.9 });
+        const pot = MeshBuilder.CreateCylinder("fmPot", { diameterTop: 0.34, diameterBottom: 0.22, height: 0.3, tessellation: 10 }, this.scene);
+        const rim = MeshBuilder.CreateTorus("fmRim", { diameter: 0.34, thickness: 0.05, tessellation: 10 }, this.scene);
+        rim.position.y = 0.15;
+        parts.push(pot, rim);
+      } else if (kind === "termo") {
+        material = matPBR(this.scene, "fallTermoM", "#c8ccd4", { rough: 0.3, metal: 0.7 });
+        const body = MeshBuilder.CreateCylinder("ftBody", { diameter: 0.15, height: 0.42, tessellation: 10 }, this.scene);
+        const cap = MeshBuilder.CreateCylinder("ftCap", { diameter: 0.16, height: 0.09, tessellation: 10 }, this.scene);
+        cap.position.y = 0.25;
+        parts.push(body, cap);
+      } else if (kind === "momo") {
+        material = matPBR(this.scene, "fallMomoM", "#f0e3c8", { rough: 0.75 });
+        const dough = MeshBuilder.CreateSphere("fmDough", { diameter: 0.4, segments: 8 }, this.scene);
+        dough.scaling.set(1, 0.72, 0.85);
+        const pleat = MeshBuilder.CreateSphere("fmPleat", { diameter: 0.14, segments: 6 }, this.scene);
+        pleat.position.y = 0.15;
+        parts.push(dough, pleat);
+      } else if (kind === "pez") {
+        material = matPBR(this.scene, "fallPezM", "#9fc4d8", { rough: 0.4 });
+        const body = MeshBuilder.CreateSphere("fpBody", { diameter: 0.3, segments: 8 }, this.scene);
+        body.scaling.set(1.7, 0.55, 0.5);
+        const tail = MeshBuilder.CreateCylinder("fpTail", { diameterTop: 0.02, diameterBottom: 0.16, height: 0.2, tessellation: 6 }, this.scene);
+        tail.rotation.z = Math.PI / 2;
+        tail.position.x = -0.28;
+        parts.push(body, tail);
+      } else {
+        material = matPBR(this.scene, "fallMiscM", "#8d99ae", { rough: 0.8 });
+        parts.push(MeshBuilder.CreateSphere("fmMisc", { diameter: 0.3, segments: 6 }, this.scene));
+      }
+      for (const p of parts) p.material = material;
+      master = parts.length > 1 ? Mesh.MergeMeshes(parts, true, true, undefined, false, false)! : parts[0];
+      master.name = `fallMaster_${kind}`;
+      master.isVisible = false;
+      this.castShadow(master);
+      this.fallingKinds.set(kind, master);
+    }
+    const inst = master.createInstance(`fallObj${this.fallingSeq++}`);
+    inst.isVisible = true;
+    return inst as unknown as Mesh;
+  }
+
   addHolds(holds: HoldInstance[], colors: Record<string, string>): void {
     // RELIEVE (T39): los anclajes son SEMILLAS de la teselación — cada presa
     // genera SU piedra (cara centrada en ella, fractura a su alrededor). Si la
@@ -1898,13 +2200,15 @@ export class SherpaScene {
       let master = this.holdMasters.get(h.type);
       if (!master) {
         master = MeshBuilder.CreateSphere(`holdMaster_${h.type}`, { diameter: 0.22, segments: 8 }, this.scene);
-        master.material = mat(this.scene, `holdM_${h.type}`, hex);
+        // T61: presas en PBR (relleno HDRI; rugosidad según tipo de agarre)
+        master.material = matPBR(this.scene, `holdM_${h.type}`, hex, { rough: h.type === "ice" || h.type === "ice_plate" || h.type === "snow" ? 0.35 : 0.62 });
         master.isVisible = false;
         master.receiveShadows = true; // las presas reciben la sombra de los cuerpos
         this.holdMasters.set(h.type, master);
       }
       const inst = master.createInstance(`hold_${h.id}`);
       inst.position.set(h.pos.x, h.pos.y, h.pos.z);
+      inst.metadata = { holdType: h.type }; // T61: para los swaps nevados
       // PRESAS PROFUNDAS (T41, petición del jugador: "hacer los puntos de
       // agarre más profundos"): el knob se ESTIRA en z hasta morder la pared —
       // la presa se ve encajada en la roca, no flotando pegada a ella.
@@ -1948,10 +2252,11 @@ export class SherpaScene {
     }
     this.climberPendingSwap[player] = this.climberState === "loading"; // llegará tarde: intercambiar
     const colors = SHERPA_COLORS[player];
-    const body = mat(this.scene, `body${player}`, colors.body);
-    const strap = mat(this.scene, `strap${player}`, colors.strap);
+    // T61: cuerpos en PBR (relleno HDRI coherente con la hora del día)
+    const body = matPBR(this.scene, `body${player}`, colors.body, { rough: 0.72 });
+    const strap = matPBR(this.scene, `strap${player}`, colors.strap, { rough: 0.78 });
     const bones: Bone[] = [];
-    const mk = (name: string, a: number, b: number, radius: number, material: StandardMaterial): void => {
+    const mk = (name: string, a: number, b: number, radius: number, material: Material): void => {
       const rest = vLen(vSub(rig.particles[a].pos, rig.particles[b].pos));
       const mesh = MeshBuilder.CreateCapsule(`p${player}_${name}`, { radius, height: rest + radius, tessellation: 8, capSubdivisions: 4 }, this.scene);
       mesh.material = material;
@@ -2243,8 +2548,8 @@ export class SherpaScene {
   spawnPlank(lenM: number): void {
     this.despawnPlank();
     const board = MeshBuilder.CreateBox("plank", { width: 1.7, height: 0.07, depth: 0.42 }, this.scene);
-    board.material = mat(this.scene, "plankM", "#9a6b3f");
-    const strapMat = mat(this.scene, "plankStrapM", "#54402c");
+    board.material = matPBR(this.scene, "plankM", "#9a6b3f", { rough: 0.8 });
+    const strapMat = matPBR(this.scene, "plankStrapM", "#54402c", { rough: 0.85 });
     for (const sx of [-0.55, 0.55]) {
       const strap = MeshBuilder.CreateBox(`plankStrap${sx}`, { width: 0.1, height: 0.085, depth: 0.46 }, this.scene);
       strap.material = strapMat;
@@ -2329,10 +2634,11 @@ export class SherpaScene {
 
   spawnRichMan(): void {
     this.despawnRichMan();
-    const body = mat(this.scene, "richBody", "#c9a86a");
-    const clothes = mat(this.scene, "richClothes", "#7c4dbd");
+    // T61: PBR (piel + ropa del ricachón)
+    const body = matPBR(this.scene, "richBody", "#c9a86a", { rough: 0.7 });
+    const clothes = matPBR(this.scene, "richClothes", "#7c4dbd", { rough: 0.8 });
     const bones: Bone[] = [];
-    const mk = (name: string, a: number, b: number, radius: number, material: StandardMaterial, rest: number): void => {
+    const mk = (name: string, a: number, b: number, radius: number, material: Material, rest: number): void => {
       const mesh = MeshBuilder.CreateCapsule(`rm_${name}`, { radius, height: rest + radius, tessellation: 8, capSubdivisions: 4 }, this.scene);
       mesh.material = material;
       bones.push({ a, b, mesh, rest });
@@ -2525,6 +2831,14 @@ export class SherpaScene {
     );
     // NUNCA bajo la nieve (pitch -30° cerca del suelo metería la cámara en ella)
     if (this.camera.position.y < 0.35) this.camera.position.y = 0.35;
+    // T61: el FRONTAL NOCTURNO acompaña al equipo (entre las dos cinturas, alto
+    // y hacia la cámara): la escalada de noche queda jugable y con sombras suaves.
+    if (this.headlamp && this.headlamp.intensity > 0.01 && points.length) {
+      const n = Math.min(2, points.length);
+      let hx = 0, hy = 0;
+      for (let i = 0; i < n; i++) { hx += points[i].x; hy += points[i].y; }
+      this.headlamp.position.set(hx / n, hy / n + 1.7, this.camera.position.z + 2.6);
+    }
     if (this.shakeAmp > 0.001) {
       this.camera.position.x += (Math.random() - 0.5) * this.shakeAmp;
       this.camera.position.y += (Math.random() - 0.5) * this.shakeAmp;
@@ -2753,7 +3067,7 @@ export class SherpaScene {
    *  infiniteDistance → siempre centrada en la cámara; sin niebla (ES el
    *  fondo). Variante TORMENTA azul noche para el modo tormenta. */
   private buildSkyDome(): void {
-    const makeGradient = (top: string, mid: string, bottom: string): DynamicTexture => {
+    const makeGradient = (top: string, mid: string, bottom: string, stars = false): DynamicTexture => {
       const dt = new DynamicTexture("skyGrad", { width: 8, height: 256 }, this.scene, false);
       const ctx = dt.getContext() as unknown as CanvasRenderingContext2D;
       const g = ctx.createLinearGradient(0, 0, 0, 256);
@@ -2762,6 +3076,18 @@ export class SherpaScene {
       g.addColorStop(1, bottom);
       ctx.fillStyle = g;
       ctx.fillRect(0, 0, 8, 256);
+      if (stars) {
+        // estrellas deterministas sobre el degradado nocturno (2 px = visibles)
+        let s = 0x51ce;
+        const rnd = (): number => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return (s % 100000) / 100000; };
+        ctx.fillStyle = "rgba(255,255,255,0.85)";
+        for (let i = 0; i < 90; i++) {
+          const y = rnd() * 130; // mitad alta del degradado (cénit→medio)
+          const x = rnd() * 8;
+          ctx.fillRect(Math.floor(x), Math.floor(y), 1, 1);
+          if (rnd() < 0.3) ctx.fillRect(Math.floor(x) + 1, Math.floor(y), 1, 1);
+        }
+      }
       dt.update();
       return dt;
     };
@@ -2778,7 +3104,12 @@ export class SherpaScene {
     // oscuros de lo deseado a pantalla (el visible dominante es el medio).
     this.skyMatDay = mkMat("skyDay", makeGradient("#17334f", "#3f6f99", "#7fa6bd"));
     this.skyMatStorm = mkMat("skyStorm", makeGradient("#05070d", "#0d1220", "#1a2230"));
-    this.skyMatActive = this.stormMode ? this.skyMatStorm : this.skyMatDay;
+    // T61 — HORA DEL DÍA: atardecer cálido y noche con ESTRELLAS horneadas.
+    this.skyMatSunset = mkMat("skySunset", makeGradient("#3d2a55", "#c46a4a", "#f2b177"));
+    this.skyMatNight = mkMat("skyNight", makeGradient("#020409", "#070d1c", "#101a30", true));
+    this.skyMatActive = this.stormMode ? this.skyMatStorm
+      : this.daytimeId === "atardecer" ? this.skyMatSunset
+      : this.daytimeId === "noche" ? this.skyMatNight : this.skyMatDay;
     const dome = MeshBuilder.CreateSphere("skyDome", { diameter: 260, segments: 10, sideOrientation: Mesh.BACKSIDE }, this.scene);
     dome.material = this.skyMatActive;
     dome.infiniteDistance = true;
@@ -2788,11 +3119,15 @@ export class SherpaScene {
     this.skyDome = dome;
   }
 
-  /** Cambia cielo + niebla día ⇄ tormenta (coherentes entre sí). */
+  /** Cambia cielo + niebla día ⇄ tormenta (coherentes entre sí).
+   *  T61: la vuelta del preset respeta la HORA DEL DÍA elegida. */
   private setSkyStorm(storm: boolean): void {
-    this.skyMatActive = storm ? this.skyMatStorm : this.skyMatDay;
+    this.skyMatActive = storm ? this.skyMatStorm
+      : this.daytimeId === "atardecer" ? this.skyMatSunset
+      : this.daytimeId === "noche" ? this.skyMatNight : this.skyMatDay;
     if (this.skyDome) this.skyDome.material = this.skyMatActive;
-    this.scene.fogColor = (storm ? this.fogStorm : this.fogDay).clone();
+    this.scene.fogColor = (storm ? this.fogStorm
+      : Color3.FromHexString(this.dayPreset.fogColor)).clone();
   }
 
   /** MODO TORMENTA: cielo más oscuro (azul noche) + sol APAGADO mientras dura
@@ -2802,15 +3137,104 @@ export class SherpaScene {
     this.stormMode = storm;
     this.setSkyStorm(storm);
     if (!storm && this.flashT <= 0) {
-      this.scene.clearColor = new Color4(0.055, 0.07, 0.09, 1);
-      if (this.hemiLight) this.hemiLight.intensity = this.hemiBase;
-      if (this.sunLight) this.sunLight.intensity = this.sunBase;
-      if (this.rockFill) this.rockFill.intensity = this.rockFillBase;
+      this.scene.clearColor = Color4.FromHexString(this.dayPreset.ambient + "FF");
+      this.applyPresetLights(1);
     } else if (storm) {
       this.scene.clearColor = new Color4(0.028, 0.032, 0.048, 1);
-      if (this.hemiLight) this.hemiLight.intensity = this.hemiBase * 0.72;
-      if (this.sunLight) this.sunLight.intensity = this.sunBase * 0.28;
-      if (this.rockFill) this.rockFill.intensity = 0.3; // noche: el relleno de roca se apaga
+      this.applyPresetLights(0.28);
+      if (this.rockFill) this.rockFill.intensity = Math.min(this.rockFill.intensity, 0.3);
+    }
+  }
+
+  /** T61 — LUZ DEL PRESET (hora del día) con multiplicador de tormenta. */
+  private applyPresetLights(mult: number): void {
+    const p = this.dayPreset;
+    if (this.hemiLight) {
+      this.hemiLight.intensity = p.hemiIntensity * (mult === 1 ? 1 : 0.72);
+      this.hemiLight.diffuse = Color3.FromHexString(p.hemiColor);
+    }
+    if (this.sunLight) {
+      this.sunLight.intensity = p.sunIntensity * mult;
+      this.sunLight.diffuse = Color3.FromHexString(p.sunColor);
+      this.sunLight.specular = Color3.FromHexString(p.sunColor).scale(0.24);
+    }
+    if (this.rockFill) this.rockFill.intensity = p.fillIntensity * (mult === 1 ? 1 : 0.35);
+    if (this.headlamp) this.headlamp.intensity = p.headlamp && mult === 1 ? 1.15 : p.headlamp ? 0.35 : 0;
+  }
+
+  /** T61 — HORA DEL DÍA (petición: "variar la posición del sol, escaladas
+   *  nocturnas"). Aplica sol, luces, niebla, cielo, exposición, frontal y el
+   *  HDRI procedural (IBL de los PBR). id desconocido → día (defensivo). */
+  setDaytime(id: string, preset: DayPreset): void {
+    const pid = (id === "atardecer" || id === "noche" ? id : "dia") as DaytimeId;
+    this.daytimeId = pid;
+    this.dayPreset = preset ?? resolveDayPreset(undefined, pid);
+    const p = this.dayPreset;
+    if (this.sunLight) {
+      const d = new Vector3(p.sunDir[0], p.sunDir[1], p.sunDir[2]);
+      if (d.lengthSquared() > 1e-6) d.normalize();
+      this.sunLight.direction.copyFrom(d);
+      this.sunDirBase = d.clone(); // el sol orbital parte de ESTA base
+      if (!this.stormMode) {
+        this.sunLight.intensity = p.sunIntensity;
+        this.sunLight.diffuse = Color3.FromHexString(p.sunColor);
+        this.sunLight.specular = Color3.FromHexString(p.sunColor).scale(0.24);
+      }
+    }
+    if (!this.stormMode) {
+      if (this.hemiLight) {
+        this.hemiLight.intensity = p.hemiIntensity;
+        this.hemiLight.diffuse = Color3.FromHexString(p.hemiColor);
+      }
+      if (this.rockFill) this.rockFill.intensity = p.fillIntensity;
+    }
+    if (this.headlamp) this.headlamp.intensity = p.headlamp && !this.stormMode ? 1.15 : this.headlamp.intensity * 0.2;
+    this.scene.fogColor = Color3.FromHexString(p.fogColor);
+    this.scene.fogDensity = p.fogDensity;
+    this.scene.clearColor = Color4.FromHexString(p.ambient + "FF");
+    const ip = this.scene.imageProcessingConfiguration;
+    if (typeof p.exposure === "number") ip.exposure = p.exposure;
+    // cielo (sin tormenta activa: la tormenta manda hasta acabar)
+    if (!this.stormMode) {
+      this.skyMatActive = pid === "atardecer" ? this.skyMatSunset
+        : pid === "noche" ? this.skyMatNight : this.skyMatDay;
+      if (this.skyDome && this.skyMatActive) this.skyDome.material = this.skyMatActive;
+    }
+    this.rebuildEnv(p);
+  }
+
+  getDaytime(): string { return this.daytimeId; }
+
+  /** T61 — HDRI PROCEDURAL: genera el panorama .hdr de la hora del día y lo
+   *  cuelga como environmentTexture (IBL físico para los PBRMaterial).
+   *  Fallo tolerado: sin HDRI el juego se ilumina como siempre. */
+  private rebuildEnv(p: DayPreset): void {
+    try {
+      const bytes = generateSkyHdrBytes({
+        top: hexToLin(p.skyTop),
+        mid: hexToLin(p.skyMid),
+        bottom: hexToLin(p.skyBottom),
+        sunDir: [-p.sunDir[0], -p.sunDir[1], -p.sunDir[2]], // hacia el sol
+        sunColor: hexToLin(p.sunColor),
+        sunIntensity: p.stars ? 26 : p.sunIntensity * 1.35,
+        ground: p.stars ? [0.012, 0.014, 0.02] : [0.16, 0.15, 0.14],
+        moonIntensity: p.stars ? 0.9 : 0,
+        stars: p.stars ? 1 : 0,
+        seed: 0x61da,
+        width: 256,
+        height: 128,
+      });
+      if (this.envUrl) URL.revokeObjectURL(this.envUrl);
+      this.envUrl = URL.createObjectURL(new Blob([bytes as unknown as BlobPart], { type: "image/vnd.radiance" }));
+      const env = new HDRCubeTexture(this.envUrl, this.scene, 128, false, true, false, true);
+      this.scene.environmentTexture = env;
+      this.scene.environmentIntensity = p.stars ? 0.4 : 0.85;
+      const old = this.envTexture;
+      this.envTexture = env;
+      if (old) old.dispose();
+    } catch {
+      // sin HDRI no pasa nada: las luces directas sostienen la escena
+      this.scene.environmentTexture = null;
     }
   }
 

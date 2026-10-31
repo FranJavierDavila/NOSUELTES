@@ -81,15 +81,53 @@ with sync_playwright() as pw:
             page.wait_for_timeout(2000)
     assert go, "el botón GO del menú nunca apareció"
     page.click("button[data-a=go]")
+    # T59+: saltar el onboarding con CLICS JS (el clic real se ahoga con
+    # SwiftShader; T61 endureció esta práctica en todas las E2E)
+    page.wait_for_timeout(1500)
+    for _ in range(6):
+        try:
+            avanzado = page.evaluate("""(() => {
+              const b = document.querySelector('[data-a=obNext]');
+              if (!b || !b.offsetParent) return false;
+              b.click();
+              return true;
+            })()""")
+        except Exception:
+            avanzado = False
+        if not avanzado:
+            break
+        page.wait_for_timeout(600)
 
     t0 = time.time()
     while time.time() - t0 < 120:
-        if scene_ok(page):
+        # T61: scene_ok ya no basta (el MENÚ también tiene escena) — exigir
+        # la PARTIDA real vía drag(0) como el resto de E2E.
+        en_partida = False
+        try:
+            en_partida = bool(page.evaluate("window.__SHERPAS_DEBUG && !!__SHERPAS_DEBUG.drag(0)"))
+        except Exception:
+            pass
+        if en_partida:
             break
         try:
             page.click("text=SHERPAS AL LÍMITE", timeout=4000)
             page.wait_for_selector("button[data-a=go]", timeout=6000)
             page.click("button[data-a=go]")
+            page.wait_for_timeout(1200)
+            for _ in range(6):
+                avanzado = False
+                try:
+                    avanzado = page.evaluate("""(() => {
+                      const b = document.querySelector('[data-a=obNext]');
+                      if (!b || !b.offsetParent) return false;
+                      b.click();
+                      return true;
+                    })()""")
+                except Exception:
+                    pass
+                if not avanzado:
+                    break
+                page.wait_for_timeout(500)
         except Exception:
             pass
         page.wait_for_timeout(4000)
@@ -130,10 +168,11 @@ with sync_playwright() as pw:
     check("celebrar activo en P0", bool(em.get("p0")) and em["p0"].get("name") == "celebrar", f"({em.get('p0')})")
     check("la mano sube sobre la física (handDy > 0.1)", (em.get("p0") or {}).get("handDy", 0) > 0.1,
           f"(handDy={em.get('p0', {}).get('handDy')})")
-    # (en sandbox a 4 fps el reloj va clamped ×0,4: espera generosa)
+    # (en sandbox a 4 fps el reloj va clamped ×0,4: espera generosa; T61 añade
+    #  PBR+macizos y el frame cae aún más — 15 s de margen)
     em2 = {"p0": {"name": "celebrar"}}
     t0 = time.time()
-    while time.time() - t0 < 9:
+    while time.time() - t0 < 15:
         em2 = probe(page, "emote") or {}
         if em2.get("p0") is None:
             break

@@ -13,6 +13,8 @@ import { P } from "../../physics/pbd/ragdoll";
 import { PLANK_DEFAULTS } from "../physics/plank";
 import { SnapBuffer, type NetSessionParams, type NetSnapshot } from "./protocol";
 import type { GuestNet } from "./netClient";
+import { SnowSystem } from "../gameplay/snow"; // T61: nevada replicada
+import { resolveDayPreset } from "../gameplay/daycycle"; // T61: hora del día replicada
 
 /** índices de partícula por extremidad (igual que sherpaRig). */
 const LIMB_PARTICLE: Record<string, number> = { hand_l: P.handL, hand_r: P.handR, foot_l: P.footL, foot_r: P.footR };
@@ -55,6 +57,8 @@ export class GuestRunner {
     gesture: "idle",
   };
   private mmCache = new Map<string, MinimapHold[]>();
+  /** T61: nevada local del guest (misma tuning que el host). */
+  private snow: SnowSystem;
   /** cuerdas reconstruidas del snapshot (flat → V3[], sin alojar por frame). */
   private ropeA: { x: number; y: number; z: number }[] = [];
   private ropeB: { x: number; y: number; z: number }[] = [];
@@ -77,6 +81,14 @@ export class GuestRunner {
     const delay = d.data.net?.interpBufferMs ?? 100;
     this.buf = new SnapBuffer(delay);
     this.d.net.onSnapshot = (s) => { if (!this.disposed) this.onSnap(s); };
+    // T61 — el guest REPLICA el ambiente del host: misma hora del día (sol,
+    // cielo, HDRI) y la misma nevada (intensidad por altura local).
+    this.snow = new SnowSystem(this.d.data.tuning.snow);
+    this.snow.setMode(this.d.params.snow === "snow" ? "snow" : this.d.params.snow === "snow_low" ? "snow_low" : "clear");
+    this.d.scene.setDaytime(
+      this.d.params.daytime ?? "dia",
+      resolveDayPreset(this.d.data.tuning.daycycle, this.d.params.daytime ?? "dia"),
+    );
   }
 
   static async create(d: GuestRunnerDeps): Promise<GuestRunner> {
@@ -211,6 +223,10 @@ export class GuestRunner {
     s.syncSherpa(0, this.solver, 1);
     setParts(cur.b.p, prev.b.p);
     s.syncSherpa(1, this.solver, 1);
+    // T61: la nevada del guest respira con la altura interpolada del equipo
+    const gAlt = Math.min(cur.a.p[1] ?? 0, cur.b.p[1] ?? 0);
+    const gSev = this.snow.step(frameDt, gAlt);
+    s.setSnowVisual(gSev.intensity > 0.02, gSev.intensity, gSev.snowlineM);
 
     // ---- ricachón (shim estructural) ----
     for (let i = 0; i < 11; i++) {
