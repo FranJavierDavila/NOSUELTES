@@ -355,6 +355,13 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         } | null;
         return sc?.getBaseCampInfo?.() ?? null;
       },
+      /** T62 RICACHÓN CON PLANTILLA: ¿la marioneta GLB está activa? (sonda E2E). */
+      richPuppet: (): Record<string, unknown> | null => {
+        const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
+          getRichPuppetInfo?: () => Record<string, unknown>;
+        } | null;
+        return sc?.getRichPuppetInfo?.() ?? null;
+      },
       /** T56 CAÍDA DEL RICACHÓN: estado de la caída (sonda E2E: aterriza en el
        *  pedriz con impacto; el respawn llega después). */
       richFall: (): Record<string, unknown> | null => {

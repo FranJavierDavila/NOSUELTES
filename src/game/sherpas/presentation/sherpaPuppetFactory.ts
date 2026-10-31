@@ -95,11 +95,16 @@ export class SherpaPuppetFactory {
 
   /** Instancia el modelo para UN jugador. null si falta alguna pieza (la
    *  escena se queda con cápsulas). `strapHex` tiñe las JUNTAS/CORREAS
-   *  (materiales sin textura); el cuerpo texturizado conserva el arte. */
+   *  (materiales sin textura); el cuerpo texturizado conserva el arte.
+   *  T62 — opts para EL RICACHÓN con la misma plantilla: `bodyHex` aplana el
+   *  cuerpo a UN color (sin textura: el morado de marca) y `pieceScale`
+   *  ENGORDA piezas por nombre (escala local sobre el pivote de la
+   *  articulación: la panza crece sin desalinear las juntas). */
   instantiate(
     strapHex: string,
     casters: (m: AbstractMesh) => void,
     fillLight?: (m: AbstractMesh) => void,
+    opts?: { bodyHex?: string; pieceScale?: Record<string, [number, number, number]> },
   ): SherpaPuppetInstance | null {
     const entries = this.container.instantiateModelsToScene(
       (n: string) => n, // nombres compartidos: se referencian por OBJETO
@@ -145,6 +150,10 @@ export class SherpaPuppetFactory {
     const binds: PuppetBinds = buildBinds(trs);
 
     // --- materiales: cuerpo (textura, arte original) vs juntas (tinte jugador) ---
+    // T62 — opts.bodyHex (RICACHÓN): cuerpo PLANO de un color (sin textura):
+    // se retira el albedoTexture y manda el albedoColor — el morado de marca
+    // se lee puro en vez de teñir la textura (que saldría lodaza).
+    const bodyFlat = opts?.bodyHex ? Color3.FromHexString(opts.bodyHex) : null;
     const strap = Color3.FromHexString(strapHex);
     const seen = new Set<unknown>();
     const allMeshes = collectMeshes(entries.rootNodes as unknown as TransformNode[]);
@@ -158,7 +167,12 @@ export class SherpaPuppetFactory {
         seen.add(mat);
         mat.metallic = 0; // tela/plástico: dieléctrico (sin env, metallic=1 sería negro)
         mat.useHorizonOcclusion = false;
-        if (mat.albedoTexture) {
+        if (bodyFlat) {
+          // cuerpo PLANO de un color (ricachón morado)
+          mat.albedoTexture = null;
+          mat.albedoColor = bodyFlat;
+          mat.emissiveColor = new Color3(bodyFlat.r * 0.24, bodyFlat.g * 0.24, bodyFlat.b * 0.24);
+        } else if (mat.albedoTexture) {
           // cuerpo: piso emissive sutil (T49: que se lea sobre roca oscura)
           mat.emissiveTexture = mat.albedoTexture;
           mat.emissiveColor = new Color3(0.2, 0.2, 0.2);
@@ -180,6 +194,17 @@ export class SherpaPuppetFactory {
       if (m instanceof Mesh) m.sideOrientation = Material.CounterClockWiseSideOrientation;
       casters(m);
       fillLight?.(m); // relleno frío para el PBR (misma política T44)
+    }
+
+    // T62 — ENGORDE por pieza (ricachón): escala LOCAL del nodo pieza, que
+    // rota/translada cada frame SIN tocarla. La escala vive en el espacio
+    // local de la pieza (su pivote ES la articulación): la panza crece
+    // hacia su propio +z (delante) sin desalinear la cadena.
+    if (opts?.pieceScale) {
+      for (const [name, s] of Object.entries(opts.pieceScale)) {
+        const node = (nodeBy as Map<string, TransformNode>).get(name);
+        if (node) node.scaling.set(s[0]!, s[1]!, s[2]!);
+      }
     }
 
     return new SherpaPuppetInstance(entries.rootNodes as unknown as TransformNode[], nodeBy, binds, allMeshes);

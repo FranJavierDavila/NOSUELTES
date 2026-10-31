@@ -55,7 +55,7 @@ export interface SherpaSyncSolver { getParticle(i: number): { pos: { x: number; 
 import { v3, vAdd, vScale, vSub, vLen, type V3 } from "../../physics/pbd/math";
 import type { HoldInstance } from "../physics/anchors";
 import type { DragReachInfo } from "../physics/sherpaRig";
-import { RM } from "../physics/richMan";
+import { RM, RM_PARTICLES } from "../physics/richMan";
 import type { CameraData, ClimberData, HudData, PerfTuning, VfxData } from "../core/data";
 import type { OrbitAxis } from "../input/input";
 import { orbitLimits, rotYxz, sunAzimuth } from "./orbitMath"; // T47: sol orbital + vista libre (puro)
@@ -94,6 +94,12 @@ import {
   type BaseCampCfg, type GeomData,
 } from "../world/baseCamp"; // T56: faldones de continuidad + pedriz
 import { buildCabinSpec, flagRopePoint, type CabinMat, type CabinSpec } from "../world/cabin"; // T56: cabaña sherpa
+import {
+  buildSideMassifGeometry, resolveSideMassifCfg, type SideMassifCfg,
+} from "../world/sideMassif"; // T62: macizos naturales (cortinas desplazadas)
+import { generateRopeColor, generateRopeNormalRGBA } from "../world/ropeTexture"; // T62: cuerda con bandas
+import { generateWoodColor, generateWoodNormalRGBA } from "../world/woodTexture"; // T62: madera del tablón
+import { richJoints15 } from "./richJoints"; // T62: ricachón poseído por la física de 11 cuerpos
 
 interface Bone { a: number; b: number; mesh: Mesh; rest: number; offY?: number }
 interface RigVisual { bones: Bone[]; head: Mesh; roots: Mesh[] }
@@ -209,6 +215,11 @@ export class SherpaScene {
   // tardía e intercambio en caliente que el skinned; si el .glb falla, cápsulas.
   private puppetFactory: SherpaPuppetFactory | null = null;
   private puppet: (SherpaPuppetInstance | null)[] = [null, null];
+  // T62 — RICACHÓN CON LA PLANTILLA DE LOS ESCALADORES: segunda instancia de
+  // la MISMA marioneta sherpa.glb (morado plano + piezas engordadas) poseída
+  // por su física de 11 cuerpos vía richJoints15. Fallback: cápsulas de siempre.
+  private richPuppet: SherpaPuppetInstance | null = null;
+  private richPuppetTried = false;
   private climberRig: (SherpaSpawnRig | null)[] = [null, null];
   private climberPendingSwap: [boolean, boolean] = [false, false];
   private richVisual: {
@@ -223,7 +234,7 @@ export class SherpaScene {
   // call por cuerda (antes ~20 cilindros sueltos = ~20 draw calls).
   private ropeSegs: (Mesh | InstancedMesh)[][] = [[], []];
   private ropeMaster: Mesh | null = null;
-  private ropeMat: StandardMaterial | null = null;
+  private ropeMat: PBRMaterial | null = null; // T62: cuerda texturizada (bandas negras)
   private static readonly ROPE_POOL = 24; // ≥ visualNodes (14) + cola (7) de tuning.rope
   private static readonly STREAK_POOL = 44; // rayas de viento simultáneas
   private trashMesh: Mesh | null = null;
@@ -287,7 +298,12 @@ export class SherpaScene {
   private snowIntensityApplied = -1;
   private snowyMasters = new Map<string, Mesh>();
   private snowySwaps = new Map<string, Mesh>();
-  private reliefBaseColors = new Map<number, Float32Array>();
+  private reliefBaseColors = new Map<number, { base: Float32Array | null }>();
+  /** T62 — NEVADA sobre el macizo lateral (fuera del mapa de chunks: el
+   *  planificador no debe verlo; mismo tinte, base restaurable). */
+  private massifSnow: { mesh: Mesh; base: Float32Array | null } | null = null;
+  /** T62 — MATERIAL del tablón (madera real, creado perezoso). */
+  private plankMat: PBRMaterial | null = null;
   // T61 — OBJETOS QUE CAEN: master por tipo + instancias sincronizadas
   private fallingKinds = new Map<string, Mesh>();
   private fallingMeshes = new Map<number, Mesh>();
@@ -553,8 +569,12 @@ export class SherpaScene {
       loader
         .then((f) => {
           if (this.disposed) { f.disposeContainer(); return; }
-          if (f instanceof SherpaPuppetFactory) this.puppetFactory = f;
-          else this.climberFactory = f;
+          if (f instanceof SherpaPuppetFactory) {
+            this.puppetFactory = f;
+            // T62: el RICACHÓN comparte la MISMA plantilla (segunda instancia
+            // morada y engordada); si el GLB falta, cápsulas de siempre.
+            this.trySpawnRichPuppet();
+          } else this.climberFactory = f;
           this.climberState = "ready";
           // los materiales del GLB llegan tras executeWhenReady: reactiva el
           // mecanismo de dirty para su primera compilación y lo vuelve a
@@ -951,64 +971,55 @@ export class SherpaScene {
     this.buildSideMassifs(wallW / 2, wallFaceZ, wallTop);
   }
 
-  /** T61 — MACIZOS LATERALES (petición: "tapar los huecos que quedan en los
-   *  lados de ambas paredes de los muros"). Dos volúmenes de roca (uno por
-   *  lado) que nacen DENTRO del muro (sin costura visible) y continúan hacia
-   *  fuera y hacia atrás: desde cualquier órbita permitida (yaw ≤ 75°, pitch
-   *  ±50°) ya no se ve el vacío. Silueta irregular con contrafuertes; material
-   *  PBR de pedriza con estratos triplanar EN ESPACIO MUNDO (continuidad de
-   *  tono con los faldones). 3 mallas fusionadas en total: coste ≈ 0. */
+  /** T62 — MACIZOS LATERALES NATURALES (petición del jugador: las piezas T61
+   *  "parecen dos columnas, quitarlas" y "el relleno hacia los laterales que
+   *  tenga la misma textura… con un poco de desplazamiento"). FUERA cajas y
+   *  contrafuertes: ahora cada lado es UNA CORTINA DE ROCA continua (módulo
+   *  puro sideMassif.ts) que nace enterrada en el muro, con DESPLAZAMIENTO
+   *  real por vértice, cresta que decae hacia fuera y repliegue que envuelve
+   *  el canto hacia atrás. MISMO material que faldones/pedriz (pedriza +
+   *  estratos triplanar en espacio mundo) y MISMAS UVs de mundo: toda la
+   *  familia lateral se lee como UNA montaña. La tapa trasera se queda
+   *  (vista libre alta). Sonda E2E en getBaseCampInfo. */
   private buildSideMassifs(halfW: number, faceZ: number, topY: number): void {
     const baseMat = this.ensureBaseRockMaterial();
-    const rng = makeRng(0x61d15);
-    const height = topY + 8;
-    const all: Mesh[] = [];
+    const rawCfg = ((this.reliefRaw as { sideMassif?: unknown } | null)?.sideMassif
+      ?? (this.reliefRaw as { baseCamp?: unknown; sideMassif?: unknown } | null)?.sideMassif) as unknown;
+    const cfg: SideMassifCfg = resolveSideMassifCfg(rawCfg);
+    const parts: Mesh[] = [];
     for (const dir of [-1, 1] as const) {
-      const parts: Mesh[] = [];
-      const inner = dir * (halfW - 0.35); // enterrado en el muro: sin rendija
-      const outer = dir * (halfW + 7.4);
-      const w = Math.abs(outer - inner);
-      // cuerpo principal: cara frontal a z = −0.35 (detrás de las presas, que
-      // sobresalen hasta ≈ −0.64) y fondo a z = +3.9 — la cámara (z ≤ −1 en la
-      // órbita extrema) JAMÁS entra en él.
-      const main = MeshBuilder.CreateBox(`massif${dir}_main`, { width: w, height, depth: 4.25 }, this.scene);
-      main.position.set((inner + outer) / 2, height / 2 - 2, faceZ + 2.075);
-      main.receiveShadows = true;
-      main.material = baseMat;
-      main.freezeWorldMatrix();
-      parts.push(main);
-      // contrafuertes: bultos de silueta a cotas variadas (deterministas);
-      // la cara queda ≈ −0.55: apenas delante del mortero, detrás de las presas
-      const nRibs = 5;
-      for (let i = 0; i < nRibs; i++) {
-        const y = 2 + (i + rng.next() * 0.7) * (height * 0.82) / nRibs;
-        const rw = 1.8 + rng.next() * 2.2;
-        const rh = 6 + rng.next() * 13;
-        const rd = 0.8 + rng.next() * 0.5;
-        const xOut = dir * (halfW + 0.4 + rng.next() * 4.6);
-        const rib = MeshBuilder.CreateBox(`massif${dir}_rib${i}`, { width: rw, height: rh, depth: rd }, this.scene);
-        rib.position.set(xOut, y + rh / 2 - 1, faceZ - 0.25 + rd / 2 - rng.next() * 0.12);
-        rib.receiveShadows = true;
-        rib.material = baseMat;
-        rib.freezeWorldMatrix();
-        parts.push(rib);
-      }
-      const mergedSide = Mesh.MergeMeshes(parts, true, true, undefined, false, false)!;
-      mergedSide.name = `sideMassif${dir}`;
-      mergedSide.freezeWorldMatrix();
-      all.push(mergedSide);
+      const g = buildSideMassifGeometry(dir, {
+        ...cfg,
+        innerM: halfW - 0.35, // enterrado en el muro: sin rendija
+        outerM: halfW + 7.4,
+        faceZ,
+        yTop: topY + 8,
+      });
+      const curtain = this.geomToMesh(`sideMassifCurtain${dir}`, g);
+      curtain.material = baseMat;
+      curtain.receiveShadows = true;
+      curtain.freezeWorldMatrix();
+      parts.push(curtain);
     }
-    // TAPA TRASERA: cierra la vista por detrás de la pared (vista libre alta)
-    const back = MeshBuilder.CreateBox("massifBack", { width: (halfW + 7.4) * 2, height, depth: 2.6 }, this.scene);
-    back.position.set(0, height / 2 - 2, 5.2);
+    // TAPA TRASERA: cierra la vista por detrás de la pared (vista libre alta).
+    // Colores blancos explícitos: el merge conserva el buffer de color de las
+    // cortinas (la nevada T62 lo retinta por vértice).
+    const height = topY + 8;
+    const back = MeshBuilder.CreateBox("massifBack", { width: (halfW + 7.4) * 2, height: height + 2, depth: 2.6 }, this.scene);
+    back.position.set(0, (height + 2) / 2 - 2, 5.2);
+    back.setVerticesData(VertexBuffer.ColorKind, new Float32Array(back.getTotalVertices() * 4).fill(1));
     back.receiveShadows = true;
     back.material = baseMat;
     back.freezeWorldMatrix();
-    all.push(back);
-    const merged = Mesh.MergeMeshes(all, true, true, undefined, false, false)!;
+    parts.push(back);
+    const merged = Mesh.MergeMeshes(parts, true, true, undefined, false, false)!;
     merged.name = "sideMassifs";
+    merged.material = baseMat;
+    merged.receiveShadows = true;
     merged.freezeWorldMatrix();
     this.baseCampStats.massifTris = Math.round(merged.getTotalIndices() / 3);
+    // T62: la NEVADA blanquea también el macizo (base restaurable al despejar)
+    this.massifSnow = { mesh: merged, base: null };
   }
 
   // ---------- T56 BASE CAMP: pedriz + faldones + cabaña sherpa ----------
@@ -1139,6 +1150,17 @@ export class SherpaScene {
       // de tono en espacio mundo) — ahora SÍ se nota sobre la pedriza
       plugin.configure(strata, (this.strataCfg?.scale ?? 0.6) * 1.55, (this.strataCfg?.strength ?? 0.5) * 0.9, 0.24);
     }
+    // T62 — DESPLAZAMIENTO percibido (petición: "si estos bloques tuviesen un
+    // poco de desplazamiento darían mejor sensación que la pared tan plana"):
+    // normales de roca del MISMO horno que los chunks (detalle a 1 cm) sobre
+    // pedriza+estratos: los cantos y el repliegue ganan grano al contraluz.
+    const rockN = RawTexture.CreateRGBATexture(
+      rockNormalRGBA(256, (ROCKWALL_SEED ^ 0x0b3f) >>> 0, 1), 256, 256, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE,
+    );
+    rockN.wrapU = Texture.WRAP_ADDRESSMODE;
+    rockN.wrapV = Texture.WRAP_ADDRESSMODE;
+    m.bumpTexture = rockN;
+    m.bumpTexture.level = 0.9;
     this.baseRockMat = m;
     return m;
   }
@@ -2036,48 +2058,59 @@ export class SherpaScene {
     }
   }
 
-  /** MANCHAS DE NIEVE en la roca: tinte por vértice de los chunks vivos.
-   *  Guarda los colores originales para restaurar al despejar. */
+  /** MANCHAS DE NIEVE en la roca: tinte por vértice de los chunks vivos + el
+   *  macizo lateral T62. Guarda los colores originales para restaurar al
+   *  despejar. */
   private tintSnowOnRelief(lineY: number, intensity: number): void {
+    for (const [chunk, e] of this.reliefMeshes) {
+      let holder = this.reliefBaseColors.get(chunk);
+      if (!holder) {
+        holder = { base: null };
+        this.reliefBaseColors.set(chunk, holder);
+      }
+      this.applySnowTint(e.mesh, holder, lineY, intensity);
+      if (lineY === Number.POSITIVE_INFINITY) this.reliefBaseColors.delete(chunk);
+    }
+    if (this.massifSnow) this.applySnowTint(this.massifSnow.mesh, this.massifSnow, lineY, intensity);
+  }
+
+  /** T62 — tinte de nieve sobre UNA malla con colores por vértice (helper
+   *  compartido: chunks del muro + macizo lateral). `holder.base` guarda el
+   *  ORIGINAL (idempotente) y se anula al despejar. */
+  private applySnowTint(mesh: Mesh, holder: { base: Float32Array | null }, lineY: number, intensity: number): void {
     const capK = Math.min(1, intensity * 1.4);
     const clearing = lineY === Number.POSITIVE_INFINITY;
-    for (const [chunk, e] of this.reliefMeshes) {
-      const pos = e.mesh.getVerticesData(VertexBuffer.PositionKind);
-      const col = e.mesh.getVerticesData(VertexBuffer.ColorKind);
-      if (!pos || !col) continue;
-      let base = this.reliefBaseColors.get(chunk);
-      if (!base) {
-        base = new Float32Array(col);
-        this.reliefBaseColors.set(chunk, base);
+    const pos = mesh.getVerticesData(VertexBuffer.PositionKind);
+    const col = mesh.getVerticesData(VertexBuffer.ColorKind);
+    if (!pos || !col) return;
+    if (!holder.base) holder.base = new Float32Array(col);
+    const src = holder.base; // siempre desde el ORIGINAL (idempotente)
+    const out = new Float32Array(col.length);
+    let changed = false;
+    for (let i = 0, vi = 0; i < pos.length; i += 3, vi += 4) {
+      const y = pos[i + 1];
+      const x = pos[i];
+      let k = 0;
+      if (!clearing) {
+        const t = Math.min(1, Math.max(0, (y - (lineY - 0.4)) / 5.4));
+        const cap = t * t * (3 - 2 * t) * capK;
+        // parcheo determinista por posición (la nieve no cubre uniforme)
+        const jit = 0.55 + 0.45 * (Math.abs(Math.sin(x * 12.9898 + y * 78.233) * 43758.5453) % 1);
+        k = Math.min(0.9, cap * jit);
       }
-      const src = base; // siempre desde el ORIGINAL (idempotente)
-      const out = new Float32Array(col.length);
-      let changed = false;
-      for (let i = 0, vi = 0; i < pos.length; i += 3, vi += 4) {
-        const y = pos[i + 1];
-        const x = pos[i];
-        let k = 0;
-        if (!clearing) {
-          const t = Math.min(1, Math.max(0, (y - (lineY - 0.4)) / 5.4));
-          const cap = t * t * (3 - 2 * t) * capK;
-          // parcheo determinista por posición (la nieve no cubre uniforme)
-          const jit = 0.55 + 0.45 * (Math.abs(Math.sin(x * 12.9898 + y * 78.233) * 43758.5453) % 1);
-          k = Math.min(0.9, cap * jit);
-        }
-        if (k > 0.02) {
-          out[vi] = src[vi] + (0.97 - src[vi]) * k;
-          out[vi + 1] = src[vi + 1] + (0.98 - src[vi + 1]) * k;
-          out[vi + 2] = src[vi + 2] + (1.0 - src[vi + 2]) * k;
-          out[vi + 3] = src[vi + 3];
-          changed = true;
-        } else {
-          out[vi] = src[vi]; out[vi + 1] = src[vi + 1]; out[vi + 2] = src[vi + 2]; out[vi + 3] = src[vi + 3];
-          if (col[vi] !== src[vi] || col[vi + 1] !== src[vi + 1] || col[vi + 2] !== src[vi + 2]) changed = true;
-        }
+      if (k > 0.02) {
+        out[vi] = src[vi]! + (0.97 - src[vi]!) * k;
+        out[vi + 1] = src[vi + 1]! + (0.98 - src[vi + 1]!) * k;
+        out[vi + 2] = src[vi + 2]! + (1.0 - src[vi + 2]!) * k;
+        out[vi + 3] = src[vi + 3]!;
+        changed = true;
+      } else {
+        out[vi] = src[vi]!; out[vi + 1] = src[vi + 1]!; out[vi + 2] = src[vi + 2]!; out[vi + 3] = src[vi + 3]!;
+        if (col[vi] !== src[vi] || col[vi + 1] !== src[vi + 1] || col[vi + 2] !== src[vi + 2]) changed = true;
       }
-      if (changed) e.mesh.updateVerticesData(VertexBuffer.ColorKind, out);
-      if (clearing) this.reliefBaseColors.delete(chunk);
     }
+    if (changed) mesh.updateVerticesData(VertexBuffer.ColorKind, out);
+    if (clearing) holder.base = null;
   }
 
   // ---------- T61 — OBJETOS QUE CAEN (dibujo) ----------
@@ -2544,11 +2577,14 @@ export class SherpaScene {
 
   private plankMesh: Mesh | null = null;
 
-  /** Tabla de madera con travesaños y nudos en los cabos (el ricachón va sentado). */
+  /** Tabla de madera con travesaños y nudos en los cabos (el ricachón va sentado).
+   *  T62 — TEXTURA REAL DE MADERA (petición del jugador): vetas a lo largo +
+   *  nudos + normal map derivado; la tabla es el escenario del ricachón y se
+   *  ve a un palmo de la cámara: el albedo liso delataba la tabla. */
   spawnPlank(lenM: number): void {
     this.despawnPlank();
     const board = MeshBuilder.CreateBox("plank", { width: 1.7, height: 0.07, depth: 0.42 }, this.scene);
-    board.material = matPBR(this.scene, "plankM", "#9a6b3f", { rough: 0.8 });
+    board.material = this.ensurePlankMaterial();
     const strapMat = matPBR(this.scene, "plankStrapM", "#54402c", { rough: 0.85 });
     for (const sx of [-0.55, 0.55]) {
       const strap = MeshBuilder.CreateBox(`plankStrap${sx}`, { width: 0.1, height: 0.085, depth: 0.46 }, this.scene);
@@ -2570,6 +2606,33 @@ export class SherpaScene {
     this.plankMesh = board;
   }
 
+  /** T62 — MATERIAL de madera del tablón (perezoso, compartido): color de
+   *  vetas + normal del mismo relieve (el grano se hunde a contraluz). */
+  private ensurePlankMaterial(): PBRMaterial {
+    if (this.plankMat) return this.plankMat;
+    const m = new PBRMaterial("plankWoodM", this.scene);
+    const albedo = RawTexture.CreateRGBATexture(
+      generateWoodColor(256, 256, 0x600d), 256, 256, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE,
+    );
+    albedo.wrapU = Texture.WRAP_ADDRESSMODE;
+    albedo.wrapV = Texture.WRAP_ADDRESSMODE;
+    albedo.anisotropicFilteringLevel = 4;
+    m.albedoTexture = albedo;
+    m.albedoColor = new Color3(1, 1, 1); // el tono lo porta la textura
+    const nrm = RawTexture.CreateRGBATexture(
+      generateWoodNormalRGBA(256, 256, 0x600d), 256, 256, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE,
+    );
+    nrm.wrapU = Texture.WRAP_ADDRESSMODE;
+    nrm.wrapV = Texture.WRAP_ADDRESSMODE;
+    m.bumpTexture = nrm;
+    m.bumpTexture.level = 0.65;
+    m.metallic = 0;
+    m.roughness = 0.72; // madera barena: brillo suave
+    m.emissiveColor = new Color3(0.05, 0.04, 0.028); // piso para leerla a contraluz
+    this.plankMat = m;
+    return m;
+  }
+
   despawnPlank(): void {
     if (!this.plankMesh) return;
     this.plankMesh.dispose();
@@ -2587,11 +2650,30 @@ export class SherpaScene {
   ensureRopeLines(): void {
     if (this.ropeSegs[0].length > 0) return;
     if (!this.ropeMat) {
-      // cáñamo oscuro: visible sobre nieve y sobre roca clara.
-      this.ropeMat = new StandardMaterial("ropeM", this.scene);
-      this.ropeMat.diffuseColor = Color3.FromHexString("#8a5a2b");
-      this.ropeMat.emissiveColor = Color3.FromHexString("#3a2410");
-      this.ropeMat.specularColor = new Color3(0.04, 0.04, 0.04);
+      // T62 — CUERDA REAL (petición del jugador: "textura más realista de
+      // cuerda con pequeñas bandas negras, cuerdas de trepar"): cáñamo tostado
+      // con fibras a lo largo, torsión en diagonal y MARCAS NEGRAS periódicas
+      // (ropeTexture.ts, tileable). El u del cilindro da la vuelta a la cuerda
+      // y el v va a lo LARGO: las bandas cruzan la cuerda cada ~4-6 cm.
+      const albedo = RawTexture.CreateRGBATexture(
+        generateRopeColor(256, 256, 0x70ca), 256, 256, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE,
+      );
+      albedo.wrapU = Texture.WRAP_ADDRESSMODE;
+      albedo.wrapV = Texture.WRAP_ADDRESSMODE;
+      const nrm = RawTexture.CreateRGBATexture(
+        generateRopeNormalRGBA(256, 256, 0x70ca), 256, 256, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE,
+      );
+      nrm.wrapU = Texture.WRAP_ADDRESSMODE;
+      nrm.wrapV = Texture.WRAP_ADDRESSMODE;
+      const m = new PBRMaterial("ropeM", this.scene);
+      m.albedoTexture = albedo;
+      m.albedoColor = new Color3(1, 1, 1); // el tono lo porta la textura
+      m.bumpTexture = nrm; // el torsado se hunde a contraluz
+      m.bumpTexture.level = 0.8;
+      m.metallic = 0;
+      m.roughness = 0.82; // fibra mate con brillo suave
+      m.emissiveColor = new Color3(0.055, 0.045, 0.032); // piso: se lee sobre nieve y roca clara
+      this.ropeMat = m;
     }
     // PERF: UN cilindro master oculto + 2×ROPE_POOL instancias hardware —
     // mismo patrón que las presas (el master invisible no impide renderizar
@@ -2681,6 +2763,10 @@ export class SherpaScene {
     for (const b of bones) this.castShadow(b.mesh);
     for (const m of [head, hat, brim]) this.castShadow(m);
     this.richVisual = { bones, head, hat, brim, glasses, snack, cup, book, phone };
+    // T62: si la marioneta GLB (plantilla de los escaladores) está lista, el
+    // cuerpo va en ELLA y las cápsulas se esconden (el sombrero/gafas/props
+    // siguen en sus manos y cabeza: son la gracia del personaje).
+    this.applyRichPuppetVisibility();
   }
 
   despawnRichMan(): void {
@@ -2695,27 +2781,116 @@ export class SherpaScene {
     this.richVisual.book.dispose();
     this.richVisual.phone.dispose();
     this.richVisual = null;
+    this.applyRichPuppetVisibility(); // sin match, la marioneta se esconde
+  }
+
+  /** T62 — RICACHÓN = MARIONETA sherpa.glb (petición: "el esqueleto del
+   *  Ricachón podría usar la misma plantilla que la de los escaladores").
+   *  Segunda instancia del MISMO factory (cero descargas nuevas), cuerpo
+   *  MORADO plano (la marca del personaje) con correas DORADAS y piezas
+   *  engordadas sobre su pivote (la panza crece hacia su +z sin desalinear
+   *  la cadena). La física de 11 cuerpos lo posee vía richJoints15. Si el
+   *  GLB no está, la escena sigue con las cápsulas de toda la vida. */
+  private trySpawnRichPuppet(): void {
+    if (this.richPuppetTried || !this.puppetFactory || this.disposed) return;
+    this.richPuppetTried = true;
+    const inst = this.puppetFactory.instantiate(
+      "#d4af37", // correas doradas: se lee RICO a cualquier distancia
+      (m) => { this.castShadow(m); },
+      undefined, // el relleno frío ya lo aporta el HDRI en el PBR
+      {
+        bodyHex: "#7c4dbd",
+        pieceScale: {
+          // [x, y, z] locales de la pieza: GRUESO sin alargar (la articulación
+          // es el pivote); la panza crece hacia su +z (delante). El escalador
+          // es atlético: el ricachón necesita +50% para leer GORDO.
+          pieza_torso: [1.58, 1.02, 1.72],
+          pieza_muslo_izq: [1.45, 1.0, 1.45],
+          pieza_muslo_der: [1.45, 1.0, 1.45],
+          pieza_pantorrilla_izq: [1.3, 1.0, 1.3],
+          pieza_pantorrilla_der: [1.3, 1.0, 1.3],
+          pieza_brazo_sup_izq: [1.42, 1.0, 1.42],
+          pieza_brazo_sup_der: [1.42, 1.0, 1.42],
+          pieza_antebrazo_izq: [1.3, 1.0, 1.3],
+          pieza_antebrazo_der: [1.3, 1.0, 1.3],
+          pieza_cabeza: [1.15, 1.08, 1.15],
+          mochila: [1.3, 1.12, 1.35],
+          tirante_izq: [1.4, 1.0, 1.4],
+          tirante_der: [1.4, 1.0, 1.4],
+        },
+      },
+    );
+    if (inst) {
+      this.richPuppet = inst;
+      this.applyRichPuppetVisibility();
+    }
+  }
+
+  /** T62 — visibilidad coherente del cuerpo del ricachón: marioneta ↔
+   *  cápsulas (nunca los dos a la vez, nunca ninguno). */
+  private applyRichPuppetVisibility(): void {
+    const on = !!this.richPuppet && !!this.richVisual;
+    if (this.richPuppet) {
+      for (const r of this.richPuppet.rootNodes) r.setEnabled(on);
+    }
+    if (this.richVisual) {
+      for (const b of this.richVisual.bones) b.mesh.setEnabled(!on);
+      this.richVisual.head.setEnabled(!on);
+    }
+  }
+
+  /** T62 SONDA E2E: el ricachón usa la plantilla de los escaladores. */
+  getRichPuppetInfo(): { active: boolean; pieces: number } {
+    return {
+      active: !!this.richPuppet && !!this.richVisual,
+      pieces: this.richPuppet ? this.richPuppet.pieceEntries().length : 0,
+    };
   }
 
   syncRichMan(sim: RichManRenderView, alpha: number): void {
-    const vis = this.richVisual;
-    if (!vis) return;
     const lerp = (i: number): V3 => {
       const b = sim.bodies[i];
       return vAdd(b.prev, vScale(vSub(b.pos, b.prev), alpha));
     };
-    for (const bone of vis.bones) {
-      this.orientCapsule(bone.mesh, lerp(bone.a), lerp(bone.b), bone.rest);
+    // T62 — CUERPO: la marioneta GLB (si está) es poseída por la física de 11
+    // cuerpos vía el adaptador puro richJoints15 (11 → 15 articulaciones, los
+    // hombros/caderas derivados del marco anatómico de cada frame). Las
+    // cápsulas de toda la vida quedan como fallback (GLB ausente).
+    const rp = this.richPuppet;
+    if (rp && sim.bodies.length >= RM_PARTICLES) {
+      const bodies: { x: number; y: number; z: number }[] = [];
+      for (let i = 0; i < RM_PARTICLES; i++) {
+        const p = lerp(i);
+        bodies.push({ x: p.x, y: p.y, z: p.z });
+      }
+      rp.pose(richJoints15(bodies));
+    } else {
+      const vis = this.richVisual;
+      if (vis) {
+        for (const bone of vis.bones) {
+          this.orientCapsule(bone.mesh, lerp(bone.a), lerp(bone.b), bone.rest);
+        }
+      }
     }
+    const vis = this.richVisual;
+    if (!vis) return;
     const headP = lerp(RM.head);
     vis.head.position.set(headP.x, headP.y, headP.z);
     // tocado y gafas siguen a la cabeza (la cara mira a −z). DURMIENDO (petición
     // del jugador: "ponerse a dormir acostado en la tabla"): el sombrero cae
     // SOBRE LA CARA — el clásico siesta de Siesta.
+    // T62: con la marioneta GLB la cabeza es la pieza del modelo (más grande
+    // que la esfera de cápsulas): el sombrero/gafas necesitan offsets MAYORES
+    // o quedan tragados dentro de la cabeza.
     const sleeping = sim.gesture === "durmiendo";
-    vis.hat.position.set(headP.x, headP.y + (sleeping ? 0.02 : 0.18), headP.z + (sleeping ? -0.1 : 0));
-    vis.brim.position.set(headP.x, headP.y + (sleeping ? 0.075 : 0.135), headP.z + (sleeping ? -0.105 : 0));
-    vis.glasses.position.set(headP.x, headP.y + 0.035, headP.z - 0.115);
+    const gordo = this.richPuppet ? 1 : 0;
+    const hatY = gordo ? 0.26 : 0.18;
+    const brimY = gordo ? 0.205 : 0.135;
+    const glassesY = gordo ? 0.028 : 0.035;
+    const glassesZ = gordo ? -0.175 : -0.115;
+    vis.hat.position.set(headP.x, headP.y + (sleeping ? hatY * 0.2 : hatY), headP.z + (sleeping ? -0.12 : 0));
+    vis.brim.position.set(headP.x, headP.y + (sleeping ? brimY * 0.5 : brimY), headP.z + (sleeping ? -0.125 : 0));
+    vis.glasses.position.set(headP.x, headP.y + glassesY, headP.z + glassesZ);
     vis.glasses.setEnabled(!sleeping); // a dormir, gafas fuera
     // props de gesto: visibles SOLO en su estado (el gesto se lee mejor con
     // objeto en mano: bocadillo al comer, copita al brindar, libro al leer,
@@ -3718,6 +3893,7 @@ export class SherpaScene {
       if (this.skinned[p]) { this.skinned[p]!.dispose(); this.skinned[p] = null; }
       if (this.puppet[p]) { this.puppet[p]!.dispose(); this.puppet[p] = null; }
     }
+    if (this.richPuppet) { this.richPuppet.dispose(); this.richPuppet = null; } // T62
     this.destroyWorker();
     this.strataTex?.dispose(); // T44: capa de estratos compartida (los chunks no la tocan)
     this.strataTex = null;
