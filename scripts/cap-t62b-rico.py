@@ -15,17 +15,14 @@ with sync_playwright() as pw:
     errs = []
     page.on("pageerror", lambda e: errs.append(str(e)))
     page.goto(URL, wait_until="domcontentloaded")
-    for ronda in range(3):
-        try:
-            page.wait_for_selector("text=SHERPAS AL LÍMITE", timeout=30000)
-            page.click("text=SHERPAS AL LÍMITE", timeout=8000)
-            page.wait_for_selector("button[data-a=go]", timeout=90000)
+    page.wait_for_selector("button[data-a=go]", timeout=90000)
+    page.evaluate("(() => { const b = document.querySelector('button[data-a=go]'); if (b) b.click(); })()")
+    for _ in range(12):
+        page.wait_for_timeout(5000)
+        if page.evaluate("!!window.__SHERPAS_DEBUG"):
             break
-        except Exception:
-            page.goto(URL, wait_until="domcontentloaded")
-            page.wait_for_timeout(2500)
-    page.click("button[data-a=go]")
-    page.wait_for_timeout(1500)
+        page.evaluate("(() => { const b = document.querySelector('button[data-a=go]'); if (b) b.click(); })()")
+    page.wait_for_timeout(3000)
     for _ in range(8):
         try:
             if not page.evaluate("(() => { const b = document.querySelector('[data-a=obNext]'); if (!b || !b.offsetParent) return false; b.click(); return true; })()"):

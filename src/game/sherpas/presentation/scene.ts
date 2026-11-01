@@ -2060,7 +2060,10 @@ export class SherpaScene {
       const sizePx = Math.round(num(raw?.sizePx, 512, 128, 1024));
       const glossPx = 256;
       const scale = num(raw?.scale, 0.5, 0.05, 4);
-      const strength = num(raw?.strength, 0.85, 0, 1.5);
+      // T74: 0.85 → 0.5 — la capa climática completa (pátina/líquenes/barniz/
+      // fisura + normal) aplastaba el albedo de la cara hasta ~×0.5 y el muro
+      // no se leía como piedra (petición del jugador); el carácter queda.
+      const strength = num(raw?.strength, 0.5, 0, 1.5);
       const freezeY = num(raw?.freezeAltitudeM, 14, 0, 400);
       const seed = (ROCKWALL_SEED ^ 0x9c1a) >>> 0;
       const fields = RawTexture.CreateRGBATexture(generateClimateFields(sizePx, seed, { strength: Math.min(1, strength) }), sizePx, sizePx, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
@@ -3452,6 +3455,20 @@ export class SherpaScene {
     return {
       active: !!this.richPuppet && !!this.richVisual,
       pieces: this.richPuppet ? this.richPuppet.pieceEntries().length : 0,
+    };
+  }
+
+  /** T74 SONDA E2E: estado del muro — chunks de roca con material PBR, plugins
+   *  de estratos/clima montados, cola del fallback síncrono y binds del primer
+   *  plugin climático (0 = el material todavía no se ha renderizado). */
+  getWallInfo(): Record<string, number> {
+    return {
+      chunksPbr: this.rockPbrCount,
+      colaSync: this.rockSyncQueue.length,
+      pluginsEstratos: this.strataPlugins.length,
+      pluginsClima: this.climaPlugins.length,
+      mallasMuro: this.scene.meshes.filter((m) => m.name.startsWith("rockDM_")).length,
+      bindsClima0: this.climaPlugins[0]?.dynamics.binds ?? -1,
     };
   }
 

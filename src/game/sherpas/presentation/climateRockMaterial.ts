@@ -78,7 +78,10 @@ climaTint += vec3(0.60, 0.44, 0.26) * patina * 0.40;
 climaTint += vec3(0.46, 0.54, 0.38) * lich * 0.42;
 climaTint -= vec3(0.34, 0.33, 0.35) * varnish * 0.55;
 climaTint -= vec3(0.30, 0.29, 0.30) * crack * 0.55;
-surfaceAlbedo *= clamp(vec3(1.0) + climaTint * climaParams.y, vec3(0.5), vec3(1.30));
+// T74: suelo 0.5 → 0.62 — con strength 0.85 el barniz+fisura dejaban la cara
+// de la pared a ~×0.5 de albedo y la piedra NO SE LEÍA (petición del jugador:
+// «no se ve el muro de piedra»); el carácter climático queda, el aplastado no.
+surfaceAlbedo *= clamp(vec3(1.0) + climaTint * climaParams.y, vec3(0.62), vec3(1.30));
 // CLIMA EN VIVO: la nieve húmeda oscurece MÁS donde la piedra es porosa
 // (fisuras + pátina); el hielo blanquea las fisuras.
 float poros = clamp(0.30 + patina * 0.6 + crack * 0.8, 0.0, 1.0);
