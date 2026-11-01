@@ -408,6 +408,11 @@ export interface ClimberData {
   mode?: "piezas" | "skin";
   /** URL del .glb (servido desde /public/models). */
   model: string;
+  /** T70 — URL del .glb DEFINITIVO del ricachón (su propio modelo con arte
+   *  propio, p.ej. /models/rico.glb). Ausente o roto → plan T62: segunda
+   *  instancia de la plantilla de los escaladores (morado plano + engorde)
+   *  y si tampoco, cápsulas. */
+  richModel?: string;
   /** Corrección de orientación del export sobre su eje vertical (grados):
    *  0 = mira a la pared · 180 = mira a cámara (se ajusta con la E2E). */
   turnDeg?: number;
@@ -623,6 +628,7 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
       type: "object", required: ["enabled", "model", "tint"], properties: {
         enabled: { type: "boolean" },
         model: { type: "string", minLength: 1 },
+        richModel: { type: "string", minLength: 1 },
         turnDeg: { type: "number" },
         tint: { type: "array", minItems: 2, maxItems: 2, items: { type: "string", pattern: "^#[0-9a-fA-F]{6}$" } },
       },

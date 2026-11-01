@@ -79,8 +79,8 @@ def main():
         # el modelo GLB necesita tiempo para cargar en el menú (ricachón puppet)
         for ronda in range(3):
             try:
-                page.wait_for_selector("text=SHERPAS AL LÍMITE", timeout=30000)
-                page.click("text=SHERPAS AL LÍMITE", timeout=8000)
+                # los defaults del menú ya son el escenario de esta E2E
+                # (Normal + ES + Despejado + Día): directo al GO
                 page.wait_for_selector("button[data-a=go]", timeout=90000)
                 break
             except Exception:
@@ -89,21 +89,24 @@ def main():
         page.wait_for_timeout(2500)
 
         print("— entrar en partida (2 jugadores, saltando onboarding si sale)")
-        page.click("button[data-a=go]")
+        # click vía JS: el hit-target check de Playwright se queda esperando
+        # aunque el botón está visible/enabled (comprobado con elementFromPoint)
+        page.evaluate("document.querySelector('button[data-a=go]').click()")
         page.wait_for_timeout(1500)
-        for _ in range(8):  # el onboarding de 5 pasos: avanzar con CLICS JS
+        for _ in range(30):  # el onboarding COMPLETO: avanzar hasta que no quede UI
             try:
                 avanzado = page.evaluate("""(() => {
-                  const b = document.querySelector('[data-a=obNext]');
-                  if (!b || !b.offsetParent) return false;
-                  b.click();
-                  return true;
+                  for (const sel of ['[data-a=obNext]', '[data-a=obDone]', '[data-a=obClose]']) {
+                    const b = document.querySelector(sel);
+                    if (b && b.offsetParent) { b.click(); return sel; }
+                  }
+                  return null;
                 })()""")
             except Exception:
-                avanzado = False
+                avanzado = None
             if not avanzado:
                 break
-            page.wait_for_timeout(600)
+            page.wait_for_timeout(700)
         t0 = time.time()
         while time.time() - t0 < 150:
             try:

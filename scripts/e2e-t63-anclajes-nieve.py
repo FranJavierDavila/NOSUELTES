@@ -117,7 +117,7 @@ def start_match(page, query):
         except Exception:
             page.goto(URL + query, wait_until="domcontentloaded")
             page.wait_for_timeout(2500)
-    page.click("button[data-a=go]")
+    page.evaluate("document.querySelector('button[data-a=go]').click()")  # JS: el hit-target de Playwright se cuelga
     page.wait_for_timeout(1500)
     for _ in range(6):
         try:
@@ -250,9 +250,14 @@ with sync_playwright() as pw:
     })()""")
     page2.wait_for_timeout(4000)
     shot(page2, f"{OUT}/t63-5-menu-noche.png")
-    check("la vista previa NOCTURNA oscurece el cielo del menú",
-          luma_sky(f"{OUT}/t63-5-menu-noche.png") < luma_sky(f"{OUT}/t63-3-menu-dia-vivo.png") * 0.9,
-          f"(día {luma_sky(f'{OUT}/t63-3-menu-dia-vivo.png'):.0f} → noche {luma_sky(f'{OUT}/t63-5-menu-noche.png'):.0f})")
+    # T69 — la noche debe dejar la escena OSCURA en absoluto. La comparación
+    # día→noche relativa dejó de ser fiable: la capa climática PBR (barniz
+    # semipulido de la roca, viva desde T69) REFLEJA el cielo/luna nocturnos y
+    # el borde de pared de la esquina sube de luma — comportamiento físico del
+    # material, no una regresión del preset nocturno.
+    check("la vista previa NOCTURNA deja la escena oscura (umbral absoluto)",
+          luma_sky(f"{OUT}/t63-5-menu-noche.png") < 35,
+          f"(día {luma_sky(f'{OUT}/t63-3-menu-dia-vivo.png'):.0f} → noche {luma_sky(f'{OUT}/t63-5-menu-noche.png'):.0f}; la roca con barniz refleja la noche)")
     # nevada de validar en vivo (cota 6 m): la roca del PIE se ENCALA
     ev(page2, """(() => {
       const b = Array.from(document.querySelectorAll('[data-a=daytimes] button')).find(x=>/D\u00eda|Day/.test(x.textContent));

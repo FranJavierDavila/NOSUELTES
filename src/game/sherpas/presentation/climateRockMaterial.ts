@@ -31,6 +31,13 @@ import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 
 const FRAG_DEFS = `
 #ifdef CLIMAROCK
+// T69-FIX 3c: los SAMPLERS se declaran AQUÍ (custom code del plugin — vía
+// getCustomCode, SIEMPRE inyectada) y NO en getUniforms().fragment: la
+// declaración vía manager depende del orden interno de _addPlugin (que
+// reconstruye el UBO antes de pushear el plugin) y en la ráfaga de arranque
+// compiló sin ella («strataSampler/climaSampler: undeclared identifier»).
+uniform sampler2D climaSampler;
+uniform sampler2D climaNormalSampler;
 vec4 climaTri(vec3 p, vec3 n, float scale) {
   vec3 w = pow(abs(n), vec3(4.0));
   w /= (w.x + w.y + w.z + 1e-5);
@@ -102,6 +109,12 @@ export class ClimateRockPlugin extends MaterialPluginBase {
 
   constructor(material: PBRMaterial) {
     super(material, "ClimateRock", 225, { CLIMAROCK: false }, true, false, false);
+    // T69-FIX 2: los uniforms NO viajan por el bus de eventos del plugin manager
+    // (bindForSubMesh del plugin solo corre bajo mustRebind y con efectos
+    // estables puede no correr NUNCA — diagnosticado por sonda: 88 binds del
+    // material y 0 del plugin; también la vía hardBind quedó sin dispararse).
+    // El canal que MANDA es syncNow(), llamado por SherpaScene.render() cada
+    // frame (canal propio del juego, demostrado que corre).
   }
 
   /** Texturas (campos + normal, tileables) y parámetros de mapeado. */
@@ -164,13 +177,14 @@ export class ClimateRockPlugin extends MaterialPluginBase {
     samplers.push("climaSampler", "climaNormalSampler");
   }
 
-  getUniforms(): { ubo: { name: string; size: number; type: string }[]; fragment: string } {
+  getUniforms(): { ubo: { name: string; size: number; type: string }[] } {
     return {
       ubo: [
         { name: "climaParams", size: 4, type: "vec4" },
         { name: "climaDyn", size: 4, type: "vec4" },
       ],
-      fragment: "uniform sampler2D climaSampler;\nuniform sampler2D climaNormalSampler;",
+      // los samplers van en FRAG_DEFS (ver arriba): duplicarlos aquí haría
+      // una redeclaración GLSL cuando AMBAS vías llegan al shader
     };
   }
 
@@ -183,18 +197,44 @@ export class ClimateRockPlugin extends MaterialPluginBase {
     };
   }
 
-  bindForSubMesh(uniformBuffer: UniformBuffer, _scene: Scene): void {
+  /** hardBindForSubMesh (vía oficial Babylon si el manager la dispara). */
+  hardBindForSubMesh(uniformBuffer: UniformBuffer, _scene: Scene): void {
+    this.writeUniforms(uniformBuffer);
+  }
+
+  /** T69 — CANAL REAL: escribe los uniforms AHORA en el UBO del material. Lo
+   *  llama SherpaScene.render() cada frame (el easing del clima vive aquí). */
+  syncNow(): void {
     if (!this._active) return;
+    const ubo = (this._material as PBRMaterial & { _uniformBuffer?: UniformBuffer })._uniformBuffer;
+    if (ubo) this.writeUniforms(ubo);
+  }
+
+  private writeUniforms(uniformBuffer: UniformBuffer): void {
+    if (!this._active) return;
+    // T69-FIX 3b: hasta que el REBUILD del UBO registró los uniforms del
+    // plugin (_uniformLocations poblados), escribir lanzaría «Cannot add an
+    // uniform after UBO has been created» y ensuciaría la consola. El salto
+    // es silencioso: el primer bind del material pinta ya con valores.
+    const locs = (uniformBuffer as unknown as { _uniformLocations?: Record<string, number> })._uniformLocations;
+    if (!locs || !("climaParams" in locs)) return;
     this.bindCount++;
     // easing del clima en vivo (~1 s de rampa a 60 fps, exponencial)
     const k = 0.045;
     this._wetness += (this._wetTarget - this._wetness) * k;
     this._frost += (this._frostTarget - this._frost) * k;
-    uniformBuffer.updateFloat4("climaParams", this._scale, this._strength, this._freezeY, 0);
-    uniformBuffer.updateFloat4("climaDyn", this._wetness, this._frost, 0, 0);
-    if (this._tex && this._ntex) {
-      uniformBuffer.setTexture("climaSampler", this._tex);
-      uniformBuffer.setTexture("climaNormalSampler", this._ntex);
+    // syncNow corre ANTES del primer bind del material: hasta que el UBO tiene
+    // layout (primer bind del material, vía mustRebind del primer frame) las
+    // escrituras no existen aún — se toleran y a partir de ese momento viajan.
+    try {
+      uniformBuffer.updateFloat4("climaParams", this._scale, this._strength, this._freezeY, 0);
+      uniformBuffer.updateFloat4("climaDyn", this._wetness, this._frost, 0, 0);
+      if (this._tex && this._ntex) {
+        uniformBuffer.setTexture("climaSampler", this._tex);
+        uniformBuffer.setTexture("climaNormalSampler", this._ntex);
+      }
+    } catch {
+      /* UBO aún sin layout: el primer bind del material lo crea */
     }
   }
 

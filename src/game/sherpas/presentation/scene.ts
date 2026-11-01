@@ -243,6 +243,12 @@ export class SherpaScene {
   // por su física de 11 cuerpos vía richJoints15. Fallback: cápsulas de siempre.
   private richPuppet: SherpaPuppetInstance | null = null;
   private richPuppetTried = false;
+  // T70 — MODELO DEFINITIVO DEL RICACHÓN: factory PROPIO con su arte (rico.glb
+  // del jugador). Estados: none (sin richModel en config) → T62 directo;
+  // loading → esperar (no se posee con la plantilla compartida por delante);
+  // ready → el modelo definitivo; failed → fallback T62 (morado + engorde).
+  private richFactory: SherpaPuppetFactory | null = null;
+  private richFactoryState: "none" | "loading" | "ready" | "failed" = "none";
   // T66 — EMOTICONO-BOCADILLO del ricachón: billboard con el PNG del ánimo
   // delante de la cara (anclado a la cabeza, SIN tocar geometría ni animación).
   private richEmote: Mesh | null = null;
@@ -432,6 +438,7 @@ export class SherpaScene {
   private climaCfg: { scale: number; strength: number; freezeY: number } | null = null;
   private climaTried = false;
   private climaPlugins: ClimateRockPlugin[] = [];
+  private strataPlugins: TriPlanarStrataPlugin[] = [];
   // T48: VEGETACIÓN en los hundimientos de la pared (matas por chunk)
   private plantasCfg: PlantasCfg | null = null;
   private plantasMat: PBRMaterial | null = null;
@@ -643,6 +650,23 @@ export class SherpaScene {
             this.puppetFactory = f;
             // T62: el RICACHÓN comparte la MISMA plantilla (segunda instancia
             // morada y engordada); si el GLB falta, cápsulas de siempre.
+            // T70: si la config trae richModel, el modelo DEFINITIVO del
+            // jugador carga en paralelo y MANDA cuando esté (el spawn T62 se
+            // retiene hasta resolverse, a favor o a cápsulas).
+            if (cfg.richModel && this.richFactoryState === "none") {
+              this.richFactoryState = "loading";
+              SherpaPuppetFactory.load(this.scene, cfg.richModel)
+                .then((rf) => {
+                  if (this.disposed) { rf.disposeContainer(); return; }
+                  this.richFactory = rf;
+                  this.richFactoryState = "ready";
+                  this.trySpawnRichPuppet();
+                })
+                .catch(() => {
+                  this.richFactoryState = "failed"; // fallback T62
+                  this.trySpawnRichPuppet();
+                });
+            }
             this.trySpawnRichPuppet();
           } else this.climberFactory = f;
           this.climberState = "ready";
@@ -1226,6 +1250,8 @@ export class SherpaScene {
       // capa MACRO de estratos encima (misma familia que la pared: continuidad
       // de tono en espacio mundo) — ahora SÍ se nota sobre la pedriza
       plugin.configure(strata, (this.strataCfg?.scale ?? 0.6) * 1.55, (this.strataCfg?.strength ?? 0.5) * 0.9, 0.24);
+      this.strataPlugins.push(plugin);
+      this.refreshMaterialUboLayout(m); // T69-FIX 3: el layout necesita ver el plugin
     }
     // T62 — DESPLAZAMIENTO percibido (petición: "si estos bloques tuviesen un
     // poco de desplazamiento darían mejor sensación que la pared tan plana"):
@@ -1834,6 +1860,7 @@ export class SherpaScene {
     if (strata) {
       const plugin = new TriPlanarStrataPlugin(mat);
       plugin.configure(strata, this.strataCfg!.scale, this.strataCfg!.strength, this.strataCfg!.detail);
+      this.strataPlugins.push(plugin);
     }
     // T69 — CAPA CLIMÁTICA: campos de meteorización triplanar (fisura/pátina/
     // líquenes/barniz) + normal de fisuras + GLOSINOSIDAD climática (la costra
@@ -1846,6 +1873,9 @@ export class SherpaScene {
       this.climaPlugins.push(plugin);
       mat.microSurfaceTexture = clima.gloss; // barniz semipulido, pátina mate
     }
+    // T69-FIX 3: los DOS plugins (estratos + clima) ya están en _plugins del
+    // material — el rebuild del UBO ahora sí los registra (layout + GLSL).
+    if (this.strataPlugins.length || this.climaPlugins.length) this.refreshMaterialUboLayout(mat);
     this.rockPbrCount++;
     mesh.material = mat;
     mesh.receiveShadows = true; // la roca recibe la sombra de los cuerpos
@@ -2056,10 +2086,75 @@ export class SherpaScene {
 
   /** T69 SONDA E2E: estado de la capa climática de la piedra (campos horneados
    *  + clima en vivo con su easing). */
-  getClimateInfo(): { active: boolean; plugins: number; scale: number; strength: number; freezeY: number; wetness: number; frost: number; perPlugin: { wet: number; frost: number; tw: number; tf: number; fy: number; binds: number }[] } {
+  /** T69-FIX 3 — REBUILD del UBO tras añadir plugins MaterialPluginBase.
+   *  Babylon 9.32: MaterialPluginManager._addPlugin reconstruye el UBO ANTES
+   *  de pushear el plugin que llega, así que el layout y las declaraciones
+   *  GLSL del plugin añadido tarde NUNCA entran en el shader (en producción:
+   *  strataSampler/climaSampler "undeclared identifier" → effect sin
+   *  compilar; strataParams/climaDyn fuera del layout → «Cannot add an
+   *  uniform after UBO has been created» a 1173 fps). Con TODOS los plugins
+   *  ya en _plugins, este rebuild los registra de una sola vez (UBO nuevo,
+   *  evento PrepareUniformBuffer, sin escrituras previas a rehacer). */
+  private refreshMaterialUboLayout(mat: PBRMaterial): void {
+    const m = mat as unknown as {
+      resetDrawCache?: () => void;
+      _createUniformBuffer?: () => void;
+    };
+    // INCONDICIONAL: _createUniformBuffer desecha el UBO actual y crea uno
+    // fresco (layoutBuilt=false → evento PrepareUniformBuffer con TODOS los
+    // plugins ya en _plugins → create()). El constructor ya creó uno, así que
+    // el rebuild nunca es el primero: no hay escrituras que perder.
+    m.resetDrawCache?.();
+    m._createUniformBuffer?.();
+  }
+
+  getClimateInfo(): { active: boolean; plugins: number; scale: number; strength: number; freezeY: number; wetness: number; frost: number; perPlugin: { wet: number; frost: number; tw: number; tf: number; fy: number; binds: number }[]; ubo: { layoutBuilt: boolean; uniforms: string[]; plugins: string[] } | null; uboPedriza: { layoutBuilt: boolean; uniforms: string[]; plugins: string[] } | null; conPlugin: { name: string; uniforms: string[]; effect: string; layoutBuilt: boolean; plugins: string }[] } {
     const first = this.climaPlugins[0];
     const d = first?.dynamics ?? { wetness: 0, frost: 0, targetWet: 0, targetFrost: 0, binds: 0 };
+    // T69-diag: el UBO REAL del primer material de roca (¿el layout incluye
+    // los uniforms del plugin? ¿qué plugins ve el manager?)
+    let ubo: { layoutBuilt: boolean; uniforms: string[]; plugins: string[] } | null = null;
+    {
+      const mat = first ? (first as unknown as { _material?: unknown })._material : null;
+      if (mat) {
+        const m = mat as { _uniformBufferLayoutBuilt?: boolean; _uniformBuffer?: { _uniformLocations?: Record<string, unknown> }; pluginManager?: { _plugins?: { name: string }[] } };
+        ubo = {
+          layoutBuilt: !!m._uniformBufferLayoutBuilt,
+          uniforms: Object.keys(m._uniformBuffer?._uniformLocations ?? {}),
+          plugins: m.pluginManager?._plugins?.map((x) => x.name) ?? [],
+        };
+      }
+    }
+    // la pedriza (strata sin clima) — el otro material con plugin
+    let uboPedriza: { layoutBuilt: boolean; uniforms: string[]; plugins: string[] } | null = null;
+    if (this.baseRockMat) {
+      const m = this.baseRockMat as unknown as { _uniformBufferLayoutBuilt?: boolean; _uniformBuffer?: { _uniformLocations?: Record<string, unknown> }; pluginManager?: { _plugins?: { name: string }[] } };
+      uboPedriza = {
+        layoutBuilt: !!m._uniformBufferLayoutBuilt,
+        uniforms: Object.keys(m._uniformBuffer?._uniformLocations ?? {}),
+        plugins: m.pluginManager?._plugins?.map((x) => x.name) ?? [],
+      };
+    }
+    // TODOS los materiales con plugin de strata/clima: nombre, uniforms del
+    // UBO y si el efecto actual ya compiló (diagnóstico T69-FIX 3)
+    const conPlugin: { name: string; uniforms: string[]; effect: string; layoutBuilt: boolean; plugins: string }[] = [];
+    for (const m of this.scene.materials) {
+      const pm = (m as unknown as { pluginManager?: { _plugins?: { name: string }[] } }).pluginManager;
+      const ps = pm?._plugins?.map((x) => x.name) ?? [];
+      if (!ps.some((n) => n === "TriPlanarStrata" || n === "ClimateRock")) continue;
+      const mu = m as unknown as { _uniformBuffer?: { _uniformLocations?: Record<string, unknown> }; _drawWrapper?: { effect?: { _isReady?: boolean; name?: string } } };
+      conPlugin.push({
+        name: m.name,
+        uniforms: Object.keys(mu._uniformBuffer?._uniformLocations ?? {}).filter((u) => u.includes("strata") || u.includes("clima")),
+        effect: mu._drawWrapper?.effect ? (mu._drawWrapper.effect._isReady ? "ready" : "NO-ready") : "sin-effect",
+        layoutBuilt: !!(m as unknown as { _uniformBufferLayoutBuilt?: boolean })._uniformBufferLayoutBuilt,
+        plugins: ps.filter((n) => n === "TriPlanarStrata" || n === "ClimateRock").join("+"),
+      });
+    }
     return {
+      ubo,
+      uboPedriza,
+      conPlugin,
       active: !!this.climaTex,
       plugins: this.climaPlugins.length,
       scale: this.climaCfg?.scale ?? 0,
@@ -3292,33 +3387,47 @@ export class SherpaScene {
    *  GLB no está, la escena sigue con las cápsulas de toda la vida. */
   private trySpawnRichPuppet(): void {
     if (this.richPuppetTried || !this.puppetFactory || this.disposed) return;
+    // T70: con richModel en config NO se posee la plantilla compartida hasta
+    // resolver el modelo definitivo (ready → defino; failed → fallback T62).
+    if (this.richFactoryState === "loading") return;
     this.richPuppetTried = true;
-    const inst = this.puppetFactory.instantiate(
-      "#d4af37", // correas doradas: se lee RICO a cualquier distancia
-      (m) => { this.castShadow(m); },
-      undefined, // el relleno frío ya lo aporta el HDRI en el PBR
-      {
-        bodyHex: "#7c4dbd",
-        pieceScale: {
-          // [x, y, z] locales de la pieza: GRUESO sin alargar (la articulación
-          // es el pivote); la panza crece hacia su +z (delante). El escalador
-          // es atlético: el ricachón necesita +50% para leer GORDO.
-          pieza_torso: [1.58, 1.02, 1.72],
-          pieza_muslo_izq: [1.45, 1.0, 1.45],
-          pieza_muslo_der: [1.45, 1.0, 1.45],
-          pieza_pantorrilla_izq: [1.3, 1.0, 1.3],
-          pieza_pantorrilla_der: [1.3, 1.0, 1.3],
-          pieza_brazo_sup_izq: [1.42, 1.0, 1.42],
-          pieza_brazo_sup_der: [1.42, 1.0, 1.42],
-          pieza_antebrazo_izq: [1.3, 1.0, 1.3],
-          pieza_antebrazo_der: [1.3, 1.0, 1.3],
-          pieza_cabeza: [1.15, 1.08, 1.15],
-          mochila: [1.3, 1.12, 1.35],
-          tirante_izq: [1.4, 1.0, 1.4],
-          tirante_der: [1.4, 1.0, 1.4],
+    const inst = this.richFactoryState === "ready" && this.richFactory
+      ? // MODELO DEFINITIVO: el arte del jugador manda (texturas incluidas);
+        // solo las correas sin textura (mochila/tirantes, añadidas por el
+        // adaptador) reciben el dorado de identidad del ricachón.
+        this.richFactory.instantiate(
+          "#d4af37", // correas doradas: se lee RICO a cualquier distancia
+          (m) => { this.castShadow(m); },
+          undefined, // el relleno frío ya lo aporta el HDRI en el PBR
+          // SIN bodyHex (el arte texturizado se conserva) y SIN pieceScale
+          // (el modelo YA es gordo: el engorde T62 era el parche provisional).
+        )
+      : this.puppetFactory.instantiate(
+        "#d4af37", // correas doradas: se lee RICO a cualquier distancia
+        (m) => { this.castShadow(m); },
+        undefined, // el relleno frío ya lo aporta el HDRI en el PBR
+        {
+          bodyHex: "#7c4dbd",
+          pieceScale: {
+            // [x, y, z] locales de la pieza: GRUESO sin alargar (la articulación
+            // es el pivote); la panza crece hacia su +z (delante). El escalador
+            // es atlético: el ricachón necesita +50% para leer GORDO.
+            pieza_torso: [1.58, 1.02, 1.72],
+            pieza_muslo_izq: [1.45, 1.0, 1.45],
+            pieza_muslo_der: [1.45, 1.0, 1.45],
+            pieza_pantorrilla_izq: [1.3, 1.0, 1.3],
+            pieza_pantorrilla_der: [1.3, 1.0, 1.3],
+            pieza_brazo_sup_izq: [1.42, 1.0, 1.42],
+            pieza_brazo_sup_der: [1.42, 1.0, 1.42],
+            pieza_antebrazo_izq: [1.3, 1.0, 1.3],
+            pieza_antebrazo_der: [1.3, 1.0, 1.3],
+            pieza_cabeza: [1.15, 1.08, 1.15],
+            mochila: [1.3, 1.12, 1.35],
+            tirante_izq: [1.4, 1.0, 1.4],
+            tirante_der: [1.4, 1.0, 1.4],
+          },
         },
-      },
-    );
+      );
     if (inst) {
       this.richPuppet = inst;
       this.applyRichPuppetVisibility();
@@ -4510,6 +4619,13 @@ export class SherpaScene {
 
   render(): void {
     if (this.disposed) return;
+    // T69 — UNIFORMS DE LAS CAPAS TRIPANAR (estratos + clima): se escriben CADA
+    // FRAME por el canal de render propio del juego. El bus de bindForSubMesh de
+    // Babylon queda cacheado bajo mustRebind y con efectos estables puede NO
+    // dispararse jamás (diagnosticado por sonda: 88 binds del material, 0 del
+    // plugin) — aquí los uniforms llegan siempre (coste: 2×nChunks writes).
+    for (const p of this.climaPlugins) p.syncNow();
+    for (const p of this.strataPlugins) p.syncNow();
     // RELIEVE (T39): streaming de piedras alrededor de la cámara (coste ≈ 0 en idle).
     this.updateRelief();
     // BLINDAJE (física de juego): el motor puede quedar con depth-write a false

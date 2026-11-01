@@ -71,7 +71,7 @@ def start_match(page):
     page.wait_for_timeout(4000)
     # SIN lanzador: el overlay de arranque (¡GO!) está disponible directo
     page.wait_for_selector("button[data-a=go]", timeout=90000)
-    page.click("button[data-a=go]")
+    page.evaluate("document.querySelector('button[data-a=go]').click()")  # JS: el hit-target de Playwright se cuelga
     page.wait_for_timeout(1200)
     # saltar onboarding si aparece (primera vez en este perfil)
     for _ in range(8):

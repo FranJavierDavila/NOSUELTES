@@ -1448,3 +1448,38 @@ Work Log:
 Stage Summary:
 - LAS PRESAS VUELVEN A ESTAR MONTADAS SOBRE SU PIEDRA: el asiento de roca fundida queda 12 mm DETRÁS del centro de cada agarre (contrato T40 restaurado) — el bulto emerge entero de la piedra en vez de quedar a media tapa, con 10-19 cm de presencia real medida en las 14 presas del arranque.
 - Y LA PIEDRA SE VE: cada apoyo lleva levante propio y una junta oscura ondulada en su borde (la misma matemática del asiento T44, pintada sobre el albedo del chunk en la escena) — la presa desplazada sobre su piedra se lee con cualquier luz, como en la mampostería original de T39, sin tocar el módulo espejado de fidelidad.
+
+---
+Task ID: 69
+Agent: Z.ai (principal)
+Task: "La capa climática de la piedra tiene que verse EN EL JUEGO (wetness/frost en vivo, cota fría) y las E2E del clima en verde con las capas activas."
+
+Work Log:
+- ACTIVACIÓN EN VIVO + VERIFICACIÓN: la capa climática (ClimateRockPlugin, horneada en el commit anterior) pasa a MANDAR por frame: syncNow() desde SherpaScene.render() escribe climaParams (escala/fuerza/cota) y climaDyn (wetness/frost con easing ~1 s) directo en el UBO de cada material de roca; setSnowVisual empuja objetivos por clima y ALTITUD (setFreezeY). Diag scripts/diag-t69-plugins.py + diag-t69-captura.py: 11 chunks con plugin, binds>1000, sin errores; capturas t69-1/2/3 (piedra de día, nevada, muro de día).
+- FIX 1 — «Cannot add an uniform after UBO has been created» (climaDyn/strataParams, 1173 errores + effect sin compilar): Babylon 9.32 MaterialPluginManager._addPlugin reconstruye el UBO ANTES de pushear el plugin que llega — el layout y las declaraciones GLSL del plugin añadido tarde NUNCA entran en el shader. FIX en escena: refreshMaterialUboLayout(mat) (resetDrawCache + _createUniformBuffer interno) tras añadir TODOS los plugins de cada material (pedriza y chunks).
+- FIX 2 — «strataSampler/climaSampler: undeclared identifier» en la ráfaga de arranque: la declaración vía getUniforms().fragment dependía del mismo orden roto. FIX: los samplers se declaran en el CUSTOM_FRAGMENT_DEFINITIONS del propio plugin (vía getCustomCode, SIEMPRE inyectada) y getUniforms queda solo con el ubo (duplicar haría redeclaración GLSL).
+- FIX 3 — escrituras antes de layout (10× «Cannot add…» residuales): writeUniforms de AMBOS plugins consulta _uniformLocations y salta en silencio hasta que el rebuild registró los nombres; el primer bind pinta ya con valores.
+- SONDA PERMANENTE: getClimateInfo gana ubo (layoutBuilt, uniforms del primer chunk) y conPlugin (por material: layout, plugins, uniforms strata/clima) — el diagnóstico del UBO queda en la E2E para siempre.
+- CALIDAD: 0 compile errors, 0 cannot-add, 0 undeclared en 15 s de sesión (antes 1173); E2E t63 (anclajes+encalado, 0 errores JS nevada+día), t64 (fatiga un-mano 0,021/s), t65 (clima-piedra plugins=11, wet/frost en reposo) TODAS VERDES con las capas activas; vitest 571/571.
+- Lecciones: (1) el orden interno de _addPlugin (rebuild antes del push) hace que los plugins añadidos tras el constructor NO entren nunca en el layout: con N plugins, un rebuild manual al final es el único camino; (2) las declaraciones de sampler en custom code (getCustomCode) son inmunes a ese orden — la vía getUniforms().fragment no lo es; (3) Babylon registra los uniforms de plugin en el evento PrepareUniformBuffer (case 8) y crea el UBO EN EL CONSTRUCTOR del material: cualquier plugin posterior nace fuera; (4) Playwright's hit-target check se cuelga sobre el botón GO aunque elementFromPoint devuelva el botón: click vía JS evaluate.
+
+Stage Summary:
+- EL CLIMA SE VE Y RESPONDE: la piedra lleva meteorización triplanar (fisura/pátina/líquenes/barniz + normal de labios + glosa) y CAMBIA en vivo con la nevada (la piedra húmeda se oscurece por los poros, el hielo blanquea las fisuras) y con la cota fría (más crióclastia arriba), sin un solo error de shader en sesión completa.
+- LAS E2E DEL CLIMA VOLVIERON AL VERDE CON LAS CAPAS ENCENDIDAS: t63/t64/t65 completas + sonda de UBO permanente para que esta clase de rotura (layout de plugins) nunca vuelva a ser silenciosa.
+
+---
+Task ID: 70
+Agent: Z.ai (principal)
+Task: "Rico.glb (modelo definitivo del ricachón): adapta su estructura para que pueda ser correctamente articulado por el motor."
+
+Work Log:
+- RADIOGRAFÍA (scripts/glb_inspect.py): upload/Rico.glb = 10 piezas corpóreas (torso/cabeza/brazos/antebrazos/muslos/pantorrillas), jerarquía PLANA, pivotes EN SU articulación, ~1,95 m, Y arriba, mira a +z, izquierda en x− (misma convención que sherpa.glb), 1 material PBR con 3 texturas embebidas (el arte del jugador). Le FALTAN mochila, tirante_izq y tirante_der: con CUALQUIER pieza ausente el adaptador cae a cápsulas.
+- ADAPTACIÓN (scripts/rico_adapt.py → public/models/rico.glb): añade las 3 piezas que exige el contrato SIN TOCAR el arte: mochila (baúl a la espalda, pivot en el anclaje del dorso, caja 0,46×0,46×0,28) y tirante_izq/der (correa sobre cada hombro a x=±0,295 — el pivote de cada brazo_sup) como raíces planas con material NUEVO sin textura (rico_correas, dorado baseColor) → el adaptador Babylon tiñe las piezas sin albedoTexture con el strapHex #d4af37, la misma vía de las correas de los escaladores. Accessors/bufferViews/bin reconstruidos a mano (glTF 2.0: attributes anidados, USHORT, alineación 4).
+- TEST ESTRUCTURAL PERMANENTE (tests/sherpas/rico-glb.test.ts ×4): las 13 piezas exactas de PIECE_SPECS, las 3 añadidas como raíces planas con pivote (mochila a z<−0,2, tirantes sobre el hombro), GLB bien formado (accessors/bufferViews dentro del bin, MAT4 y byteOffset opcional tolerados) y el ARTE INTACTO (10 corpóreas con textura en el material del torso; rico_correas sin textura).
+- INTEGRACIÓN EN ESCENA (data.ts + climber.json + scene.ts): ClimberData.richModel="/models/rico.glb" (schema incluido); el ricachón carga SU PROPIO factory (SherpaPuppetFactory.load en paralelo, estado none/loading/ready/failed) y se instancia SIN bodyHex y SIN pieceScale — adiós al morado plano y al engorde T62 (el modelo YA es gordo): el arte texturizado del jugador manda y solo las correas reciben el dorado. Si el GLB falla → fallback T62 (plantilla compartida engordada) y si no, cápsulas.
+- VERIFICACIÓN REAL: test estructural 4/4; vitest 571/571; E2E t62 TODO VERDE con el modelo definitivo: richPuppet {active: true, pieces: 13}, física viva, fuerza nieve aceptada y 0 errores de página/consola en sesión completa. Capturas download/t62-*.png — el ricachón se ve con SU traje (art texturizado), correa dorada al pecho y silueta gorda sentado en el tablón.
+- Lecciones: (1) el contrato de piezas es TODO-O-NADA (una pieza ausente = cápsulas): un test estructural del GLB servido atrapa la falta ANTES de que el navegador lo haga; (2) al inyectar mallas en un GLB a mano, glTF exige attributes anidados en el primitive (POSITION/NORMAL) e indices al nivel del primitive — un primitivo plano compila pero el loader lo ignora; (3) el arte del jugador MANDA: la integración de un modelo definitivo es QUITAR parches (bodyHex, pieceScale), no añadirlos.
+
+Stage Summary:
+- EL RICACHÓN TIENE SU MODELO DEFINITIVO EN JUEGO: Rico.glb adaptado al contrato (13/13 piezas) se carga en su propio factory, lo posee la física de 15 partículas igual que los escaladores, conserva las texturas del jugador y estrena correas doradas — sin el tinte morado ni el engorde provisionales de T62.
+- LA CADENA ESTÁ CUBIERTA: test estructural del GLB (antes de abrir el navegador), sonda de UBO por material, E2E t62 verde con 0 errores y capturas del ricachón texturizado en el tablón.

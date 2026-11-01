@@ -82,7 +82,7 @@ def start_match(page):
     page.goto(URL + "/", wait_until="domcontentloaded")
     page.wait_for_timeout(4000)
     page.wait_for_selector("button[data-a=go]", timeout=90000)
-    page.click("button[data-a=go]")
+    page.evaluate("document.querySelector('button[data-a=go]').click()")  # JS: el hit-target de Playwright se cuelga
     page.wait_for_timeout(1200)
     for _ in range(8):
         try:

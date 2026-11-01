@@ -26,6 +26,9 @@ import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 
 const FRAG_DEFS = `
 #ifdef TRISTATA
+// T69-FIX 3c: el SAMPLER se declara AQUÍ (custom code — vía getCustomCode,
+// SIEMPRE inyectada) y NO en getUniforms().fragment (ver ClimateRock).
+uniform sampler2D strataSampler;
 vec3 strataTri(vec3 p, vec3 n, float scale) {
   vec3 w = pow(abs(n), vec3(4.0));
   w /= (w.x + w.y + w.z + 1e-5);
@@ -61,6 +64,8 @@ export class TriPlanarStrataPlugin extends MaterialPluginBase {
 
   constructor(material: PBRMaterial) {
     super(material, "TriPlanarStrata", 220, { TRISTATA: false }, true, false, false);
+    // T69-FIX 2 (ver ClimateRock): los uniforms NO dependen del bus del manager
+    // — el canal real es syncNow(), llamado por SherpaScene.render() cada frame.
   }
 
   /** Textura de estratos (tileable, RGBA) + parámetros de mapeado. */
@@ -97,11 +102,12 @@ export class TriPlanarStrataPlugin extends MaterialPluginBase {
     samplers.push("strataSampler");
   }
 
-  getUniforms(): { ubo: { name: string; size: number; type: string }[]; fragment: string } {
+  getUniforms(): { ubo: { name: string; size: number; type: string }[] } {
     return {
       ubo: [{ name: "strataParams", size: 4, type: "vec4" }],
-      // el SAMPLER sí es un uniform global (nunca vive en el UBO)
-      fragment: "uniform sampler2D strataSampler;",
+      // el sampler va en FRAG_DEFS (custom code, vía getCustomCode): la vía
+      // getUniforms().fragment dependía del orden de _addPlugin y en la
+      // ráfaga de arranque compiló sin ella (T69-FIX 3c)
     };
   }
 
@@ -114,11 +120,33 @@ export class TriPlanarStrataPlugin extends MaterialPluginBase {
     };
   }
 
-  bindForSubMesh(uniformBuffer: UniformBuffer, scene: Scene): void {
+  /** hardBindForSubMesh (vía oficial Babylon si el manager la dispara). */
+  hardBindForSubMesh(uniformBuffer: UniformBuffer, scene: Scene): void {
+    this.writeUniforms(uniformBuffer, scene);
+  }
+
+  /** T69 — CANAL REAL: escribe los uniforms AHORA en el UBO del material. */
+  syncNow(): void {
+    if (!this._active) return;
+    const ubo = (this._material as PBRMaterial & { _uniformBuffer?: UniformBuffer })._uniformBuffer;
+    if (ubo) this.writeUniforms(ubo, this._material.getScene());
+  }
+
+  private writeUniforms(uniformBuffer: UniformBuffer, scene: Scene): void {
     if (!this._active || !this._tex) return;
-    uniformBuffer.updateFloat4("strataParams", this._scale, this._strength, this._detail, this._detailScaleMul);
-    if (scene.texturesEnabled) {
-      uniformBuffer.setTexture("strataSampler", this._tex);
+    // T69-FIX 3b: hasta que el REBUILD del UBO registró strataParams en el
+    // layout (_uniformLocations), escribir lanzaría «Cannot add an uniform
+    // after UBO has been created» y ensuciaría la consola. Salto silencioso:
+    // el primer bind del material pinta ya con valores.
+    const locs = (uniformBuffer as unknown as { _uniformLocations?: Record<string, number> })._uniformLocations;
+    if (!locs || !("strataParams" in locs)) return;
+    try {
+      uniformBuffer.updateFloat4("strataParams", this._scale, this._strength, this._detail, this._detailScaleMul);
+      if (scene.texturesEnabled) {
+        uniformBuffer.setTexture("strataSampler", this._tex);
+      }
+    } catch {
+      /* UBO aún sin layout: el primer bind del material lo crea */
     }
   }
 
