@@ -201,7 +201,11 @@ export class RichManSim {
     // T44: el gesto se aplica sobre la pose YA FUNDIDA — se ve SENTADO y también
     // DE PIE/paseando (la voz del ricachón no se interrumpe por cambiarse de postura).
     const g = this.gestureOffsets(time);
-    const gw = g ? Math.min(1, Math.max(0, time - this.gestureStart) / 0.35) : 0; // fundido
+    // T78 — fundido CORTO (0.35→0.12 s): en la interpolación lineal base→destino
+    // la mano cruza el vecindario del codo y la cadena se pliega un instante
+    // (dip ~0,12): a 0,12 s son 2-7 frames y se lee como ANTICIPACIÓN del
+    // gesto, no como deformación; a 0,35 s duraba 1-2 segundos visibles.
+    const gw = g ? Math.min(1, Math.max(0, time - this.gestureStart) / 0.12) : 0; // fundido
     for (let i = 0; i < this.bodies.length; i++) {
       const a = sit[i], b = stand[i];
       let dx = a.x + (b.x - a.x) * k;
@@ -228,8 +232,11 @@ export class RichManSim {
     // DENTRO y la pieza se hundía en el tronco. Codos/manos abiertos.
     o[RM.elbowL] = v3(slide - 0.31, 0.4, -0.06);
     o[RM.elbowR] = v3(slide + 0.31, 0.4, -0.06);
-    o[RM.handL] = v3(slide - 0.38, 0.28, -0.1);
-    o[RM.handR] = v3(slide + 0.38, 0.28, -0.1);
+    // T78 — manos al reposo MÁS FUERA (el modelo tiene hombros a ±0.2965 y
+    // antebrazos largos): a ±0.38 el antebrazo se plegaba a 0,14 m y la pieza
+    // doblaba hacia el vientre («mete las manos dentro del cuerpo»).
+    o[RM.handL] = v3(slide - 0.42, 0.24, -0.1);
+    o[RM.handR] = v3(slide + 0.42, 0.24, -0.1);
     o[RM.kneeL] = v3(slide - 0.1, 0.1, -0.26);
     o[RM.kneeR] = v3(slide + 0.1, 0.1, -0.26);
     o[RM.footL] = v3(slide - 0.13, -0.16, -0.34);
@@ -238,7 +245,19 @@ export class RichManSim {
   }
   /** Deltas del gesto actual (11 entradas; null si no hay gesto).
    *  Cada uno se diseña para LEERSE a distancia de cámara: exagerado, lento y
-   *  con una clara intención cómica (petición del jugador). */
+   *  con una clara intención cómica (petición del jugador).
+   *  T78 — RE-TENIDOS A LA ESTRUCTURA DE HUESOS DEL MODELO (feedback: «deforma,
+   *  mete las manos dentro del cuerpo, la cabeza no está bien»): los deltas son
+   *  ADITIVOS sobre la pose sentada y con los hombros anchos del GLB
+   *  (±0.2965) varios gestos plegaban las cadenas a <0,1 m (antebrazo doblado
+   *  dentro del tronco) o hundían la cabeza en el pecho (head-chest <0,15 con
+   *  pieza de cabeza grande). Reglas de la nueva tabla, verificadas por test
+   *  (richManGesture.test.ts):
+   *  · antebrazo |mano−codo| ≥ 0,15 y brazo |codo−pecho| ≥ 0,18 (no se pliegan);
+   *  · |cabeza−pecho| ≥ 0,21 (la cabeza no se come el torso);
+   *  · mano FUERA de la silueta: |x| ≥ 0,24 O delante del pecho (z ≤ pecho−0,10)
+   *    O por encima de la cabeza — un gesto "a la boca/oídos" se lee DELANTE
+   *    (−z), no metiendo la mano hacia el eje del cuerpo. */
   private gestureOffsets(time: number): V3[] | null {
     const ph = time - this.gestureStart;
     const d: V3[] = new Array(RM_PARTICLES).fill(v3(0, 0, 0));
@@ -247,110 +266,119 @@ export class RichManSim {
     const kind: RichGesture = time < this.ostentateUntil ? "exaltado" : this.gestureKind;
     switch (kind) {
       case "exaltado": {
-        // HABLAR EN ALTO (petición: "mueva los brazos en alto de forma muy
-        // clara y ostentosa"): DOS brazos arriba a la vez, en V sobre la
-        // cabeza, meneo vivo desfasado — el MÍNIMO de la onda sigue por
-        // encima del pecho (se lee hablar desde cualquier ángulo de cámara).
+        // HABLAR EN ALTO: dos brazos en V SOBRE la cabeza (manos a y≈0,98,
+        // por encima de la cabeza 0,8), codos fuera — meneo vivo desfasado.
         const wL = Math.sin(ph * 7.1);
         const wR = Math.sin(ph * 7.1 + 2.2);
-        set(RM.handL, 0.2, 0.55 + 0.04 * wL, -0.06);
-        set(RM.handR, -0.2, 0.55 + 0.04 * wR, -0.06);
-        set(RM.elbowL, -0.1, 0.3, -0.02);
-        set(RM.elbowR, 0.1, 0.3, -0.02);
-        set(RM.head, 0, 0.05, -0.05);
-        set(RM.chest, 0, 0.03, -0.03);
+        set(RM.handL, -0.02, 0.74 + 0.05 * wL, -0.02);
+        set(RM.handR, 0.02, 0.74 + 0.05 * wR, -0.02);
+        set(RM.elbowL, -0.15, 0.26, -0.02);
+        set(RM.elbowR, 0.15, 0.26, -0.02);
+        set(RM.head, 0, 0.05, -0.04);
         break;
       }
       case "dormitando": {
-        // cabecea: la cabeza cae y se incorpora; brazos colgando flojos
+        // cabecea: la cabeza cae POCO (−0.05: antes −0.15 la hundía en el
+        // pecho) y se incorpora; brazos colgando flojos
         const nod = Math.sin(ph * 1.9) * 0.5 + 0.5;
-        set(RM.head, Math.sin(ph * 0.8) * 0.05, -0.15 * nod, 0.04 * nod);
-        set(RM.handL, 0, -0.05, 0);
-        set(RM.handR, 0, -0.05, 0);
+        set(RM.head, Math.sin(ph * 0.8) * 0.05, -0.05 * nod, -0.03 * nod);
+        set(RM.handL, 0, -0.04, 0);
+        set(RM.handR, 0, -0.04, 0);
         set(RM.elbowL, 0, -0.02, 0);
         set(RM.elbowR, 0, -0.02, 0);
         break;
       }
       case "insultando": {
-        // puño en alto sacudiendo (a la vez que la burbuja de insulto)
+        // puño en alto a un LADO (fuera de la silueta) sacudiendo
         const shake = Math.sin(ph * 13) * 0.04;
-        set(RM.handR, -0.06 + shake, 0.42, -0.08);
-        set(RM.elbowR, 0.02, 0.26, 0);
-        set(RM.head, 0, 0.02, -0.03);
+        set(RM.handR, 0.04, 0.56 + shake, -0.04);
+        set(RM.elbowR, 0.09, 0.20, -0.02);
+        set(RM.head, 0, 0.02, -0.02);
         break;
       }
       case "comiendo": {
-        // lleva el bocadillo a la boca a mordiscos; la otra mano descansa
+        // lleva el bocadillo a la boca POR DELANTE (z −0.28, delante del
+        // pecho): antes la mano entraba hacia el eje (x≈0,16) y se leía
+        // dentro del torso
         const bite = Math.sin(ph * 5.2) * 0.045;
-        set(RM.handR, -0.22, 0.28 + bite, -0.08);
-        set(RM.elbowR, -0.06, 0.14, 0);
+        set(RM.handR, -0.24, 0.46 + bite, -0.18);
+        set(RM.elbowR, 0.09, 0.14, -0.06);
         set(RM.head, 0, -0.03, -0.02);
         set(RM.handL, 0, -0.04, 0);
         break;
       }
       case "tirando_basura": {
-        // viento atrás... ¡y lanzamiento! (la basura sale por su cuenta)
+        // viento atrás (mano atrás-fuera)… ¡y lanzamiento arriba-adelante!
         const windup = ph < 0.45 ? ph / 0.45 : 0;
         const throwW = ph < 0.45 ? 0 : Math.max(0, 1 - (ph - 0.45) / 0.35);
-        set(RM.handR, -0.2 * windup + 0.1 + 0.22 * throwW, 0.06 * windup + 0.05 + 0.3 * throwW, throwW > 0 ? -0.1 * throwW : 0.04 * windup);
-        set(RM.elbowR, -0.08 * windup + 0.04 + 0.09 * throwW, 0.03 * windup + 0.02 + 0.15 * throwW, 0);
+        set(RM.handR,
+          0.08 * windup - 0.02 * throwW,
+          0.26 * windup + 0.36 * throwW,
+          0.24 * windup - 0.44 * throwW);
+        set(RM.elbowR,
+          0.09 * windup + 0.02 * throwW,
+          0.12 * windup + 0.18 * throwW,
+          0.08 * windup - 0.16 * throwW);
         set(RM.head, -0.04 * windup, 0, 0);
         break;
       }
       case "aplaudiendo": {
-        // palmas alegres: las manos se juntan al centro a un ritmo vivo
+        // palmas DELANTE del pecho (z −0.30): las manos se acercan al centro
+        // sin entrar en la silueta (el pecho queda detrás del plano de palmas)
         const gap = Math.abs(Math.sin(ph * Math.PI * 2 * 2.2)) * 0.14;
-        set(RM.handL, 0.24 - gap, 0.14, -0.1);
-        set(RM.handR, -0.24 + gap, 0.14, -0.1);
-        set(RM.elbowL, 0.1, 0.08, -0.02);
-        set(RM.elbowR, -0.1, 0.08, -0.02);
+        set(RM.handL, 0.27 - gap, 0.36, -0.2);
+        set(RM.handR, -0.27 + gap, 0.36, -0.2);
+        set(RM.elbowL, -0.02, 0.12, -0.1);
+        set(RM.elbowR, 0.02, 0.12, -0.1);
         set(RM.head, 0, 0.02, -0.02);
         break;
       }
       case "brindando": {
-        // copa en alto: sorbo y brinde a la cámara (echa la cabeza atrás)
+        // copa en alto-adelante: sorbo y brinde a la cámara (echa la cabeza atrás)
         const sip = Math.max(0, Math.sin(ph * 1.7));
-        set(RM.handL, 0.24, 0.42, -0.12);
-        set(RM.elbowL, 0.08, 0.22, -0.02);
+        set(RM.handL, 0.10, 0.60, -0.18);
+        set(RM.elbowL, -0.11, 0.22, -0.06);
         set(RM.head, 0, 0.03 * sip, 0.05 * sip);
-        set(RM.handR, 0, 0.08, -0.03);
+        set(RM.handR, 0, 0.06, -0.04);
         break;
       }
       case "mirando": {
-        // prismáticos a los ojos: escanea el horizonte buscando la cima
+        // prismáticos DELANTE DE LOS OJOS (z −0.32): escanea el horizonte
         const scan = Math.sin(ph * 1.5);
-        set(RM.handL, 0.26, 0.38, -0.12);
-        set(RM.handR, -0.26, 0.38, -0.12);
-        set(RM.elbowL, -0.06, 0.24, -0.04);
-        set(RM.elbowR, 0.06, 0.24, -0.04);
+        set(RM.handL, 0.30, 0.56, -0.22);
+        set(RM.handR, -0.30, 0.56, -0.22);
+        set(RM.elbowL, -0.01, 0.22, -0.1);
+        set(RM.elbowR, 0.01, 0.22, -0.1);
         set(RM.head, scan * 0.09, 0.02, -0.03);
         break;
       }
       case "pataleando": {
-        // pataleo sentado (además del bamboleo que manda a la tabla)
+        // pataleo sentado; los brazos se ABREN hacia fuera (aleteo), no suben
+        // al eje del cuerpo
         const kL = Math.max(0, Math.sin(ph * 9));
         const kR = Math.max(0, Math.sin(ph * 9 + Math.PI));
         set(RM.footL, 0, 0.26 * kL, -0.06 * kL);
         set(RM.kneeL, 0, 0.18 * kL, 0.02 * kL);
         set(RM.footR, 0, 0.26 * kR, -0.06 * kR);
         set(RM.kneeR, 0, 0.18 * kR, 0.02 * kR);
-        set(RM.handL, 0, 0.16 * kR, 0);
-        set(RM.handR, 0, 0.16 * kL, 0);
+        set(RM.handL, -0.06 * kR, 0.10 * kR, 0);
+        set(RM.handR, 0.06 * kL, 0.10 * kL, 0);
         break;
       }
       case "durmiendo": {
         // TUMBADO SOBRE LA TABLA (petición del jugador): cuerpo estirado a lo
-        // largo de la tabla (cabeza hacia el cabo derecho), manos bajo la
-        // cabeza, rodillas flexionadas, respiración lenta. El sombrero cae a
-        // la cara (lo mueve la escena) y las gafas se quitan.
+        // largo de la tabla (cabeza hacia el cabo derecho), manos JUNTO a la
+        // cabeza con antebrazo vivo (antes se plegaba a 0,09 m), rodillas
+        // flexionadas, respiración lenta. El sombrero cae a la cara (lo mueve
+        // la escena) y las gafas se quitan.
         const breath = Math.sin(ph * 1.15);
         set(RM.pelvis, 0.02, -0.02, 0);
         set(RM.chest, 0.3, -0.34 + breath * 0.012, 0.03);
         set(RM.head, 0.58, -0.56 + breath * 0.02, 0.02);
-        set(RM.elbowL, 0.4, -0.1, 0.02);
-        set(RM.handL, 0.52, -0.04, 0.03);
-        set(RM.elbowR, 0.44, -0.08, 0.02);
-        set(RM.handR, 0.58, -0.02, 0.03);
+        set(RM.elbowL, 0.61, -0.02, -0.02);
+        set(RM.handL, 0.86, 0.06, -0.04);
+        set(RM.elbowR, 0.63, 0.0, 0);
+        set(RM.handR, 0.88, 0.08, -0.04);
         set(RM.kneeL, -0.06, 0.06, 0.04);
         set(RM.kneeR, 0.04, 0.06, 0.04);
         set(RM.footL, -0.22, 0.16, 0.04);
@@ -358,37 +386,37 @@ export class RichManSim {
         break;
       }
       case "bailando": {
-        // BAILARÁN (petición del jugador): caderas que marcan el ritmo, brazos
-        // arriba alternando, cabeceo — todo con la tabla de base.
+        // brazos arriba ALTERNANDO por FUERA de la silueta (x ±0.40), caderas
+        // que marcan el ritmo, cabeceo
         const beat = ph * 5.2;
         const wig = Math.sin(beat);
         set(RM.pelvis, wig * 0.06, Math.abs(Math.sin(beat)) * 0.045, 0);
         set(RM.head, wig * 0.04, Math.sin(beat + 1) * 0.05, 0);
-        set(RM.handL, -0.02, 0.34 + Math.sin(beat) * 0.14, -0.06);
-        set(RM.handR, 0.02, 0.34 + Math.sin(beat + Math.PI) * 0.14, -0.06);
-        set(RM.elbowL, -0.05, 0.18, 0);
-        set(RM.elbowR, 0.05, 0.18, 0);
+        set(RM.handL, 0.02 + 0.04 * Math.sin(beat), 0.60 + 0.03 * Math.sin(beat), -0.06);
+        set(RM.handR, -0.02 + 0.04 * Math.sin(beat + Math.PI), 0.60 + 0.03 * Math.sin(beat + Math.PI), -0.06);
+        set(RM.elbowL, -0.11, 0.18, -0.02);
+        set(RM.elbowR, 0.11, 0.18, -0.02);
         set(RM.kneeL, 0, Math.max(0, Math.sin(beat)) * 0.06, 0);
         set(RM.kneeR, 0, Math.max(0, Math.sin(beat + Math.PI)) * 0.06, 0);
         break;
       }
       case "leyendo": {
-        // LEYENDO (petición del jugador): libro delante (lo pone la escena),
-        // dos manos al frente, cabeza inclinada hacia abajo, escanea líneas.
+        // libro DELANTE (z −0.32, la escena lo pone entre las manos), cabeza
+        // inclinada SOLO un poco (antes −0.12 la metía en el pecho)
         const scan = Math.sin(ph * 1.4) * 0.02;
-        set(RM.handL, 0.16, 0.14, -0.1);
-        set(RM.handR, -0.16, 0.14, -0.1);
-        set(RM.elbowL, 0.06, 0.06, -0.02);
-        set(RM.elbowR, -0.06, 0.06, -0.02);
-        set(RM.head, scan, -0.12, 0.05);
+        set(RM.handL, 0.20, 0.32, -0.22);
+        set(RM.handR, -0.20, 0.32, -0.22);
+        set(RM.elbowL, 0.01, 0.06, -0.06);
+        set(RM.elbowR, -0.01, 0.06, -0.06);
+        set(RM.head, scan, -0.05, 0.03);
         break;
       }
       case "telefono": {
-        // LLAMANDO (petición del jugador): teléfono a la oreja (prop de la
-        // escena), codo arriba, cabeza ladeada, la otra mano descansa.
+        // teléfono a la OREJA (x 0.28 fuera de la silueta, z −0.14 al plano de
+        // la cara), codo arriba-fuera, cabeza ladeada, la otra mano descansa
         const chat = Math.sin(ph * 2.6) * 0.02;
-        set(RM.handR, -0.26 + chat, 0.44, -0.04);
-        set(RM.elbowR, -0.12, 0.26, 0);
+        set(RM.handR, -0.14 + chat, 0.56, -0.04);
+        set(RM.elbowR, 0.07, 0.18, 0);
         set(RM.head, 0.05, -0.02, 0);
         set(RM.handL, 0, -0.04, 0);
         break;

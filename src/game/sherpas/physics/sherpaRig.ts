@@ -1184,6 +1184,20 @@ export class SherpaRig {
         st.fatigue = Math.min(1, st.fatigue + (limbT.stallFatiguePerSecond ?? STALL_FATIGUE_PER_SECOND_DEFAULT) * (stallable ? soloHandMult : 1) * dt);
       }
       if (st.fatigue >= limbT.fatigueReleaseAt) {
+        // T78 — EL PAR DE MANOS SE SUELTA JUNTO (feedback del jugador: «solo
+        // cae cuando ambos llegan a rojo y cierran el círculo»): con la otra
+        // mano anclada y aún por debajo del umbral, esta no se va sola — las
+        // DOS se despegan a la vez (los anillos van acompasados: muestran el
+        // máx del par, así que la caída coincide con el cierre de AMBOS).
+        // Sobrearga/slip siguen soltando una mano concreta (eventos puntuales).
+        if (isHand(limb)) {
+          const sib: Limb = limb === "hand_l" ? "hand_r" : "hand_l";
+          const ss = this.states.get(sib)!;
+          if (ss.anchored && ss.holdId && ss.fatigue < limbT.fatigueReleaseAt) {
+            this.forceRelease(sib, limbT.reGripLock, "exhaustion");
+            released.push({ limb: sib, cause: "exhaustion" });
+          }
+        }
         this.forceRelease(limb, limbT.reGripLock, "exhaustion");
         released.push({ limb, cause: "exhaustion" });
         continue;

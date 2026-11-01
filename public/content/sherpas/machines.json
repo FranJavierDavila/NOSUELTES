@@ -82,8 +82,8 @@
         "colgando": {
           "next": "dormitando",
           "durationRange": [
-            8,
-            16
+            5,
+            9
           ]
         },
         "dormitando": {

@@ -33,8 +33,8 @@ import { CampSystem, saveAscent, type AscentStats, type SavedAscent } from "../w
 import { PointerDrag } from "../input/drag";
 import type { GripRingEntry } from "./gripRing"; // T65: anillos de agarre
 import {
-  collectReachRings, REACH_RING_POOL, type ReachHoldView, type ReachLimbProbe, type ReachRingEntry,
-} from "./gripRing"; // T66-FB: anillos blancos de alcance
+  collectReachRings, pairGripDisplay, REACH_RING_POOL, type ReachHoldView, type ReachLimbProbe, type ReachRingEntry,
+} from "./gripRing"; // T66-FB: anillos blancos de alcance + T78: par de manos acompasado
 import { initialRichMood, richBubbleVisible, stepRichMood, type RichMoodState } from "./richMood"; // T66: ánimo del ricachón
 import { Matrix } from "@babylonjs/core/Maths/math.vector";
 import type { SherpaScene } from "../presentation/scene";
@@ -1714,9 +1714,15 @@ export class SherpasMatch {
     const limbProbes: ReachLimbProbe[] = [];
     for (const p of [0, 1] as const) {
       const rig = this.sherpas[p];
-      for (const l of ["hand_l", "hand_r"] as const) {
-        const st = rig.states.get(l)!;
-        if (st.anchored && st.holdId) gripEntries.push({ holdId: st.holdId, fatigue: st.fatigue });
+      // T78 — EL PAR DE MANOS ES UN SOLO AGARRE: con las dos ancladas, los dos
+      // anillos muestran la MISMA fatiga (el máx del par) — van acompasados y
+      // el rig suelta las dos a la vez cuando ese valor cierra el círculo.
+      const hl = rig.states.get("hand_l")!;
+      const hr = rig.states.get("hand_r")!;
+      const bothHands = hl.anchored && !!hl.holdId && hr.anchored && !!hr.holdId;
+      const pairF = pairGripDisplay(hl.fatigue, hr.fatigue, bothHands);
+      for (const st of [hl, hr]) {
+        if (st.anchored && st.holdId) gripEntries.push({ holdId: st.holdId, fatigue: pairF });
       }
       for (const l of LIMBS) {
         const rp = rig.reachProbe(l);

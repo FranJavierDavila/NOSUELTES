@@ -91,8 +91,7 @@ export class RichManBrain {
       this.walkedThisBout = false;
       // rearma el aburrimiento para el nuevo ciclo sentado (4-7 s)
       this.boredAt = 4 + this.deps.rng.next() * 3;
-    }
-    const machine = this.deps.machines.machines.richman_fsm;
+    }    const machine = this.deps.machines.machines.richman_fsm;
     const st = machine.states[state];
     this.stateDuration = st.durationRange
       ? this.deps.rng.range(st.durationRange[0], st.durationRange[1])
@@ -121,7 +120,10 @@ export class RichManBrain {
     // quieto unos segundos, se busca una gracia EL SOLO, sin esperar a que el
     // director le deje un hueco (su cola interrumpe a su ritmo).
     if (this.state === "colgando" && this.stateTime >= this.boredAt) {
-      this.boredAt = Infinity; // una sola vez por ciclo sentado
+      // T78 — RE-ARMABLE (feedback: «vemos siempre la misma»): si la tirada
+      // sale "se queda tan ancho", vuelve a intentarlo en 4-7 s en vez de
+      // quedarse sin gracias el resto del ciclo (que duraba 8-16 s).
+      this.boredAt = this.stateTime + 4 + this.deps.rng.next() * 3;
       const r = this.deps.rng.next();
       if (r < 0.2) this.enter("de_pie");
       else if (r < 0.31) this.enter("aplaudiendo");

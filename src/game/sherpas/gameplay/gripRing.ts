@@ -89,6 +89,22 @@ export function mergeGripRings(entries: readonly GripRingEntry[]): GripRingEntry
   return [...byHold.entries()].map(([holdId, fatigue]) => ({ holdId, fatigue }));
 }
 
+// T78 — EL PAR DE MANOS ES UN SOLO AGARRE (feedback del jugador: «deberían ir
+// acompasados, si uno está rojo el otro también y deben evolucionar ambos,
+// solo cae cuando ambos llegan a rojo y cierran el círculo»): con las DOS
+// manos ancladas, las dos anillos muestran LA MISMA fatiga (el peor caso, el
+// máx del par) y el rig suelta LAS DOS a la vez cuando ese valor cierra el
+// círculo (fatigueReleaseAt). Así los dos anillos van siempre al unísono y la
+// caída coincide exactamente con el cierre. Una mano SOLA muestra la suya.
+
+/** Fatiga que muestra el anillo de una mano del par. Con las dos ancladas,
+ *  la misma (máx) en ambas; sola, la suya. Clampeado y tolerante a NaN. */
+export function pairGripDisplay(fa: number, fb: number, bothAnchored: boolean): number {
+  const a = clamp01(Number.isFinite(fa) ? fa : 0);
+  const b = clamp01(Number.isFinite(fb) ? fb : 0);
+  return bothAnchored ? Math.max(a, b) : a;
+}
+
 // T69 — EL ANILLO SE LLENA COMO UN CÍRCULO (petición del jugador: "la fatiga
 // para llegar al descuelgue debe ser del 100%, lo que se corresponde con el
 // círculo completo en 360 grados"): el recorrido del anillo YA no es un toro

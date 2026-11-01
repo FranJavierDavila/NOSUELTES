@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""T76 — constantes de normalización de las 5 caras al marco de pieza_cabeza.
+"""T76/T78 — constantes de normalización de las 5 caras al marco de pieza_cabeza.
 
 Cada cara entra con escala/centro propios (asustado viene 3,4× pequeña,
 chuleria desplazada +z). Receta: escala uniforme s = mediana de las razones
 de tamaño (robusta a la boca abierta) y traslado para casar CENTROS de bbox.
-Las constantes salen en espacio glTF; en Babylon el importador niega la z de
-las posiciones (conversión RH→LH), así que la escena aplica offset.z = −t.z.
-Imprime el bloque TS listo para pegar en richFaces.ts.
+
+T78 (feedback del jugador: «cuando coloca una cabeza nueva no la orienta como
+la original, la pone invertida mirando a la pared»): los exports del artista
+miran a +z y la cabeza HORNEADA mira a −z (a cámara, giro 180°Y de T74). La
+envoltura gira ahora π en Y y el offset se recomputa para que el CENTRO del
+bbox siga clavado en el de la cabeza: P' = C − R·(C − P), con C el centro del
+bbox de pieza_cabeza (marco local del nodo) y R la rotación π en Y. El script
+imprime el bloque TS listo para pegar en richFaces.ts.
 """
 import json
 import struct
@@ -55,11 +60,21 @@ for n in FACES:
     s_prima = s / Sn                              # el nodo ya escala Sn
     t = hctr - fctr * s                           # deseado en head-local (geo)
     # child_total = M_child × M_node; M_node·geo = Sn·geo + Tn ⇒
-    # s'·Sn = s  y  t' = t − s'·Tn
+    # s'·Sn = s  y  t' = t − s'·Tn   (sin giro, T76)
     t_prima = t - s_prima * Tn
-    print(f'  {n}: {{ url: "/models/caras/pieza_cara_{n}.glb", scale: {s_prima:.5f}, offset: [{t_prima[0]:.5f}, {t_prima[1]:.5f}, {t_prima[2]:.5f}] }},   // Sn={Sn} Tn={np.round(Tn,3)}')
-    # verificación: geo × (s'·Sn) + (t' + s'·Tn) debe casar size/centro con la cabeza
-    chk_mn = fmn * (s_prima * Sn) + (t_prima + s_prima * Tn)
-    chk_mx = fmx * (s_prima * Sn) + (t_prima + s_prima * Tn)
-    print(f"    // check size {np.round(chk_mx-chk_mn,3)} vs head {np.round(hsize,3)}; centro {np.round((chk_mn+chk_mx)/2,3)} vs {np.round(hctr,3)}")
+    # T78 — GIRO π EN Y de la envoltura: el centro permanece en el de la
+    # cabeza ⇒ P' = C − R·(C − P) con R = diag(−1, 1, −1) ⇒ (2Cx−Px, Py, 2Cz−Pz).
+    p = t_prima
+    p_flip = np.array([2 * hctr[0] - p[0], p[1], 2 * hctr[2] - p[2]])
+    print(f'  {n}: {{ url: "/models/caras/pieza_cara_{n}.glb", scale: {s_prima:.5f}, offset: [{p_flip[0]:.5f}, {p_flip[1]:.5f}, {p_flip[2]:.5f}] }},   // Sn={Sn} Tn={np.round(Tn,3)}')
+    # verificación CON GIRO: R·(geo × (s'·Sn) + s'·Tn) + P' debe casar
+    # tamaño/centro con la cabeza (el frente queda invertido, el centro no se mueve)
+    def ctr_of(gmin, gmax):
+        ctr = (gmin + gmax) / 2 * (s_prima * Sn) + s_prima * Tn
+        return np.array([-ctr[0], ctr[1], -ctr[2]]) + p_flip
+    def half_of(gmin, gmax):
+        return (gmax - gmin) / 2 * (s_prima * Sn)
+    c_chk = ctr_of(fmn, fmx)
+    half = half_of(fmn, fmx)
+    print(f"    // check centro {np.round(c_chk,3)} vs cabeza {np.round(hctr,3)}; semi {np.round(half,3)} vs {np.round(hsize/2,3)}")
 print("};")

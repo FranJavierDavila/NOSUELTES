@@ -34,7 +34,7 @@ import { emoteOffset, stepEmote, startEmote, type EmoteSlot } from "../gameplay/
 import { buildGripArcGeometry, gripArcFraction, gripRingColor, gripRingPulses, mergeGripRings, REACH_RING_ALPHA, REACH_RING_COLOR, REACH_RING_POOL, type GripRingEntry, type ReachRingEntry } from "../gameplay/gripRing"; // T65/T66-FB/T67-FB/T69: anillos
 import { isRichMood, RICH_BUBBLE_SPEAK_S, type RichMood } from "../gameplay/richMood"; // T66: ánimo del ricachón
 import { composeEmoteBubble, composeRichSpeech, flipRowsRGBA } from "../gameplay/emoteBubble"; // T66-FB/T76-FB: bocadillo de cómic (+ texto)
-import { RICH_FACES, faceForMood, isRichFace, type RichFaceName, type RichFaceSpec } from "../gameplay/richFaces"; // T76: caras expresivas
+import { RICH_FACES, RICH_FACE_YAW, faceForMood, isRichFace, type RichFaceName, type RichFaceSpec } from "../gameplay/richFaces"; // T76: caras expresivas
 import { richJoints15, RICH_DIMS_DEFAULT, type RichJointDims } from "./richJoints"; // T62/T76: ricachón poseído (dims del modelo)
 import { SceneLoader } from "@babylonjs/core/Loading/sceneLoader"; // T76: carga de las caras expresivas
 import "@babylonjs/loaders/glTF"; // registro del cargador .glb (caras T76)
@@ -272,12 +272,22 @@ export class SherpaScene {
   private richFaces = new Map<RichFaceName, TransformNode>();
   private richFaceActive: RichFaceName | null = null;
   private richFaceLoading = false;
+  /** T78 — mallas PROPIAS de pieza_cabeza (capturadas ANTES de colgar las
+   *  caras, que son hijas de su nodo): con cara activa la cabeza original se
+   *  OCULTA («no oculta nunca», feedback del jugador). */
+  private richHeadMeshes: Mesh[] = [];
   /** Cara en crudo del ánimo (para componer el globo con texto): PNG decodificado. */
   private richFaceRaw = new Map<RichMood, { data: Uint8Array; s: number }>();
   private richSpeechTex = new Map<string, RawTexture>();
   private richSpeechAspect = new Map<string, number>();
   private richSpeechUntil = 0;
   private richSpeechText: string | null = null;
+  /** T78 — clave ánimo|frase FIJADA al hablar: la textura ancha se compone con
+   *  el ánimo del MOMENTO; si el ánimo de la simulación cambia dentro de la
+   *  ventana (histéresis 1,5 s < habla 3,8 s) la clave reconstruida por frame
+   *  no existía y el globo caía al emoticón cuadrado («solo se ve el bocadillo
+   *  del emoticón», feedback del jugador). */
+  private richSpeechKey: string | null = null;
   /** Aspecto actual del billboard (1 = cuadrado del ánimo; habla = w/h). */
   private richEmoteAspectX = 1;
   /** BOCADILLOS visibles (opción del menú inicial): apaga el billboard del
@@ -2722,6 +2732,12 @@ export class SherpaScene {
       // el color SIEMPRE (a f=0 el arco está oculto y manda la pista, pero el
       // material nunca queda negro a la vista de una transición)
       g.mat.emissiveColor.set(r, gg, b);
+      // T78 — LA PISTA VA ACOMPASADA (feedback del jugador: «si uno está rojo
+      // el otro también»): el riel se tinta con la MISMA rampa atenuada (×0.3)
+      // — todo el círculo lee del mismo estado; el hueco ya no es verde cuando
+      // el arco está rojo.
+      const trackMat = g.track.material as StandardMaterial;
+      trackMat.emissiveColor.set(r * 0.3, gg * 0.3, b * 0.3);
       // pista: siempre visible bajo el arco (el riel del recorrido)
       g.track.position.set(hold.position.x, hold.position.y, hold.position.z - 0.028);
       g.track.scaling.setAll(scale * pulse * 1.06);
@@ -3499,6 +3515,9 @@ export class SherpaScene {
     const headNode = inst.pieceEntries().find(([n]) => n === "pieza_cabeza")?.[1];
     if (!headNode) { console.error("[T76] pieza_cabeza no encontrada en el puppet del rico"); return; }
     this.richFaceLoading = true;
+    // T78 — mallas PROPIAS de la cabeza, capturadas ANTES de colgar ninguna
+    // cara (las caras cuelgan de este nodo: getChildMeshes después las traería).
+    this.richHeadMeshes = headNode.getChildMeshes().filter((m): m is Mesh => m instanceof Mesh);
     for (const name of Object.keys(RICH_FACES) as RichFaceName[]) {
       const spec: RichFaceSpec = RICH_FACES[name];
       void SceneLoader.LoadAssetContainerAsync("", spec.url, this.scene)
@@ -3522,6 +3541,9 @@ export class SherpaScene {
           const wrap = new TransformNode(`rico_cara_${name}`, this.scene);
           wrap.parent = headNode;
           wrap.scaling.setAll(spec.scale);
+          // T78 — la cara del artista mira a +z (a la pared): giro π en Y; el
+          // offset ya viene recomputado para no mover el centro del bbox.
+          wrap.rotation.y = RICH_FACE_YAW;
           wrap.position.set(spec.offset[0]!, spec.offset[1]!, spec.offset[2]!);
           piece.parent = wrap; // conserva su TRS propio (pivote + node-scale)
           for (const m of cont.meshes) {
@@ -3542,14 +3564,26 @@ export class SherpaScene {
           piece.setEnabled(false); // la cabeza por defecto manda hasta que toque
           this.richFaces.set(name, wrap);
           // si el ánimo ACTIVO ya pide esta cara, enséñala nada más llegar
-          if (this.richFaceActive === name) piece.setEnabled(true);
+          // (y oculta la cabeza original: syncRichHeadVisibility)
+          if (this.richFaceActive === name) {
+            piece.setEnabled(true);
+            this.syncRichHeadVisibility();
+          }
         })
         .catch((err) => { console.error(`[T76] cara ${name} no cargó:`, err); });
     }
   }
 
+  /** T78 — la cabeza original SOLO se ve sin cara activa (con cara, las mallas
+   *  propias de pieza_cabeza se ocultan: antes quedaban las DOS cabezas). */
+  private syncRichHeadVisibility(): void {
+    const headOn = this.richFaceActive === null;
+    for (const m of this.richHeadMeshes) m.setEnabled(headOn);
+  }
+
   /** T76 — enseña la cara del ánimo (null = cabeza por defecto). Solo cambia
-   *  nodos enabled: barato y seguro en el camino por frame. */
+   *  nodos enabled: barato y seguro en el camino por frame. T78: y oculta la
+   *  cabeza original (nunca se ocultaba: dos cabezas a la vez). */
   private applyRichFace(name: RichFaceName | null): void {
     if (this.richFaceActive === name && (name === null || this.richFaces.has(name))) return;
     this.richFaceActive = name;
@@ -3557,11 +3591,13 @@ export class SherpaScene {
       const on = n === name;
       for (const c of wrap.getChildMeshes()) c.setEnabled(on);
     }
+    this.syncRichHeadVisibility();
   }
 
-  /** SONDA E2E T76: caras cargadas y activa. */
-  getRichFaceInfo(): { loaded: number; active: string | null } {
-    return { loaded: this.richFaces.size, active: this.richFaceActive };
+  /** SONDA E2E T76: caras cargadas y activa. T78: cabeza original oculta. */
+  getRichFaceInfo(): { loaded: number; active: string | null; headHidden: boolean } {
+    const headOn = this.richHeadMeshes.some((m) => m.isEnabled());
+    return { loaded: this.richFaces.size, active: this.richFaceActive, headHidden: this.richHeadMeshes.length > 0 && !headOn };
   }
 
   /** T76 — INTERRUPTOR DE BOCADILLOS (menú inicial): apaga el billboard del
@@ -3571,6 +3607,7 @@ export class SherpaScene {
     if (!on) {
       this.richSpeechUntil = 0;
       this.richSpeechText = null;
+      this.richSpeechKey = null;
     }
   }
 
@@ -3634,6 +3671,11 @@ export class SherpaScene {
     if (!m) return;
     if (!this.richEmote) this.buildRichEmote();
     if (!this.richEmote || !this.richEmoteMat) return;
+    // T78 — HABLA EN CURSO: el material muestra la textura ANCHA (cara+frase);
+    // el ánimo de este frame NO la pisa (el swap por frame la restaura igual,
+    // pero sin el guard asomaba un frame de emoticón cuadrado).
+    const speechFresh = !!this.richSpeechText && performance.now() < this.richSpeechUntil;
+    if (speechFresh) return;
     const tex = this.ensureRichEmoteTexture(m);
     if (!tex) return;
     this.richEmoteMat.emissiveTexture = tex;
@@ -3719,7 +3761,11 @@ export class SherpaScene {
    *  ánimo+frase. */
   sayRichLine(text: string, durS = 3.8): boolean {
     if (!this.richBubblesOn || typeof document === "undefined") return false;
-    const m: RichMood = this.richEmoteMood ?? "furia";
+    // sin ánimo en cara (ni pin) el globo no puede verse: false → el match
+    // manda la frase al subtítulo (antes se componeía una textura que nunca
+    // se enseñaba y la frase se PERDÍA).
+    const m: RichMood | null = this.richMoodPin ?? this.richEmoteMood;
+    if (!m) return false;
     if (!this.richFaceRaw.has(m)) {
       this.ensureRichEmoteTexture(m); // llega async: ESTE tick cae al subtítulo
       return false;
@@ -3727,6 +3773,8 @@ export class SherpaScene {
     if (!this.richEmote) this.buildRichEmote();
     if (!this.richEmote || !this.richEmoteMat) return false;
     this.richSpeechText = text;
+    this.richSpeechKey = `${m}|${text}`; // T78: FIJADA al hablar (el ánimo de la
+    // simulación puede cambiar dentro de la ventana: la clave no se reconstruye)
     this.richSpeechUntil = performance.now() + durS * 1000;
     this.richEmoteShownAt = performance.now(); // pop de nuevo con la frase
     this.ensureRichSpeechTexture(m, text);
@@ -3792,8 +3840,13 @@ export class SherpaScene {
     pinned: boolean; speaking: boolean;
     /** T76: cara activa y boca de habla (frase en el globo). */
     face: string | null; facesLoaded: number; speech: boolean;
+    /** T78: el material muestra AHORA la textura ancha (cara+frase). */
+    speechTex: boolean;
   } {
     const ready = this.richEmoteMood ? (this.richEmoteTexReady.get(this.richEmoteMood) ?? false) : false;
+    const speechKey = this.richSpeechKey;
+    const speechTexNow = !!speechKey && !!this.richEmoteMat &&
+      this.richEmoteMat.emissiveTexture === this.richSpeechTex.get(speechKey);
     return {
       mood: this.richEmoteMood,
       visible: !!this.richEmote && this.richEmote.isEnabled() && this.richEmote.isVisible && !!this.richEmoteMat?.emissiveTexture,
@@ -3804,6 +3857,7 @@ export class SherpaScene {
       face: this.richFaceActive,
       facesLoaded: this.richFaces.size,
       speech: performance.now() < this.richSpeechUntil,
+      speechTex: speechTexNow,
     };
   }
 
@@ -3868,9 +3922,10 @@ export class SherpaScene {
       // viva, el material muestra la textura ANCHA (cara + frase); al agotarse
       // vuelve la del ánimo. Swap por puntero: idempotente y barato.
       const speechFresh = this.richBubblesOn && !!this.richSpeechText && nowE < this.richSpeechUntil;
-      const speechKey = speechFresh && this.richEmoteMood
-        ? `${this.richEmoteMood}|${this.richSpeechText}`
-        : null;
+      // T78 — la clave se FIJÓ al hablar (sayRichLine): no se reconstruye con
+      // el ánimo de este frame (que cambia con histéresis de 1,5 s y rompía
+      // la búsqueda de la textura ancha).
+      const speechKey = speechFresh ? this.richSpeechKey : null;
       const speechTex = speechKey ? this.richSpeechTex.get(speechKey) : undefined;
       const speechAspect = speechKey ? (this.richSpeechAspect.get(speechKey) ?? 1) : 1;
       if (speechTex && this.richEmoteMat.emissiveTexture !== speechTex) {
