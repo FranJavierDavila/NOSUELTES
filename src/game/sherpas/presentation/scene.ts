@@ -1871,7 +1871,10 @@ export class SherpaScene {
       const plugin = new ClimateRockPlugin(mat);
       plugin.configure(clima.fields, clima.normal, clima.scale, clima.strength, clima.freezeY);
       this.climaPlugins.push(plugin);
-      mat.microSurfaceTexture = clima.gloss; // barniz semipulido, pátina mate
+      // T75: el microSurfaceTexture (glosidad climática) se RETIRA — en la GPU
+      // del jugador la cara salía como un espejo del cielo azul oscuro (plano,
+      // sin piedra) y este canal especular es el otro candidato al aplastado;
+      // la rugosidad constante 0.93 ya lee PIEDRA MATE, que es lo pedido.
     }
     // T69-FIX 3: los DOS plugins (estratos + clima) ya están en _plugins del
     // material — el rebuild del UBO ahora sí los registra (layout + GLSL).
@@ -3404,6 +3407,10 @@ export class SherpaScene {
           undefined, // el relleno frío ya lo aporta el HDRI en el PBR
           // SIN bodyHex (el arte texturizado se conserva) y SIN pieceScale
           // (el modelo YA es gordo: el engorde T62 era el parche provisional).
+          // T75: GIRO ANATÓMICO — el cuerpo sentado mira a −z (cámara) y el
+          // bind del modelo a +z (muro): sin él, punteras/palmas/codos quedan
+          // con el rollo del escalador (invertidos 180°).
+          { anatomicalTwist: true },
         )
       : this.puppetFactory.instantiate(
         "#d4af37", // correas doradas: se lee RICO a cualquier distancia

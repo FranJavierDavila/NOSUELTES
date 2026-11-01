@@ -104,7 +104,13 @@ export class SherpaPuppetFactory {
     strapHex: string,
     casters: (m: AbstractMesh) => void,
     fillLight?: (m: AbstractMesh) => void,
-    opts?: { bodyHex?: string; pieceScale?: Record<string, [number, number, number]> },
+    opts?: {
+      bodyHex?: string;
+      pieceScale?: Record<string, [number, number, number]>;
+      /** T75 — giro anatómico de extremidades (RICACHÓN: el cuerpo mira a −z,
+       *  el bind a +z; ver PuppetBinds.anatomicalTwist). */
+      anatomicalTwist?: boolean;
+    },
   ): SherpaPuppetInstance | null {
     const entries = this.container.instantiateModelsToScene(
       (n: string) => n, // nombres compartidos: se referencian por OBJETO
@@ -147,7 +153,7 @@ export class SherpaPuppetFactory {
         quat: { x: q.x, y: q.y, z: q.z, w: q.w },
       });
     }
-    const binds: PuppetBinds = buildBinds(trs);
+    const binds: PuppetBinds = buildBinds(trs, { anatomicalTwist: !!opts?.anatomicalTwist });
 
     // --- materiales: cuerpo (textura, arte original) vs juntas (tinte jugador) ---
     // T62 — opts.bodyHex (RICACHÓN): cuerpo PLANO de un color (sin textura):

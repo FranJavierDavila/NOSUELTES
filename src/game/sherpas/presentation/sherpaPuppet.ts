@@ -28,11 +28,19 @@
 import { P } from "../../physics/pbd/ragdoll";
 import {
   mat4FromQuatPos, mat4Invert, mat4Mul, quatFromMat4,
-  quatFromUnitVectors, quatNorm, v3t, vCross, vLen, vNorm, vScale, vSub,
+  quatFromUnitVectors, quatNorm, v3t, vCross, vDot, vLen, vNorm, vScale, vSub,
   xfPoint, type Mat4, type QuatT, type V3T,
 } from "./climberPoseMath";
 
 const vAddR = (a: V3T, b: V3T): V3T => ({ x: a.x + b.x, y: a.y + b.y, z: a.z + b.z });
+
+/** Componente de `v` perpendicular a `axis` (unitario) o null si es degenerada. */
+const perpUnit = (v: V3T, axis: V3T): V3T | null => {
+  const d = vDot(v, axis);
+  const r = vSub(v, vScale(axis, d));
+  const l = vLen(r);
+  return l < 0.05 ? null : vScale(r, 1 / l);
+};
 
 // ---------- pose canónica de la plantilla (metros, Y arriba, mira a +Z) ----------
 // EXACTAMENTE la misma del exportador de la plantilla
@@ -120,11 +128,23 @@ export interface PuppetBinds {
   torsoBindFrame: Mat4;
   /** Inversa de torsoBindFrame (precapturada: el bind no cambia). */
   torsoBindFrameInv: Mat4;
+  /** T75 — GIRO ANATÓMICO de extremidades (RICACHÓN): el bind del modelo mira
+   *  a +z (el escalador pegado al muro) pero el cuerpo del ricachón mira a −z
+   *  (a cámara, sentado en la tabla). El arco mínimo del eje del hueso conserva
+   *  el ROLLO del bind: punteras al muro, palmas invertidas («manos cambiadas»),
+   *  codos con el pliegue al revés. Con el giro, cada extremidad rueda sobre su
+   *  propio eje hasta alinear su «delante» de bind con el frente real del
+   *  cuerpo (marco del torso del frame). En la pose canónica el giro es
+   *  IDENTIDAD (el teorema del bind se mantiene) y los escaladores no lo usan. */
+  anatomicalTwist?: boolean;
 }
 
 /** Bind desde las traslaciones/rotaciones de los nodos del .glb. Las piezas
  *  ausentes se informan en el diag del adaptador (la escena cae a cápsulas). */
-export function buildBinds(trs: Map<string, { pivot: V3T; quat: QuatT }>): PuppetBinds {
+export function buildBinds(
+  trs: Map<string, { pivot: V3T; quat: QuatT }>,
+  opts?: { anatomicalTwist?: boolean },
+): PuppetBinds {
   const byName = new Map<string, PieceBind>();
   for (const [name, t] of trs) byName.set(name, bindFromTrs(t.pivot, t.quat));
   return {
@@ -132,6 +152,7 @@ export function buildBinds(trs: Map<string, { pivot: V3T; quat: QuatT }>): Puppe
     byName,
     torsoBindFrame: torsoFrame(CANON),
     torsoBindFrameInv: mat4Invert(torsoFrame(CANON)),
+    anatomicalTwist: !!opts?.anatomicalTwist,
   };
 }
 
@@ -224,10 +245,29 @@ export function computePuppetPose(binds: PuppetBinds, joints: V3T[]): Map<string
     const prox = joints[spec.prox!], dist = joints[spec.dist!];
     const d = vSub(dist, prox);
     const len = vLen(d);
+    const curDir = len < 1e-6 ? spec.bindDir ?? v3t(0, 1, 0) : vScale(d, 1 / len);
     const deltaQ = len < 1e-6 || !spec.bindDir
       ? ZERO_QUAT
-      : quatFromUnitVectors(spec.bindDir, vScale(d, 1 / len));
-    const rotM = mat4Mul(bind.rotM, mat4FromQuatPos(deltaQ, v3t(0, 0, 0)));
+      : quatFromUnitVectors(spec.bindDir, curDir);
+    let rotM = mat4Mul(bind.rotM, mat4FromQuatPos(deltaQ, v3t(0, 0, 0)));
+    // T75 — giro anatómico (solo si el bind lo pide, p. ej. el RICACHÓN): tras
+    // el arco del eje, rodar sobre el hueso hasta que el «delante» de la pieza
+    // (el frente del bind, +z del personaje) mire donde mira el CUERPO ahora.
+    // Degenerados (hueso ∥ frente, proyección nula) → sin giro (seguro).
+    if (binds.anatomicalTwist && spec.bindDir && len >= 1e-6) {
+      const bindFwd = v3t(
+        binds.torsoBindFrame[8]!, binds.torsoBindFrame[9]!, binds.torsoBindFrame[10]!,
+      );
+      const fwdNow = v3t(frameNow[8]!, frameNow[9]!, frameNow[10]!);
+      const arcM = mat4FromQuatPos(deltaQ, v3t(0, 0, 0));
+      const f1 = xfPoint(arcM, bindFwd); // el frente de bind tras el arco
+      const p1 = perpUnit(f1, curDir);
+      const p2 = perpUnit(fwdNow, curDir);
+      if (p1 && p2) {
+        const twistQ = quatFromUnitVectors(p1, p2);
+        rotM = mat4Mul(rotM, mat4FromQuatPos(twistQ, v3t(0, 0, 0)));
+      }
+    }
     out.set(spec.name, poseOf(rotM, prox));
   }
   return out;

@@ -42,12 +42,18 @@ vec3 strataTri(vec3 p, vec3 n, float scale) {
 
 const FRAG_MAIN = `
 #ifdef TRISTATA
-vec3 sCol = strataTri(vPositionW, geometricNormalW, strataParams.x) * 2.0;
+// T75: SUELO del tono — una lectura fallida del sampler (driver/GPU concreto,
+// unidad sin textura) devolvía NEGRO y el mix aplastaba el albedo horneado a
+// ~×0.2 PLANO (la cara entera gris oscuro, «no se ve el muro de piedra»).
+// Con el suelo 0.55 (×2 = 1.1 ≈ neutro) una lectura muerta degrada a casi
+// sin efecto en vez de teñir de negro; una lectura sana no se toca (el centro
+// de la textura es 0.5 → 1.0 y las bandas profundas quedan a 0.27→0.55).
+vec3 sCol = max(strataTri(vPositionW, geometricNormalW, strataParams.x) * 2.0, vec3(0.55));
 surfaceAlbedo *= mix(vec3(1.0), sCol, strataParams.y);
 // T55 — GRANO/DETALLE: segunda muestra TRIPANAR a escala fina (misma textura,
 // espacio mundo multiplicado) — rompe la planicie de tono de la escala media.
 if (strataParams.z > 0.001) {
-  vec3 dCol = strataTri(vPositionW * strataParams.w + vec3(7.31, 3.17, 11.7), geometricNormalW, strataParams.x) * 2.0;
+  vec3 dCol = max(strataTri(vPositionW * strataParams.w + vec3(7.31, 3.17, 11.7), geometricNormalW, strataParams.x) * 2.0, vec3(0.55));
   surfaceAlbedo *= mix(vec3(1.0), dCol, strataParams.z);
 }
 #endif

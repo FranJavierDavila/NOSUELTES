@@ -249,3 +249,74 @@ describe("public/models/sherpa.glb (el modelo del jugador)", () => {
     }
   });
 });
+
+// ---------- T75: giro anatómico de extremidades (el RICACHÓN sentado) ----------
+// El bind del modelo mira a +z (el escalador pegado al muro) pero el cuerpo
+// sentado del ricachón mira a −z (a cámara). Sin giro, el arco mínimo del eje
+// conserva el ROLLO del bind: punteras al muro, palmas invertidas. Con el
+// giro, cada extremidad rueda hasta que su «delante» mira donde mira el cuerpo.
+
+/** 15 articulaciones SENTADO mirando a −z (rodillas hacia la cámara), el mismo
+ *  layout que richJoints15 produce para la pose sentada de richMan. */
+const sentadoMirandoACamara = (): V3T[] => {
+  const j: V3T[] = new Array(15);
+  j[P.pelvisC] = v3t(0, 0.5, 0);
+  j[P.chest] = v3t(0, 0.85, -0.02);
+  j[P.head] = v3t(0, 1.15, -0.05);
+  // la IZQUIERDA anatómica de un cuerpo que mira a −z vive en +x
+  j[P.shL] = v3t(0.21, 0.81, -0.02); j[P.shR] = v3t(-0.21, 0.81, -0.02);
+  j[P.hipL] = v3t(0.12, 0.48, 0); j[P.hipR] = v3t(-0.12, 0.48, 0);
+  j[P.elbowL] = v3t(0.26, 0.62, -0.05); j[P.elbowR] = v3t(-0.26, 0.62, -0.05);
+  j[P.handL] = v3t(0.34, 0.5, -0.09); j[P.handR] = v3t(-0.34, 0.5, -0.09);
+  j[P.kneeL] = v3t(0.1, 0.42, -0.26); j[P.kneeR] = v3t(-0.1, 0.42, -0.26);
+  j[P.footL] = v3t(0.1, 0.08, -0.31); j[P.footR] = v3t(-0.1, 0.08, -0.31);
+  return j;
+};
+
+/** «Delante» mundial de la pieza: dónde apunta su +z local tras la pose. */
+const fwdDe = (binds: PuppetBinds, joints: V3T[], name: string): V3T => {
+  const pose = computePuppetPose(binds, joints).get(name)!;
+  const m = mat4FromQuatPos(pose.quat, v3t(0, 0, 0));
+  return vNorm(xfDir(m, v3t(0, 0, 1)));
+};
+
+describe("T75 — giro anatómico de extremidades (bind a +z, cuerpo a −z)", () => {
+  it("en la pose CANÓNICA el giro es identidad: el teorema del bind se mantiene", () => {
+    const con = buildBinds(realGlbTrs(), { anatomicalTwist: true });
+    const sin = buildBinds(realGlbTrs());
+    const canon = canonJoints();
+    const pc = computePuppetPose(con, canon);
+    const ps = computePuppetPose(sin, canon);
+    for (const spec of PIECE_SPECS) {
+      const a = pc.get(spec.name)!, b = ps.get(spec.name)!;
+      expect(vClose(a.pos, b.pos), spec.name).toBe(true);
+      expect(qAngle(a.quat, b.quat) < 1e-6, spec.name).toBe(true);
+    }
+  });
+
+  it("SENTADO a cámara: la puntera de la pantorrilla mira a −z (no al muro)", () => {
+    const sentado = sentadoMirandoACamara();
+    const sin = buildBinds(realGlbTrs());
+    const con = buildBinds(realGlbTrs(), { anatomicalTwist: true });
+    // SIN giro: el +z de la pieza sigue apuntando a +z (al muro) — el bug T74
+    const fwdSin = fwdDe(sin, sentado, "pieza_pantorrilla_izq");
+    expect(fwdSin.z).toBeGreaterThan(0.7);
+    // CON giro: la puntera rueda 180° y mira a cámara
+    const fwdCon = fwdDe(con, sentado, "pieza_pantorrilla_izq");
+    expect(fwdCon.z).toBeLessThan(-0.7);
+  });
+
+  it("SENTADO a cámara: el «delante» del muslo y del antebrazo también giran al frente", () => {
+    const sentado = sentadoMirandoACamara();
+    const sin = buildBinds(realGlbTrs());
+    const con = buildBinds(realGlbTrs(), { anatomicalTwist: true });
+    // el muslo va en DIAGONAL (abajo-hacia cámara): su +z arrastra el componente
+    // del hueso — la prueba es que GIRA al frente (signo) y con él el ⊥ manda
+    const fwdSin = fwdDe(sin, sentado, "pieza_muslo_izq");
+    expect(fwdSin.z, "muslo sin giro mira al muro").toBeGreaterThan(0);
+    const fwdCon = fwdDe(con, sentado, "pieza_muslo_izq");
+    expect(fwdCon.z, "muslo con giro mira a cámara").toBeLessThan(-0.2);
+    const fb = fwdDe(con, sentado, "pieza_antebrazo_der");
+    expect(fb.z, "antebrazo").toBeLessThan(-0.5);
+  });
+});
