@@ -34,7 +34,7 @@ import { emoteOffset, stepEmote, startEmote, type EmoteSlot } from "../gameplay/
 import { buildGripArcGeometry, gripArcFraction, gripRingColor, gripRingPulses, mergeGripRings, REACH_RING_ALPHA, REACH_RING_COLOR, REACH_RING_POOL, type GripRingEntry, type ReachRingEntry } from "../gameplay/gripRing"; // T65/T66-FB/T67-FB/T69: anillos
 import { isRichMood, RICH_BUBBLE_SPEAK_S, type RichMood } from "../gameplay/richMood"; // T66: ánimo del ricachón
 import { composeEmoteBubble, composeRichSpeech, flipRowsRGBA } from "../gameplay/emoteBubble"; // T66-FB/T76-FB: bocadillo de cómic (+ texto)
-import { RICH_FACES, RICH_FACE_YAW, faceForMood, isRichFace, type RichFaceName, type RichFaceSpec } from "../gameplay/richFaces"; // T76: caras expresivas
+import { RICH_FACES, RICH_FACE_YAW, isRichFace, stepRichFaceHold, type RichFaceName, type RichFaceSpec } from "../gameplay/richFaces"; // T76: caras expresivas · T82: la cara aguanta la frase
 import { richJoints15, RICH_DIMS_DEFAULT, type RichJointDims } from "./richJoints"; // T62/T76: ricachón poseído (dims del modelo)
 import { SceneLoader } from "@babylonjs/core/Loading/sceneLoader"; // T76: carga de las caras expresivas
 import "@babylonjs/loaders/glTF"; // registro del cargador .glb (caras T76)
@@ -271,6 +271,9 @@ export class SherpaScene {
   /** Nodos-envoltura de las 5 caras (hijos de pieza_cabeza; 0 o 1 visible). */
   private richFaces = new Map<RichFaceName, TransformNode>();
   private richFaceActive: RichFaceName | null = null;
+  /** T82 — hasta cuándo aguanta la cara activa sin ánimo propio (ventana de
+   *  habla + respiro; núcleo puro stepRichFaceHold en richFaces.ts). */
+  private richFaceHoldUntil = 0;
   private richFaceLoading = false;
   /** T78 — mallas PROPIAS de pieza_cabeza (capturadas ANTES de colgar las
    *  caras, que son hijas de su nodo): con cara activa la cabeza original se
@@ -3683,7 +3686,17 @@ export class SherpaScene {
     // T76 — CARA EXPRESIVA: el ánimo manda la cara (null = cabeza por
     // defecto). setRichMood lo llaman host E invitado (el ánimo viaja en el
     // snapshot, rich.m): la cara cambia en las dos pantallas sin cable nuevo.
-    this.applyRichFace(isRichMood(m) ? faceForMood(m) : null);
+    // T82 — la cara AGUANTA la ventana de habla (stepRichFaceHold): sin esto
+    // la histéresis (1,5 s) soltaba la cara antes de que se la mirase — las
+    // caras nuevas "no aparecían".
+    const face = stepRichFaceHold(
+      { name: this.richFaceActive, until: this.richFaceHoldUntil },
+      isRichMood(m) ? m : null,
+      this.richEmoteSpeakUntil,
+      nowMs,
+    );
+    this.richFaceHoldUntil = face.until;
+    this.applyRichFace(face.name);
     if (!m) return;
     if (!this.richEmote) this.buildRichEmote();
     if (!this.richEmote || !this.richEmoteMat) return;
@@ -3848,6 +3861,21 @@ export class SherpaScene {
     this.richEmoteMat = emm;
   }
 
+  /** T82 — cota del anclaje (presa) más alto en una columna cerca de un punto:
+   *  para colocar el bocadillo del rico POR ENCIMA de las presas que tiene
+   *  alrededor (solo cuentan las que están a la altura de la cabeza o más
+   *  arriba — las de abajo no tapan el globo). null si no hay ninguna cerca. */
+  private anchorTopNear(p: { x: number; y: number; z: number }, radiusH: number): number | null {
+    let top: number | null = null;
+    for (const m of this.holdMeshes.values()) {
+      const mp = m.position;
+      if (Math.abs(mp.x - p.x) > radiusH || Math.abs(mp.z - p.z) > radiusH) continue;
+      if (mp.y < p.y - 0.25) continue;
+      if (top === null || mp.y > top) top = mp.y;
+    }
+    return top;
+  }
+
   /** T66 SONDA E2E: ánimo mostrado + visibilidad + textura DIBUJADA (el PNG a
    *  4 fps tarda varios frames en decodificar: sin esto la cara sale blanca).
    *  T66-FB: `pinned` y `speaking` para verificar el "SOLO cuando habla". */
@@ -3991,7 +4019,17 @@ export class SherpaScene {
         // el globo escala ×1.55 y sube un poco más (no se come la cara); el
         // emoticón solo se queda como siempre.
         const speechBoost = speechTex ? 1.55 : 1;
-        const UP = speechTex ? 0.68 : 0.52;
+        // T82 — EL BOCADILLO POR ENCIMA DE LOS ANCLAJES (petición: «deben
+        // aparecer por encima de los anclajes para que se lean»): el UP fijo
+        // (0.52/0.68) podía dejar el globo A LA ALTURA de las presas que
+        // rodean la cabeza (el anillo de agarre las dibuja encima). Si hay
+        // anclajes a la altura de la cabeza o más arriba cerca, el globo SUBE
+        // a su por encima (cota del más alto + margen), con tope de cordura.
+        const anchorTop = this.anchorTopNear(headP, 1.0);
+        const UP = Math.min(
+          1.7,
+          Math.max(speechTex ? 0.68 : 0.52, anchorTop === null ? 0 : anchorTop - headP.y + 0.28),
+        );
         const FWD = 0.1;     // un palmo hacia la cámara: nada interseca con la cabeza
         // T76: el globo de habla es ANCHO (aspect > 1): el ancla es el CENTRO
         // del plano — se corre a la derecha media extensión para que la cola y

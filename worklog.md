@@ -1682,3 +1682,20 @@ Stage Summary:
 - La pared de 6.6 m tiene roca y relleno en TODO su ancho: nada de cantos sin pared ni tapados por los macizos — y si mañana el ancho vuelve a cambiar, la escena lo sigue sola (data-driven).
 - El ricachón comenta cada 14-26 s en vez de cada 7-15: los mensajes respiran.
 - El sherpa colgado de la cuerda se ve COMO EN LA REALIDAD: dos brazos extendidos hacia arriba, manos juntas agarrando la cuerda sobre la cabeza, balanceándose con el péndulo.
+
+---
+Task ID: 82
+Agent: Z.ai (principal)
+Task: «Cuidado que no se solapen dos audios. Los bocadillos deben aparecer por encima de los anclajes para que se lean. Sigo sin ver aparecer las caras nuevas.»
+
+Work Log:
+- SOLAPE DE AUDIOS (caída raíz): solo fireRealVoice consultaba realBusy(); el handler de InsultSaid (cóndor, basura, sustos…) disparaba shoutRealFile SIN comprobar nada — dos grabaciones del jugador sonaban ENCIMA. Compuerta central en playRealPath (audio.ts): mientras suena una grabación NO entra otra (return 0; el subtítulo/bocadillo del evento rechazado se ve igual, dur 0 = sin brazos en alto fantasma); el GRITO DE CAÍDA (shoutPath) es prioritario y CORTA la voz en curso (currentVoice.stop + onended limpia). El texto siempre se ve; la voz nunca se pisa.
+- BOCADILLOS SOBRE LOS ANCLAJES: el UP del globo era fijo (0.52 / 0.68 en habla) y podía quedarse A LA ALTURA de las presas del anillo de agarre. Ahora (scene.ts) cada frame con bocadillo visible se calcula anchorTopNear(): cota de la presa MÁS ALTA en una columna de ±1 m alrededor de la cabeza (solo presas a la altura de la cabeza o más arriba; las de abajo no tapan) y el globo sube a esa cota +0.28 m (tope 1.7 m). Sobre los anclajes siempre, en campo abierto el UP de siempre.
+- CARAS NUEVAS QUE NO APARECEN (3 frentes): ① CARGA descartada por evidencia — los 5 GLB existen (3.1 MB c/u), estructura limpia (1 nodo + 1 malla), mismo pivote (0,1.5919,0.04) que la pieza_cabeza de rico.glb, chunks GLB íntegros (el MISMATCH de buffer es de rico.glb, tolerado por Babylon, y ajeno a las caras). ② CAÍDA RAÍZ REAL: la histéresis del ánimo (RICH_MOOD_HOLD_S 1.5 s) soltaba la cara ANTES de que cerrara la ventana de habla (2.6–3.8 s) — la cara destellaba y volvía a la cabeza por defecto. Nuevo stepRichFaceHold (richFaces.ts, puro + 5 tests): mientras el ánimo tiene cara propia la cara se mantiene; cuando el ánimo cae a uno sin cara, la cara AGUANTA hasta fin de ventana de habla + 0.8 s de respiro (RICH_FACE_LINGER_MS); la escena lo consume en setRichMood (frase ↔ cara de T80 de principio a fin). ③ FRECUENCIA: 5 de 7 ánimos espontáneos no tenían cara — IDLE_MOODS rebalanceado a 6 sin duplicados y con enfado (banter con cara propia): 3 de 6 espontáneas enseñan cabeza nueva (chuleria/orgulloso/enfadado); furia/sorpresa siguen reservadas a la simulación.
+- Verificación E2E en caliente INTENTADA y bloqueada como en T79/T80: dev server OK (200) pero el arranque del match mata la página (OOM del sandbox, ~800 MB libres; diag-t82-arranque/diag-t82-match en scripts/). Nota técnica: el filtro offsetParent del botón ¡GO! da false con el HUD overlay — usar offsetWidth||offsetHeight. Las sondas (richFaces/richMood pin) quedan listas para cuando haya memoria.
+- Tests: 639/639 (+7: cara-hold ×5, vocabulario ×2), tsc limpio.
+
+Stage Summary:
+- Nunca suenan dos grabaciones a la vez: entra una; el grito de caída corta lo que hubiera.
+- Los bocadillos del ricachón se colocan por ENCIMA de la presa más alta que tenga alrededor: se leen sobre el anillo de anclajes.
+- Las caras GLB AGUANTAN toda la frase (y un respiro) en vez de destellar 1,5 s, y las espontáneas ahora reparten las 3 caras con voz propia: asustado/gritando/enfadado/orgulloso/chuleria se VEN.

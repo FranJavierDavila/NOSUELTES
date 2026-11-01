@@ -51,6 +51,8 @@ export class SherpaAudio {
   private realCache = new Map<string, AudioBuffer>();
   private realLastIdx = -1;
   private realBusyUntil = 0;
+  /** T82 — la voz EN CURSO (para poder CORTARLA cuando una prioritaria entre). */
+  private currentVoice: AudioBufferSourceNode | null = null;
   /** número de voces reales reproducidas (sonda E2E). */
   realPlayedCount = 0;
 
@@ -148,13 +150,14 @@ export class SherpaAudio {
   }
 
   /** Ruta arbitraria (el GRITO DE CAÍDA protegido del jugador vive fuera del
-   *  banco: /audio/rico/es/cd0e9f33.mp3 — su grabación original intacta). */
+   *  banco: /audio/rico/es/cd0e9f33.mp3 — su grabación original intacta).
+   *  T82: el grito es PRIORITARIO — corta cualquier voz que esté sonando. */
   async shoutPath(path: string, gain = 0.95): Promise<number> {
     if (this.muted || this.disposed || !this.ctx || !this.voiceGain || !path) return 0;
-    return this.playRealPath(path, gain, 0.98, 1.06);
+    return this.playRealPath(path, gain, 0.98, 1.06, true);
   }
 
-  private async playRealPath(path: string, gain: number, rateMin: number, rateMax: number): Promise<number> {
+  private async playRealPath(path: string, gain: number, rateMin: number, rateMax: number, force = false): Promise<number> {
     if (!this.ctx || !this.voiceGain) return 0;
     let buf = this.realCache.get(path);
     if (!buf) {
@@ -166,6 +169,11 @@ export class SherpaAudio {
       } catch { return 0; }
     }
     if (this.disposed || !this.voiceGain) return 0;
+    // T82 — UNA SOLA VOZ (petición: «cuidado que no se solapen dos audios»):
+    // mientras suena una grabación NO entra otra (el subtítulo/bocadillo del
+    // evento rechazado se ve igual). Solo el grito de caída (force) entra y
+    // CORTA la voz en curso — es el aviso que no se puede perder.
+    if (!force && this.ctx.currentTime < this.realBusyUntil) return 0;
     const rate = rateMin + Math.random() * Math.max(0, rateMax - rateMin);
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
@@ -173,6 +181,9 @@ export class SherpaAudio {
     const g = this.ctx.createGain();
     g.gain.value = gain;
     src.connect(g).connect(this.voiceGain);
+    try { this.currentVoice?.stop(); } catch { /* ya parada sola */ }
+    this.currentVoice = src;
+    src.onended = () => { if (this.currentVoice === src) this.currentVoice = null; };
     src.start();
     const dur = buf.duration / Math.max(0.25, rate);
     this.realBusyUntil = this.ctx.currentTime + dur + 0.25;

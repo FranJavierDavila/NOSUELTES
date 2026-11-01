@@ -69,9 +69,14 @@ export const RICH_IDLE_S_MIN = 14;
 export const RICH_IDLE_S_MAX = 26;
 
 /** Vocabulario de la charla espontánea (ánimos TRANQUILOS: nunca furia ni
- *  susto — esos los pone la simulación cuando algo pasa de verdad). */
+ *  susto — esos los pone la simulación cuando algo pasa de verdad).
+ *  T82 — «sigo sin ver aparecer las caras nuevas»: 5 de los 7 ánimos de aquí
+ *  no tenían cara propia (MOOD_FACE) y la espontánea casi nunca mostraba
+ *  cabeza nueva. `enfado` entra con su queja de siempre (banter, no furia) y
+ *  los duplicados de alegre/dudoso salen: ahora 3 de 6 ánimos espontáneos
+ *  llevan cara (chuleria / orgulloso / enfadado). */
 export const IDLE_MOODS: readonly RichMood[] =
-  ["alegre", "dudoso", "desconfianza", "soberbia", "triste", "alegre", "dudoso"];
+  ["alegre", "dudoso", "desconfianza", "soberbia", "triste", "enfado"];
 
 /** Frases espontáneas por ánimo (es/en). Escritas para el personaje: rico,
  *  pesado y miedoso a la vez. */

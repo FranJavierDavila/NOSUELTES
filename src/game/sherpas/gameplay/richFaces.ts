@@ -74,3 +74,34 @@ export const faceForMood = (m: RichMood | null): RichFaceName | null =>
 /** ¿Nombre de cara válido? (datos externos: config, red, debug). */
 export const isRichFace = (v: unknown): v is RichFaceName =>
   typeof v === "string" && (RICH_FACE_NAMES as readonly string[]).includes(v);
+
+// T82 — LA CARA AGUANTA LA FRASE (petición: «sigo sin ver aparecer las caras
+// nuevas»). CAÍDA RAÍZ: la histéresis del ánimo suelta la cara a los 1,5 s
+// (RICH_MOOD_HOLD_S) mientras la ventana de habla dura 2,6–3,8 s — la cara
+// DESTELLABA y volvía a la cabeza por defecto antes de que el jugador la
+// mirase. La cara de un ánimo CON cara propia se mantiene mientras ese ánimo
+// siga activo y, cuando el ánimo cae a uno sin cara (dudoso de siempre), la
+// cara AGUANTA hasta que cierra la ventana de habla + un respiro: frase ↔
+// cara (T80) se ve de principio a fin. Núcleo puro (testeable, sin escena).
+
+export interface RichFaceHold {
+  /** cara activa (null = cabeza por defecto). */
+  name: RichFaceName | null;
+  /** instante (ms de reloj de pared) hasta el que la cara aguanta sin ánimo propio. */
+  until: number;
+}
+
+/** Respiro tras cerrarse la ventana de habla antes de volver a la cabeza por
+ *  defecto (la cara no se esconde a la misma vez que el bocadillo). */
+export const RICH_FACE_LINGER_MS = 800;
+
+/** Pasa el estado de cara un tick. `speakUntilMs` es la ventana de habla viva
+ *  (richEmoteSpeakUntil de la escena): mientras el ánimo tenga cara propia la
+ *  retención se EXTIENDE a esa ventana; sin cara propia, la anterior aguanta
+ *  hasta `until` y después vuelve la cabeza por defecto. */
+export function stepRichFaceHold(prev: RichFaceHold, mood: RichMood | null, speakUntilMs: number, nowMs: number): RichFaceHold {
+  const name = faceForMood(mood);
+  if (name) return { name, until: Math.max(prev.until, speakUntilMs + RICH_FACE_LINGER_MS) };
+  if (prev.name && nowMs < prev.until) return prev;
+  return { name: null, until: 0 };
+}

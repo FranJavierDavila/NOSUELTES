@@ -7,9 +7,12 @@
 import { describe, it, expect } from "vitest";
 import {
   desiredRichMood, stepRichMood, initialRichMood, isRichMood, RICH_MOODS,
-  RICH_MOOD_HOLD_S, RICH_BUBBLE_SPEAK_S, richBubbleVisible,
+  RICH_MOOD_HOLD_S, RICH_BUBBLE_SPEAK_S, richBubbleVisible, IDLE_MOODS,
   type RichMoodCtx, type RichMoodState,
 } from "../../src/game/sherpas/gameplay/richMood";
+import {
+  stepRichFaceHold, faceForMood, MOOD_FACE, RICH_FACE_LINGER_MS,
+} from "../../src/game/sherpas/gameplay/richFaces";
 
 /** Contexto base: sentado tranquilo en su tabla. */
 const ctxBase = (over: Partial<RichMoodCtx> = {}): RichMoodCtx => ({
@@ -197,5 +200,61 @@ describe("T66-FB · el bocadillo SOLO cuando el Ricachón habla (say/RICH_BUBBLE
     expect(Number.isFinite(s.say)).toBe(true);
     expect(s.say).toBeGreaterThanOrEqual(0);
     expect(s.say).toBeLessThanOrEqual(RICH_BUBBLE_SPEAK_S + 1e-9);
+  });
+});
+
+// T82 — LA CARA AGUANTA LA FRASE (stepRichFaceHold, richFaces.ts): la
+// histéresis del ánimo (1,5 s) soltaba la cara antes de que la ventana de
+// habla (2,6–3,8 s) cerrara — las caras nuevas "no aparecían".
+describe("stepRichFaceHold — la cara aguanta la ventana de habla (T82)", () => {
+  it("un ánimo con cara propia activa la cara y extiende la retención a la ventana de habla", () => {
+    const h = stepRichFaceHold({ name: null, until: 0 }, "furia", 10_000, 8_000);
+    expect(h.name).toBe("gritando");
+    expect(h.until).toBe(10_000 + RICH_FACE_LINGER_MS);
+  });
+
+  it("cuando el ánimo cae a uno sin cara, la cara ANTERIOR aguanta hasta la ventana", () => {
+    // furia habló hasta 10_000 ms; a 9_000 el ánimo ya es dudoso (sin cara)
+    const h = stepRichFaceHold({ name: "gritando", until: 10_800 }, "dudoso", 10_000, 9_000);
+    expect(h.name).toBe("gritando"); // sigue en cara: la frase aún se oye
+    expect(h.until).toBe(10_800);
+  });
+
+  it("pasada la ventana (+respiro) vuelve la cabeza por defecto", () => {
+    const h = stepRichFaceHold({ name: "gritando", until: 10_800 }, "dudoso", 10_000, 11_600);
+    expect(h.name).toBeNull();
+    expect(h.until).toBe(0);
+  });
+
+  it("los ánimos sin cara de fábrica no activan retención nueva", () => {
+    expect(stepRichFaceHold({ name: null, until: 0 }, "alegre", 5_000, 4_000).name).toBeNull();
+    expect(stepRichFaceHold({ name: null, until: 0 }, "triste", 5_000, 4_000).name).toBeNull();
+    expect(stepRichFaceHold({ name: null, until: 0 }, "dudoso", 5_000, 4_000).name).toBeNull();
+  });
+
+  it("la cara de fábrica mapea MOOD_FACE completo (sorpresa→asustado, furia→gritando, enfado→enfadado, soberbia→orgulloso, desconfianza→chuleria)", () => {
+    expect(faceForMood("sorpresa")).toBe("asustado");
+    expect(faceForMood("furia")).toBe("gritando");
+    expect(faceForMood("enfado")).toBe("enfadado");
+    expect(faceForMood("soberbia")).toBe("orgulloso");
+    expect(faceForMood("desconfianza")).toBe("chuleria");
+    expect(faceForMood("alegre")).toBeNull();
+  });
+});
+
+// T82 — VOCABULARIO ESPONTÁNEO CON CARAS: con IDLE_MOODS de 7 entradas
+// (alegre/dudoso×2 + triste SIN cara) la espontánea casi nunca enseñaba
+// cabeza nueva; ahora 3 de 6 ánimos llevan cara.
+describe("IDLE_MOODS — variedad de caras espontáneas (T82)", () => {
+  it("incluye enfado (tiene cara propia) y no repite ánimos sin cara", () => {
+    expect(IDLE_MOODS).toContain("enfado");
+    expect(new Set(IDLE_MOODS).size).toBe(IDLE_MOODS.length);
+    const conCara = IDLE_MOODS.filter((m) => MOOD_FACE[m]).length;
+    expect(conCara).toBeGreaterThanOrEqual(3);
+  });
+
+  it("nunca suelta furia ni sorpresa espontáneas (la simulación las reserva)", () => {
+    expect(IDLE_MOODS).not.toContain("furia");
+    expect(IDLE_MOODS).not.toContain("sorpresa");
   });
 });
