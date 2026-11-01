@@ -1515,3 +1515,19 @@ Work Log:
 Stage Summary:
 - 1 GB REAL LIBERADO y repo aligerado: sin copias de upload, sin capturas históricas (regenerables), cachés vacías — el sandbox queda con 7,9 GB libres.
 - PREVIEW RESTAURADO: supervisor relanzado con techo de memoria; el juego vuelve a servirse en :3000 (compilación en frío la primera carga).
+
+---
+Task ID: 73
+Agent: Z.ai (principal)
+Task: "Continuación: sandbox vivo tras reciclado, integración verificada y vigilante de :3000."
+
+Work Log:
+- ESTADO TRAS RECICLADO: servidor ARRIBA (HTTP 200, next-server 1,9 GB RSS), git limpio y sincronizado (70e232a en origen), 6,5 GB libres. El envoltorio bash del supervisor (dev-supervisor.sh) MURIÓ con el reciclado y solo sobrevivió su hijo «bun run dev» — el auto-relanzamiento quedaba desactivado sin que nadie lo notara.
+- INTEGRACIÓN VERIFICADA EN CALIENTE: public/content/sherpas/climber.json trae «richModel: /models/rico.glb» y el chunk servido (src_game_sherpas_presentation_*.js) contiene la referencia — el Ricachón definitivo sigue vivo tras la limpieza; nada de lo borrado en T72 afectaba al juego.
+- BADGE «5 ISSUES» DEL DEV OVERLAY: diagnosticado como falso positivo del bundler — instrumentation.ts YA está blindado (guard NEXT_RUNTIME==='nodejs' + require por eval), pero turbopack compila una copia para la ruta EDGE y marca process.cwd sin ejecutarla. Cosmético, solo dev, sin efecto en el juego (todas las E2E cierran con 0 errores de página). Se decide NO tocar el código que funciona por silenciar un aviso.
+- NUEVO (scripts/watchdog-server.sh): vigilante PASIVO de :3000 en background — mientras el servidor responda 200 no hace nada (compatible con cualquier arranque previo); con 3 fallos seguidos (~70 s, tolera compilaciones en frío) relanza vía ensure_server.sh heredando el techo de heap de T71. Sustituye con ventaja al bucle propietario: no depende de poseer el proceso, solo de la sonda HTTP.
+- Lecciones: (1) el supervisor «propietario» (bucle que lanza y revive su hijo) tiene un punto ciego: si el sandbox mata al bucle pero no al hijo, nadie vigila y nadie sabe; un vigilante por sonda HTTP es inmune a ese estado zombi; (2) los avisos del bundler hay que juzgarlos por su runtime real: un guard correcto en ejecución no silencia el análisis estático, y pelear contra el linter del bundler por cosmética es cómo se rompen cosas que funcionaban.
+
+Stage Summary:
+- SANDBOX RESISTENTE: aunque el supervisor propietario muera, el vigilante pasivo de :3000 detecta la caída (~70 s) y relanza el juego con techo de memoria.
+- EL JUEGO ESTÁ ENTERO TRAS LA LIMPIEZA: climber.json + chunk servido confirman el ricachón GLB y la capa climática en el aire; el badge de Issues del dev overlay es ruido cosmético del bundler Edge, documentado como tal.
