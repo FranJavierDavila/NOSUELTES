@@ -1483,3 +1483,20 @@ Work Log:
 Stage Summary:
 - EL RICACHÓN TIENE SU MODELO DEFINITIVO EN JUEGO: Rico.glb adaptado al contrato (13/13 piezas) se carga en su propio factory, lo posee la física de 15 partículas igual que los escaladores, conserva las texturas del jugador y estrena correas doradas — sin el tinte morado ni el engorde provisionales de T62.
 - LA CADENA ESTÁ CUBIERTA: test estructural del GLB (antes de abrir el navegador), sonda de UBO por material, E2E t62 verde con 0 errores y capturas del ricachón texturizado en el tablón.
+
+---
+Task ID: 71
+Agent: Z.ai (principal)
+Task: "El jugador NO VE la pared ni el ricachón nuevo — diagnosticar y estabilizar."
+
+Work Log:
+- SÍNTOMA: la partida del jugador muestra el juego VIEJO (sin la capa climática de la piedra y con el ricachón provisiona) pese a que T69/T70 están commiteados y empujados (2e6b7e7).
+- CULPABLE ENCONTRADO (dmesg): «Out of memory: Killed process … (next-server)» con anon-rss 2.070.528 kB — el sandbox tiene 4 GB y next dev creció hasta ~2 GB; cada sonda headless (chrome + SwiftShader) empujaba el total al límite y el OOM killer se cargaba el servidor. Con el servidor muerto a ratos, la pestaña del jugador quedaba con la última versión cargada y SIN HMR (websocket muerto) → nunca se actualizaba a T69/T70.
+- FIX (scripts/dev-supervisor.sh): el supervisor ahora exporta NODE_OPTIONS="--max-old-space-size=1228" antes de bun run dev — techo de heap para que next dev no vuelva a comerse la máquina; el supervisor queda corriendo en background y relanza solo.
+- VERIFICACIÓN DEL CÓDIGO SERVIDO (sin navegador, solo curl): /  → 200; chunk del juego (src_game_sherpas_presentation_*.js, 607 KB) contiene «models/rico.glb» y 14 apariciones de climateDyn/freezeY; /models/rico.glb → 200 con 8.650.984 B. El código T69+T70 ES el que se sirve.
+- EVIDENCIA VISUAL (scripts/diag-user-view.py + diag-load.py): sonda headless entra en partida (?clima=clear&hora=dia) y captura download/diag-vista-1-general.png — se ve la pared con sus rocas laterales texturizadas, las presas con anillos y el RICACHÓN GLB texturizado (traje azul con cadena dorada) sentado en el tablón. El badge «5 Issues» de Next dev son los avisos de Edge Runtime de instrumentation.ts (conocidos, inofensivos).
+- Lecciones: (1) en un sandbox de 4 GB, next dev SIN techo de heap es una bomba de relojería: el OOM kill no deja rastro en el log de la app y el síntoma (pestaña que no se actualiza) parece un bug del juego; (2) «no veo lo nuevo» en dev = dos sospechosos simétricos: el SERVIDOR sirviendo código viejo o la PESTAÑA ejecutando JS viejo con HMR muerto — verificar primero con curl qué hay en el aire (chunks + assets), sin abrir navegador; (3) pkill -f con un patrón que aparece en la propia línea de comando del shell se suicida a sí mismo.
+
+Stage Summary:
+- LA CAUSA NO ERA EL JUEGO: T69/T70 están servidos y renderizan (evidencia en download/diag-vista-1-general.png); el dev server moría por OOM y la pestaña del jugador se quedaba congelada en el juego viejo.
+- SERVIDOR ESTABILIZADO: supervisor en background con techo de heap (1.2 GB) y relanzamiento automático; refresco duro (Ctrl+Shift+R) en localhost:3000 trae la partida nueva.
