@@ -1500,3 +1500,18 @@ Work Log:
 Stage Summary:
 - LA CAUSA NO ERA EL JUEGO: T69/T70 están servidos y renderizan (evidencia en download/diag-vista-1-general.png); el dev server moría por OOM y la pestaña del jugador se quedaba congelada en el juego viejo.
 - SERVIDOR ESTABILIZADO: supervisor en background con techo de heap (1.2 GB) y relanzamiento automático; refresco duro (Ctrl+Shift+R) en localhost:3000 trae la partida nueva.
+
+---
+Task ID: 72
+Agent: Z.ai (principal)
+Task: "Liberar espacio (copias antiguas, capturas, material sobrante) y devolver el preview del chat (sandbox sin servidor)."
+
+Work Log:
+- DIAGNÓSTICO: el disco NO estaba lleno (3,0/9,9 GB), pero había ~2,4 GB de material regenerable: ~/.bun/install/cache 1,4 GB (paquetes ya instalados en node_modules), .next 950 MB (se regenera al compilar), npm 56 KB; más duplicados e integrados: upload/Sherpa.glb (= public/models/sherpa.glb byte a byte), mp3/m4a de voz (= public/audio/rico/real/), rockwall*.js (integrados como TS en src/game/sherpas/world/ desde T67), emotionos.zip (extraído en T65), spiderman/cooper/escalador.glb (referencias sin uso; la plantilla adaptada ya está en public/models), imágenes pegadas (material de referencia agotado) y 38 capturas E2E (t62…t66fb) reproducibles con sus scripts.
+- LIBERADO (3,0 → 2,0 GB en uso): bun cache + .next + npm cache + 24 ficheros de upload + 38 capturas de download/. QUEDAN en upload/ SOLO los irremplazables: Rico.glb (fuente de scripts/rico_adapt.py — borrarlo rompería la readaptación), NO_SUELTES_Arquitectura_Tecnica_Prototipo_v1.docx y el Pasted Content de texto. En download/ queda SOLO download/diag-vista-1-general.png (evidencia del estado actual).
+- PREVIEW MUERTO: el supervisor muere con cada reciclado del sandbox (procesos no sobreviven) y Caddy (proxy del preview, /app/Caddyfile) se queda sin backend: :3000 en 000. FIX: relanzado dev-supervisor.sh en background (con el techo de heap de T71); .next se regenera en frío.
+- Lecciones: (1) bun hardlinkea su cache dentro de node_modules — du la cuenta dos veces: el espacio real liberado puede ser menor que el «du» de la cache; (2) borrar SIEMPRE tras verificar duplicado por hash o integración confirmada en el repo; los originales que alimentan scripts de regeneración (Rico.glb) se quedan; (3) el preview del chat es tan fuerte como el proceso detrás: si el sandbox se recicla, el supervisor hay que relanzarlo a mano.
+
+Stage Summary:
+- 1 GB REAL LIBERADO y repo aligerado: sin copias de upload, sin capturas históricas (regenerables), cachés vacías — el sandbox queda con 7,9 GB libres.
+- PREVIEW RESTAURADO: supervisor relanzado con techo de memoria; el juego vuelve a servirse en :3000 (compilación en frío la primera carga).
