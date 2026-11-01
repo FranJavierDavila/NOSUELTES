@@ -1582,3 +1582,20 @@ Work Log:
 Stage Summary:
 - EL RICACHÓN TIENE EL CUERPO DEL MODELO: hombros donde el artista los esculpió (medidos del bind), de pie sobre el tablón y a resolución casi nativa en GPUs justas.
 - LA CARA DEL RICO EXPRESA LO QUE DICE: 5 caras GLB intercambiadas por ánimo (host+invitado), bocadillo de cómic con la frase al lado de la cara y opción en el menú para apagarlo; la fatiga del escalador arranca de cero en cada agarre nuevo.
+
+---
+Task ID: 77
+Agent: Z.ai (principal)
+Task: Cierre de la T76 tras reciclado del sandbox: verificar el swap de caras EN CALIENTE, regenerar las capturas de cara/bocadillo que quedaron pendientes y sincronizar GitHub (6 commits pendientes con el PAT del jugador).
+
+Work Log:
+- RE-VERIFICACIÓN BASE: sandbox reciclado → servidor arriba (200 OK), vitest completo 587/587 (47 ficheros, ~20 s). Las 5 caras cargan en partida real: sonda richFaces() → {loaded: 5}.
+- SWAP VERIFICADO EN VIVO (en DOS sesiones E2E distintas): pin por sonda richMood('enfado') → True y richFaces() en el MISMO evaluate (applyRichFace es síncrono) → {active: "enfadado"}; el mapping contrario también en vivo: ánimo «dudoso» → face null (cabeza por defecto, correcto). El camino pin→cara — el único que quedó sin confirmar el día de la T76 — funciona end-to-end.
+- CAPTURA VISUAL BLOQUEADA POR OOM DEL SANDBOX (no del juego): dmesg muestra la cadena completa — oom-kill de chrome-headless (966 MB anon) durante el arranque de partida, oom-kill del PROPIO next-server (1,76 GB anon; el supervisor lo levantó de nuevo) y por último «Page crashed» del renderer en el goto. Con viewport 480→320→256 px, pin+lectura en un solo evaluate y captura inmediata, la ventana de memoria no alcanza para componer el screenshot tras el arranque WebGL. La evidencia del swap queda FUNCIONAL (sondas); la pixel (cara GLB de cerca y bocadillo con frase) queda para un sandbox con holgura: regenerable con scripts/cap-t76-oneshot.py.
+- BUGS DE MIS SCRIPTS CAZADOS (scripts/sonda-t76-caras.py, verifica-t76-resiliente.py, cap-t76-oneshot.py, diag-arranque.py): (1) la sonda de «contexto vivo» por page.evaluate('1') devuelve True TAMBIÉN en about:blank → la recuperación nunca hacía goto y la página se quedaba en blanco 150 s (diagnóstico: imprimir body.innerText por paso; fix: decidir por page.url); (2) pipe a tail oculta el progreso hasta el final → tee + python -u; (3) el primer «activo=None» de hoy NO era un bug del juego: era una recarga del dev entre el pin y la lectura — pin y lectura deben ir en UN evaluate.
+- PUSH: sin credenciales en el entorno, git push → «could not read Username for 'https://github.com'» (PAT no almacenado por diseño, T54). Commits listos en local; hace falta el PAT pegado en chat para empujar origin/main.
+- Lecciones: (1) una sonda de «vivo» basada en evaluate miente en about:blank: la decisión de navegar se toma por URL; (2) cuando el sandbox va justo de RAM, el ORDEN de la evidencia importa: primero la sonda funcional (barata), después la captura (cara) — y el dmesg dice qué proceso murió antes de culpar al código; (3) un «fallo de sonda» puede ser un contexto muerto entre dos evaluates: operaciones dependientes en un solo evaluate eliminan la ventana.
+
+Stage Summary:
+- EL SWAP DE CARAS ESTÁ VERIFICADO EN VIVO: pin 'enfado' → cara «enfadado» activa con las 5 cargadas (y «dudoso» → cabeza por defecto); 587/587 tests; solo falta la captura de cerca, bloqueada por OOM del sandbox y regenerable con scripts/cap-t76-oneshot.py.
+- GITHUB PENDIENTE DEL PAT: commits listos en local; el push requiere el token del jugador pegado en chat (nunca almacenado).
