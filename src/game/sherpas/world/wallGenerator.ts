@@ -34,6 +34,10 @@ export interface EntranteZone {
 }
 export interface WallLayout {
   totalHeightM: number;
+  /** T81 — ancho de la pared de JUEGO (wall.widthM): la escena lo consume para
+   *  tapas laterales/relleno (antes iba duro 5.4 y con la pared de 6.6 el
+   *  canto quedaba sin roca o enterrado bajo los macizos laterales). */
+  widthM: number;
   campZones: CampZone[];
   phaseSpans: { phase: number; yMin: number; yMax: number; narrativeBase: number }[];
   salientes: SalienteZone[];
@@ -200,7 +204,7 @@ export class WallGenerator {
         });
       }
     }
-    return { totalHeightM: y, campZones, phaseSpans, salientes, entrantes };
+    return { totalHeightM: y, widthM: this.widthM, campZones, phaseSpans, salientes, entrantes };
   }
 
   phaseOfHeight(y: number): PhaseData {

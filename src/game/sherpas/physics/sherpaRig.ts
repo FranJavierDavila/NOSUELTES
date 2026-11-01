@@ -1371,14 +1371,20 @@ export class SherpaRig {
   private dangleTarget(limb: Limb): V3 {
     // T58-E: COLGADO DE LA CUERDA — petición literal: "debería quedarse
     // colgado de la cuerda sujetándola con ambas manos". En caught/hauling
-    // (sin cuerda agotada) las MANOS suben a la cuerda por encima del pecho,
-    // con el balanceo del cuerpo; los pies siguen colgando.
+    // (sin cuerda agotada) las MANOS suben a la cuerda, los pies cuelgan.
+    // T81 — POSTURA REAL DE COLGADO (petición: «que extienda las dos manos
+    // hacia arriba cogiendo la cuerda con las mismas»): ya no a media altura
+    // del pecho (+0.52, brazos encogidos) — las dos manos van JUNTAS (±0.045)
+    // a la LÍNEA DE CUERDA sobre la cabeza, con el brazo EXTENDIDO (el tope
+    // del esqueleto: hombro +0.28 → objetivo +1.18 sobre la cadera; el clamp
+    // del hueso deja el brazo recto hacia arriba). El cuerpo pende de la
+    // cuerda: la línea sobre el arnés es vertical y el vaivén la sigue.
     if ((this.ropeState === "caught" || this.ropeState === "hauling") && isHand(limb) && !this.ropeReleased) {
       const body = this.rig.particles[P.pelvisC];
       const vx = (body.pos.x - body.prev.x) * 8;
       const sway = Math.max(-0.12, Math.min(0.12, -vx));
       const s = sideOf(limb);
-      return v3(body.pos.x + s * 0.09 + sway, body.pos.y + 0.52, body.pos.z - 0.06);
+      return v3(body.pos.x + s * 0.045 + sway, body.pos.y + 1.18, body.pos.z - 0.06);
     }
     const root = this.rig.particles[CHAIN_ROOT[limb]].pos;
     const len = (isHand(limb) ? ARM.upper + ARM.fore : LEG.thigh + LEG.shin) * 0.92;

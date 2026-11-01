@@ -1665,3 +1665,20 @@ Stage Summary:
 - EL RICO ESTÁ VIVO: cada 7-15 s suelta una expresión espontánea con frase y cara (tabla escrita para el personaje), salvo que pase algo grave.
 - AGARRES CON CUERPO: si la mano no llega, se suelta el pie bajo (empuje real de escalada) y la presa se alcanza; nunca se cuelga de una sola presa ni se auto-empuja con el brazo agotado.
 - PARED 6,6 m: +1,2 m por lado, con la ruta garantizada escalable en 100 semillas.
+
+---
+Task ID: 81
+Agent: Z.ai (principal)
+Task: Ajustes tras la pared ancha: «has colocado el muro más ancho pero está tapado por las tapas laterales o no se ve esa parte de la pared debajo de las piezas de relleno»; «los mensajes más espaciados»; «cuando un sherpa queda colgado de la cuerda que extienda las dos manos hacia arriba cogiendo la cuerda con las mismas, sería la postura realista».
+
+Work Log:
+- PARED ANCHA INVISIBLE (caída raíz): la escena tenía el ancho visual DURO — `const wallW = 5.4` en buildWorld (margen ±0.6 sobre la pared de juego de 4.2, que nunca cambió). Con la pared de juego a 6.6 m, los bloques/relleno/estratos cubrían ±2.7: el canto 2.7–3.3 (donde nacen presas) quedaba SIN roca detrás y los macizos laterales (nacen en halfW−0.35) lo tapaban. Arreglado de raíz: WallLayout lleva `widthM` (el generador lo publica) y buildWorld hace `wallW = layout.widthM + 1.2` — mismo margen visual de siempre, ahora data-driven. Todo lo colgado (campo de roca, huecos, salientes, faldones baseCamp que ya usaban reliefWallW, macizos, massifBack) sigue el ancho automáticamente.
+- MENSAJES ESPACIADOS: RICH_IDLE_S_MIN/MAX 7-15 s → 14-26 s (el rico sigue hablando solo, sin acaparar).
+- COLGADO REALISTA DE LA CUERDA: el dangleTarget de caught/hauling ponía las manos a media altura del pecho (+0.52, brazos encogidos, separadas ±0.09). Ahora las dos manos van JUNTAS (±0.045) a la línea de cuerda SOBRE LA CABEZA (cadera +1.18): con hombro a +0.28 y brazo 0.88·1.08≈0.95, el clamp del esqueleto (huesos×STRETCH_HARD desde la raíz) deja el brazo RECTO hacia arriba — la postura real de quien cuelga de un arnés agarrando la cuerda encima de la cabeza. El vaivén pendular (sway por vx) sigue moviendo ambas manos con la cuerda; soltar la cuerda (ropeReleased) vuelve al colgajo suelto de siempre.
+- Tests: 632/632 (los T80 siguen verdes: usan RICH_IDLE_S_MIN/MAX como cotas, no valores fijos) y tsc limpio. Sin test nuevo para la escena (Babylon, no testeable headless); el ancho de juego ya estaba cubierto (t80: 6.6 + presas dentro del ancho).
+- Verificación en caliente: sigue bloqueada por la memoria del sandbox (OOM al arrancar el match, documéntado en T79/T80).
+
+Stage Summary:
+- La pared de 6.6 m tiene roca y relleno en TODO su ancho: nada de cantos sin pared ni tapados por los macizos — y si mañana el ancho vuelve a cambiar, la escena lo sigue sola (data-driven).
+- El ricachón comenta cada 14-26 s en vez de cada 7-15: los mensajes respiran.
+- El sherpa colgado de la cuerda se ve COMO EN LA REALIDAD: dos brazos extendidos hacia arriba, manos juntas agarrando la cuerda sobre la cabeza, balanceándose con el péndulo.

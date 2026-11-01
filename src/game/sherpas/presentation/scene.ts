@@ -841,7 +841,11 @@ export class SherpaScene {
   buildWorld(layout: WallLayout): void {
     if (this.worldBuilt) return; // la escena del menú se reutiliza como escena de partida
     this.worldBuilt = true;
-    const wallW = 5.4;
+    // T81 — el ancho VISUAL sigue al de JUEGO (layout.widthM, wall.widthM):
+    // iba duro 5.4 (margen ±0.6 sobre la pared de 4.2) y con la pared ancha
+    // (6.6) el canto quedaba sin roca debajo del relleno / tapado por los
+    // macizos laterales. Mismo margen visual de siempre: +0.6 por lado.
+    const wallW = layout.widthM + 1.2;
     // T41: la cara del muro se RETRASA (petición del jugador: "retrasar la
     // pared para que las piernas no toquen") — debe COINCIDIR con
     // wall_gen.json wall.zFront (la física lee el dato; la escena lo espeja).

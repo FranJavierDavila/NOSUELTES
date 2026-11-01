@@ -62,9 +62,11 @@ const PRIORITY: Record<RichMood, number> = {
 // cara la pone MOOD_FACE (richFaces.ts) y los ánimos sin cara propia muestran
 // la cabeza por defecto. Dos idiomas (el HUD viaja en el idioma elegido).
 
-/** Segundos entre expresiones espontáneas (aleatorio uniforme). */
-export const RICH_IDLE_S_MIN = 7;
-export const RICH_IDLE_S_MAX = 15;
+/** Segundos entre expresiones espontáneas (aleatorio uniforme).
+ *  T81 (petición del jugador: «los mensajes más espaciados»): de 7-15 s a
+ *  14-26 s — el rico sigue vivo, pero sin acaparar la conversación. */
+export const RICH_IDLE_S_MIN = 14;
+export const RICH_IDLE_S_MAX = 26;
 
 /** Vocabulario de la charla espontánea (ánimos TRANQUILOS: nunca furia ni
  *  susto — esos los pone la simulación cuando algo pasa de verdad). */
