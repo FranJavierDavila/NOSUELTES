@@ -134,7 +134,8 @@
     "disablePee": "Disable pee",
     "daltonism": "Colorblind palette",
     "reduceShake": "Reduce camera shake",
-    "subtitles": "Subtitles always on"
+    "subtitles": "Subtitles always on",
+    "bubbles": "Boss speech bubbles (face and lines)"
   },
   "save": {
     "saved": "Progress saved at {camp}",

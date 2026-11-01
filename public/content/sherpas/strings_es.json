@@ -134,7 +134,8 @@
     "disablePee": "Desactivar el pis",
     "daltonism": "Paleta para daltonismo",
     "reduceShake": "Reducir sacudidas de cámara",
-    "subtitles": "Subtítulos siempre activos"
+    "subtitles": "Subtítulos siempre activos",
+    "bubbles": "Bocadillos del jefe (cara y frases)"
   },
   "save": {
     "saved": "Progreso guardado en {camp}",

@@ -341,3 +341,46 @@ describe("T66-FB · la fatiga de estancamiento es SOLO DE LAS MANOS", () => {
     expect(foot.fatigue).toBeLessThan(1);
   });
 });
+
+// ---------------- T76-FEEDBACK: fatiga DESDE CERO en cada agarre nuevo ----------------
+
+describe("T76 · al cambiar de agarre la fatiga empieza de cero (petición literal)", () => {
+  it("soltar y agarrar una presa DISTINTA limpia la fatiga acumulada", () => {
+    const { rig, anchors } = buildRig(4242, { fatigueRate: 0, baseGripHand: 1e6, baseGripFoot: 1e6 });
+    const p = handPos(rig);
+    grab(rig, anchors, "hand_l", v3(p.x, p.y, Z()), "t76_a1");
+    settle(rig, 13); // gracia 10 s + ~3 s estancado → fatiga ≈ 0.03
+    const st = rig.states.get("hand_l")!;
+    expect(st.fatigue).toBeGreaterThan(0.015);
+    // variar de verdad: presa nueva más arriba
+    grab(rig, anchors, "hand_l", v3(p.x, p.y + 0.5, Z()), "t76_a2");
+    settle(rig, 0.5);
+    expect(st.anchored).toBe(true);
+    expect(rig.holdIdOf("hand_l")).toBe("t76_a2");
+    expect(st.fatigue).toBe(0); // el conteo arranca de cero
+    // y vuelve a contar desde cero (no es un cero congelado): tras la gracia sube otra vez
+    settle(rig, 12);
+    expect(st.fatigue).toBeGreaterThan(0.01);
+  });
+
+  it("re-agarrar la MISMA presa NO borra la deuda (no se paga con un truco)", () => {
+    const { rig, anchors } = buildRig(4242, { fatigueRate: 0, baseGripHand: 1e6, baseGripFoot: 1e6 });
+    const p = handPos(rig);
+    // primera presa LEJOS de las de inicio (medio metro arriba), como en el
+    // test anterior: cerca del arranque el acquire resuelve a una start_hold
+    const pos = v3(p.x, p.y + 0.5, Z());
+    grab(rig, anchors, "hand_l", pos, "t76_b1");
+    settle(rig, 13);
+    const st = rig.states.get("hand_l")!;
+    const antes = st.fatigue;
+    expect(rig.holdIdOf("hand_l")).toBe("t76_b1");
+    expect(antes).toBeGreaterThan(0.015);
+    // soltar y volver a la MISMA presa (mismo id; el objetivo se corre 2 cm
+    // dentro de su radio para que el viaje dispare y el acquire la resuelva)
+    grab(rig, anchors, "hand_l", v3(pos.x + 0.02, pos.y, Z()), "t76_b1");
+    settle(rig, 0.5);
+    expect(st.anchored).toBe(true);
+    expect(rig.holdIdOf("hand_l")).toBe("t76_b1");
+    expect(st.fatigue).toBeGreaterThanOrEqual(antes - 0.005); // deuda conservada
+  });
+});

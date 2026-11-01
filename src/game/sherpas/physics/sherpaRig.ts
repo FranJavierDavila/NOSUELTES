@@ -141,6 +141,11 @@ export interface LimbGripState {
    *  carga de siempre). */
   stallSeconds: number;
   stallHoldId: string | null;
+  /** T76 — última presa anclada (la memoria de "cambiar de agarre"): al anclar
+   *  una presa DISTINTA la fatiga acumulada se limpia y el conteo arranca de
+   *  cero. Vive fuera del sistema de estancamiento (ese es solo de manos y
+  *   re-agarrar la misma presa no borra su deuda). */
+  lastHoldId: string | null;
 }
 
 export interface SherpaGripTuning {
@@ -331,7 +336,7 @@ export class SherpaRig {
       this.states.set(limb, {
         limb, anchored: false, holdId: null, traveling: false, travelTime: 0,
         tension: 0, fatigue: 0, overloadTimer: 0, lockedFor: 0, target: null, gripSeconds: 0,
-        stallSeconds: 0, stallHoldId: null,
+        stallSeconds: 0, stallHoldId: null, lastHoldId: null,
       });
     }
     this.lastResult = emptyResult();
@@ -963,6 +968,14 @@ export class SherpaRig {
           st.holdId = anchor.hold.id;
           st.overloadTimer = 0;
           st.gripSeconds = 0;
+          // T76-FEEDBACK — FATIGA DESDE CERO EN CADA AGARRE NUEVO (petición
+          // literal: "cuando una extremidad cambia de agarre sus parámetros de
+          // fatiga se inicializan y comienzan a contar desde cero"): anclar una
+          // presa DISTINTA de la anterior limpia la fatiga acumulada. La memoria
+          // del agarre anterior es lastHoldId (ajena al estancamiento T64, que
+          // es solo de manos y conserva la deuda al re-agarrar la misma presa).
+          if (st.lastHoldId !== anchor.hold.id) st.fatigue = 0;
+          st.lastHoldId = anchor.hold.id;
           this.limbPt[limb] = vClone(anchor.hold.pos);
           gripped.push({ limb, anchor });
           // PRESA SORPRESA VERDE → carga de Super Flatulencia (petición).

@@ -243,6 +243,8 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     if (choice.resume) resumeSave = await loadAscent();
     else await clearAscent();
     const scene = state.scene;
+    // T76: bocadillos del ricachón (cara + frases) — opción del menú inicial.
+    scene.setRichBubbles(choice.bubbles ?? true);
     // T60 RED: con guest conectado, el jugador 2 es DEL GUEST — el mixer
     // sustituye el input local de P2 por el que llega por socket.
     const netMixer = state.hostNet?.hasGuest
@@ -420,6 +422,25 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
           getRichPuppetInfo?: () => Record<string, unknown>;
         } | null;
         return sc?.getRichPuppetInfo?.() ?? null;
+      },
+      /** T76 CARAS EXPRESIVAS + BOCADILLO DE HABLA + POSE DE PIE (sonda E2E). */
+      richFaces: (): Record<string, unknown> | null => {
+        const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
+          getRichFaceInfo?: () => Record<string, unknown>;
+        } | null;
+        return sc?.getRichFaceInfo?.() ?? null;
+      },
+      richSay: (text: string): boolean => {
+        const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
+          sayRichLine?: (text: string, durS?: number) => boolean;
+        } | null;
+        return sc?.sayRichLine?.(text, 8) ?? false;
+      },
+      richStand: (on: boolean): boolean => {
+        const m = state.match as unknown as { richStandPin?: boolean } | null;
+        if (!m) return false;
+        m.richStandPin = !!on;
+        return true;
       },
       /** T63 ANCLAJES NATURALES: recetas estampadas (masters, magnesio,
        *  grietas, variantes) — sonda E2E. */

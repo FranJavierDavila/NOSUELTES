@@ -141,6 +141,8 @@ export class SherpasMatch {
   private realVoiceLast = -1e9;
   private tiltVoiceArmed = false;
   private richSlidePrev = 0;
+  /** T76 — pin E2E de la pose de pie (la FSM manda en juego; la sonda lo fuerza). */
+  richStandPin = false;
   private lastSimDt = 1 / 60;
   private wallFrontZ: number;
   readonly wallWidthM: number;
@@ -798,7 +800,7 @@ export class SherpasMatch {
     // pose del ricachón mandada por el FSM: sentado ⇄ de pie ⇄ caminando
     // (petición del jugador). Caminar desplaza la masa REAL sobre la tabla: el
     // lado cargado se hunde, tira de su sherpa y descarga al otro.
-    const wantsStand = this.brain.state === "de_pie" || this.brain.state === "caminando";
+    const wantsStand = this.brain.state === "de_pie" || this.brain.state === "caminando" || this.richStandPin;
     const psPrev = this.plankState;
     const richStanding = wantsStand && !!psPrev && !psPrev.grounded && !psPrev.fellOff;
     this.rich.standing = richStanding;
@@ -1605,7 +1607,10 @@ export class SherpasMatch {
         : this.d.audio.shoutRealFile(p.file ?? this.d.audio.pickBankFile(p.context) ?? "");
       // JUICE T38: bocanadas de furia sobre su cabeza — el enojo se VE.
       this.d.scene.fxRage(this.rich.bodies[RM.head].pos);
-      if (text) this.d.hud.subtitle(text, 3.8);
+      // T76-FB — LA FRASE EN EL BOCADILLO (cara + texto al lado): la escena
+      // acepta si los bocadillos están activos (opción del menú); si no, el
+      // subtítulo de abajo de toda la vida.
+      if (text && !this.d.scene.sayRichLine(text, 3.8)) this.d.hud.subtitle(text, 3.8);
       // T44 — BRAZOS EN ALTO mientras EMITE UN SONIDO (petición: "para saber
       // que el ricachón habla... de forma muy clara y ostentosa"): gesto
       // "exaltado" durante la duración EFECTIVA del clip.

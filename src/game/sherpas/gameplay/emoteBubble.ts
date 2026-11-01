@@ -151,3 +151,106 @@ function sampleFace(face: Uint8Array, S: number, x: number, y: number): [number,
   }
   return out;
 }
+
+// ---------- T76-FB — BOCADILLO CON TEXTO (lo que dice) ----------
+//
+// PETICIÓN: "modificar los bocadillos que ahora aparecen con la cara y a su
+// lado el texto de lo que dice". El globo cuadrado T66 (cara dentro) se
+// EXTiende a la derecha con un globo de texto blanco (mismo contorno oscuro):
+// cara a la izquierda, frase a la derecha, cola abajo-izquierda intacta
+// (sigue apuntando a la cara del rico). La parte cuadrada la sigue pintando
+// composeEmoteBubble (píxel-perfect, sin canvas); el texto necesita canvas 2D
+// (medir y trazar fuentes), así que este paso es DOM y devuelve null sin
+// document (SSR/tests) — la escena cae al subtítulo de siempre.
+
+export interface RichSpeechCanvas {
+  data: Uint8Array;
+  w: number;
+  h: number;
+}
+
+/** Parte `text` en líneas que caben en maxW medido con `ctx.font`. */
+function wrapSpeechText(ctx: CanvasRenderingContext2D, text: string, maxW: number): string[] {
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let cur = "";
+  for (const w of words) {
+    const attempt = cur ? `${cur} ${w}` : w;
+    if (ctx.measureText(attempt).width <= maxW || !cur) {
+      cur = attempt;
+    } else {
+      lines.push(cur);
+      cur = w;
+    }
+  }
+  if (cur) lines.push(cur);
+  return lines.slice(0, 4); // más de 4 líneas: el globo se come la pantalla
+}
+
+/** Bocadillo ANCHO con la cara a la izquierda y `text` a la derecha.
+ *  Devuelve buffer RGBA (origen arriba-izquierda, aún SIN voltear) y su
+ *  tamaño; null sin DOM. La mitad izquierda ES composeEmoteBubble intacto. */
+export function composeRichSpeech(face: Uint8Array, S: number, text: string): RichSpeechCanvas | null {
+  if (typeof document === "undefined") return null;
+  const probe = document.createElement("canvas");
+  const ctx0 = probe.getContext("2d");
+  if (!ctx0) return null;
+  const fontPx = Math.max(14, Math.round(S * 0.082));
+  ctx0.font = `bold ${fontPx}px system-ui, sans-serif`;
+  const maxTextW = S * 2.05;
+  const lines = wrapSpeechText(ctx0, text, maxTextW);
+  if (lines.length === 0) return null;
+  const textW = Math.max(...lines.map((l) => ctx0.measureText(l).width));
+  const gap = S * 0.07;
+  const padX = S * 0.12;
+  const W = Math.ceil(S + gap + textW + padX * 2);
+  const H = S;
+  probe.width = W;
+  probe.height = H;
+  const ctx = probe.getContext("2d");
+  if (!ctx) return null;
+  // 1) globo de texto: rect redondeado blanco + contorno oscuro, de la mitad
+  //    del círculo del globo hasta el borde derecho (la unión la tapa el
+  //    círculo blanco de la base que entra después).
+  const gx = BUBBLE_CX * S;                 // centro del globo circular
+  const gy = BUBBLE_CY * S;
+  const gr = BUBBLE_R * S;
+  const boxX = gx;
+  const boxW = W - padX - gx;
+  const boxH = gr * 1.5;
+  const boxY = gy - boxH / 2;
+  const rad = S * 0.09;
+  const outline = BUBBLE_OUTLINE * S;
+  ctx.beginPath();
+  if (typeof ctx.roundRect === "function") {
+    ctx.roundRect(boxX, boxY, boxW, boxH, rad);
+  } else {
+    ctx.rect(boxX, boxY, boxW, boxH);
+  }
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
+  ctx.lineWidth = outline;
+  ctx.strokeStyle = `rgb(${OUTLINE_R},${OUTLINE_G},${OUTLINE_B})`;
+  ctx.stroke();
+  // 2) base cuadrada T66 ENCIMA, COMPUESTA con drawImage (putImageData
+  //    sobreescribiría el rect donde la base es transparente: agujeros)
+  const base = composeEmoteBubble(face, S);
+  const tmp = document.createElement("canvas");
+  tmp.width = S;
+  tmp.height = S;
+  const tctx = tmp.getContext("2d");
+  if (!tctx) return null;
+  tctx.putImageData(new ImageData(new Uint8ClampedArray(base), S, S), 0, 0);
+  ctx.drawImage(tmp, 0, 0);
+  // 3) el texto, en oscuro, centrado en el rect (con margen del contorno)
+  ctx.font = `bold ${fontPx}px system-ui, sans-serif`;
+  ctx.fillStyle = `rgb(${OUTLINE_R},${OUTLINE_G},${OUTLINE_B})`;
+  ctx.textBaseline = "middle";
+  const lineH = fontPx * 1.22;
+  const startY = gy - ((lines.length - 1) * lineH) / 2;
+  lines.forEach((l, i) => {
+    ctx.fillText(l, boxX + padX * 0.7, startY + i * lineH);
+  });
+  const img = ctx.getImageData(0, 0, W, H);
+  return { data: new Uint8Array(img.data.buffer), w: W, h: H };
+}

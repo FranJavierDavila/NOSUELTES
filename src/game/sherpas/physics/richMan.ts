@@ -223,10 +223,13 @@ export class RichManSim {
     o[RM.pelvis] = v3(slide, 0.19, 0);
     o[RM.chest] = v3(slide + lean, 0.52 + bob, -0.04);
     o[RM.head] = v3(slide + lean, 0.8 + bob, -0.1);
-    o[RM.elbowL] = v3(slide - 0.26, 0.4, -0.06);
-    o[RM.elbowR] = v3(slide + 0.26, 0.4, -0.06);
-    o[RM.handL] = v3(slide - 0.34, 0.28, -0.1);
-    o[RM.handR] = v3(slide + 0.34, 0.28, -0.1);
+    // T76 — HOMBROS DEL MODELO: el GLB definitivo tiene los hombros a ±0.2965
+    // (medido del bind): con codos a ±0.26 el brazo superior apuntaba HACIA
+    // DENTRO y la pieza se hundía en el tronco. Codos/manos abiertos.
+    o[RM.elbowL] = v3(slide - 0.31, 0.4, -0.06);
+    o[RM.elbowR] = v3(slide + 0.31, 0.4, -0.06);
+    o[RM.handL] = v3(slide - 0.38, 0.28, -0.1);
+    o[RM.handR] = v3(slide + 0.38, 0.28, -0.1);
     o[RM.kneeL] = v3(slide - 0.1, 0.1, -0.26);
     o[RM.kneeR] = v3(slide + 0.1, 0.1, -0.26);
     o[RM.footL] = v3(slide - 0.13, -0.16, -0.34);
@@ -410,17 +413,22 @@ export class RichManSim {
     const lean = -Math.sin(angle) * 0.12;
     const bal = Math.min(1, Math.abs(angle) / 0.5); // brazos al equilibrio
     const arm = walking ? Math.sin(wp) * 0.09 : 0;
-    o[RM.pelvis] = v3(slide + sway, 0.74 + bob, 0);
-    o[RM.chest] = v3(slide + sway + lean, 1.07, -0.02);
-    o[RM.head] = v3(slide + sway + lean * 1.4, 1.34, -0.05);
-    o[RM.elbowL] = v3(slide - 0.3 - bal * 0.08 + arm, 0.82, -0.03);
-    o[RM.elbowR] = v3(slide + 0.3 + bal * 0.08 - arm, 0.82, -0.03);
-    o[RM.handL] = v3(slide - 0.36 - bal * 0.16 + arm * 1.7, 0.56, -0.05);
-    o[RM.handR] = v3(slide + 0.36 + bal * 0.16 - arm * 1.7, 0.56, -0.05);
-    o[RM.kneeL] = v3(slide - 0.11, 0.4 + sL * 0.15, -0.1 - sL * 0.08);
-    o[RM.kneeR] = v3(slide + 0.11, 0.4 + sR * 0.15, -0.1 - sR * 0.08);
-    o[RM.footL] = v3(slide - 0.14 + wd * sL * 0.15, 0.04 + sL * 0.13, -0.16);
-    o[RM.footR] = v3(slide + 0.14 + wd * sR * 0.15, 0.04 + sR * 0.13, -0.16);
+    // T76 — DE PIE MÁS ALTO: con los pies a y=0.04 (bajo la cara superior del
+    // tablón) el cuerpo quedaba «por debajo de la tabla» (petición del
+    // jugador). La pose completa SUBE: plantas SOBRE el tablón, piernas
+    // estiradas (0.36+0.35 ≈ los palos de la física) y codos/manos abiertos
+    // como en sentado (hombros del modelo a ±0.2965).
+    o[RM.pelvis] = v3(slide + sway, 0.87 + bob, 0);
+    o[RM.chest] = v3(slide + sway + lean, 1.2, -0.02);
+    o[RM.head] = v3(slide + sway + lean * 1.4, 1.47, -0.05);
+    o[RM.elbowL] = v3(slide - 0.34 - bal * 0.08 + arm, 0.93, -0.03);
+    o[RM.elbowR] = v3(slide + 0.34 + bal * 0.08 - arm, 0.93, -0.03);
+    o[RM.handL] = v3(slide - 0.4 - bal * 0.16 + arm * 1.7, 0.67, -0.05);
+    o[RM.handR] = v3(slide + 0.4 + bal * 0.16 - arm * 1.7, 0.67, -0.05);
+    o[RM.kneeL] = v3(slide - 0.11, 0.51 + sL * 0.15, -0.1 - sL * 0.08);
+    o[RM.kneeR] = v3(slide + 0.11, 0.51 + sR * 0.15, -0.1 - sR * 0.08);
+    o[RM.footL] = v3(slide - 0.14 + wd * sL * 0.15, 0.16 + sL * 0.13, -0.16);
+    o[RM.footR] = v3(slide + 0.14 + wd * sR * 0.15, 0.16 + sR * 0.13, -0.16);
     return o;
   }
 

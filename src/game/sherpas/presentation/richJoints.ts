@@ -27,10 +27,26 @@ import { P } from "../../physics/pbd/ragdoll";
 import { RM } from "../physics/richMan";
 import { v3t, vSub, vAdd, vNorm, vCross, vDot, vLen, vScale, type V3T } from "./climberPoseMath";
 
-/** Semiancho de hombros/caderas DERIVADOS (m). Los del escalador CANON son
- *  0.19/0.13; el ricachón es más ancho (sus codos descansan a ±0.26). */
+/** Semiancho de hombros/caderas DERIVADOS por defecto (m). Los del escalador
+ *  CANON son 0.19/0.13; el ricachón cápsula era más ancho (codos a ±0.26).
+ *  T76: con el MODELO DEFINITIVO estos valores NO mandan — la escena mide los
+ *  pivotes de hombro/cadera del propio .glb (brazos a ±0.2965, muslos a
+ *  ±0.139) y pasa las dimensiones por `dims`: eran la causa de los brazos
+ *  hundidos dentro del tronco («las piezas están metidas dentro del tronco»). */
 export const RICH_SHOULDER_HALF_M = 0.21;
 export const RICH_HIP_HALF_M = 0.12;
+
+/** T76 — dimensiones del esqueleto derivado, medibles desde el bind del modelo. */
+export interface RichJointDims {
+  shoulderHalf: number;
+  hipHalf: number;
+}
+
+/** Defaults (cápsulas / plantilla compartida): los de toda la vida. */
+export const RICH_DIMS_DEFAULT: RichJointDims = {
+  shoulderHalf: RICH_SHOULDER_HALF_M,
+  hipHalf: RICH_HIP_HALF_M,
+};
 
 /** Facing por defecto: la convención del personaje (mirando a CÁMARA, −z),
  *  usada cuando ni rodillas ni manos delatan el frente (de pie recto). */
@@ -61,7 +77,11 @@ const perp = (v: V3T, up: V3T): V3T => {
  * Defensivo: cuerpos ausentes/degenerados/NaN → pose de emergencia finita
  * (el render nunca debe reventar).
  */
-export function richJoints15(b: readonly PV3[], fallbackFacing: V3T = RICH_DEFAULT_FACING): V3T[] {
+export function richJoints15(
+  b: readonly PV3[],
+  fallbackFacing: V3T = RICH_DEFAULT_FACING,
+  dims: RichJointDims = RICH_DIMS_DEFAULT,
+): V3T[] {
   const g = (i: number): V3T => {
     const p = b[i];
     if (!p) return v3t(0, 0, 0);
@@ -121,11 +141,11 @@ export function richJoints15(b: readonly PV3[], fallbackFacing: V3T = RICH_DEFAU
   const j: V3T[] = new Array(15);
   j[P.head] = head;
   j[P.chest] = chest;
-  j[P.shL] = off(chest, RICH_SHOULDER_HALF_M, shOff);
-  j[P.shR] = off(chest, -RICH_SHOULDER_HALF_M, shOff);
+  j[P.shL] = off(chest, dims.shoulderHalf, shOff);
+  j[P.shR] = off(chest, -dims.shoulderHalf, shOff);
   j[P.pelvisC] = pelvis;
-  j[P.hipL] = off(pelvis, RICH_HIP_HALF_M, hipOff);
-  j[P.hipR] = off(pelvis, -RICH_HIP_HALF_M, hipOff);
+  j[P.hipL] = off(pelvis, dims.hipHalf, hipOff);
+  j[P.hipR] = off(pelvis, -dims.hipHalf, hipOff);
   j[P.elbowL] = elbL;
   j[P.elbowR] = elbR;
   j[P.handL] = hdL;

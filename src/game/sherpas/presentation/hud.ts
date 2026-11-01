@@ -17,8 +17,10 @@ export type BalanceUiState = "equilibrado" | "aviso" | "desequilibrado";
 export const WEATHER_IDS = ["clear", "snow", "snow_low"] as const;
 export const WEATHER_PREF_KEY = "ns.weather.v1";
 export const DAYTIME_PREF_KEY = "ns.daytime.v1";
+/** T76: preferencia de bocadillos ("si"/"no") — persiste como el clima. */
+export const BUBBLES_PREF_KEY = "ns.bubbles.v1";
 
-export interface HudStartChoice { difficulty: string; seed: number; lang: Lang; resume: boolean; mute: boolean; daltonism: boolean; reduceShake: boolean; disablePee: boolean; /** T61: clima (clear/snow/snow_low) y hora del día (dia/atardecer/noche). */ weather: string; daytime: string }
+export interface HudStartChoice { difficulty: string; seed: number; lang: Lang; resume: boolean; mute: boolean; daltonism: boolean; reduceShake: boolean; disablePee: boolean; /** T76: bocadillos del ricachón visibles (cara y frases en el globo). */ bubbles: boolean; /** T61: clima (clear/snow/snow_low) y hora del día (dia/atardecer/noche). */ weather: string; daytime: string }
 
 export interface HudLimbsState { tension: number; fatigue: number; anchored: boolean }
 
@@ -717,7 +719,9 @@ export class SherpaHud {
     // URL (?clima= / ?hora=) manda si el mount la trae — E2E determinista.
     const weather0 = opts.defaultWeather ?? this.loadPref(WEATHER_PREF_KEY, WEATHER_IDS, "clear");
     const daytime0 = opts.defaultDaytime ?? this.loadPref(DAYTIME_PREF_KEY, DAYTIME_IDS, "dia");
-    this.choice = { lang: this.lang, resume: false, mute: false, daltonism: false, reduceShake: false, disablePee: false, difficulty: opts.defaultPreset, seed: opts.seed, weather: weather0, daytime: daytime0 };
+    // T76: bocadillos (cara + frase en el globo) — ON por defecto, persiste.
+    const bubbles0 = this.loadPref(BUBBLES_PREF_KEY, ["si", "no"], "si") === "si";
+    this.choice = { lang: this.lang, resume: false, mute: false, daltonism: false, reduceShake: false, disablePee: false, bubbles: bubbles0, difficulty: opts.defaultPreset, seed: opts.seed, weather: weather0, daytime: daytime0 };
     const el = this.el.start!;
     el.innerHTML = `<div class="panel">
       <h1>⛰️ ${esc(this.t("menu.title"))}</h1>
@@ -733,6 +737,7 @@ export class SherpaHud {
         <span class="chk"><input type="checkbox" data-a="daltonism" id="ck_d"><label for="ck_d">${esc(this.t("settings.daltonism"))}</label></span>
         <span class="chk"><input type="checkbox" data-a="shake" id="ck_s"><label for="ck_s">${esc(this.t("settings.reduceShake"))}</label></span>
         <span class="chk"><input type="checkbox" data-a="nopee" id="ck_p"><label for="ck_p">${esc(this.t("settings.disablePee"))}</label></span>
+        <span class="chk"><input type="checkbox" data-a="bubbles" id="ck_b" ${bubbles0 ? "checked" : ""}><label for="ck_b">${esc(this.t("settings.bubbles"))}</label></span>
       </div>
       <div class="row" style="margin-top:18px"><button class="go" data-a="go">${esc(this.t("menu.start"))}</button></div>
       <div class="row" style="justify-content:center"><button data-a="howto">🎓 ${esc(this.t("onboarding.menuButton"))}</button>
@@ -821,6 +826,12 @@ export class SherpaHud {
         (this.choice as Record<string, unknown>)[key] = (e.target as HTMLInputElement).checked;
       };
     }
+    // T76 — BOCADILLOS: choice + persistencia (como el clima/hora)
+    (el.querySelector("[data-a=bubbles]") as HTMLInputElement).onchange = (e) => {
+      const on = (e.target as HTMLInputElement).checked;
+      this.choice.bubbles = on;
+      this.savePref(BUBBLES_PREF_KEY, on ? "si" : "no");
+    };
     el.querySelectorAll<HTMLElement>("[data-a=resume]").forEach((b) => { b.onclick = () => { this.choice.resume = true; this.hideStart(); opts.onGo(this.choice as HudStartChoice); }; });
     el.querySelector<HTMLElement>("[data-a=new]")?.addEventListener("click", () => { this.choice.resume = false; this.hideStart(); opts.onGo(this.choice as HudStartChoice); });
     if (!opts.saveCampLabel) {

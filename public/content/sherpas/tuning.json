@@ -131,10 +131,10 @@
     "hoverSeconds": 2.2
   },
   "perf": {
-    "targetFps": 60,
+    "targetFps": 55,
     "minScale": 1.0,
-    "maxScale": 2.4,
-    "step": 0.2,
+    "maxScale": 1.3,
+    "step": 0.1,
     "checkSeconds": 2.0,
     "shadowQuality": "medium",
     "dprCap": 2
