@@ -83,6 +83,10 @@ const LOAD_HARD_CAP = 2.5;      // techo duro de la carga por extremidad × peso
 // --- arrastre con puntero (petición del jugador: "seleccionas la extremidad y
 // la arrastras hasta un anclaje; los anclajes actúan como imanes") ---
 const MAGNET_R = 0.55;          // radio de imán de presas (m, plano de pared)
+// T80 — EMPUJE DE PIERNA: metros de alcance extra que gana la MANO al soltar
+// un apoyo de pie (el cuerpo sube: servo anti-goma + media de anclajes sin el
+// pie bajo). El empuje real de escalada gana ~0,2-0,35 m; 0,3 es conservador.
+const FOOT_RELEASE_GAIN = 0.3;
 // Anti-goma v2 (2ª petición del jugador: "un pequeño margen sí, pero no de goma"):
 // el alcance de juego ES la longitud ósea con un margen mínimo. Todo coherente:
 // lo que se puede agarrar es lo que el brazo/pierna dibujado alcanza.
@@ -287,6 +291,9 @@ export class SherpaRig {
   private noHandsTimer = 0;
   /** true SOLO el tick en que el resbalón por dos manos suelta los pies. */
   slippedByTwoHands = false;
+  /** T80 — cooldown del EMPUJE DE PIERNA (soltar un pie para que la mano
+   *  llegue): evita soltar DOS pies en el mismo gesto. */
+  private footAssistAt = -99;
   /** SEGURO DE CUERDA (Task 36): estado del porteo y memoria de la caída. */
   ropeState: RopeHoldState = "climbing";
   private ropeFallStartY: number | null = null;
@@ -605,7 +612,15 @@ export class SherpaRig {
   }
 
   /** Puntero movido (punto del plano de pared): fija el imán si hay presa
-   *  libre y alcanzable cerca. Es la "ayuda de posicionamiento" pedida. */
+   *  libre y alcanzable cerca. Es la "ayuda de posicionamiento" pedida.
+   *  T80 — EMPUJE DE PIERNA (petición: «si el escalador se estira para
+   *  alcanzar un agarre por distancia, si le llega igual es preciso que
+   *  suelte una pierna para poder alcanzarlo»): si la MANO no llega pero la
+   *  presa quedaría al alcance soltando un apoyo de pie (el cuerpo SUBE —
+   *  el servo anti-goma lo acerca y la media de anclajes ancla menos abajo),
+   *  la pierna que menos sostiene se suelta sola. Físicamente realista: es el
+   *  empuje de escalada de verdad — soltar el pie bajo y estirar el cuerpo
+   *  gana ~0,2-0,3 m de alcance hacia arriba (ver t80-feedback.test.ts). */
   moveDrag(p: V3): void {
     const limb = this.dragging;
     if (!limb) return;
@@ -624,8 +639,69 @@ export class SherpaRig {
       if (d < MAGNET_R_DEAD) anyNear = true;
       if (d < bestD && this.canReach(limb, hold.pos)) { best = hold; bestD = d; }
     }
+    if (!best && isHand(limb) && this.simTime - this.footAssistAt > 0.8
+      && this.states.get(limb)!.fatigue < 0.5) {
+      // T80 — con el brazo AGOTADO no hay auto-empuje (el círculo de fatiga
+      // manda: mecanicas2 «las zonas de influencia se reducen con la fatiga»);
+      // el jugador siempre puede soltar el pie a mano y re-arrastrar.
+      const gain = FOOT_RELEASE_GAIN;
+      const maxLen = this.fatiguedReach(limb) + gain;
+      let cand: HoldInstance | null = null;
+      let candD = Infinity;
+      for (const hold of this.deps.anchorSystem.holds.values()) {
+        if (this.deps.anchorSystem.anchorAtHold(hold.id)) continue;
+        const d = Math.hypot(hold.pos.x - p.x, hold.pos.y - p.y);
+        if (d >= MAGNET_R_DEAD) continue;
+        const dRoot = vLen(vSub(hold.pos, this.rig.particles[CHAIN_ROOT[limb]].pos));
+        const dTip = vLen(vSub(hold.pos, this.limbPt[limb]));
+        if (dRoot > maxLen && dTip > maxLen) continue;
+        if (d < candD) { cand = hold; candD = d; }
+      }
+      const foot = cand ? this.footToPushOff(cand.pos) : null;
+      if (foot) {
+        this.releaseAnchored(foot); // empuje: el cuerpo sube y la mano llega
+        this.footAssistAt = this.simTime;
+        best = cand;
+        bestD = candD;
+      }
+    }
     this.dragHold = best;
     this.dragDeadZone = !anyNear;
+  }
+
+  /** El pie que conviene soltar para el empuje: el anclado MÁS BAJO (el que
+   *  más tira del cuerpo hacia abajo y menos aporta a la subida) y solo si
+   *  quedan ≥2 anclajes tras soltarlo (nunca colgar de una sola presa). */
+  private footToPushOff(target: V3): Limb | null {
+    if (this.anchorsCount() < 3) return null;
+    let pick: Limb | null = null;
+    let pickY = Infinity;
+    for (const f of ["foot_l", "foot_r"] as const) {
+      const st = this.states.get(f)!;
+      if (!st.anchored || !st.holdId) continue;
+      const hold = this.deps.anchorSystem.holds.get(st.holdId);
+      if (!hold) continue;
+      if (hold.pos.y < pickY) { pickY = hold.pos.y; pick = f; }
+    }
+    if (!pick) return null;
+    // sólo vale la pena si el apoyo está por DEBAJO de la presa objetivo
+    const hold = this.states.get(pick)!.holdId;
+    const hp = hold ? this.deps.anchorSystem.holds.get(hold)?.pos : null;
+    return hp && hp.y < target.y - 0.05 ? pick : null;
+  }
+
+  /** Suelta una extremidad anclada (la misma mecánica que beginDrag al
+   *  re-agarrar, sin cancelar el arrastre en curso). */
+  private releaseAnchored(limb: Limb): void {
+    const st = this.states.get(limb)!;
+    if (st.traveling) this.cancelTravel(limb);
+    if (!st.anchored) return;
+    const anchor = this.deps.anchorSystem.anchorOf(this.player, limb);
+    if (anchor) this.deps.anchorSystem.release(anchor);
+    st.anchored = false;
+    st.holdId = null;
+    st.tension = 0;
+    st.overloadTimer = 0;
   }
 
   /** Info del círculo de alcance del arrastre (verde/rojo + zona muerta).

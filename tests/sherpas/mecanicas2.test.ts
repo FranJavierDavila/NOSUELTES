@@ -406,9 +406,10 @@ describe("círculo de alcance + zona muerta (petición: 'circulo verde de alcanc
     expect(info!.deadZone).toBe(false);
     expect(info!.reachable).toBe(true);
     // punto B: roca vacía lejos de toda presa Y fuera del alcance del hombro
+    // (T80: pared más ancha 4.2→6.6 — más presas en la franja: barrido más ancho)
     let best: { x: number; y: number } | null = null;
-    for (let x = -2.6; x <= 2.6 && !best; x += 0.2) {
-      for (let y = 6.4; y <= 8.4 && !best; y += 0.2) {
+    for (let x = -3.2; x <= 3.2 && !best; x += 0.2) {
+      for (let y = 6.4; y <= 9.4 && !best; y += 0.2) {
         let dMin = Infinity;
         for (const h of anchors.holds.values()) dMin = Math.min(dMin, Math.hypot(h.pos.x - x, h.pos.y - y));
         if (dMin > 0.9) best = { x, y };
@@ -512,10 +513,13 @@ describe("la FATIGA reduce el alcance (petición: 'las zonas de influencia se re
     expect(rig.canReach("hand_l", hold.pos)).toBe(true); // sin fatiga: llega
     rig.states.get("hand_l")!.fatigue = 1;               // agotado: el círculo se encoge
     expect(rig.canReach("hand_l", hold.pos)).toBe(false);
-    // y el arrastre ya NO la imanta
+    // y el arrastre ya NO la imanta (T80: pared más ancha — puede aparecer otra
+    // presa generada SÍ alcanzable cerca del puntero; el invariante es que la
+    // presa LÍMITE, alcanzable sin fatiga, deja de estar al alcance agotado)
     rig.beginDrag("hand_l");
     rig.moveDrag(v3(hold.pos.x, hold.pos.y, Z()));
-    expect(rig.dragMagnetId()).toBeNull();
+    expect(rig.dragMagnetId()).not.toBe("edge_reach");
+    expect(rig.canReach("hand_l", hold.pos)).toBe(false);
   });
 
   it("datos: tuning.limb.reachFatigueLoss existe (0,22)", () => {

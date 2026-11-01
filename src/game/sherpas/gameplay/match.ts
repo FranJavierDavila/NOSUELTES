@@ -35,7 +35,7 @@ import type { GripRingEntry } from "./gripRing"; // T65: anillos de agarre
 import {
   collectReachRings, pairGripDisplay, REACH_RING_POOL, type ReachHoldView, type ReachLimbProbe, type ReachRingEntry,
 } from "./gripRing"; // T66-FB: anillos blancos de alcance + T78: par de manos acompasado
-import { initialRichMood, richBubbleVisible, stepRichMood, type RichMoodState } from "./richMood"; // T66: ánimo del ricachón
+import { initialRichMood, richBubbleVisible, stepRichMood, forceRichMood, pickIdleLine, MOOD_FOR_CONTEXT, type RichMoodState } from "./richMood"; // T66: ánimo del ricachón · T80: frases↔caras
 import { Matrix } from "@babylonjs/core/Maths/math.vector";
 import type { SherpaScene } from "../presentation/scene";
 import type { SherpaHud, HudStartChoice, HudTickState, MinimapHold } from "../presentation/hud";
@@ -176,6 +176,11 @@ export class SherpasMatch {
   private richMood: RichMoodState = initialRichMood();
   private richImpactUntil = 0; // sorpresa: "¿qué ha sido eso?" (golpes, batacazos)
   private richSummitUntil = 0; // soberbia temporal al alcanzar campamento
+  /** T80 — azar de las expresiones espontáneas (determinista por semilla). */
+  private rngIdle: Rng = makeRng(0x1d0e);
+  /** T80 — frase pendiente de pronunciar EN EL RENDER (tras setRichMood): la
+   *  cara del globo sale del ánimo NUEVO, no del que la escena tenía al sonar. */
+  private pendingRichLine: { text: string; durS: number } | null = null;
   private plankCenterPrev: V3 | null = null;
   private plankSpeedMs = 0;
   private lastReachRings: ReachRingEntry[] = []; // para el snapshot de red (rr)
@@ -312,6 +317,7 @@ export class SherpasMatch {
     this.snow.setMode(deps.choice.weather === "snow" ? "snow" : deps.choice.weather === "snow_low" ? "snow_low" : "clear");
     this.fallTuning = { ...FALLING_DEFAULTS, ...(this.data.tuning.falling ?? {}) };
     this.fallRng = makeRng(seed ^ 0xf41a);
+    this.rngIdle = makeRng(seed ^ 0x1d0e); // T80: caras/frases espontáneas
     deps.scene.setDaytime(
       deps.choice.daytime ?? "dia",
       resolveDayPreset(this.data.tuning.daycycle, deps.choice.daytime ?? "dia"),
@@ -708,8 +714,13 @@ export class SherpasMatch {
         // — el viento empuja mucho menos al anclado.
         const mult = s.belaying ? 0.25 : 1;
         for (const pt of s.rig.particles) {
+          // T80 — DERIVA PURA (pos y prev con el MISMO delta): antes prev solo
+          // llevaba el 62% y CADA tick inyectaba velocidad contra los pines —
+          // el solver devolvía el tirón y el cuerpo ZUMBÍA durante las rachas
+          // (el «temblequeo raro»). Deriva posicional sin energía fantasma: el
+          // cuerpo se corre a sotavento, sin pelearse con las fijaciones.
           pt.pos = vAdd(pt.pos, v3(dx * mult, 0, 0));
-          pt.prev = vAdd(pt.prev, v3(dx * 0.62 * mult, 0, 0));
+          pt.prev = vAdd(pt.prev, v3(dx * mult, 0, 0));
         }
       }
       ropeWindX = wdir * this.data.tuning.weather.ropeWindAccel * wl;
@@ -878,6 +889,8 @@ export class SherpasMatch {
     // T66 — ÁNIMO: contexto de simulación → uno de los 8 emoticonos (con
     // prioridad e histéresis en richMood.ts). El snapshot lleva `rich.m` y la
     // escena lo pinta delante de la cara del modelo.
+    // T80 — EXPRESIONES ESPONTÁNEAS: si nadie dice nada en un rato, el rico
+    // suelta una cara/frase aleatoria del vocabulario tranquilo (IDLE_LINES).
     this.richMood = stepRichMood(this.richMood, {
       gesture: this.rich.gesture,
       state: this.brain.state,
@@ -888,7 +901,12 @@ export class SherpasMatch {
       speedMs: this.plankSpeedMs,
       storm: !!this.weather.storm,
       summit: this.simTime < this.richSummitUntil,
-    }, dt);
+    }, dt, this.rngIdle.next);
+    if (this.richMood.spokeIdle) {
+      this.richMood.spokeIdle = false; // borde: se consume al decir la frase
+      const line = pickIdleLine(this.richMood.mood, this.d.hud.lang, this.rngIdle.next);
+      if (line) this.pendingRichLine = { text: line, durS: 3.2 };
+    }
     // T44 — VOZ REAL POR ESCORA (petición: "...o la tabla se inclina bastante"):
     // al alcanzar la escora dramática UNA VEZ por episodio suelta una voz real
     // del banco del jugador (rearmado al recuperarse + cooldown global).
@@ -981,7 +999,11 @@ export class SherpasMatch {
     }
     if (this.rich.seated) {
       // pose de juego (sentado/gestos ⇄ de pie/paseo; también durante el congelado de cima).
-      this.rich.pose(ps.center, ps.angle, ps.slide, this.simTime);
+      // T80 — EL MISMO ÁNGULO VISUAL QUE LA TABLA (angle + angleShake): antes
+      // la tabla se sacudía con el viento y el rico iba con el ángulo SECO —
+      // vibrieren uno contra otro (el «temblequeo raro»). Un solo ángulo:
+      // tabla + ricachón + cajas se mueven como UN cuerpo sólido.
+      this.rich.pose(ps.center, ps.angle + ps.angleShake, ps.slide, this.simTime);
     }
     const rmInfo = this.rich.step(dt);
     if (rmInfo.bumpWall > 1) {
@@ -1588,7 +1610,8 @@ export class SherpasMatch {
     on("CondorLanded", () => {
       this.d.hud.subtitle(this.d.hud.t("hud.condorLanded"), 2.6);
       const line = this.insults.pick("condor_angry");
-      if (line) this.d.bus.emit("InsultSaid", { lineId: "condor_angry", context: "condor_angry", text: "" });
+      // T80: la frase ELEGIDA viaja (antes se tiraba y el bocadillo salía mudo)
+      if (line) this.d.bus.emit("InsultSaid", { lineId: "condor_angry", context: "condor_angry", text: line });
     });
     on("CondorLeft", () => { /* se va solo: la carga desaparece con él */ });
     on("InsultSaid", (p) => {
@@ -1597,20 +1620,33 @@ export class SherpasMatch {
       // El fichero viene por evento o se elige por CONTEXTO (audio.json →
       // realVoice.contexts); el subtítulo SIEMPRE es la transcripción de la
       // grabación que suena. Cero TTS / speechSynthesis / gibberish.
+      // T80 — LA FRASE SIEMPRE SE VE (petición: «en los bocadillos no aparecen
+      // los textos de las frases, solo CABRONEESSS»): solo 6 grabaciones tienen
+      // transcripción; sin ella, el texto cae al BANCO DE INSULTOS escrito
+      // (data.insults) del contexto — nunca más una frase muda.
       const rvCfg = this.d.audio.realVoiceCfg;
       const isScream = p.context === "rich_fell";
       const text = isScream
         ? p.text || (this.d.hud.lang === "en" ? "YOU BASTAAAARDS!!!" : "¡¡CABRONEEEEESSSS!!!!")
-        : (p.text || this.d.audio.realLineFor(p.file ?? null, this.d.hud.lang));
+        : (p.text
+          || this.d.audio.realLineFor(p.file ?? null, this.d.hud.lang)
+          || this.insults.pick(p.context)
+          || this.insults.pick("auto")
+          || "");
+      // T80 — LA FRASE MANDA LA CARA (petición: «la frase identifique la
+      // emoción que se corresponde con la cara»): el contexto del evento fija
+      // el ánimo (y MOOD_FACE pone la cara) por encima de la histéresis.
+      const ctxMood = MOOD_FOR_CONTEXT[p.context];
+      if (ctxMood) this.richMood = forceRichMood(this.richMood, ctxMood, 3.8);
       const dS = isScream
         ? this.d.audio.shoutPath(rvCfg?.screamPath ?? "/audio/rico/es/cd0e9f33.mp3")
         : this.d.audio.shoutRealFile(p.file ?? this.d.audio.pickBankFile(p.context) ?? "");
       // JUICE T38: bocanadas de furia sobre su cabeza — el enojo se VE.
       this.d.scene.fxRage(this.rich.bodies[RM.head].pos);
-      // T76-FB — LA FRASE EN EL BOCADILLO (cara + texto al lado): la escena
-      // acepta si los bocadillos están activos (opción del menú); si no, el
-      // subtítulo de abajo de toda la vida.
-      if (text && !this.d.scene.sayRichLine(text, 3.8)) this.d.hud.subtitle(text, 3.8);
+      // T80 — la frase se dice EN EL RENDER (tras setRichMood): así el globo
+      // compone con la cara del ánimo FORZADO por el contexto, no con el que
+      // la escena tenía al sonar la grabación.
+      if (text) this.pendingRichLine = { text, durS: 3.8 };
       // T44 — BRAZOS EN ALTO mientras EMITE UN SONIDO (petición: "para saber
       // que el ricachón habla... de forma muy clara y ostentosa"): gesto
       // "exaltado" durante la duración EFECTIVA del clip.
@@ -1751,6 +1787,13 @@ export class SherpasMatch {
     // T66 — ÁNIMO del ricachón: la escena SOLO muestra el bocadillo mientras
     // "habla" (ventana say tras cada cambio de ánimo; el pin de E2E manda).
     s.setRichMood(this.richMood.mood, false, richBubbleVisible(this.richMood));
+    // T80 — la frase pendiente se dice AHORA: la cara del globo es la del
+    // ánimo recién aplicado (frase ↔ cara, petición del jugador).
+    if (this.pendingRichLine) {
+      const line = this.pendingRichLine;
+      this.pendingRichLine = null;
+      if (!s.sayRichLine(line.text, line.durS)) this.d.hud.subtitle(line.text, line.durS);
+    }
     const t0 = this.trash[0];
     s.syncTrash(t0 && t0.alive ? t0.pos : null, this.simTime * 6);
     s.syncUrine(this.urine ? this.urine.particles.map((p) => ({ pos: p.pos, life: p.life })) : null);
@@ -1759,11 +1802,13 @@ export class SherpasMatch {
     s.syncDrone(this.drone.renderPos(), this.simTime, this.drone.pkgCarried());
     if (this.plankState) {
       const dp = this.dronePkg;
-      const cosA = Math.cos(this.plankState.angle), sinA = Math.sin(this.plankState.angle);
+      // T80 — mismo ángulo visual que la tabla (angle + angleShake)
+      const va = this.plankState.angle + this.plankState.angleShake;
+      const cosA = Math.cos(va), sinA = Math.sin(va);
       const lx = (dp?.frac ?? 0) * (this.plankLenM / 2);
       s.syncDronePkg(
         dp ? { x: this.plankState.center.x + cosA * lx, y: this.plankState.center.y + sinA * lx + 0.11, z: this.plankState.center.z + 0.05 } : null,
-        this.plankState.angle,
+        va,
       );
     }
     // ráfagas visibles: rayas cruzando EN la dirección del viento (rachas)
@@ -1772,13 +1817,15 @@ export class SherpasMatch {
     // llegan por evento en simTick → scene.lightningFlash).
     s.setStorm(this.weather.storm);
     // CAJAS sobre la tabla (siguen center/angle; 0 cuando no hay).
+    // T80 — el MISMO ángulo visual que la tabla (angle + angleShake): con la
+    // racha las cajas vibrieren contra el tablón si van con el ángulo seco.
     if (this.plankState) {
       const bt = this.data.tuning.boxes;
       s.syncBoxes(
         this.boxes?.count ?? 0,
         this.boxes ? this.boxes.side * (bt?.offsetFrac ?? 0.55) : 0,
         this.plankState.center,
-        this.plankState.angle,
+        this.plankState.angle + this.plankState.angleShake,
       );
     }
     // ESTELA del gas verde durante el vuelo de Super Flatulencia (a ~9 Hz).

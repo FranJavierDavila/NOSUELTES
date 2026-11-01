@@ -462,11 +462,32 @@ export class RichManSim {
 
   /** Se desliza de la tabla: pasa a ragdoll libre con velocidad heredada.
    *  CONTUNDENTE (petición del jugador): impulso ×2,4 con caída real hacia
-   *  abajo + techo de velocidad liberado — se despeña, no se escurre. */
+   *  abajo + techo de velocidad liberado — se despeña, no se escurre.
+   *  T80 — TUMBO (petición: «estando de pie en la tabla llega al suelo de
+   *  pie»): el ragdoll partía de la última pose SIN momento angular — la
+   *  figura caía en columna y aterrizaba EN PIE. Ahora el despegue LLEVA
+   *  rotación: tilto inicial + velocidad tangencial (ω×r) que hace girar al
+   *  cuerpo sobre el eje X (trastabilla hacia delante, como quien resbala)
+   *  y se estampa girado. Física real: el momento angular se conserva en el
+   *  vuelo y las colisiones lo deshacen en el suelo (se queda hecho un pomel). */
   launchFall(dir: number): void {
     this.seated = false;
     const kick = v3(dir * 2.2 / 60, -1.4 / 60, -0.4 / 60);
-    for (const b of this.bodies) b.prev = vSub(b.pos, kick);
+    const pelvis = this.bodies[RM.pelvis].pos;
+    // ω alrededor de +X: v = ω×r da al pecho/cabeza (r_y>0) velocidad +z…
+    // para TRASTABILLAR hacia delante (−z, donde mira) ω es negativa; el
+    // sentido apunta con el deslizamiento (dir) para leerse como tropiezo.
+    const omega = -(3.1 + Math.min(1.2, Math.abs(dir) * 0.55)) * (dir >= 0 ? 1 : -1);
+    const tilt = 0.16 * Math.sign(omega); // ya nace un pelo girado (arranca el vuelco)
+    const ct = Math.cos(tilt), st = Math.sin(tilt);
+    for (const b of this.bodies) {
+      const r = vSub(b.pos, pelvis);
+      // tilt inicial: rotación (y,z) alrededor de la pelvis
+      b.pos = vAdd(pelvis, v3(r.x, r.y * ct - r.z * st, r.y * st + r.z * ct));
+      // velocidad tangencial del tumbo + patada de la caída
+      const w = v3(0, -omega * r.z, omega * r.y);
+      b.prev = vSub(vAdd(b.pos, w), kick);
+    }
     this.velCap = 0.34; // T56: terminal de cuerpo pesado (≈20 m/s)
   }
 

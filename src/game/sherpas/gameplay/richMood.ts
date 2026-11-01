@@ -56,6 +56,80 @@ const PRIORITY: Record<RichMood, number> = {
   dudoso: 0,
 };
 
+// T80 — FRASES ↔ CARAS (petición del jugador: «podrías escribir una frase
+// para que dijese e indicar a qué cara se corresponde»). El rico habla SOLO
+// cada RICH_IDLE_S_MIN..MAX con una de estas frases del ánimo que toque; la
+// cara la pone MOOD_FACE (richFaces.ts) y los ánimos sin cara propia muestran
+// la cabeza por defecto. Dos idiomas (el HUD viaja en el idioma elegido).
+
+/** Segundos entre expresiones espontáneas (aleatorio uniforme). */
+export const RICH_IDLE_S_MIN = 7;
+export const RICH_IDLE_S_MAX = 15;
+
+/** Vocabulario de la charla espontánea (ánimos TRANQUILOS: nunca furia ni
+ *  susto — esos los pone la simulación cuando algo pasa de verdad). */
+export const IDLE_MOODS: readonly RichMood[] =
+  ["alegre", "dudoso", "desconfianza", "soberbia", "triste", "alegre", "dudoso"];
+
+/** Frases espontáneas por ánimo (es/en). Escritas para el personaje: rico,
+ *  pesado y miedoso a la vez. */
+export const IDLE_LINES: Record<RichMood, { es: string[]; en: string[] }> = {
+  alegre: {
+    es: ["¡Jamón, queso y vistas al abismo!", "¡Qué buen día hace en mi montaña!"],
+    en: ["Ham, cheese and a cliff view!", "What a lovely day on my mountain!"],
+  },
+  dudoso: {
+    es: ["¿Seguro que esta cuerda aguanta?", "¿Vosotros sabéis lo que hacéis?"],
+    en: ["Are you sure this rope holds?", "Do you even know what you're doing?"],
+  },
+  desconfianza: {
+    es: ["No me gusta este cielo, nada…", "Aquí pasa algo raro, lo presiento."],
+    en: ["I don't like this sky at all…", "Something's off, I can feel it."],
+  },
+  enfado: {
+    es: ["¡Anda ya, que no es una carrera!", "¡Sois lentos como las ovejas!"],
+    en: ["Come on, this isn't a race!", "You're slower than sheep!"],
+  },
+  furia: {
+    es: ["¡AUUUGH! ¡Mi tabla!", "¡Idiotaas!"],
+    en: ["AAARGH! My plank!", "You fools!"],
+  },
+  soberbia: {
+    es: ["Yo jamás me caería, jamás.", "Cuando lleguemos arriba, champán."],
+    en: ["I would never fall. Never.", "Champagne at the top, remember."],
+  },
+  sorpresa: {
+    es: ["¡¿Qué fue eso?!", "¡Brrr! ¡Qué susto!"],
+    en: ["What was that?!", "Brrr! That scared me!"],
+  },
+  triste: {
+    es: ["Mi tabla… mi preciosa tabla…", "Hoy no es mi día…"],
+    en: ["My plank… my precious plank…", "Not my day today…"],
+  },
+};
+
+/** T80 — FRASE DE EVENTO → CARA: cuando el ricachón dice una grabación real o
+ *  una línea del banco, el CONTEXTO del evento fija el ánimo (y la cara sale
+ *  por MOOD_FACE): «la frase identifique la emoción que se corresponde con la
+ *  cara». Contextos del banco de voz + eventos del director. */
+export const MOOD_FOR_CONTEXT: Record<string, RichMood> = {
+  rich_fell: "sorpresa",
+  fall: "sorpresa",
+  boxes_fell: "furia",
+  drone: "sorpresa",
+  condor_angry: "furia",
+  kick: "furia",
+  eating: "alegre",
+  camp_arrival: "soberbia",
+  summit: "soberbia",
+  pee: "dudoso",
+  high_tension: "enfado",
+  unbalanced_rope: "enfado",
+  idle_too_long: "dudoso",
+  trash: "enfado",
+  auto: "dudoso",
+};
+
 /** Contexto de simulación que alimenta el ánimo (todo plano/serializable). */
 export interface RichMoodCtx {
   /** gesto actual del ricachón (RichGesture del physics/richMan). */
@@ -89,10 +163,17 @@ export interface RichMoodState {
    *  hablando"). 0 = callado: el emoticón NO se ve. Arranca a 0: al empezar la
    *  partida el ricachón está en el suyo y no dice nada. */
   say: number;
+  /** T80 — segundos hasta la PRÓXIMA expresión espontánea (el rico "habla
+   *  solo" cuando no pasa nada: caras/frases aleatorias; petición del
+   *  jugador: «deben ir apareciendo de forma aleatoria»). */
+  idleIn: number;
+  /** T80 — borde de ESTE tick: la expresión espontánea disparó (el match
+   *  dice la frase y limpia). No viaja por red. */
+  spokeIdle?: boolean;
 }
 
 /** Ánimo de fábrica: el rico, sentado en su tabla, CALLADO (sin bocadillo). */
-export const initialRichMood = (): RichMoodState => ({ mood: "dudoso", t: 0, lock: 0, say: 0 });
+export const initialRichMood = (): RichMoodState => ({ mood: "dudoso", t: 0, lock: 0, say: 0, idleIn: 7 });
 
 /** ¿Está "hablando"? (el bocadillo se ve mientras quede say > 0). */
 export const richBubbleVisible = (s: RichMoodState): boolean => s.say > 0;
@@ -134,17 +215,61 @@ export function desiredRichMood(ctx: RichMoodCtx): RichMood {
  *  al momento (el susto no hace cola). HABLA: cada CAMBIO de ánimo abre la
  *  ventana del bocadillo (RICH_BUBBLE_SPEAK_S); sin cambio, la ventana se
  *  gasta. Impacto y velocidad ya vienen del ctx (el llamador decae impactS
- *  con dt). Determinista y sin reloj de pared. */
-export function stepRichMood(s: RichMoodState, ctx: RichMoodCtx, dt: number): RichMoodState {
+ *  con dt). Determinista y sin reloj de pared.
+ *  T80 — EXPRESIONES ESPONTÁNEAS: si hace RICH_IDLE_S_MIN..MAX que nadie dice
+ *  nada y el ánimo no va a cambiar, el rico SUelta una cara/frase aleatoria
+ *  del vocabulario tranquilo (IDLE_MOODS) y abre su ventana de habla: el
+ *  match la pronuncia (sayRichLine) y la cara sale del ánimo (MOOD_FACE). */
+export function stepRichMood(
+  s: RichMoodState,
+  ctx: RichMoodCtx,
+  dt: number,
+  rand: () => number = Math.random,
+): RichMoodState {
   const dts = Math.max(0, Math.min(0.5, Number.isFinite(dt) ? dt : 0));
   const want = desiredRichMood(ctx);
   const t = s.t + dts;
   const lock = Math.max(0, s.lock - dts);
   const say = Math.max(0, s.say - dts);
-  if (want === s.mood) return { mood: s.mood, t, lock, say };
+  if (want === s.mood) {
+    // nada nuevo que contar: el reloj de expresiones espontáneas corre.
+    const idleIn = s.idleIn - dts;
+    if (idleIn <= 0 && say <= 0 && lock <= 0) {
+      const mood = IDLE_MOODS[Math.floor(rand() * IDLE_MOODS.length) % IDLE_MOODS.length];
+      return {
+        mood: mood === s.mood ? IDLE_MOODS[(Math.floor(rand() * (IDLE_MOODS.length - 1)) + 1) % IDLE_MOODS.length] : mood,
+        t: 0, lock: RICH_MOOD_HOLD_S, say: RICH_BUBBLE_SPEAK_S,
+        idleIn: RICH_IDLE_S_MIN + rand() * (RICH_IDLE_S_MAX - RICH_IDLE_S_MIN),
+        spokeIdle: true,
+      };
+    }
+    return { mood: s.mood, t, lock, say, idleIn: Math.max(0, idleIn) };
+  }
   const canChange = lock <= 0 || PRIORITY[want] > PRIORITY[s.mood];
-  if (!canChange) return { mood: s.mood, t, lock, say };
-  return { mood: want, t: 0, lock: RICH_MOOD_HOLD_S, say: RICH_BUBBLE_SPEAK_S };
+  if (!canChange) return { mood: s.mood, t, lock, say, idleIn: s.idleIn };
+  // el contexto manda: la espontaneidad espera a que la montaña vuelva a callar
+  return {
+    mood: want, t: 0, lock: RICH_MOOD_HOLD_S, say: RICH_BUBBLE_SPEAK_S,
+    idleIn: RICH_IDLE_S_MIN + rand() * (RICH_IDLE_S_MAX - RICH_IDLE_S_MIN),
+  };
+}
+
+/** Frase espontánea al azar para un ánimo (null sin frase). `lang` es el
+ *  idioma del HUD ("es" por defecto, "en" inglés). */
+export function pickIdleLine(mood: RichMood, lang: string, rand: () => number): string | null {
+  const pool = IDLE_LINES[mood]?.[lang === "en" ? "en" : "es"] ?? [];
+  if (pool.length === 0) return null;
+  return pool[Math.floor(rand() * pool.length) % pool.length];
+}
+
+/** T80 — fuerza un ánimo (la FRASE manda la cara: petición del jugador, «la
+ *  frase identifique la emoción que se corresponde con la cara»). Rompe la
+ *  histéresis a favor: si el contexto de la grabación dice furia, furia se ve. */
+export function forceRichMood(s: RichMoodState, mood: RichMood, sayS: number): RichMoodState {
+  return {
+    mood, t: 0, lock: RICH_MOOD_HOLD_S, say: Math.max(s.say, sayS),
+    idleIn: RICH_IDLE_S_MIN + Math.random() * (RICH_IDLE_S_MAX - RICH_IDLE_S_MIN),
+  };
 }
 
 /** ¿Es un mood válido? (snapshot de red: datos que llegan por cable). */

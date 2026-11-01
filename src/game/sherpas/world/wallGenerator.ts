@@ -537,30 +537,70 @@ export class WallGenerator {
     const zone = this.patternZoneOf(this.patternOfBand(index));
     const entersBand = (h: HoldInstance) => h.pos.y > yMin - 1.2 && h.pos.y < yMax;
     const all = [...prevTail, ...holds];
+    const seenIds = new Set<string>();
     const connected = (): boolean => {
+      seenIds.clear();
       if (all.length < validator.minHoldsPerBand) return false;
       // BFS desde las presas de entrada (banda anterior o arranque).
       const start = index === 0 ? holds.filter((h) => h.id.startsWith("start_")) : prevTail;
       if (!start.length) return false;
-      const seen = new Set<string>();
       const queue = [...start.filter(entersBand)];
-      for (const s of queue) seen.add(s.id);
+      for (const s of queue) seenIds.add(s.id);
       while (queue.length) {
         const cur = queue.pop()!;
         for (const h of all) {
-          if (seen.has(h.id)) continue;
-          if (this.climbStep(cur, h)) { seen.add(h.id); queue.push(h); }
+          if (seenIds.has(h.id)) continue;
+          if (this.climbStep(cur, h)) { seenIds.add(h.id); queue.push(h); }
         }
       }
       // cada banda nueva debe alcanzar su tercio superior (progresión posible).
       const upper = holds.filter((h) => h.pos.y > yMax - g.reach.bandValidateHeightM);
       if (!upper.length) return false;
-      return upper.every((h) => seen.has(h.id));
+      return upper.every((h) => seenIds.has(h.id));
     };
 
     let adds = 0;
     while (!connected() && adds < validator.maxAddsPerBand) {
       adds++;
+      // T80 (pared más ancha: 4.2→6.6 m) — PUENTE DETERMINISTA hacia la presa
+      // alta aún inalcanzable: con bandas anchas, una presa en un lateral queda
+      // a >1 paso de la cadena y el azar no siempre la conecta en el presupuesto
+      // de adds. Se construye una ESCALERA desde la alcanzable más cercana con
+      // tramos garantizados ≤ 0,95·paso (iterativa: cada add acerca la cadena);
+      // si el puente no aterriza (zona/distance), reparto aleatorio como antes.
+      const orphan = holds.find((h) => h.pos.y > yMax - g.reach.bandValidateHeightM && !seenIds.has(h.id));
+      let bridged = false;
+      if (orphan) {
+        let near: HoldInstance | null = null;
+        let nearD = Infinity;
+        for (const r of all) {
+          if (!seenIds.has(r.id)) continue;
+          const d = vLen(vSub(r.pos, orphan.pos));
+          if (d < nearD) { nearD = d; near = r; }
+        }
+        const reachMax = Math.max(g.reach.legReachM, g.reach.armReachM) + g.reach.marginM + g.reach.verticalBodySpanM * 0.5;
+        if (near && nearD > reachMax) {
+          const m = g.sample.marginXM;
+          // t deja el tramo DESDE near a ≤ 0,95·paso; el resto se cierra en
+          // las siguientes iteraciones (near ya será el propio puente).
+          const t = Math.min(0.5, (reachMax * 0.95) / nearD);
+          for (const dt2 of [0, 0.06, -0.06]) {
+            const tt = Math.max(0.05, Math.min(0.95, t + dt2));
+            const bx = near.pos.x + (orphan.pos.x - near.pos.x) * tt;
+            const by = near.pos.y + (orphan.pos.y - near.pos.y) * tt;
+            const cx = Math.max(-this.widthM / 2 + m, Math.min(this.widthM / 2 - m, bx));
+            if (!this.xInPatternZone(cx, by, yMin, zone)) continue;
+            if (placed.some((p) => Math.hypot(p.x - cx, p.y - by) < g.sample.minDistanceM * 0.6)) continue;
+            const hold = this.makeHold(`v${index}_${adds}`, cx, by, "rock_firm", index, isCampBand);
+            holds.push(hold);
+            placed.push(v3(cx, by, this.zHold));
+            all.push(hold);
+            bridged = true;
+            break;
+          }
+        }
+      }
+      if (bridged) continue; // re-evalúa el grafo con el puente puesto
       const x = rng.range(-this.widthM / 2 + g.sample.marginXM, this.widthM / 2 - g.sample.marginXM);
       const y = rng.range(yMin + 0.2, yMax - 0.15);
       if (!this.xInPatternZone(x, y, yMin, zone)) continue; // el parche respeta el patrón

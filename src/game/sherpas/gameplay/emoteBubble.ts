@@ -216,7 +216,13 @@ export function composeRichSpeech(face: Uint8Array, S: number, text: string): Ri
   const textW = Math.max(...lines.map((l) => ctx0.measureText(l).width));
   const gap = S * 0.07;
   const padX = S * 0.12;
-  const W = Math.ceil(S + gap + textW + padX * 2);
+  // T80 — el TEXTO empieza TRAS el círculo de la cara (petición: «está mal
+  // colocado el texto, se corta con la imagen del emoticón»): antes arrancaba
+  // en el CENTRO del globo (boxX + padX·0.7 cae DENTRO del círculo) y las
+  // primeras letras se pintaban sobre la cara. Ahora: borde derecho del
+  // círculo + un respiro, y el lienzo reserva ese ancho.
+  const textX = BUBBLE_CX * S + BUBBLE_R * S + S * 0.05;
+  const W = Math.ceil(textX + textW + padX * 2);
   const H = S;
   probe.width = W;
   probe.height = H;
@@ -263,7 +269,7 @@ export function composeRichSpeech(face: Uint8Array, S: number, text: string): Ri
   ctx.textBaseline = "middle";
   const startY = boxY + boxH / 2 - ((lines.length - 1) * lineH) / 2;
   lines.forEach((l, i) => {
-    ctx.fillText(l, boxX + padX * 0.7, startY + i * lineH);
+    ctx.fillText(l, textX, startY + i * lineH);
   });
   const img = ctx.getImageData(0, 0, W, H);
   return { data: new Uint8Array(img.data.buffer), w: W, h: H };
