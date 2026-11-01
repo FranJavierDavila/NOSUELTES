@@ -27,6 +27,7 @@ import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { Material } from "@babylonjs/core/Materials/material";
 import { MultiMaterial } from "@babylonjs/core/Materials/multiMaterial";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
+import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { Quaternion } from "@babylonjs/core/Maths/math.vector";
 import {
@@ -60,6 +61,7 @@ export class SherpaPuppetFactory {
   private constructor(
     private container: AssetContainer,
     private diag: PuppetDiag,
+    private scene: Scene,
   ) {}
 
   static async load(scene: Scene, url: string): Promise<SherpaPuppetFactory> {
@@ -88,7 +90,7 @@ export class SherpaPuppetFactory {
       heightModel: Number.isFinite(minY) && Number.isFinite(maxY) ? maxY - minY : 0,
       meshes,
       mirrorStripped: false,
-    });
+    }, scene);
   }
 
   get diagnostics(): PuppetDiag { return { ...this.diag }; }
@@ -99,13 +101,18 @@ export class SherpaPuppetFactory {
    *  T62 — opts para EL RICACHÓN con la misma plantilla: `bodyHex` aplana el
    *  cuerpo a UN color (sin textura: el morado de marca) y `pieceScale`
    *  ENGORDA piezas por nombre (escala local sobre el pivote de la
-   *  articulación: la panza crece sin desalinear las juntas). */
+   *  articulación: la panza crece sin desalinear las juntas).
+   *  T79 — `bodyTexture`: MAPA DE ROPA propio del jugador (petición: «mapa
+   *  para el segundo sherpa para que tenga un color de ropa diferente y se
+   *  distinga mejor»): sustituye el albedo del CUERPO (materiales con
+   *  textura) por el jpg dado; las correas siguen con su tinte. */
   instantiate(
     strapHex: string,
     casters: (m: AbstractMesh) => void,
     fillLight?: (m: AbstractMesh) => void,
     opts?: {
       bodyHex?: string;
+      bodyTexture?: string;
       pieceScale?: Record<string, [number, number, number]>;
       /** T75 — giro anatómico de extremidades (RICACHÓN: el cuerpo mira a −z,
        *  el bind a +z; ver PuppetBinds.anatomicalTwist). */
@@ -160,6 +167,11 @@ export class SherpaPuppetFactory {
     // se retira el albedoTexture y manda el albedoColor — el morado de marca
     // se lee puro en vez de teñir la textura (que saldría lodaza).
     const bodyFlat = opts?.bodyHex ? Color3.FromHexString(opts.bodyHex) : null;
+    // T79 — mapa de ropa propio del jugador (p.ej. sherpa_rojo.jpg): UNA
+    // textura compartida por instancia, cargada de forma perezosa.
+    const bodyTex = opts?.bodyTexture
+      ? new Texture(opts.bodyTexture, this.scene, false, false)
+      : null;
     const strap = Color3.FromHexString(strapHex);
     const seen = new Set<unknown>();
     const allMeshes = collectMeshes(entries.rootNodes as unknown as TransformNode[]);
@@ -178,6 +190,12 @@ export class SherpaPuppetFactory {
           mat.albedoTexture = null;
           mat.albedoColor = bodyFlat;
           mat.emissiveColor = new Color3(bodyFlat.r * 0.24, bodyFlat.g * 0.24, bodyFlat.b * 0.24);
+        } else if (mat.albedoTexture && bodyTex) {
+          // cuerpo con MAPA PROPIO (segundo sherpa en rojo): mismo piso
+          // emissive sutil que el arte original (T49: se lee sobre roca oscura)
+          mat.albedoTexture = bodyTex;
+          mat.emissiveTexture = bodyTex;
+          mat.emissiveColor = new Color3(0.2, 0.2, 0.2);
         } else if (mat.albedoTexture) {
           // cuerpo: piso emissive sutil (T49: que se lea sobre roca oscura)
           mat.emissiveTexture = mat.albedoTexture;

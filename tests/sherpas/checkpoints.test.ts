@@ -107,6 +107,12 @@ describe("cuerda cooperativa: seguro corto del compañero anclado", () => {
   const dropOf = (rig: SherpaRig, dropM: number): { drop: number; state: string } => {
     const dt = 1 / 60;
     for (let i = 0; i < 30; i++) rig.step(dt, 1); // asentar
+    // T79 — media pared: con la holgura completa (2,9 m) desde los apoyos de
+    // arranque (banda de suelo) el escalador toca la nieve ANTES de que la
+    // cuerda agarre (regla nueva: tirado en el suelo, no colgado). El
+    // escenario de ESTE test es la captura EN EL AIRE → subir el cuerpo.
+    const dy = 6 - rig.rig.particles[P.pelvisC].pos.y;
+    for (const pt of rig.rig.particles) { pt.pos.y += dy; pt.prev.y += dy; }
     const y0 = rig.waist().y;
     rig.setBelayCatch(dropM);
     for (const limb of ["hand_l", "hand_r", "foot_l", "foot_r"] as const) rig.forceRelease(limb, 99, "player");

@@ -2975,6 +2975,10 @@ export class SherpaScene {
         cfg.tint[player] ?? "#ffffff", // tinte de JUNTAS/CORREAS (el cuerpo conserva su arte)
         (m) => this.castShadow(m),
         (m) => { this.rockFill?.includedOnlyMeshes.push(m); }, // T44: relleno frío para el PBR
+        // T79 — el SEGUNDO sherpa (P1) lleva el mapa de ropa ROJO del jugador
+        // (upload → public/models/sherpas/sherpa_rojo.jpg): se distinguen de
+        // un vistazo; P0 conserva el arte original.
+        player === 1 ? { bodyTexture: "/models/sherpas/sherpa_rojo.jpg" } : undefined,
       );
     } catch (err) {
       this.climberState = "error";
@@ -3621,6 +3625,14 @@ export class SherpaScene {
     if (this.richVisual) {
       for (const b of this.richVisual.bones) b.mesh.setEnabled(!on);
       this.richVisual.head.setEnabled(!on);
+      // T79 — NADA DEL ESQUELETO VIEJO (petición: «debajo está el antiguo
+      // esqueleto o se ve un sombrero… NUNCA debe verse»): el sombrero/ala/
+      // gafas son props de CÁPSULAS de fábrica; con el modelo del jugador
+      // (que trae su propio tocado) quedan OCULTOS. Vuelven solo si el
+      // puppet desaparece (fallback de cápsulas intacto).
+      this.richVisual.hat.setEnabled(!on);
+      this.richVisual.brim.setEnabled(!on);
+      this.richVisual.glasses.setEnabled(!on);
     }
   }
 
@@ -3908,7 +3920,10 @@ export class SherpaScene {
     vis.hat.position.set(headP.x, headP.y + (sleeping ? hatY * 0.2 : hatY), headP.z + (sleeping ? -0.12 : 0));
     vis.brim.position.set(headP.x, headP.y + (sleeping ? brimY * 0.5 : brimY), headP.z + (sleeping ? -0.125 : 0));
     vis.glasses.position.set(headP.x, headP.y + glassesY, headP.z + glassesZ);
-    vis.glasses.setEnabled(!sleeping); // a dormir, gafas fuera
+    // T79 — con la marioneta del jugador, los props del esqueleto viejo siguen
+    // OCULTOS (applyRichPuppetVisibility los apaga; el setEnabled de las gafas
+    // no debe re-encenderlos cada frame).
+    vis.glasses.setEnabled(!sleeping && !this.richPuppet); // a dormir, gafas fuera
     // T66-FB — BOCADILLO DE CÓMIC: NO encima de la cara, sino como un globo
     // LIGERAMENTE ARRIBA HACIA UN LADO (offset derecho-arriba relativo a
     // cámara: gire la cámara como gire, el globo sigue viéndose arriba a la
@@ -3967,12 +3982,17 @@ export class SherpaScene {
           ux = fy * rz - fz * ry; uy = fz * rx - fx * rz; uz = fx * ry - fy * rx;
         }
         const SIDE = 0.38;   // hacia un lado (derecha en pantalla)
-        const UP = 0.52;     // ligeramente arriba
+        // T79 — BOCA DE HABLA MÁS GRANDE (petición: «agrandar los bocadillos
+        // para que se lean perfectamente»): con la textura ANCHA (cara+frase)
+        // el globo escala ×1.55 y sube un poco más (no se come la cara); el
+        // emoticón solo se queda como siempre.
+        const speechBoost = speechTex ? 1.55 : 1;
+        const UP = speechTex ? 0.68 : 0.52;
         const FWD = 0.1;     // un palmo hacia la cámara: nada interseca con la cabeza
         // T76: el globo de habla es ANCHO (aspect > 1): el ancla es el CENTRO
         // del plano — se corre a la derecha media extensión para que la cola y
         // la cara sigan mirando a la cabeza del rico.
-        const wide = ((this.richEmoteAspectX - 1) * 0.52) / 2;
+        const wide = ((this.richEmoteAspectX - 1) * 0.52 * speechBoost) / 2;
         this.richEmote.position.set(
           headP.x + rx * (SIDE + wide) + ux * UP - fx * FWD,
           headP.y + ry * (SIDE + wide) + uy * UP - fy * FWD + Math.sin(nowE / 460) * 0.006,
@@ -3981,7 +4001,7 @@ export class SherpaScene {
         const pop = Math.min(1, (nowE - this.richEmoteShownAt) / 300);
         const c1 = 1.70158;
         const back = 1 + (c1 + 1) * Math.pow(pop - 1, 3) + c1 * Math.pow(pop - 1, 2);
-        const base = 0.62 + 0.38 * back;
+        const base = (0.62 + 0.38 * back) * speechBoost;
         this.richEmote.scaling.set(base * this.richEmoteAspectX, base, base);
       }
     }

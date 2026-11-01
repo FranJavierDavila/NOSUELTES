@@ -222,7 +222,9 @@ export interface DragReachInfo {
 /** Seguro de CUERDA del escalador (Task 36): la cuerda de porteo atrapa la
  *  caída individual y la recuperación es mano a mano — pierde altura y tiempo,
  *  pero la partida JAMÁS se reinicia por una caída de uno solo. */
-export type RopeHoldState = "climbing" | "falling" | "caught" | "hauling";
+/** T79 — añade "grounded": la caída terminó EN EL SUELO (cerca de tierra no
+ *  se cuelga: se cae a la nieve con la tabla y el ricachón — petición). */
+export type RopeHoldState = "climbing" | "falling" | "caught" | "hauling" | "grounded";
 
 export interface SherpaStepInfo {
   result: StepResult;
@@ -288,6 +290,9 @@ export class SherpaRig {
   /** SEGURO DE CUERDA (Task 36): estado del porteo y memoria de la caída. */
   ropeState: RopeHoldState = "climbing";
   private ropeFallStartY: number | null = null;
+  /** T79 — la caída va directa AL SUELO (la línea de captura queda en la
+   *  banda de tierra): no hay colgado; cae a la nieve y queda tirado. */
+  private groundLanding = false;
   private ropeTautDone = false;
   private ropeTautNow = false;
   private ropeHaulStartNow = false;
@@ -411,7 +416,16 @@ export class SherpaRig {
    *  ricachón) lo devuelve a su sitio tick a tick y el empujón no se nota
    *  (cazado en E2E: pico +0,00 m). Al acabarse la ventana, el cabo se
    *  re-asienta con un tirón visible: el peso vuelve a la cuerda. */
-  ropeHeld(): boolean { return this.ropeState !== "climbing" || this.impulseWindowT > 0; }
+  ropeHeld(): boolean {
+    // T79 — TIRADO EN EL SUELO (o cayendo a él): la tabla NO se congela —
+    // cae con el ricachón hasta la nieve (petición del jugador). También
+    // manda el cuerpo real: si está apoyado en el suelo, la cuerda no
+    // sostiene la tabla aunque el estado diga otra cosa.
+    if (this.groundLanding || this.ropeState === "grounded") return false;
+    const body = this.rig.particles[P.pelvisC];
+    if (this.ropeState !== "climbing" && body.pos.y <= this.deps.floorY + FLOOR_MARGIN + 0.1) return false;
+    return this.ropeState !== "climbing" || this.impulseWindowT > 0;
+  }
 
   /** ¿Está SUBIENDO el impulso del compañero (cabo de porteo congelado)? */
   impulseRising(): boolean { return this.impulseRiseT > 0; }
@@ -847,6 +861,7 @@ export class SherpaRig {
       if (nAnchored > 0 && this.ropeState !== "climbing") {
         this.ropeState = "climbing";
         this.ropeFallStartY = null;
+        this.groundLanding = false; // T79: nueva caída = nueva decisión de tierra
         this.dangleSettleT = 0;
       }
       let vel = vSub(body.pos, body.prev);
@@ -866,10 +881,20 @@ export class SherpaRig {
         // (Task 36, petición: "cae, la cuerda lo agarra, pierde altura y
         // tiempo pero no vuelve a cero"). El tirón usa el MISMO muelle
         // estable del colgado: frena, rebota una vez y queda colgado.
-        if (this.ropeState !== "falling" && this.ropeState !== "caught") {
+        if (this.ropeState !== "falling" && this.ropeState !== "caught" && this.ropeState !== "grounded") {
           this.ropeState = "falling";
           this.ropeFallStartY = body.pos.y;
           this.dangleSettleT = 0;
+          // T79 — ¿LA CAPTURA CAERÍA JUNTO AL SUELO? Si la línea de captura de
+          // la cuerda (inicio − caída absorvida) queda en la banda de suelo
+          // (floorY + catchFloorM), el escalador toca la nieve ANTES de que la
+          // cuerda lo agarre: cae a tierra y se queda TIRADO (y la tabla, con
+          // el ricachón, cae con él: ropeHeld false). Petición del jugador:
+          // «no tiene sentido que queden colgados cuando estarían tocando el
+          // suelo». A media pared la banda no se toca y la captura de siempre
+          // manda (cae, la cuerda lo agarra, cuelga y el compañero iza).
+          const floorCatch = this.deps.floorY + (fT?.catchFloorM ?? 0.6);
+          this.groundLanding = (this.ropeFallStartY - this.belayCatchDropM) <= floorCatch + 0.05;
         }
         const catchY = Math.max(
           this.deps.floorY + (fT?.catchFloorM ?? 0.6),
@@ -877,7 +902,8 @@ export class SherpaRig {
         );
         // T58-E: si la cuerda se AGOTÓ en la ventana A SACO, NO vuelve a
         // agarrar — el suelo es el final (castigo del rescate fallido).
-        if (this.ropeState === "falling" && body.pos.y <= catchY && !this.ropeReleased) {
+        // T79: tampoco agarra si va a caer AL SUELO (groundLanding).
+        if (this.ropeState === "falling" && body.pos.y <= catchY && !this.ropeReleased && !this.groundLanding) {
           this.ropeState = "caught";
           this.ropeTautNow = true; // evento de borde: el match suena/avisa
           this.dangleSettleT = 0;
@@ -894,6 +920,13 @@ export class SherpaRig {
             }
             this.ropeTautDone = true;
           }
+        }
+        // T79 — CONTACTO CON LA NIEVE: tirado en el suelo (la colisión del
+        // suelo sostiene el cuerpo; la cuerda queda holgada y NO lo levanta).
+        if (this.ropeState === "falling" && this.groundLanding
+          && body.pos.y <= this.deps.floorY + FLOOR_MARGIN + 0.02) {
+          this.ropeState = "grounded";
+          this.ropeTautNow = false;
         }
         if (this.ropeState === "caught") {
           const pen = catchY - body.pos.y;

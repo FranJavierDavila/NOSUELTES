@@ -189,17 +189,30 @@ function wrapSpeechText(ctx: CanvasRenderingContext2D, text: string, maxW: numbe
 
 /** Bocadillo ANCHO con la cara a la izquierda y `text` a la derecha.
  *  Devuelve buffer RGBA (origen arriba-izquierda, aún SIN voltear) y su
- *  tamaño; null sin DOM. La mitad izquierda ES composeEmoteBubble intacto. */
+ *  tamaño; null sin DOM. La mitad izquierda ES composeEmoteBubble intacto.
+ *  T79 — EL TEXTO SE LEE (petición: «los textos son enanos y no se leen»):
+ *  la fuente sube de 0,082·S a ~0,16·S (el doble) y la caja del texto CRECE
+ *  con las líneas (antes era fija gr·1.5 y el texto se salía o quedaba
+ *  perdido). Si aun así no caben 4 líneas, la fuente baja un escalón. */
 export function composeRichSpeech(face: Uint8Array, S: number, text: string): RichSpeechCanvas | null {
   if (typeof document === "undefined") return null;
   const probe = document.createElement("canvas");
   const ctx0 = probe.getContext("2d");
   if (!ctx0) return null;
-  const fontPx = Math.max(14, Math.round(S * 0.082));
-  ctx0.font = `bold ${fontPx}px system-ui, sans-serif`;
-  const maxTextW = S * 2.05;
-  const lines = wrapSpeechText(ctx0, text, maxTextW);
-  if (lines.length === 0) return null;
+  const maxTextW = S * 2.6;
+  // fuente adaptativa: el mayor escalón cuyas líneas caben en alto (≤0,84·S)
+  const STEPS = [0.16, 0.135, 0.115, 0.098];
+  let fontPx = 0;
+  let lines: string[] = [];
+  for (const k of STEPS) {
+    const fp = Math.max(12, Math.round(S * k));
+    ctx0.font = `bold ${fp}px system-ui, sans-serif`;
+    const ls = wrapSpeechText(ctx0, text, maxTextW);
+    if (ls.length === 0) return null;
+    fontPx = fp;
+    lines = ls;
+    if (ls.length * (fp * 1.22) <= S * 0.84) break;
+  }
   const textW = Math.max(...lines.map((l) => ctx0.measureText(l).width));
   const gap = S * 0.07;
   const padX = S * 0.12;
@@ -211,14 +224,16 @@ export function composeRichSpeech(face: Uint8Array, S: number, text: string): Ri
   if (!ctx) return null;
   // 1) globo de texto: rect redondeado blanco + contorno oscuro, de la mitad
   //    del círculo del globo hasta el borde derecho (la unión la tapa el
-  //    círculo blanco de la base que entra después).
+  //    círculo blanco de la base que entra después). La caja CRECE con las
+  //    líneas (techo 0.92·S) y queda centrada en el globo.
   const gx = BUBBLE_CX * S;                 // centro del globo circular
   const gy = BUBBLE_CY * S;
   const gr = BUBBLE_R * S;
+  const lineH = fontPx * 1.22;
+  const boxH = Math.min(S * 0.92, Math.max(gr * 1.5, lines.length * lineH + S * 0.08));
   const boxX = gx;
   const boxW = W - padX - gx;
-  const boxH = gr * 1.5;
-  const boxY = gy - boxH / 2;
+  const boxY = Math.max(S * 0.02, Math.min(gy - boxH / 2, H - boxH - S * 0.02));
   const rad = S * 0.09;
   const outline = BUBBLE_OUTLINE * S;
   ctx.beginPath();
@@ -242,12 +257,11 @@ export function composeRichSpeech(face: Uint8Array, S: number, text: string): Ri
   if (!tctx) return null;
   tctx.putImageData(new ImageData(new Uint8ClampedArray(base), S, S), 0, 0);
   ctx.drawImage(tmp, 0, 0);
-  // 3) el texto, en oscuro, centrado en el rect (con margen del contorno)
+  // 3) el texto, en oscuro, centrado en la caja (con margen del contorno)
   ctx.font = `bold ${fontPx}px system-ui, sans-serif`;
   ctx.fillStyle = `rgb(${OUTLINE_R},${OUTLINE_G},${OUTLINE_B})`;
   ctx.textBaseline = "middle";
-  const lineH = fontPx * 1.22;
-  const startY = gy - ((lines.length - 1) * lineH) / 2;
+  const startY = boxY + boxH / 2 - ((lines.length - 1) * lineH) / 2;
   lines.forEach((l, i) => {
     ctx.fillText(l, boxX + padX * 0.7, startY + i * lineH);
   });

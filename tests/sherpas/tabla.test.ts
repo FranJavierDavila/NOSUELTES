@@ -103,7 +103,11 @@ describe("tabla de porteo (petición del jugador)", () => {
   });
 
   it("sherpas demasiado separados → la tabla tira de ellos el uno hacia el otro", () => {
-    const { pulls } = run(30, 2.2, 2.2, -2.6, 2.6); // span 5.2 > plankLen+2·ropeLen
+    // T79: el span máximo depende de ropeLen (data-driven, ahora 1.9):
+    // la separación de la prueba se calcula DESDE el tuning, no a ojo.
+    const spanMax = t.plankLen + 2 * t.ropeLen - (t.maxSpanSlackM ?? 0.25);
+    const half = spanMax / 2 + 0.3;
+    const { pulls } = run(30, 2.2, 2.2, -half, half);
     expect(pulls.length).toBeGreaterThan(0);
     for (const { p, d } of pulls) {
       if (p === 0) expect(d.x).toBeGreaterThan(0); // A hacia B

@@ -74,11 +74,14 @@ describe("regla de dos manos (petición del jugador)", () => {
     expect(slipped).toBe(true);
     expect(slipCauses).toBeGreaterThanOrEqual(1); // los pies sueltan por resbalón
     expect(rig.anchorsCount()).toBe(0);
-    // Task 36: el cuerpo CAE, pero la CUERDA lo atrapa — no acaba tumbado en
-    // la nieve: queda colgado del seguro (captura/recobrado), por encima del
-    // clamp del suelo, hasta que se recupera mano a mano.
-    expect(["caught", "hauling"]).toContain(rig.ropeState);
-    expect(minWaist).toBeGreaterThan(0.3); // el suelo (0,45) ya no es el final
+    // T79 — CAÍDA CERCA DEL SUELO: los apoyos de arranque están en la banda
+    // de tierra (la línea de captura de la cuerda cae dentro de ella), así que
+    // el escalador NO se queda colgado: cae a la nieve y queda TIRADO (la
+    // petición literal: «no tiene sentido que queden colgados cuando estarían
+    // tocando el suelo»). La captura en el aire la cubren los tests de caída
+    // en alto (Task 36 / T58-E); tirado se recupera re-agarrando (t79).
+    expect(rig.ropeState).toBe("grounded");
+    expect(rig.ropeHeld()).toBe(false); // la tabla no se congela: cae con él
     expect(minWaist).toBeLessThan(y0); // sí perdió altura
   });
 
