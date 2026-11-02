@@ -406,15 +406,18 @@ export class RichManSim {
         break;
       }
       case "brindando": {
-        // copa en alto-adelante: sorbo (la mano VA a la boca) y brinde a cámara
+        // BRINDE con la copa EN ALTO (frente a la cara) y sorbo que la lleva
+        // a la boca alternando (ciclo ~3,7 s: brinde → sorbo → brinde)
         const sip = Math.max(0, Math.sin(ph * 1.7));
-        const glass = at(chest, fr, -0.18, 0.14, 0.34);
-        const mouth = at(head, fr, -0.03, -0.02, 0.11);
-        const m = 0.55 * sip;
-        t.handR = v3(glass.x + (mouth.x - glass.x) * m, glass.y + (mouth.y - glass.y) * m, glass.z + (mouth.z - glass.z) * m);
-        t.elbLiftR = 0.25 + 0.25 * sip;
-        t.handL = at(chest, fr, 0.10, -0.20, 0.20);
-        t.neck = { ...t.neck, pitch: t.neck.pitch - 0.18 * sip };
+        const alto = at(chest, fr, -0.18, 0.42, 0.30);
+        // la copa llega a los labios INCLINADA (por encima de la boca): el
+        // interpolar alto↔boca nunca baja de la cabeza (regla de silueta T78)
+        const mouth = at(head, fr, -0.03, 0.02, 0.11);
+        t.handR = v3(alto.x + (mouth.x - alto.x) * sip, alto.y + (mouth.y - alto.y) * sip, alto.z + (mouth.z - alto.z) * sip);
+        t.elbLiftR = 0.45 + 0.25 * sip;
+        t.handL = at(chest, fr, 0.10, -0.14, 0.20);
+        t.elbLiftL = 0.15;
+        t.neck = { ...t.neck, pitch: t.neck.pitch - 0.22 * sip + 0.06 * (1 - sip) };
         break;
       }
       case "mirando": {
