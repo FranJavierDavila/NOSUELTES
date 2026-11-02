@@ -1325,8 +1325,10 @@ export class SherpaScene {
   }
 
   /** T90 — BASE CAMP del jugador (public/models/base.glb): sustituye a la
-   *  cabaña paramétrica de T56. El GLB llega centrado en Y (±0.489) y en
-   *  unidades ~1 m: se apoya en el suelo y se escala a tamaño de campamento.
+   *  cabaña paramétrica de T56. El GLB (nodo único de Tripo con rotación X+90
+   *  propia) apoya en su origen: y∈[0, 0.55] y huella ~1×1 m en unidades
+   *  métricas — con y=0 del root queda SENTADO en el pedriz (el terreno en
+   *  BASE_POS está a nivel 0, como la cabaña vieja). Escala 7 → ~3,9 m de alto.
    *  Si el fichero falta o está roto, la escena sigue sin él (solo pedriz) y
    *  queda avisado en consola — igual que las caras expresivas (T76). */
   private buildCabin(): void {
@@ -1334,7 +1336,7 @@ export class SherpaScene {
       .then((res) => {
         const s = SherpaScene.BASE_POS.scale;
         const root = new TransformNode("baseCampRoot", this.scene);
-        root.position.set(SherpaScene.BASE_POS.x, -0.489 * s, SherpaScene.BASE_POS.z);
+        root.position.set(SherpaScene.BASE_POS.x, 0, SherpaScene.BASE_POS.z);
         root.rotation.y = SherpaScene.BASE_POS.ry;
         root.scaling.setAll(s);
         for (const m of res.meshes) {
