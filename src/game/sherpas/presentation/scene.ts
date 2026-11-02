@@ -190,6 +190,15 @@ export class SherpaScene {
   /** Contadores de juice (sonda E2E): chispas de chicote / bocanadas de furia. */
   private fxCounts = { spark: 0, rage: 0 };
   private camTarget = new Vector3(0, 1.5, -0.3);
+  /** T84 — pin de cámara para la sonda E2E (null = seguimiento normal). */
+  private camPin: Vector3 | null = null;
+  private camPinDist: number | null = null;
+
+  /** T84 — congela/libera la cámara sobre un punto (primeros planos E2E). */
+  setCamPin(p: { x: number; y: number; z: number } | null, dist?: number): void {
+    this.camPin = p ? new Vector3(p.x, p.y, p.z) : null;
+    this.camPinDist = (p && Number.isFinite(dist)) ? dist! : null;
+  }
   private camDist = 7;
   private shakeAmp = 0;
   /** ÓRBITA LATERAL (T45) + VERTICAL y AUTO-RETORNO (T46): yaw/pitch actual y
@@ -3597,11 +3606,18 @@ export class SherpaScene {
    *  propias de pieza_cabeza se ocultan: antes quedaban las DOS cabezas).
    *  T83 — y SOLO si la cara activa está realmente cargada: nunca un rico sin
    *  cabeza mientras el GLB de la cara llega (la cara entra y ENTONCES se va
-   *  la original — petición: «al no ocultarla no deja ver las otras»). */
+   *  la original — petición: «al no ocultarla no deja ver las otras»).
+   *  T84 — CAÍDA RAÍZ del «la cabeza desaparece pero la nueva NUNCA aparece»
+   *  (petición del jugador, que lo clavó: «ojo si las has puesto como hijas de
+   *  la pieza_cabeza y al ocultar el padre ocultas los hijos»): las envolturas
+   *  de caras CUELGAN de pieza_cabeza (para seguir su giro/anímica) y en
+   *  Babylon setEnabled(false) en un padre DESHABILITA TODO SU SUBÁRBOL — la
+   *  cara nueva se apagaba con el padre. isVisible=false oculta SOLO la malla
+   *  de la cabeza y deja vivir a los hijos. */
   private syncRichHeadVisibility(): void {
     const faceOn = this.richFaceActive !== null && this.richFaces.has(this.richFaceActive);
     const headOn = !faceOn;
-    for (const m of this.richHeadMeshes) m.setEnabled(headOn);
+    for (const m of this.richHeadMeshes) m.isVisible = headOn;
   }
 
   /** T76 — enseña la cara del ánimo (null = cabeza por defecto). Solo cambia
@@ -3617,10 +3633,21 @@ export class SherpaScene {
     this.syncRichHeadVisibility();
   }
 
-  /** SONDA E2E T76: caras cargadas y activa. T78: cabeza original oculta. */
-  getRichFaceInfo(): { loaded: number; active: string | null; headHidden: boolean } {
-    const headOn = this.richHeadMeshes.some((m) => m.isEnabled());
-    return { loaded: this.richFaces.size, active: this.richFaceActive, headHidden: this.richHeadMeshes.length > 0 && !headOn };
+  /** SONDA E2E T76: caras cargadas y activa. T78: cabeza original oculta.
+   *  T84: headHidden ahora es por isVisible (setEnabled del padre escondía
+   *  también la cara nueva) y faceVisible verifica que la cara activa tiene
+   *  mallas ENCENDIDAS y colgando de la cabeza (visibles de verdad). */
+  getRichFaceInfo(): { loaded: number; active: string | null; headHidden: boolean; faceVisible: boolean } {
+    const headOn = this.richHeadMeshes.some((m) => m.isVisible && m.isEnabled());
+    const active = this.richFaceActive;
+    const wrap = active !== null ? this.richFaces.get(active) : undefined;
+    const faceVisible = !!wrap && wrap.getChildMeshes().some((m) => m.isEnabled() && m.isVisible);
+    return {
+      loaded: this.richFaces.size,
+      active,
+      headHidden: this.richHeadMeshes.length > 0 && !headOn,
+      faceVisible,
+    };
   }
 
   /** T76 — INTERRUPTOR DE BOCADILLOS (menú inicial): apaga el billboard del
@@ -4147,14 +4174,18 @@ export class SherpaScene {
     const cosY = Math.cos(this.orbitYaw);
     const sinP = Math.sin(this.orbitPitch);
     const cosP = Math.cos(this.orbitPitch);
+    // T84 — PIN DE CÁMARA (sonda E2E): congela el encuadre sobre un punto
+    // (primeros planos del ricachón: caras orientadas, gestos articulados)
+    const dist = this.camPinDist ?? this.camDist;
+    if (this.camPin) this.camTarget.copyFrom(this.camPin);
     // la cara de escalada mira a -z (los escaladores viven en z negativo):
     // la cámara se coloca DELANTE de ellos, más negativa aún; yaw orbita el
     // offset alrededor del eje vertical y pitch lo inclina por encima/bajo
     // el horizonte del objetivo (radio horizontal d·cosP, altura +d·sinP).
     this.camera.position.set(
-      this.camTarget.x - this.camDist * cosP * sinY,
-      this.camTarget.y + 0.6 + this.camDist * sinP,
-      this.camTarget.z - this.camDist * cosP * cosY,
+      this.camTarget.x - dist * cosP * sinY,
+      this.camTarget.y + 0.6 + dist * sinP,
+      this.camTarget.z - dist * cosP * cosY,
     );
     // NUNCA bajo la nieve (pitch -30° cerca del suelo metería la cámara en ella)
     if (this.camera.position.y < 0.35) this.camera.position.y = 0.35;

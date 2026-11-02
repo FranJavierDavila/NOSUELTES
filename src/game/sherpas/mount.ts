@@ -436,6 +436,39 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         } | null;
         return sc?.sayRichLine?.(text, 8) ?? false;
       },
+      /** T84 RIG ARTICULADO: las 11 articulaciones del ricachón (mundo, mm
+       *  redondeados) para medir AMPLITUD DE MOVIMIENTO desde la sonda E2E. */
+      richPose: (): [string, number, number, number][] | null => {
+        const m = state.match as unknown as { rich?: { bodies: { pos: { x: number; y: number; z: number } }[] } } | null;
+        if (!m?.rich) return null;
+        const NOMBRES = ["head", "chest", "pelvis", "elbowL", "elbowR", "handL", "handR", "kneeL", "kneeR", "footL", "footR"];
+        return m.rich.bodies.map((b, i) => [
+          NOMBRES[i]!,
+          Math.round(b.pos.x * 1000), Math.round(b.pos.y * 1000), Math.round(b.pos.z * 1000),
+        ]);
+      },
+      /** T84: congela la cámara sobre un punto (primeros planos E2E); null libera. */
+      camPin: (x: number | null, y?: number, z?: number, dist?: number): boolean => {
+        const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
+          setCamPin?: (p: { x: number; y: number; z: number } | null, dist?: number) => void;
+        } | null;
+        if (!sc?.setCamPin) return false;
+        sc.setCamPin(x === null ? null : { x, y: y ?? 0, z: z ?? 0 }, dist);
+        return true;
+      },
+      /** T84: fuerza un gesto del ricachón (sonda visual). Con `pin`, congela
+       *  el gesto contra el cerebro (re-fija cada tick) y contra la voz. */
+      richGesture: (g: string, pin?: boolean): boolean => {
+        const m = state.match as unknown as {
+          rich?: { setGesture(kind: string, time: number): void; gesture: string; gesturePin: string | null };
+          simTime?: number;
+        } | null;
+        const VALIDAS = ["ninguno", "dormitando", "insultando", "comiendo", "tirando_basura", "aplaudiendo", "brindando", "mirando", "pataleando", "durmiendo", "bailando", "leyendo", "telefono", "exaltado"];
+        if (!m?.rich || !VALIDAS.includes(g)) return false;
+        m.rich.gesturePin = pin ? (g as typeof m.rich.gesturePin) : null;
+        m.rich.setGesture(g, m.simTime ?? 0); // la MISMA base de tiempo del match
+        return true;
+      },
       richStand: (on: boolean): boolean => {
         const m = state.match as unknown as { richStandPin?: boolean } | null;
         if (!m) return false;

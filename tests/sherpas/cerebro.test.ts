@@ -81,9 +81,10 @@ describe("RichManSim (doc 4.3)", () => {
     const center = v3(0, 1.2, -0.5);
     sim.sitPose(center, 0, 0, 0);
     const headSit = sim.bodies[RM.head].pos.y;
-    // gestos: comiendo acerca la mano derecha a la boca
+    // gestos: comiendo acerca la mano derecha a la boca (T84: el gesto llega
+    // por MUELLES — se avanza fino como en el bucle real del juego)
     sim.setGesture("comiendo", 0.5);
-    sim.pose(center, 0, 0, 1.0);
+    for (let i = 0; i < 60; i++) sim.pose(center, 0, 0, 0.5 + i / 60);
     const handMouth = sim.bodies[RM.handR].pos.y;
     expect(handMouth).toBeGreaterThan(headSit - 0.35); // mano alta, cerca de la cara
     // de pie: la cabeza sube claramente

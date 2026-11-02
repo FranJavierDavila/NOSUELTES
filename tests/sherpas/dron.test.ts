@@ -115,8 +115,9 @@ describe("POSTURAS CÓMICAS del ricachón (petición: 'dormir acostado, bailecit
     expect(brain.requestAction("durmiendo")).toBe(true);
     brain.tick(1 / 60, 0.5);
     expect(sim.gesture).toBe("durmiendo");
-    // pose cinemática: al sentado base se le suman los deltas del gesto
-    sim.pose(v3(0, 2.0, -0.45), 0, 0, 1.0);
+    // T84: la pose llega por MUELLES (rig articulado) — avance fino como en
+    // el bucle real del juego hasta que el tumbado asienta
+    for (let i = 0; i < 80; i++) sim.pose(v3(0, 2.0, -0.45), 0, 0, 0.5 + i / 60);
     const head = sim.bodies[RM.head].pos;
     const pelvis = sim.bodies[RM.pelvis].pos;
     const chest = sim.bodies[RM.chest].pos;
