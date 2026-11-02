@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<!-- Sonda de señalización Trystero en navegador real: dos pestañas, misma sala,
+     intercambio de mensaje. Resultado en window.__RESULT. -->
+<html>
+<head><meta charset="utf-8"></head>
+<body>
+<script type="module">
+  const q = new URLSearchParams(location.search);
+  const ROLE = q.get("role") || "a";
+  window.__LOG = [];
+  const log = (m) => { window.__LOG.push(m); document.body.textContent = window.__LOG.join(" | "); };
+  try {
+    await import("./sonda-trystero-bundle.js");
+    const { joinRoom, selfId } = window.TRYSTERO;
+    log("cargado, selfId=" + selfId);
+    const qR = q.get("relays");
+    const cfg = { appId: q.get("app") || "nosueltes-probe-v1" };
+    if (qR) cfg.relayUrls = qR.split(",").map((x) => x.trim()).filter(Boolean);
+    const qRoom = q.get("room") || "PROBA";
+    const room = joinRoom(cfg, qRoom);
+    const [send, get] = room.makeAction("probe");
+    room.onPeerJoin((id) => { log("peer-join " + id); send("hola-de-" + ROLE, id); });
+    get((data, id) => { log("msg " + data + " de " + id); window.__RESULT = "OK"; });
+    setTimeout(() => { window.__RESULT = window.__RESULT || "TIMEOUT"; }, 25000);
+  } catch (e) {
+    log("ERROR " + (e && e.message));
+    window.__RESULT = "ERROR: " + (e && e.message);
+  }
+</script>
+</body>
+</html>

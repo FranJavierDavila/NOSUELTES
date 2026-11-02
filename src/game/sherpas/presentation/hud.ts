@@ -22,12 +22,12 @@ export const BUBBLES_PREF_KEY = "ns.bubbles.v1";
 
 export interface HudStartChoice { difficulty: string; seed: number; lang: Lang; resume: boolean; mute: boolean; daltonism: boolean; reduceShake: boolean; disablePee: boolean; /** T76: bocadillos del ricachón visibles (cara y frases en el globo). */ bubbles: boolean; /** T61: clima (clear/snow/snow_low) y hora del día (dia/atardecer/noche). */ weather: string; daytime: string }
 
-export interface HudLimbsState { tension: number; fatigue: number; anchored: boolean }
+export type HudLimbsState = { tension: number; fatigue: number; anchored: boolean }
 
 /** Punto de la réplica de pared del minimapa (petición del jugador: "réplica
  *  de la pared que estamos subiendo, identificando agarres especiales").
  *  x/y normalizados 0..1 (abajo-izquierda = origen), kind = rotulación. */
-export interface MinimapHold {
+export type MinimapHold = {
   x: number; y: number;
   kind: "normal" | "salient" | "recess" | "ice" | "fart" | "camp";
   /** 0 = libre, 1 = ocupada por A (naranja), 2 = ocupada por B (azul). */
@@ -43,7 +43,7 @@ export function chipState(anchored: boolean, fatigue: number, warnAt = 0.45, cri
   if (fatigue >= warnAt) return "warn";
   return "ok";
 }
-export interface HudTickState {
+export type HudTickState = {
   timeS: number;
   players: HudLimbsState[][];
   deltaH: number;

@@ -11,10 +11,10 @@ import { InputManager } from "./input/input";
 import { SherpasMatch } from "./gameplay/match";
 import { browserStore, markOnboardingSeen, shouldShowOnboarding } from "./gameplay/onboarding";
 import { resolveDayPreset } from "./gameplay/daycycle"; // T61: hora del día (vista previa del menú)
-import { HostNet, GuestNet } from "./net/netClient";
+import { HostNet, GuestNet, debugRelays } from "./net/netClient";
 import { HostInputMixer } from "./net/remoteInput";
 import { GuestRunner } from "./net/guestRunner";
-import type { NetSessionParams } from "./net/protocol";
+import type { NetJson, NetSessionParams } from "./net/protocol";
 import { WallGenerator } from "./world/wallGenerator";
 import { loadAscent, clearAscent, type SavedAscent } from "./world/camps";
 import { v3, type V3 } from "../physics/pbd/math";
@@ -269,8 +269,8 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         snow: choice.weather ?? "clear",
         ...info,
       });
-      const evs: { n: string; p: Record<string, unknown> }[] = [];
-      state.unSubNet = bus.onAny((n, p) => { if (evs.length < 40) evs.push({ n, p: p as Record<string, unknown> }); });
+      const evs: { n: string; p: Record<string, NetJson> }[] = [];
+      state.unSubNet = bus.onAny((n, p) => { if (evs.length < 40) evs.push({ n, p: p as Record<string, NetJson> }); });
       const hz = data.net?.snapshotHz ?? 30;
       state.snapTimer = window.setInterval(() => {
         if (!state.match || !state.hostNet?.hasGuest) return;
@@ -291,10 +291,22 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         intents: state.hostNet?.intentCount ?? -1,
         snaps: state.hostNet?.snapshotCount ?? -1,
         pend: state.hostNet?.remote.size ?? -1,
+        relays: debugRelays(),
       }),
       waist: (p: number) => state.match?.["sherpas"][p]?.waist() ?? null,
       anchors: (p: number) => state.match?.["sherpas"][p]?.anchorsCount() ?? null,
       tension: (p: number) => state.match?.["sherpas"][p]?.maxTension() ?? null,
+      /** pausa el rAF del menú (E2E T86: con SwiftShader el render sofware
+       *  ahoga el event loop — p50 ~2,3 s — y los offers WebRTC caducan antes
+       *  de procesarse; congelando el menú la señalización responde al instante).
+       *  La partida/guest llevan bucle propio y no les afecta. */
+      netIdle: (on: boolean) => {
+        if (on) {
+          if (state.menuRaf) { cancelAnimationFrame(state.menuRaf); state.menuRaf = 0; }
+        } else if (!state.menuRaf && !state.match && !state.guest) {
+          menuFrame();
+        }
+      },
       aim: (p: number) => state.match?.["sherpas"][p]?.aim ? { x: state.match!["sherpas"][p].aim.x, y: state.match!["sherpas"][p].aim.y } : null,
       setAim: (p: number, x: number, y: number) => {
         const rig = state.match?.["sherpas"][p];

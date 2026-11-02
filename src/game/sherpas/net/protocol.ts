@@ -8,7 +8,7 @@ import type { Limb } from "../core/bus";
 /** Parámetros de sesión que el HOST envía al GUEST al arrancar la partida.
  *  DOS semillas: `wallSeed` = la pared del menú que el host REUTILIZA para la
  *  partida (buildWorld solo corre una vez); `seed` = presas/checkpoints. */
-export interface NetSessionParams {
+export type NetSessionParams = {
   wallSeed: number;
   seed: number;
   difficulty: string;
@@ -27,7 +27,7 @@ export interface NetSessionParams {
 
 /** Input remoto del GUEST (jugador 2): eje CRUDO (el host escala con dt suyo),
  *  flancos de una vez y CONTADOR de mash (sobrevive a pérdida: se acumula). */
-export interface NetRemoteInput {
+export type NetRemoteInput = {
   ax: number;                    // eje apuntado x −1..1 (normalizado en diagonal)
   ay: number;                    // eje apuntado y −1..1
   speed: number;                 // aimSpeed del binding del guest (teclado/mando)
@@ -40,7 +40,7 @@ export interface NetRemoteInput {
 }
 
 /** Un escalador en el snapshot: 15 partículas planas + estado visible. */
-export interface NetSnapSherpa {
+export type NetSnapSherpa = {
   /** 45 números: particles[0..14].pos xyz (el guest interpola ENTRE snapshots). */
   p: number[];
   aim: [number, number];         // x,y del punto apuntado (z = wallFrontZ)
@@ -58,7 +58,7 @@ export interface NetSnapSherpa {
 
 /** Bloque HUD a 10 Hz: el HudTickState del host + minimapa SPLIT (estático por
  *  tramo solo cuando cambia + ocupación compacta) para no enviar 500 presas. */
-export interface NetSnapHud extends HudTickState {
+export type NetSnapHud = HudTickState & {
   mm: {
     key: string;
     fracA: number; fracB: number; campFrac: number; metersLeft: number;
@@ -73,7 +73,7 @@ export interface NetSnapHud extends HudTickState {
 
 /** Snapshot completo del estado dinámico (JSON). Los campos siguen los nombres
  *  cortos: viaja a 30 Hz por socket. */
-export interface NetSnapshot {
+export type NetSnapshot = {
   v: 1;
   tick: number;
   /** tiempo de simulación del host (s). */
@@ -101,8 +101,11 @@ export interface NetSnapshot {
   storm: boolean;
   hud: NetSnapHud | null;
   /** eventos del bus desde el snapshot anterior (FX/audio del guest). */
-  ev: { n: string; p: Record<string, unknown> }[];
+  ev: { n: string; p: Record<string, NetJson> }[];
 }
+
+/** JSON estricto: lo que el canal P2P (Trystero DataPayload) acepta tipado. */
+export type NetJson = null | string | number | boolean | NetJson[] | { [k: string]: NetJson };
 
 // ---------- helpers puros ----------
 
@@ -111,6 +114,14 @@ const ALFABETO = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 /** Código de sala: 4 caracteres sin ambiguos (I/L/0/1 fuera: se dictan por voz). */
 export function isRoomCode(s: string): boolean {
   return s.length === 4 && [...s].every((c) => ALFABETO.includes(c));
+}
+
+/** Código de sala NUEVO (T86 P2P: sin servidor que lo asigne, lo genera el
+ *  host localmente con el mismo alfabeto dictable). */
+export function makeRoomCode(): string {
+  let out = "";
+  for (let i = 0; i < 4; i++) out += ALFABETO[Math.floor(Math.random() * ALFABETO.length)];
+  return out;
 }
 
 export function normalizeRoomCode(s: string): string {
