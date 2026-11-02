@@ -1,0 +1,13 @@
+  [OK ] código de sala recibido (generado local, P2P) (código='RD57')
+  [OK ] guest unido y esperando sesión 
+  [OK ] host ve al compañero conectado 
+  [OK ] partida del host arrancada 
+  [OK ] guest renderizando snapshots (P2P) 
+  [OK ] cintura A host≈guest (<0.4 m) (d=0.000)
+  [OK ] cintura B host≈guest (<0.4 m) (d=0.000)
+  [OK ] HUD viaja en el snapshot 
+  [OK ] aim de P2 se movió con teclado del guest (>0.25 m) (dx=0.780)
+  [OK ] 0 errores JS en el host (0)
+  [OK ] 0 errores JS en el guest (0)
+E2E T86 VERDE: juego remoto P2P OK (sala, sesión, snapshots, input remoto).
+-- E2E T86 VERDE (corrida completa 12/12, build standalone, 2 navegadores Chromium reales)
