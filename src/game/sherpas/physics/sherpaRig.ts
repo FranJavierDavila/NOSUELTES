@@ -23,6 +23,7 @@ import type { CharacterDefinition, BodyProfileDefinition, LimbId } from "../../t
 import type { Limb, ReleaseCause } from "../core/bus";
 import type { LimbTuning, RopeTuning, FartTuning, CoopTuning } from "../core/data";
 import { AnchorSystem, AnchorInstance, type HoldInstance } from "./anchors";
+import { TEST_MODE } from "../gameplay/testMode"; // T89: modo test oculto
 import {
   mashMeter01, mashRisePerS, mashSlidePerS, mashThreshold01, openRopeMash, ROPE_MASH_DEFAULTS, stepRopeMash,
   type RopeMashState, type RopeMashTuning,
@@ -403,12 +404,14 @@ export class SherpaRig {
    *  lo que se acorta es el alcance de JUEGO (imán/agarre/círculo). */
   fatiguedReach(limb: Limb): number {
     const loss = this.deps.tuning.limb.reachFatigueLoss ?? REACH_LOSS_AT_FULL_FATIGUE;
-    const f = Math.min(1, Math.max(0, this.states.get(limb)!.fatigue));
+    // T89 MODO TEST: sin fatiga y alcance multiplicado (agarrar es casi
+    // automático); con el modo apagado la línea es idéntica a la de siempre.
+    const f = TEST_MODE.enabled ? 0 : Math.min(1, Math.max(0, this.states.get(limb)!.fatigue));
     // IMPULSO DEL COMPAÑERO (Task 37): durante la ventana, el tirón del ancla
     // AÑADE alcance de juego (el cuerpo sube Y estira) — el compañero cobra
     // presas que antes quedaban fuera. Los huesos siguen mandando el dibujo.
     const bonus = this.impulseWindowT > 0 ? (this.deps.tuning.coop?.impulseReachBonusM ?? 0) : 0;
-    return this.boneReach(limb) * (1 - loss * f) + bonus;
+    return (this.boneReach(limb) * (1 - loss * f) + bonus) * TEST_MODE.reachMul;
   }
   com(): V3 { return this.solver.centerOfMass(); }
   limbPos(limb: Limb): V3 { return vClone(this.limbPt[limb]); }
@@ -810,6 +813,11 @@ export class SherpaRig {
   // ---------- paso completo ----------
 
   step(dt: number, loadMult: number): SherpaStepInfo {
+    // T89 MODO TEST (?test=escalada): la fatiga del tick anterior se anula
+    // ANTES de nada — ningún coste (agarre, tirones, choques, golpes de pis)
+    // llega a debilitar el agarre. Único punto de corte: TODA la fatiga del
+    // juego vive en estos estados (match.ts escribe en los mismos).
+    if (TEST_MODE.enabled) for (const st of this.states.values()) st.fatigue = 0;
     const released: SherpaStepInfo["released"] = [];
     const gripped: SherpaStepInfo["gripped"] = [];
     const t = this.deps.tuning;

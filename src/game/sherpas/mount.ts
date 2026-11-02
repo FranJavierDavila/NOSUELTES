@@ -14,6 +14,7 @@ import { resolveDayPreset } from "./gameplay/daycycle"; // T61: hora del día (v
 import { HostNet, GuestNet, debugRelays } from "./net/netClient";
 import { HostInputMixer } from "./net/remoteInput";
 import { GuestRunner } from "./net/guestRunner";
+import { TEST_MODE } from "./gameplay/testMode"; // T89: modo test oculto (?test=escalada)
 import type { NetJson, NetSessionParams } from "./net/protocol";
 import { WallGenerator } from "./world/wallGenerator";
 import { loadAscent, clearAscent, type SavedAscent } from "./world/camps";
@@ -45,6 +46,16 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
   }
 
   const data = await loadSherpasData(fetchJson, "/content/sherpas");
+  // T89 MODO TEST: insignia fija mientras la depuración esté activa.
+  if (TEST_MODE.enabled && !document.getElementById("sherpas-test-badge")) {
+    const badge = document.createElement("div");
+    badge.id = "sherpas-test-badge";
+    badge.textContent = "🧪 MODO TEST · sin fatiga · alcance x1.8";
+    badge.style.cssText = "position:fixed;top:8px;right:10px;z-index:9999;padding:4px 10px;" +
+      "border-radius:8px;background:rgba(154,60,20,.82);color:#ffe9d6;font:600 13px/1.4 sans-serif;" +
+      "pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.4)";
+    document.body.appendChild(badge);
+  }
   const repo = new ContentRepository();
   const bundle = await repo.load(browserJsonLoader, "/content");
   const character = bundle.characters.get("prototype_climber");

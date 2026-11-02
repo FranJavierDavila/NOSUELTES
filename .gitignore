@@ -57,3 +57,4 @@ server.log
 # tool result cache
 tool-results/
 __pycache__/
+.token-github

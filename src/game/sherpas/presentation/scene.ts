@@ -108,7 +108,6 @@ import {
   buildScreeGeometry, buildSpurGeometry, resolveBaseCampCfg, scatterRocks,
   type BaseCampCfg, type GeomData,
 } from "../world/baseCamp"; // T56: faldones de continuidad + pedriz
-import { buildCabinSpec, flagRopePoint, type CabinMat, type CabinSpec } from "../world/cabin"; // T56: cabaña sherpa
 import {
   buildSideMassifGeometry, resolveSideMassifCfg, type SideMassifCfg,
 } from "../world/sideMassif"; // T62: macizos naturales (cortinas desplazadas)
@@ -499,7 +498,6 @@ export class SherpaScene {
   private baseCampCfg: BaseCampCfg | null = null;
   private baseRockMat: PBRMaterial | null = null; // material COMPARTIDO pedriz+faldones
   private flagWind: PlantWindPlugin | null = null; // viento propio de los banderines
-  private flagMat: PBRMaterial | null = null;
   private baseCampStats = { enabled: false, screeTris: 0, spurTris: 0, rocks: 0, cabinPieces: 0, flags: 0, smoke: false, pedrizaTex: false, massifTris: 0 };
   /** T55 SONDA E2E: nº de chunks de roca con tinte por vértice aplicado. */
   rockTintChunks = 0;
@@ -1189,7 +1187,7 @@ export class SherpaScene {
   // (2.9, -3.6): en pantalla cae a la derecha del centro (no bajo el minimapa),
   // fuera de la línea de caída (el ricachón aterriza en x≈0.8..1.7, z≈-1.2) y
   // de la abombadera del faldón (x≥3.2). Giro 3.49 rad: puerta a la cámara.
-  private static readonly CABIN_POS = { x: 2.9, z: -3.6, ry: 3.49 };
+  private static readonly BASE_POS = { x: 7.9, z: -5.2, ry: Math.PI, scale: 7 }; // T90: campamento GLB
 
   /** VertexData de un GeomData puro (baseCamp.ts) → malla de Babylon. */
   private geomToMesh(name: string, g: GeomData): Mesh {
@@ -1220,7 +1218,7 @@ export class SherpaScene {
     // colisión física sigue siendo el plano y=0 de siempre)
     const scree = buildScreeGeometry({
       cfg,
-      cabin: { x: SherpaScene.CABIN_POS.x, z: SherpaScene.CABIN_POS.z, r: 2.1 },
+      cabin: { x: SherpaScene.BASE_POS.x, z: SherpaScene.BASE_POS.z, r: 4.2 }, // T90: explanada del campamento
     });
     const screeMesh = this.geomToMesh("screeFloor", scree);
     screeMesh.material = baseMat;
@@ -1265,7 +1263,7 @@ export class SherpaScene {
       m.isPickable = false;
       masters.push(m);
     }
-    const rocks = scatterRocks(cfg, SherpaScene.CABIN_POS.x, SherpaScene.CABIN_POS.z, 2.3);
+    const rocks = scatterRocks(cfg, SherpaScene.BASE_POS.x, SherpaScene.BASE_POS.z, 4.4); // T90
     for (const [rx, , rz, s] of rocks) {
       const inst = masters[Math.floor(rngR.next() * masters.length) % masters.length]!.createInstance(`screeRock${this.baseCampStats.rocks}`);
       inst.position.set(rx, s * 0.28, rz);
@@ -1326,182 +1324,32 @@ export class SherpaScene {
     return m;
   }
 
-  /** T56 — CABAÑA SHERPA: piezas de cabin.ts → 1 mesh fusionado por material
-   *  (5 draw calls), cuerda + BANDERINES de rezo con viento (plugin T55) y
-   *  humo de chimenea (partículas baratas). Todo colgando de un TransformNode
-   *  (posición/giro del conjunto en un solo sitio). */
+  /** T90 — BASE CAMP del jugador (public/models/base.glb): sustituye a la
+   *  cabaña paramétrica de T56. El GLB llega centrado en Y (±0.489) y en
+   *  unidades ~1 m: se apoya en el suelo y se escala a tamaño de campamento.
+   *  Si el fichero falta o está roto, la escena sigue sin él (solo pedriz) y
+   *  queda avisado en consola — igual que las caras expresivas (T76). */
   private buildCabin(): void {
-    const spec: CabinSpec = buildCabinSpec();
-    const root = new TransformNode("cabinRoot", this.scene);
-    root.position.set(SherpaScene.CABIN_POS.x, 0, SherpaScene.CABIN_POS.z);
-    root.rotation.y = SherpaScene.CABIN_POS.ry;
-
-    // materiales compartidos (T61: PBR con HDRI; el cristal conserva alfa)
-    const mats: Record<CabinMat, StandardMaterial | PBRMaterial> = {
-      stone: matPBR(this.scene, "cabinStone", "#8a8378", { rough: 0.92 }),
-      wood: matPBR(this.scene, "cabinWood", "#7a5a3a", { rough: 0.8 }),
-      woodDark: matPBR(this.scene, "cabinWoodDark", "#4f3a28", { rough: 0.85 }),
-      roof: matPBR(this.scene, "cabinRoof", "#45403b", { rough: 0.9 }),
-      glass: (() => {
-        const g = mat(this.scene, "cabinGlass", "#9fc7d8", { alpha: 0.55 });
-        g.emissiveColor = new Color3(0.12, 0.16, 0.18); // luz interior tenue
-        return g;
-      })(),
-    };
-
-    // piezas → mesh local, agrupadas por material para el MERGE
-    const byMat = new Map<CabinMat, Mesh[]>();
-    for (const p of spec.pieces) {
-      let m: Mesh;
-      if (p.kind === "cyl") {
-        m = MeshBuilder.CreateCylinder(p.name, { diameterTop: p.size[0], diameterBottom: p.size[1], height: p.size[2], tessellation: 9 }, this.scene);
-      } else if (p.kind === "tri") {
-        m = new Mesh(p.name, this.scene);
-        const vd = new VertexData();
-        vd.positions = [...p.a!, ...p.b!, ...p.c!];
-        vd.indices = [0, 1, 2, 0, 2, 1]; // doble cara (gable visto por detrás)
-        const nrm = new Float32Array(9);
-        VertexData.ComputeNormals(vd.positions as number[], vd.indices as number[], nrm);
-        vd.normals = nrm;
-        // UVs también: el MERGE por material exige el MISMO set de atributos
-        vd.uvs = [0, 0, 1, 0, 0, 1];
-        vd.applyToMesh(m);
-      } else {
-        m = MeshBuilder.CreateBox(p.name, { width: p.size[0], height: p.size[1], depth: p.size[2] }, this.scene);
-      }
-      m.position.set(p.pos[0], p.pos[1], p.pos[2]);
-      if (p.rotDeg.some((r) => r !== 0)) m.rotation.set(p.rotDeg[0] * Math.PI / 180, p.rotDeg[1] * Math.PI / 180, p.rotDeg[2] * Math.PI / 180);
-      m.isPickable = false;
-      const list = byMat.get(p.mat) ?? [];
-      list.push(m);
-      byMat.set(p.mat, list);
-    }
-
-    // CUERDA de los banderines: segmentos finos en el grupo woodDark
-    const ropePts = 12;
-    for (let i = 0; i < ropePts; i++) {
-      const t0 = i / ropePts;
-      const t1 = (i + 1) / ropePts;
-      const a = flagRopePoint(spec.rope, t0);
-      const b = flagRopePoint(spec.rope, t1);
-      const seg = MeshBuilder.CreateCylinder(`flagRope${i}`, { diameter: 0.022, height: 1, tessellation: 5 }, this.scene);
-      seg.position.set((a[0]! + b[0]!) / 2, (a[1]! + b[1]!) / 2, (a[2]! + b[2]!) / 2);
-      const dx = b[0]! - a[0]!, dy = b[1]! - a[1]!, dz = b[2]! - a[2]!;
-      const len = Math.hypot(dx, dy, dz) || 1e-6;
-      seg.scaling.y = len;
-      if (!seg.rotationQuaternion) seg.rotationQuaternion = Quaternion.Identity();
-      Quaternion.FromUnitVectorsToRef(Vector3.Up(), new Vector3(dx / len, dy / len, dz / len), seg.rotationQuaternion);
-      const list = byMat.get("woodDark")!;
-      list.push(seg);
-    }
-
-    // MERGE por material (1 draw call por material) + sombras
-    for (const [k, list] of byMat) {
-      if (!list.length) continue;
-      const merged = Mesh.MergeMeshes(list, true, true, undefined, false, false);
-      if (!merged) continue;
-      merged.name = `cabin_${k}`;
-      merged.material = mats[k];
-      merged.parent = root;
-      merged.receiveShadows = true;
-      this.castShadow(merged);
-    }
-
-    // BANDERINES de rezo: UNA malla con vertex colors (tibetanos) + buffer
-    // plantBend (bend 0 atado a la cuerda / 1 borde libre) — ondean con el
-    // viento REAL del juego vía el plugin de la vegetación (T55).
-    const flags = spec.flagPendants;
-    const fp = new Float32Array(flags.length * 4 * 3);
-    const fc = new Float32Array(flags.length * 4 * 4);
-    const fi = new Uint32Array(flags.length * 6);
-    const fb = new Float32Array(flags.length * 4 * 2);
-    flags.forEach((f, i) => {
-      const v = i * 4;
-      const set = (k: number, p: [number, number, number], bend: number): void => {
-        fp[(v + k) * 3] = p[0]!;
-        fp[(v + k) * 3 + 1] = p[1]!;
-        fp[(v + k) * 3 + 2] = p[2]!;
-        fc[(v + k) * 4] = f.color[0]!;
-        fc[(v + k) * 4 + 1] = f.color[1]!;
-        fc[(v + k) * 4 + 2] = f.color[2]!;
-        fc[(v + k) * 4 + 3] = 1;
-        fb[(v + k) * 2] = bend;
-        fb[(v + k) * 2 + 1] = f.phase;
-      };
-      set(0, f.tL, 0);
-      set(1, f.tR, 0);
-      set(2, f.bL, 1);
-      set(3, f.bR, 1);
-      fi[i * 6] = v; fi[i * 6 + 1] = v + 1; fi[i * 6 + 2] = v + 3;
-      fi[i * 6 + 3] = v; fi[i * 6 + 4] = v + 3; fi[i * 6 + 5] = v + 2;
-    });
-    const fm = new Mesh("cabinFlags", this.scene);
-    const fvd = new VertexData();
-    fvd.positions = fp;
-    fvd.indices = fi;
-    const fnrm = new Float32Array(fp.length);
-    VertexData.ComputeNormals(fp as unknown as number[], fi as unknown as number[], fnrm);
-    fvd.normals = fnrm;
-    fvd.colors = fc;
-    fvd.applyToMesh(fm);
-    fm.setVerticesBuffer(new VertexBuffer(this.scene.getEngine(), fb, "plantBend", false, false, 2));
-    fm.material = this.ensureFlagMaterial();
-    fm.parent = root;
-    fm.isPickable = false;
-    this.castShadow(fm);
-    this.baseCampStats.flags = flags.length;
-    this.baseCampStats.cabinPieces = spec.pieces.length;
-
-    // HUMO de la chimenea (≤ 24 partículas, coste ≈ 0: campamento vivo)
-    const smoke = new ParticleSystem("cabinSmoke", 24, this.scene);
-    smoke.particleTexture = this.fxTexture;
-    smoke.emitter = this.cabinLocalToWorld(spec.smokePos);
-    smoke.minEmitBox = new Vector3(-0.06, 0, -0.06);
-    smoke.maxEmitBox = new Vector3(0.06, 0.04, 0.06);
-    smoke.color1 = new Color4(0.82, 0.82, 0.85, 0.5);
-    smoke.color2 = new Color4(0.7, 0.7, 0.74, 0.4);
-    smoke.colorDead = new Color4(0.75, 0.75, 0.8, 0);
-    smoke.minSize = 0.09;
-    smoke.maxSize = 0.32;
-    smoke.minLifeTime = 1.4;
-    smoke.maxLifeTime = 2.4;
-    smoke.emitRate = 9;
-    smoke.blendMode = ParticleSystem.BLENDMODE_STANDARD;
-    smoke.direction1 = new Vector3(-0.06, 0.55, -0.06);
-    smoke.direction2 = new Vector3(0.08, 0.95, 0.08);
-    smoke.minEmitPower = 0.35;
-    smoke.maxEmitPower = 0.8;
-    smoke.gravity = new Vector3(0, 0.12, 0);
-    smoke.start();
-    this.baseCampStats.smoke = true;
-  }
-
-  /** Material de los BANDERINES: PBR vertex-color doble cara con SU plugin de
-   *  viento (tela ligera: ondea el doble que las matas de la pared). */
-  private ensureFlagMaterial(): PBRMaterial {
-    if (this.flagMat) return this.flagMat;
-    const m = new PBRMaterial("cabinFlagM", this.scene);
-    m.albedoColor = new Color3(1, 1, 1); // el color real va en VERTEX COLORS
-    m.metallic = 0;
-    m.roughness = 0.9;
-    m.backFaceCulling = false;
-    this.flagMat = m;
-    this.flagWind = new PlantWindPlugin(m);
-    const viento = resolvePlantWindCfg((this.reliefRaw as { vegetacion?: { viento?: unknown } } | null)?.vegetacion?.viento);
-    this.flagWind.configure({
-      ...viento,
-      breezeAmpM: Math.min(0.12, Math.max(0.05, viento.breezeAmpM * 2.6)),
-      pushM: Math.min(0.3, Math.max(0.1, viento.pushM * 2.2)),
-    });
-    return m;
-  }
-
-  /** Local → mundo de la cabaña (rotación Y + traslación del conjunto). */
-  private cabinLocalToWorld(p: [number, number, number]): Vector3 {
-    const pos = SherpaScene.CABIN_POS;
-    const c = Math.cos(pos.ry);
-    const s = Math.sin(pos.ry);
-    return new Vector3(pos.x + p[0]! * c + p[2]! * s, p[1], pos.z - p[0]! * s + p[2]! * c);
+    void SceneLoader.ImportMeshAsync("", assetUrl("/models/base.glb"), undefined, this.scene)
+      .then((res) => {
+        const s = SherpaScene.BASE_POS.scale;
+        const root = new TransformNode("baseCampRoot", this.scene);
+        root.position.set(SherpaScene.BASE_POS.x, -0.489 * s, SherpaScene.BASE_POS.z);
+        root.rotation.y = SherpaScene.BASE_POS.ry;
+        root.scaling.setAll(s);
+        for (const m of res.meshes) {
+          m.isPickable = false;
+          m.receiveShadows = true;
+          this.castShadow(m);
+        }
+        // los nodos de cima del GLB cuelgan del campamento; el resto conserva
+        // su jerarquía interna intacta
+        for (const n of [...res.transformNodes, ...res.meshes]) {
+          if (!n.parent) n.parent = root;
+        }
+        this.baseCampStats.cabinPieces = res.meshes.length;
+      })
+      .catch((err) => console.warn("[basecamp] base.glb no cargó:", err));
   }
 
   /** T56 SONDA E2E: estado del base camp (pedriz/faldones/cabaña/banderines).
