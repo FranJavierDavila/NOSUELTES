@@ -1699,3 +1699,20 @@ Stage Summary:
 - Nunca suenan dos grabaciones a la vez: entra una; el grito de caída corta lo que hubiera.
 - Los bocadillos del ricachón se colocan por ENCIMA de la presa más alta que tenga alrededor: se leen sobre el anillo de anclajes.
 - Las caras GLB AGUANTAN toda la frase (y un respiro) en vez de destellar 1,5 s, y las espontáneas ahora reparten las 3 caras con voz propia: asustado/gritando/enfadado/orgulloso/chuleria se VEN.
+
+---
+Task ID: 83
+Agent: Z.ai (principal)
+Task: «Los bocadillos son cuando aparecen los emoticonos, no deben aparecer solos y los bocadillos aparecen cuando dice una frase. Los bocadillos deben salir desde la cabeza no como salen ahora mucho más arriba. NADA la cara original pieza_cabeza no desaparece, con lo que no vemos nunca las caras nuevas… no sé si nos las carga o es que salen debajo de la cara por defecto que al no ocultarla no deja ver las otras… SOLUCIÓN YA»
+
+Work Log:
+- FIX A — LA CARA ORIGINAL (la caída raíz, con imagen del jugador delante): richHeadMeshes se capturaba con headNode.getChildMeshes(), pero pieza_cabeza ES la malla (nodo CON geometría en rico.glb) — sus mallas hijas no existen y la lista nacía VACÍA: syncRichHeadVisibility no ocultaba nada y la cabeza por defecto tapaba SIEMPRE las caras nuevas (la hipótesis del jugador era exacta: «salen debajo de la cara por defecto que al no ocultarla no deja ver las otras»). Ahora el propio nodo cuenta (headNode instanceof Mesh → [headNode, ...hijos]) y la cabeza SOLO se oculta si la cara activa está de verdad cargada (nunca un rico sin cabeza mientras llega el GLB).
+- FIX B — BOCADILLO = FRASE DICHA Y DESDE LA CABEZA: emoteOn ya no acepta la ventana del ánimo solo (say): el globo sale SOLO con la textura de HABLA (cara+frase) — los emoticonos jamás aparecen solos (petición literal). Y fuera el realce por anclajes de T82 (anchorTopNear eliminado): UP fijo 0.6 en habla / 0.5 en reposo — el globo nace pegado a la cabeza, cola hacia ella (petición: «deben salir desde la cabeza, no mucho más arriba»).
+- VERIFICACIÓN E2E EN CALIENTE POR FIN (rompe el bloqueo T79–T82): ① el dev server de Next moría por OOM del KERNEL a mitad de partida (dmesg: next-server con 1,8 GB RSS ejecutado por el oom-killer) — el build de PRODUCCIÓN estaba bloqueado desde T60 por el eval("require") de instrumentation.ts (Edge Runtime rechaza DCE): register() ahora es no-op y el servicio de salas lo arrancan los scripts (start lo lleva nuevo); el build pasa y el standalone usa 49 MB. ② Falta de copiar .next/static + public/ al standalone (404 en todos los chunks). ③ El flujo del menú cambió: ¡GO! abre el ONBOARDING — la sonda debe saltar los pasos (obSkip); las sondas anteriores se quedaban cliqueteando ¡GO! sin empezar. ④ Sonda verifica-t83 en scripts/: en producción (puerto 3001) el match arranca en ~15 s: faces loaded=5, pin sorpresa → active=asustado + headHidden=TRUE (la cabeza original desaparece por primera vez) y richSay acepta la frase con speechTex=true. Capturas en download/ (cámara lejana a 8 fps con SwiftShader; la prueba definitiva es la sonda).
+- Nota: el pin de la sonda no se quita con richMood(null) (la API ignora ánimos inválidos) — la regla de bocadillo-solo-con-frase es estructural (emoteOn = bubblesOn && mood && textura && (pinned || speechFresh)); en el juego real no hay pin.
+- Tests: 639/639, tsc limpio.
+
+Stage Summary:
+- La cara por defecto DESAPARECE cuando toca una cara nueva (el bug era la lista vacía de mallas a ocultar) y nunca se queda sin cabeza mientras el GLB carga.
+- El bocadillo solo sale cuando el ricachón dice una frase (emoticono + texto juntos) y nace pegado a su cabeza.
+- Build de producción desbloqueado (instrumentation) + despliegue standalone completo: la verificación E2E en caliente vuelve a funcionar (T83 probada en 15 s de arranque).

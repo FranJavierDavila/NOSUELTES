@@ -3528,7 +3528,15 @@ export class SherpaScene {
     this.richFaceLoading = true;
     // T78 — mallas PROPIAS de la cabeza, capturadas ANTES de colgar ninguna
     // cara (las caras cuelgan de este nodo: getChildMeshes después las traería).
-    this.richHeadMeshes = headNode.getChildMeshes().filter((m): m is Mesh => m instanceof Mesh);
+    // T83 — pieza_cabeza ES la malla (en rico.glb el nodo lleva la geometría):
+    // sus "mallas hijas" NO existen y richHeadMeshes nacía VACÍO — la cabeza
+    // por defecto nunca se ocultaba y tapaba SIEMPRE las caras nuevas (petición
+    // del jugador: «NADA la cara original pieza_cabeza no desaparece»). El
+    // propio nodo cuenta como cabeza.
+    this.richHeadMeshes = [
+      ...(headNode instanceof Mesh ? [headNode] : []),
+      ...headNode.getChildMeshes().filter((m): m is Mesh => m instanceof Mesh),
+    ];
     for (const name of Object.keys(RICH_FACES) as RichFaceName[]) {
       const spec: RichFaceSpec = RICH_FACES[name];
       void SceneLoader.LoadAssetContainerAsync("", spec.url, this.scene)
@@ -3586,9 +3594,13 @@ export class SherpaScene {
   }
 
   /** T78 — la cabeza original SOLO se ve sin cara activa (con cara, las mallas
-   *  propias de pieza_cabeza se ocultan: antes quedaban las DOS cabezas). */
+   *  propias de pieza_cabeza se ocultan: antes quedaban las DOS cabezas).
+   *  T83 — y SOLO si la cara activa está realmente cargada: nunca un rico sin
+   *  cabeza mientras el GLB de la cara llega (la cara entra y ENTONCES se va
+   *  la original — petición: «al no ocultarla no deja ver las otras»). */
   private syncRichHeadVisibility(): void {
-    const headOn = this.richFaceActive === null;
+    const faceOn = this.richFaceActive !== null && this.richFaces.has(this.richFaceActive);
+    const headOn = !faceOn;
     for (const m of this.richHeadMeshes) m.setEnabled(headOn);
   }
 
@@ -3861,21 +3873,6 @@ export class SherpaScene {
     this.richEmoteMat = emm;
   }
 
-  /** T82 — cota del anclaje (presa) más alto en una columna cerca de un punto:
-   *  para colocar el bocadillo del rico POR ENCIMA de las presas que tiene
-   *  alrededor (solo cuentan las que están a la altura de la cabeza o más
-   *  arriba — las de abajo no tapan el globo). null si no hay ninguna cerca. */
-  private anchorTopNear(p: { x: number; y: number; z: number }, radiusH: number): number | null {
-    let top: number | null = null;
-    for (const m of this.holdMeshes.values()) {
-      const mp = m.position;
-      if (Math.abs(mp.x - p.x) > radiusH || Math.abs(mp.z - p.z) > radiusH) continue;
-      if (mp.y < p.y - 0.25) continue;
-      if (top === null || mp.y > top) top = mp.y;
-    }
-    return top;
-  }
-
   /** T66 SONDA E2E: ánimo mostrado + visibilidad + textura DIBUJADA (el PNG a
    *  4 fps tarda varios frames en decodificar: sin esto la cara sale blanca).
    *  T66-FB: `pinned` y `speaking` para verificar el "SOLO cuando habla". */
@@ -3988,9 +3985,14 @@ export class SherpaScene {
       this.richEmoteAspectX += (speechAspect - this.richEmoteAspectX) * 0.4; // estira suave
       // T76 — INTERRUPTOR DE BOCADILLOS: con la opción apagada el globo NO se
       // ve (ni ánimo ni habla; el match manda la frase al subtítulo inferior).
+      // T83 — BOCADILLO = FRASE DICHA (petición: «los bocadillos aparecen
+      // cuando dice una frase; los emoticonos no deben aparecer solos»): el
+      // globo SOLO sale con textura de HABLA (cara+frase) — fuera la ventana
+      // del ánimo solo (say) que mostraba el emoticono sin nada que decir.
+      // El pin de depuración sigue mostrando el emoticono (E2E).
       const emoteOn =
         this.richBubblesOn && !!this.richEmoteMood && !!this.richEmoteMat.emissiveTexture &&
-        (pinned || nowE < this.richEmoteSpeakUntil || speechFresh);
+        (pinned || speechFresh);
       // OJO: `enabled` NO basta — el plano nace isVisible=false (el render lo
       // excluye igualmente). La visibilidad del billboard manda aquí.
       this.richEmote.setEnabled(emoteOn);
@@ -4019,17 +4021,12 @@ export class SherpaScene {
         // el globo escala ×1.55 y sube un poco más (no se come la cara); el
         // emoticón solo se queda como siempre.
         const speechBoost = speechTex ? 1.55 : 1;
-        // T82 — EL BOCADILLO POR ENCIMA DE LOS ANCLAJES (petición: «deben
-        // aparecer por encima de los anclajes para que se lean»): el UP fijo
-        // (0.52/0.68) podía dejar el globo A LA ALTURA de las presas que
-        // rodean la cabeza (el anillo de agarre las dibuja encima). Si hay
-        // anclajes a la altura de la cabeza o más arriba cerca, el globo SUBE
-        // a su por encima (cota del más alto + margen), con tope de cordura.
-        const anchorTop = this.anchorTopNear(headP, 1.0);
-        const UP = Math.min(
-          1.7,
-          Math.max(speechTex ? 0.68 : 0.52, anchorTop === null ? 0 : anchorTop - headP.y + 0.28),
-        );
+        // T83 — EL BOCADILLO SALE DE LA CABEZA (petición literal: «deben salir
+        // desde la cabeza, no como salen ahora mucho más arriba»): offset fijo
+        // y PEQUEÑO sobre la cabeza — la cola del globo apunta a ella. Fuera el
+        // realce por anclajes de T82 (anchorTopNear): lo mandaba demasiado
+        // arriba y desanclado del personaje.
+        const UP = speechTex ? 0.6 : 0.5;
         const FWD = 0.1;     // un palmo hacia la cámara: nada interseca con la cabeza
         // T76: el globo de habla es ANCHO (aspect > 1): el ancla es el CENTRO
         // del plano — se corre a la derecha media extensión para que la cola y
