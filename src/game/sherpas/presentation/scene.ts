@@ -102,6 +102,7 @@ import { computeRockTint, resolveRockTintCfg, type RockTintCfg } from "../world/
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer"; // T55: atributo plantBend
 import { SkinnedClimberFactory, type ClimberInstance } from "./skinnedClimber"; // T49: modelo GLB de los escaladores
 import { SherpaPuppetFactory, type SherpaPuppetInstance } from "./sherpaPuppetFactory"; // T57: Sherpa.glb POR PIEZAS (marioneta)
+import { PartsSmoother } from "./poseSmoothing"; // T85-SMOOTH: interpolación entre movimientos (adiós marioneta)
 import {
   buildScreeGeometry, buildSpurGeometry, resolveBaseCampCfg, scatterRocks,
   type BaseCampCfg, type GeomData,
@@ -380,6 +381,7 @@ export class SherpaScene {
   private dayPreset: DayPreset = DAY_PRESETS.dia;
   private envTexture: HDRCubeTexture | null = null;
   private envUrl: string | null = null;
+  private envGen = 0; // generación del env: descarta loads de horas ya sustituidas
   private headlamp: PointLight | null = null;
   // T61 — NEVADA: cota aplicada a presas/roca (recolor por vértice) + originales
   private snowPps = 420;
@@ -3007,6 +3009,7 @@ export class SherpaScene {
       return false;
     }
     this.puppet[player] = inst;
+    this.poseSmooth[player].reset(); // T85-SMOOTH: títere nuevo, historia fuera
     return true;
   }
 
@@ -3034,6 +3037,7 @@ export class SherpaScene {
       return false;
     }
     this.skinned[player] = inst;
+    this.poseSmooth[player].reset(); // T85-SMOOTH: títere nuevo, historia fuera
     return true;
   }
 
@@ -3072,6 +3076,7 @@ export class SherpaScene {
     this.climberPendingSwap[player] = false; // T49: un escalador retirado no se intercambia solo
     if (this.skinned[player]) { this.skinned[player]!.dispose(); this.skinned[player] = null; }
     if (this.puppet[player]) { this.puppet[player]!.dispose(); this.puppet[player] = null; } // T57
+    this.poseSmooth[player].reset(); // T85-SMOOTH: sin títere no hay historia que seguir
     const vis = this.rigVisuals[player];
     if (!vis) return;
     for (const b of vis.bones) b.mesh.dispose();
@@ -3090,8 +3095,9 @@ export class SherpaScene {
     // a mano (RAF + scene.render) y engine.getDeltaTime() no se actualiza sin
     // beginFrame — medimos nosotros como en updatePerf.
     const now = performance.now();
+    let dtR = 0;
     if (this.lastSyncNow[player] > 0) {
-      const dtR = Math.min(0.1, Math.max(0, (now - this.lastSyncNow[player]) / 1000));
+      dtR = Math.min(0.1, Math.max(0, (now - this.lastSyncNow[player]) / 1000));
       const run = this.emoteRuns[player];
       if (run) this.emoteRuns[player] = stepEmote(run, dtR);
     }
@@ -3101,33 +3107,36 @@ export class SherpaScene {
       const o = emoteOffset(this.emoteRuns[player], i);
       return v3(o[0], o[1], o[2]);
     };
+    // T85-SMOOTH — INTERPOLACIÓN ENTRE MOVIMIENTOS: las 15 partículas (con el
+    // emote ya sumado) pasan UNA vez por el low-pass; los tres caminos
+    // (marioneta GLB, skin, cápsulas) posan de la MISMA pose continua y las
+    // transiciones dejan de saltar en seco (efecto marioneta).
+    const rawParts: { x: number; y: number; z: number }[] = new Array(15);
+    for (let i = 0; i < 15; i++) { const p = lerp(i); const o = off(i); rawParts[i] = { x: p.x + o.x, y: p.y + o.y, z: p.z + o.z }; }
+    const parts = this.poseSmooth[player].push(rawParts, dtR);
     // T49/T57: con un modelo GLB la física lo POSEA (sin cápsulas): marioneta
     // por piezas (T57) o esqueleto skinneado (T49).
     const pup = this.puppet[player];
     if (pup) {
-      const parts: { x: number; y: number; z: number }[] = new Array(15);
-      for (let i = 0; i < 15; i++) { const p = lerp(i); const o = off(i); parts[i] = { x: p.x + o.x, y: p.y + o.y, z: p.z + o.z }; }
       pup.pose(parts);
       return;
     }
     const skin = this.skinned[player];
     if (skin) {
-      const parts: { x: number; y: number; z: number }[] = new Array(15);
-      for (let i = 0; i < 15; i++) { const p = lerp(i); const o = off(i); parts[i] = { x: p.x + o.x, y: p.y + o.y, z: p.z + o.z }; }
       skin.pose(parts);
       return;
     }
     const vis = this.rigVisuals[player];
     if (!vis) return;
     for (const b of vis.bones) {
-      const pa = vAdd(lerp(b.a), off(b.a));
-      const pb = vAdd(lerp(b.b), off(b.b));
+      const pa = parts[b.a]!;
+      const pb = parts[b.b]!;
       this.orientCapsule(b.mesh, pa, pb, b.rest);
     }
-    const headP = vAdd(lerp(P.head), off(P.head));
+    const headP = parts[P.head]!;
     vis.head.position.set(headP.x, headP.y + 0.02, headP.z);
-    const chestP = vAdd(lerp(P.chest), off(P.chest));
-    const pelvisP = vAdd(lerp(P.pelvisC), off(P.pelvisC));
+    const chestP = parts[P.chest]!;
+    const pelvisP = parts[P.pelvisC]!;
     const pack = (vis as RigVisual & { pack?: Mesh }).pack;
     if (pack) {
       pack.position.set(chestP.x, (chestP.y + pelvisP.y) / 2, chestP.z - 0.13);
@@ -3139,6 +3148,13 @@ export class SherpaScene {
   // escena posee el reloj de render). Ampliable: ver gameplay/emotes.ts.
   private emoteRuns: EmoteSlot[] = [null, null];
   private lastSyncNow: [number, number] = [0, 0]; // reloj propio por jugador (getDeltaTime miente aquí)
+  // T85-SMOOTH — INTERPOLACIÓN ENTRE MOVIMIENTOS: la pose visible persigue la
+  // física con un low-pass por articulación; las transiciones (cambio de
+  // agarre, pendejo, emote) dejan de ser saltos secos de marioneta.
+  private poseSmooth: [PartsSmoother, PartsSmoother] = [new PartsSmoother(), new PartsSmoother()];
+  // El Ricachón es una masa mayor y más lenta: ganancia algo mayor (menos lag).
+  private richPoseSmooth = new PartsSmoother(20);
+  private lastRichNow = 0; // reloj propio para el dt de suavizado del ricachón
 
   /** Dispara (o corta) una animación puntual en un jugador. Nombre
    *  desconocido = no-op (el emote en curso sigue). */
@@ -3505,6 +3521,7 @@ export class SherpaScene {
       );
     if (inst) {
       this.richPuppet = inst;
+      this.richPoseSmooth.reset(); // T85-SMOOTH: títere nuevo, historia fuera
       // T76 — DIMS DESDE EL BIND: los hombros/caderas derivados deben caer
       // DONDE el modelo tiene las articulaciones (el artista esculpió el rico
       // con hombros anchos, ±0.2965: los defaults de la plantilla dejaban las
@@ -3896,6 +3913,14 @@ export class SherpaScene {
     plane.billboardMode = Mesh.BILLBOARDMODE_ALL;
     plane.isPickable = false;
     plane.isVisible = false;
+    // T85-UI — EL BOCADILLO POR ENCIMA DE TODO (petición: "los bocadillos
+    // deben estar por encima de todo para no salir debajo de cuerdas u otros
+    // objetos"). Grupo de render 1: Babylon limpia el Z-buffer ANTES de cada
+    // grupo, así el globo se pinta tras la pared/cuerdas/presas SIN test de
+    // profundidad contra ellas (grupo 0 = todo el mundo). Nadie más usa
+    // grupos > 0 en esta escena: el globo es el único habitante del grupo 1.
+    plane.renderingGroupId = 1;
+    this.scene.setRenderingAutoClearDepthStencil(1, true, true, true);
     this.richEmote = plane;
     this.richEmoteMat = emm;
   }
@@ -3934,17 +3959,24 @@ export class SherpaScene {
       const b = sim.bodies[i];
       return vAdd(b.prev, vScale(vSub(b.pos, b.prev), alpha));
     };
+    // T85-SMOOTH — INTERPOLACIÓN ENTRE MOVIMIENTOS: mismo low-pass que los
+    // escaladores; los cambios de estado del ricachón (hablar, dormirse,
+    // pedo) dejan de teletransportar la pose.
+    const nowR = performance.now();
+    const dtR = this.lastRichNow > 0 ? Math.min(0.1, Math.max(0, (nowR - this.lastRichNow) / 1000)) : 0;
+    this.lastRichNow = nowR;
+    const rawBodies: { x: number; y: number; z: number }[] = [];
+    for (let i = 0; i < sim.bodies.length; i++) {
+      const p = lerp(i);
+      rawBodies.push({ x: p.x, y: p.y, z: p.z });
+    }
+    const bodies = this.richPoseSmooth.push(rawBodies, dtR);
     // T62 — CUERPO: la marioneta GLB (si está) es poseída por la física de 11
     // cuerpos vía el adaptador puro richJoints15 (11 → 15 articulaciones, los
     // hombros/caderas derivados del marco anatómico de cada frame). Las
     // cápsulas de toda la vida quedan como fallback (GLB ausente).
     const rp = this.richPuppet;
     if (rp && sim.bodies.length >= RM_PARTICLES) {
-      const bodies: { x: number; y: number; z: number }[] = [];
-      for (let i = 0; i < RM_PARTICLES; i++) {
-        const p = lerp(i);
-        bodies.push({ x: p.x, y: p.y, z: p.z });
-      }
       // T76: los hombros/caderas derivados usan las dims MEDIDAS del bind del
       // modelo (hombros ±0.2965 en rico.glb) — sin ellas los brazos nacían
       // dentro del tronco.
@@ -3953,13 +3985,13 @@ export class SherpaScene {
       const vis = this.richVisual;
       if (vis) {
         for (const bone of vis.bones) {
-          this.orientCapsule(bone.mesh, lerp(bone.a), lerp(bone.b), bone.rest);
+          this.orientCapsule(bone.mesh, bodies[bone.a]!, bodies[bone.b]!, bone.rest);
         }
       }
     }
     const vis = this.richVisual;
     if (!vis) return;
-    const headP = lerp(RM.head);
+    const headP = bodies[RM.head]!;
     vis.head.position.set(headP.x, headP.y, headP.z);
     // tocado y gafas siguen a la cabeza (la cara mira a −z). DURMIENDO (petición
     // del jugador: "ponerse a dormir acostado en la tabla"): el sombrero cae
@@ -4587,15 +4619,26 @@ export class SherpaScene {
       });
       if (this.envUrl) URL.revokeObjectURL(this.envUrl);
       this.envUrl = URL.createObjectURL(new Blob([bytes as unknown as BlobPart], { type: "image/vnd.radiance" }));
-      const env = new HDRCubeTexture(this.envUrl, this.scene, 128, false, true, false, true);
-      this.scene.environmentTexture = env;
-      this.scene.environmentIntensity = p.stars ? 0.4 : 0.9; // T63: IBL algo más vivo de día
-      const old = this.envTexture;
-      this.envTexture = env;
-      if (old) old.dispose();
+      // El swap se hace en onLoad, NO aquí: asignar el env antes de que cargue
+      // (y disponer el viejo al instante) abría ventanas donde un PBR
+      // disparaba el prefiltrado IBL sobre una textura ya sin GPU
+      // ("Cannot read properties of null (reading '_irradianceTexture')",
+      // visto en la E2E t57 al reiniciar el match). Hasta que cargue, el env
+      // ANTERIOR sigue iluminando (ms: invisible al jugador). El contador de
+      // generación descarta loads obsoletos si piden dos horas seguidas.
+      const gen = ++this.envGen;
+      const env = new HDRCubeTexture(this.envUrl, this.scene, 128, false, true, false, true, () => {
+        if (gen !== this.envGen) { env.dispose(); return; } // quedó obsoleto
+        const old = this.envTexture;
+        this.envTexture = env;
+        this.scene.environmentTexture = env;
+        this.scene.environmentIntensity = p.stars ? 0.4 : 0.9; // T63: IBL algo más vivo de día
+        if (old && old !== env) old.dispose();
+      });
     } catch {
-      // sin HDRI no pasa nada: las luces directas sostienen la escena
-      this.scene.environmentTexture = null;
+      // sin HDRI no pasa nada: las luces directas sostienen la escena. Se
+      // CONSERVA el env anterior (environmentTexture = null rompe el IBL de
+      // los PBR el mismo frame).
     }
   }
 
@@ -5087,6 +5130,7 @@ export class SherpaScene {
       if (this.puppet[p]) { this.puppet[p]!.dispose(); this.puppet[p] = null; }
     }
     if (this.richPuppet) { this.richPuppet.dispose(); this.richPuppet = null; } // T62
+    this.richPoseSmooth.reset(); // T85-SMOOTH: sin títere no hay historia que seguir
     // T65/T66-FB/T69: anillos de agarre (arco + pista, pool de fatiga + alcance)
     for (const g of this.gripFatigue.values()) { g.arc.dispose(); g.track.dispose(); }
     this.gripFatigue.clear();
