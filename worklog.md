@@ -1,6 +1,25 @@
 # Worklog
 
 ---
+Task ID: 40
+Agent: Z.ai (principal)
+Task: "Los bocadillos deben estar por encima de todo para no salir debajo de cuerdas u otros objetos. Las animaciones son muy bruscas parece una marioneta, debe existir interpolación entre movimientos para algo más natural y creíble"
+
+Work Log:
+- BOCADILLO ENCIMA DE TODO (T85-UI): el billboard del Ricachón vivía en el grupo de render 0 y peleaba el Z-buffer contra pared/cuerdas/presas. `buildRichEmote` lo sube a `renderingGroupId = 1` (+ `setRenderingAutoClearDepthStencil(1, true, true, true)` explícito): Babylon limpia el Z ANTES de cada grupo, así el globo se pinta tras TODO el mundo sin test de profundidad. Nadie más usa grupos > 0 (grep) — el globo es el único habitante del grupo 1.
+- INTERPOLACIÓN ENTRE MOVIMIENTOS (T85-SMOOTH): la física YA interpola prev→pos con alpha, pero los CAMBIOS de objetivo (agarre soltado, viaje terminado, emote) eran saltos de velocidad secos que el pipeline "la física es la animación" propagaba íntegros al esqueleto (efecto marioneta). Nuevo núcleo puro `presentation/poseSmoothing.ts`: low-pass por articulación (seguimiento exponencial corregido por dt, mismo patrón que LIMB_FOLLOW/DRAG_FOLLOW del rig), rate 16/s escaladores y 20/s ricachón (lag ~6 cm a 1 m/s — bajo la tolerancia de 8 cm de la E2E T57), primera muestra sembrada directa, SNAP a >0,5 m por frame (teleports/respawn nunca "vuelan de vuelta"), dt acotado a 0,1 s (pestaña congelada sin empujones ni NaN). 9 tests unitarios (siembra, monotonía sin overshoot, corrección dt dos-medios≈uno, snap solo de la articulación que salta, clamp, dt 0, reset, contrato de constantes).
+- INTEGRACIÓN EN UN SOLO SITIO: `syncSherpa` construye las 15 partículas (con emote ya sumado), las pasa UNA vez por el low-pass y los TRES caminos (marioneta por piezas T57, skin T49, cápsulas) posan de la MISMA pose continua; `syncRichMan` suaviza los 11 cuerpos antes de `richJoints15`/cápsulas (el ancla del bocadillo sale de esa pose suave). Resets en `trySpawnPuppet`/`trySpawnSkinned`/`despawnSherpa` y equivalentes del Ricachón (títere nuevo, historia fuera).
+- BONUS — CRASH IBL PREEXISTENTE CAZADO POR LA E2E: "Cannot read properties of null (reading '_irradianceTexture')" en `rebuildEnv` (T61): asignar el HDRCubeTexture ANTES de que cargue (y disponer el viejo al instante) abría la ventana donde un PBR prefiltra IBL sobre una textura ya sin GPU (hdrFiltering.js:99 lee `texture._texture._irradianceTexture`). FIX: swap DENTRO de `onLoad` (hasta entonces ilumina el env anterior), contador de generación `envGen` descarta loads obsoletos, y el catch ya NO pone `environmentTexture = null` (conserva el env vivo).
+- E2E T57 ACTUALIZADA A LA REALIDAD POST-T59: su entrada clicaba el título del menú (flujo pre-onboarding) y su warm-up usaba clics reales de Playwright que se cuelgan (lección T65 ya escrita en t65) y NUNCA saltaba el tutorial, que bloquea el arranque del match (partículas null → falso ROJO). Entrada y warm-up ahora por JS (`data-a=go` + `data-a=obSkip`), idempotentes por ronda. Verificado a mano con el bus que el flujo GO→tutorial→skip→match funciona y que el sitio EN VIVO (commit anterior) fallaba igual — la regresión era del harness, no del juego.
+- VERIFICACIÓN: vitest sherpas 664/664 (9 nuevos), tsc juego 0 errores, build de producción OK. E2E T57 (Playwright, producción): VERDE COMPLETA — 13 piezas × 2 jugadores, PIVOTES==PARTÍCULAS con peor desviación 0,005 m (p0) y 0,014 m (p1) (tol 8 cm — el suavizado no despega lo visible de la física), mochila detrás del torso, `force('subir')` escalada real (cabeza/torso/antebrazos se mueven ~40 m), frame presentado y 0 ERRORES JS (el fix del env elimina el único fallo). Capturas en download/t57-*.png.
+
+Stage Summary:
+- El bocadillo del Ricachón se dibuja SIEMPRE por encima de cuerdas, rocas, presas y escaladores (grupo de render 1 con Z limpio), también de noche y a contraluz.
+- Las animaciones interpolan entre movimientos: low-pass de poses por articulación en presentación (sin tocar la física ni el gameplay) — los cambios de agarre y los emotes dejan de saltar en seco; teleports y respawns siguen siendo instantáneos por el snap-guard.
+- Arreglada de paso la carrera del HDRI (crash intermitente de IBL al arrancar/reiniciar partida) y modernizado el harness E2E T57 al flujo post-onboarding, que vuelve a ser una red de seguridad real.
+- 664/664 tests, tsc limpio, E2E T57 completa en VERDE con 0 errores JS.
+
+---
 Task ID: 39
 Agent: Z.ai (principal)
 Task: "Función generadora de patrones de muro por algoritmos de rotura (Voronoi / fracturación tectónica): adiós a la pared plana — piedras poligonales con niveles de extrusión, solo en la zona visible de la cámara, con los anclajes centrando sus caras"

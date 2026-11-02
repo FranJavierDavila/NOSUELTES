@@ -125,17 +125,13 @@ with sync_playwright() as pw:
     page.on("console", lambda m: consola.append(f"{m.type}: {m.text[:300]}") if m.type == "error" else None)
     page.goto(URL, wait_until="domcontentloaded")
     page.wait_for_timeout(2500)
+    # El menú monta solo (el clic sobre el título era del flujo pre-T59 y el
+    # hit-target de Playwright se cuelga: lección T65 → clic por JS).
     go = False
     for ronda in range(4):
         try:
-            page.wait_for_selector("text=SHERPAS AL LÍMITE", timeout=30000)
-            page.click("text=SHERPAS AL LÍMITE", timeout=8000)
-        except Exception:
-            page.goto(URL, wait_until="domcontentloaded")
-            page.wait_for_timeout(2000)
-            continue
-        try:
             page.wait_for_selector("button[data-a=go]", timeout=120000)
+            page.evaluate("document.querySelector('button[data-a=go]').click()")
             go = True
             break
         except Exception:
@@ -152,20 +148,22 @@ with sync_playwright() as pw:
     intento = 0
     while time.time() - t0 < 120:
         intento += 1
+        # T59 ONBOARDING: tras el GO se abre el tutorial y BLOQUEA el arranque
+        # del match (partículas null hasta saltarlo). Saltamos por JS cada ronda
+        # (idempotente: si no está, no-op). Clics por JS: el hit-target de
+        # Playwright se cuelga (lección T65).
+        page.evaluate("""
+            () => {
+              const skip = document.querySelector('[data-a=obSkip]');
+              if (skip) skip.click();
+              const go = document.querySelector('button[data-a=go]');
+              if (go && !go.classList.contains('hidden')) go.click();
+            }
+        """)
         cl = probe(page, "climber")
         so_tex = scene_tex_viva(page)
         if so_tex and cl and cl.get("state") == "ready" and cl.get("players") == [True, True]:
             break
-        # (re)lanzar: menú → GO
-        try:
-            page.click("text=SHERPAS AL LÍMITE", timeout=4000)
-        except Exception:
-            pass
-        try:
-            page.wait_for_selector("button[data-a=go]", timeout=6000)
-            page.click("button[data-a=go]")
-        except Exception:
-            pass
         page.wait_for_timeout(4000)
     if not so_tex:
         page.screenshot(path="/tmp/t57-fallo-warmup.png")
