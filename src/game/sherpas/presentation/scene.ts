@@ -38,6 +38,7 @@ import { RICH_FACES, RICH_FACE_YAW, isRichFace, stepRichFaceHold, type RichFaceN
 import { richJoints15, RICH_DIMS_DEFAULT, type RichJointDims } from "./richJoints"; // T62/T76: ricachón poseído (dims del modelo)
 import { SceneLoader } from "@babylonjs/core/Loading/sceneLoader"; // T76: carga de las caras expresivas
 import "@babylonjs/loaders/glTF"; // registro del cargador .glb (caras T76)
+import { assetUrl } from "../../assetPath"; // T85: prefijo de assets en despliegue en subruta
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { Material } from "@babylonjs/core/Materials/material"; // T61: PBR|Standard en huesos · T76: winding de las caras
 import { MultiMaterial } from "@babylonjs/core/Materials/multiMaterial"; // T76: materiales de las caras del ricachón
@@ -2994,7 +2995,7 @@ export class SherpaScene {
         // T79 — el SEGUNDO sherpa (P1) lleva el mapa de ropa ROJO del jugador
         // (upload → public/models/sherpas/sherpa_rojo.jpg): se distinguen de
         // un vistazo; P0 conserva el arte original.
-        player === 1 ? { bodyTexture: "/models/sherpas/sherpa_rojo.jpg" } : undefined,
+        player === 1 ? { bodyTexture: assetUrl("/models/sherpas/sherpa_rojo.jpg") } : undefined,
       );
     } catch (err) {
       this.climberState = "error";
@@ -3548,7 +3549,7 @@ export class SherpaScene {
     ];
     for (const name of Object.keys(RICH_FACES) as RichFaceName[]) {
       const spec: RichFaceSpec = RICH_FACES[name];
-      void SceneLoader.LoadAssetContainerAsync("", spec.url, this.scene)
+      void SceneLoader.LoadAssetContainerAsync("", assetUrl(spec.url), this.scene)
         .then((cont) => {
           if (this.disposed) { cont.dispose(); return; }
           cont.addAllToScene();
@@ -3761,7 +3762,7 @@ export class SherpaScene {
     if (cached) return cached;
     if (typeof document === "undefined") return null;
     const img = new Image();
-    img.src = `/models/sherpas/emotes/r_${m}.png`;
+    img.src = assetUrl(`/models/sherpas/emotes/r_${m}.png`);
     // marcador temporal: hasta que el PNG decodifique, la sonda texReady=false
     // y el plano muestra el material base (blanco) — pocas frames a 4 fps.
     img.onload = () => {

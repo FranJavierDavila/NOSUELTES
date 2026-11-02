@@ -1,0 +1,86 @@
+PLANTILLA DEL ESCALADOR PROCEDURAL — LEEME (T53)
+=================================================
+
+QUÉ HAY EN CADA FICHERO
+-----------------------
+· escalador_procedural_referencia.glb — RÉPLICA EXACTA del escalador procedural
+  que usa el juego ahora mismo: las 15 cápsulas + cabeza + mochila, con los
+  MISMOS nombres de malla que el juego (torso, hipL, uarmL, farmL, …, head,
+  pack), mismas medidas, misma receta de construcción (Babylon
+  CreateCapsule: height = hueso + radio, tessellation 8, capSubdivisions 4).
+  Cada objeto tiene su origen en el CENTRO del hueso (así lo dibuja el juego).
+  Úsalo como CALIBADOR: tu modelo debe cubrir estas cápsulas.
+
+· escalador_plantilla_piezas.glb — PLANTILLA POR PIEZAS para modelar encima.
+  10 piezas con el ORIGEN DEL OBJETO EN SU ARTICULACIÓN (pivote), jerarquía
+  PLANA (nada está parentado), + conectores auxiliares + esferas de junta de
+  referencia (grises). En Blender cada pieza ya rota sobre su articulación.
+
+ESCALA Y ORIENTACIÓN
+--------------------
+· 1 unidad = 1 metro. Altura total ≈ 1,74 m (esfera de cabeza arriba: 1,74).
+· Y arriba, el personaje MIRA hacia +Z (en el juego, de espaldas a cámara y
+  de cara a la pared). Pies en y ≈ 0.
+· Los pies en el juego son parte de la pantorrilla (bota) y las manos parte
+  del antebrazo (mitón): NO hace falta articulación de tobillo ni muñeca.
+
+LAS 10 PIEZAS (pivote = articulación proximal, geometría hacia la hija)
+-----------------------------------------------------------------------
+  pieza                        pivote (origen del objeto)   hueso    radio
+  pieza_torso                  pelvis (0, 0.98, 0)          0.321    0.15
+  pieza_cabeza (esfera Ø0.24)  cuello (0, 1.60, 0.04)         —      0.12
+  pieza_brazo_sup_izq          hombro L (−0.19, 1.26, 0.02) 0.46     0.05
+  pieza_antebrazo_izq          codo L (−0.240, 0.804, −0.007) 0.42   0.045
+  pieza_brazo_sup_der          hombro R (0.19, 1.26, 0.02)  0.46     0.05
+  pieza_antebrazo_der          codo R (0.240, 0.804, −0.007) 0.42    0.045
+  pieza_muslo_izq              cadera L (−0.13, 0.96, 0)    0.50     0.065
+  pieza_pantorrilla_izq        rodilla L (−0.123, 0.463, 0.050) 0.47 0.055
+  pieza_muslo_der              cadera R (0.13, 0.96, 0)     0.50     0.065
+  pieza_pantorrilla_der        rodilla R (0.123, 0.463, 0.050) 0.47  0.055
+
+  (La esfera de cabeza está desplazada +0.02 sobre el cuello, como en el
+   juego; el pivote queda en el cuello.)
+
+AUXILIARES (los dibuja el juego; inclúyelos o fúndelos donde prefieras)
+-----------------------------------------------------------------------
+  conector_cadera_izq / der     pelvis → cadera, r 0.06   (origen en pelvis)
+  tirante_izq / der             pecho → hombro, r 0.055   (origen en pecho,
+                                color correa)             pecho = (0, 1.30, 0.02)
+  mochila                       caja 0.30 × 0.38 × 0.14 centrada en
+                                (0, 1.14, −0.12) — DETRÁS (−Z), color correa
+
+ESFERAS DE JUNTA (grises, SOLO referencia — borrar antes de exportar)
+---------------------------------------------------------------------
+Para tapar las uniones y que las piezas nunca se vean sueltas: una esfera en
+cada articulación con radio = radio del hueso proximal + ~10%:
+  junta_pelvis Ø0.26 · junta_pecho Ø0.22 · junta_cuello Ø0.11
+  junta_hombro Ø0.124 · junta_codo Ø0.104
+  junta_cadera Ø0.15  · junta_rodilla Ø0.136
+Truco: al esculpir, deja que el músculo/ropa de cada pieza SOBREPASE un poco
+la articulación (el solape + la esfera matan cualquier hueco en cualquier pose).
+
+POSICIONES DE LAS ARTICULACIONES (pose de referencia, metros)
+-------------------------------------------------------------
+  pelvis   (0, 0.98, 0)      pecho (0, 1.30, 0.02)    cuello (0, 1.60, 0.04)
+  hombroL  (−0.19, 1.26, 0.02)     hombroR  (0.19, 1.26, 0.02)
+  codoL    (−0.240, 0.804, −0.007) codoR    (0.240, 0.804, −0.007)
+  manoL    (−0.261, 0.392, 0.034)  manoR    (0.261, 0.392, 0.034)
+  caderaL  (−0.13, 0.96, 0)        caderaR  (0.13, 0.96, 0)
+  rodillaL (−0.123, 0.463, 0.050)  rodillaR (0.123, 0.463, 0.050)
+  pieL     (−0.123, −0.002, 0.003) pieR     (0.123, −0.002, 0.003)
+  (Brazos caídos en A-pose: la pose EXACTA no importa — la física posa cada
+   pieza cada frame. Lo que SÍ debe respetarse: pivotes y longitudes óseas.)
+
+CONVENCIONES PARA EL MODELO FINAL
+---------------------------------
+1. MISMA CANTIDAD DE OBJETOS que piezas (o menos, fundiendo auxiliares), cada
+   uno con EL MISMO NOMBRE pieza_* y el ORIGEN en su articulación.
+2. Jerarquía PLANA: nada parentado (el juego coloca cada pieza por su
+   transformación de mundo cada frame — la física ES la animación).
+3. Exporta GLB con los objetos EN SU SITIO (pose cualquiera) y escala 1.0.
+4. Colores de referencia: jugador 1 cuerpo #d97b2f / correa #e8542f
+   (naranja), jugador 2 cuerpo #2f9bd9 / correa #1f6fb0 (azul). El juego
+   puede teñir por jugador, así que un mono base neutro o claro es lo ideal.
+5. Longitudes óseas sagradas (son el alcance real de juego): brazo
+   0.46 + 0.42, pierna 0.50 + 0.47. Si tu pieza acorta el hueso, el
+   escalador se verá "de goma" (la cápsula se estira hasta la presa).

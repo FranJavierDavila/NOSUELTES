@@ -5,6 +5,7 @@
 // "Solo usar las audios que he subido yo, no uses los que generas tú").
 // Arranca tras gesto del usuario (política autoplay del navegador, doc 2.1).
 import type { AudioData } from "../core/data";
+import { assetUrl } from "../../assetPath"; // T85: prefijo de assets en subruta
 
 type SfxDef = AudioData["sfx"][string];
 
@@ -162,7 +163,7 @@ export class SherpaAudio {
     let buf = this.realCache.get(path);
     if (!buf) {
       try {
-        const res = await fetch(path);
+        const res = await fetch(assetUrl(path));
         if (!res.ok) return 0;
         buf = await this.ctx.decodeAudioData(await res.arrayBuffer());
         this.realCache.set(path, buf);

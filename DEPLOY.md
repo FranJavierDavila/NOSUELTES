@@ -61,10 +61,13 @@ carpeta `out/`, probada y funcionando) y la publica en Pages en cada push a
    juego funciona tal cual (verificado: los modelos se cargan con rutas
    absolutas `/models/…`).
 
-⚠️ **Si lo sirves en subruta** (`…github.io/NOSUELTES/`) faltan dos ajustes que
-no vienen hechos: `basePath: "/NOSUELTES"` en `next.config.ts` y convertir las
-rutas de modelos de absolutas (`/models/…`) a relativas. Con dominio propio en
-raíz (paso 2) no hace falta tocar nada.
+⚠️→✅ **Subruta soportada de serie** (`…github.io/NOSUELTES/`): el build de
+exportación aplica `basePath: /NOSUELTES` y todos los recursos que carga el
+motor (GLB, texturas, audio, JSON de contenido) se prefijan solos
+(`src/game/assetPath.ts` + `NEXT_PUBLIC_ASSET_BASE`, verificado E2E en subruta).
+Si algún día lo publicas en **dominio propio en la RAÍZ**, cambia en el
+workflow `EXPORT_BASE_PATH=/NOSUELTES` por `EXPORT_BASE_PATH=""` y no hace
+falta tocar nada más (las rutas absolutas funcionan tal cual).
 
 Limitaciones: sin salas (sin juego remoto) y sin HTTPS en dominios `.es` de
 algún registrador — GitHub Pages sí emite certificado para dominios propios
@@ -102,7 +105,8 @@ habituales.
 npm run build && npm start
 
 # build de exportación estática (GitHub Pages / hosting compartido)
-STATIC_EXPORT=1 npx next build   # salida en out/
+STATIC_EXPORT=1 EXPORT_BASE_PATH=/NOSUELTES npx next build   # salida en out/
+#  (para dominio propio en raíz: EXPORT_BASE_PATH="")
 ```
 
 ## Apéndice — `.github/workflows/deploy-pages.yml` (contenido completo)
@@ -133,7 +137,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: STATIC_EXPORT=1 npx next build
+      # La exportación estática no admite rutas force-dynamic (src/app/api);
+      # el juego publicado es solitario + cooperativo local (todo cliente).
+      - run: rm -rf src/app/api
+      - run: STATIC_EXPORT=1 EXPORT_BASE_PATH=/NOSUELTES npx next build
       - uses: actions/upload-pages-artifact@v3
         with:
           path: out

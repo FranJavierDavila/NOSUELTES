@@ -24,6 +24,7 @@ import {
   Vec3Tuple,
   isLimbId
 } from "../types";
+import { assetUrl } from "../assetPath";
 
 export type JsonLoader = (path: string) => Promise<unknown>;
 
@@ -282,7 +283,7 @@ export class ContentRepository {
 
 /** Loader de navegador: fetch relativo a /content. */
 export function browserJsonLoader(path: string): Promise<unknown> {
-  return fetch(path).then(async (res) => {
+  return fetch(assetUrl(path)).then(async (res) => {
     if (!res.ok) {
       throw new Error(`HTTP ${res.status}`);
     }

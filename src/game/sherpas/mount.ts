@@ -19,6 +19,7 @@ import { WallGenerator } from "./world/wallGenerator";
 import { loadAscent, clearAscent, type SavedAscent } from "./world/camps";
 import { v3, type V3 } from "../physics/pbd/math";
 import { Vector3, Matrix } from "@babylonjs/core/Maths/math.vector";
+import { assetUrl } from "../assetPath";
 
 export interface SherpasMountOptions {
   canvas: HTMLCanvasElement;
@@ -30,7 +31,7 @@ export interface SherpasHandles {
 }
 
 const fetchJson = async (path: string): Promise<unknown> => {
-  const res = await fetch(path);
+  const res = await fetch(assetUrl(path));
   if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
   return res.json();
 };

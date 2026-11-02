@@ -35,6 +35,7 @@ import {
   type PieceBind, type PuppetBinds,
 } from "./sherpaPuppet";
 import { v3t, type QuatT, type V3T } from "./climberPoseMath";
+import { assetUrl } from "../../assetPath";
 
 export interface PuppetDiag {
   pieces: number;        // piezas encontradas en el .glb
@@ -65,7 +66,7 @@ export class SherpaPuppetFactory {
   ) {}
 
   static async load(scene: Scene, url: string): Promise<SherpaPuppetFactory> {
-    const container = await SceneLoader.LoadAssetContainerAsync("", url, scene);
+    const container = await SceneLoader.LoadAssetContainerAsync("", assetUrl(url), scene);
     // Diagnóstico: alto del modelo + nombres de los nodos raíz del asset.
     let minY = Infinity, maxY = -Infinity, meshes = 0;
     for (const m of container.meshes) {

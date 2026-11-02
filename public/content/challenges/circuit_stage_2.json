@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "id": "circuit_stage_2",
+  "type": "reach_top",
+  "characterId": "prototype_climber",
+  "wallId": "wall_circuit_02",
+  "instruction": "Circuito, escenario 2 de 5 - EL BALCON (5.6 m): vertical (0°)-> desplome (-32°). Lleva ambas manos a la presa cima. Un pie en presa de mano carga x2.",
+  "timeLimitSeconds": 340,
+  "start": {
+    "stance": "standing",
+    "requiredAnchors": [
+      {
+        "limb": "hand_l",
+        "holdId": "start_l"
+      },
+      {
+        "limb": "hand_r",
+        "holdId": "start_r"
+      }
+    ],
+    "autoStart": false,
+    "impulse": [
+      0,
+      0,
+      0
+    ]
+  },
+  "rules": {
+    "allowFreeTarget": false,
+    "allowHandsOnFootHolds": false,
+    "allowFeetOnHandHolds": true,
+    "minSupportCount": 2,
+    "fallPlaneY": -0.25,
+    "fallDropDistance": 0.35,
+    "fallGraceSeconds": 0.35
+  },
+  "completion": {
+    "holdIds": [
+      "top"
+    ],
+    "requiredLimbs": [
+      "hand_l",
+      "hand_r"
+    ],
+    "stableDurationSeconds": 0.5,
+    "stabilityThreshold": 0.65
+  }
+}
