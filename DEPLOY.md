@@ -43,23 +43,22 @@ conectará (el juego sigue funcionando en solitario y cooperativo local).
 ## Opción B — GitHub Pages (100 % GitHub, gratis)
 
 El workflow `.github/workflows/deploy-pages.yml` (incluido más abajo y en el
-repo) compila la **exportación estática** (`STATIC_EXPORT=1 npx next build` →
-carpeta `out/`, probada y funcionando) y la publica en Pages en cada push a
-`main`.
+repo) compila la **exportación estática** (`STATIC_EXPORT=1
+EXPORT_BASE_PATH=/NOSUELTES npx next build` → carpeta `out/`, probada en
+runtime) y la publica en Pages en cada push a `main`. Además se activa solo:
+el paso `actions/configure-pages` con `enablement: true` crea el sitio de
+Pages (Source: GitHub Actions) con el token del propio workflow — **cero pasos
+manuales**.
 
-1. Añade el workflow a GitHub: en el repo, **Add file → Create new file**,
-   ruta `.github/workflows/deploy-pages.yml`, y pega el contenido que se da al
-   final de este documento (o activa en tu token el permiso `workflow` y haz
-   push del fichero). 
-2. **Settings → Pages → Build and deployment → Source: GitHub Actions**. Nada
-   más: el push (o la pestaña Actions → «Despliegue a GitHub Pages» → Run
-   workflow) publica la web en
-   `https://franjavierdavila.github.io/NOSUELTES/`.
+1. Con el workflow en el repo (ya está), cada push a `main` publica la web en
+   `https://franjavierdavila.github.io/NOSUELTES/`. Si por lo que fuera el
+   sitio de Pages no se creara solo: **Settings → Pages → Build and
+   deployment → Source: GitHub Actions** (una vez) y relanzar el workflow.
 2. Dominio propio raíz (recomendado): **Settings → Pages → Custom domain**,
    escribe `juego.tudominio.com` y crea en tu registrador un registro CNAME de
-   ese subdominio a `franjavierdavila.github.io`. Con el dominio en la RAÍZ el
-   juego funciona tal cual (verificado: los modelos se cargan con rutas
-   absolutas `/models/…`).
+   ese subdominio a `franjavierdavila.github.io`; cambia en el workflow
+   `EXPORT_BASE_PATH=/NOSUELTES` por `EXPORT_BASE_PATH=""` (un commit). En la
+   RAÍZ el juego funciona tal cual.
 
 ⚠️→✅ **Subruta soportada de serie** (`…github.io/NOSUELTES/`): el build de
 exportación aplica `basePath: /NOSUELTES` y todos los recursos que carga el
@@ -141,6 +140,10 @@ jobs:
       # el juego publicado es solitario + cooperativo local (todo cliente).
       - run: rm -rf src/app/api
       - run: STATIC_EXPORT=1 EXPORT_BASE_PATH=/NOSUELTES npx next build
+      # Crea el sitio de Pages (Source: Actions) si aún no existe — cero pasos manuales.
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: out

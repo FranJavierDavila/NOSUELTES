@@ -28,6 +28,11 @@ jobs:
       # el juego publicado es solitario + cooperativo local (todo cliente).
       - run: rm -rf src/app/api
       - run: STATIC_EXPORT=1 EXPORT_BASE_PATH=/NOSUELTES npx next build
+      # Crea el sitio de Pages (Source: Actions) si aún no existe, con el
+      # GITHUB_TOKEN del workflow (pages: write) — cero pasos manuales.
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: out
