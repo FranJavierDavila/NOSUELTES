@@ -75,6 +75,8 @@ export class GuestRunner {
   }
   private lastAim: [string, string] = ["", ""];
   private aimShownAt: [number, number] = [-1e9, -1e9];
+  /** T92: ids de anclajes portátiles ya replicados (los ev se re-envían). */
+  private portableSeen = new Set<string>();
 
   private constructor(private d: GuestRunnerDeps) {
     const hz = d.data.net?.snapshotHz ?? 30;
@@ -190,6 +192,7 @@ export class GuestRunner {
       fart: mine.fart,
       anchor: mine.anchor,
       impulse: mine.impulse,
+      place: mine.place,
       mashCount: mine.mashCount,
     });
   }
@@ -357,6 +360,18 @@ export class GuestRunner {
         const p = (e.p as { playerId?: number })?.playerId;
         const name = (e.p as { name?: string })?.name;
         if ((p === 0 || p === 1) && typeof name === "string") s.setEmote(p, name);
+      }
+      // T92: anclaje portátil colocado por el host → el guest REPLICA la presa
+      // (solo visual: el agarre/ocupación lo decide la simulación del host).
+      if (e.n === "PortableAnchorPlaced" && !this.portableSeen.has(String(e.p.id))) {
+        this.portableSeen.add(String(e.p.id));
+        const x = Number(e.p.x), y = Number(e.p.y), z = Number(e.p.z);
+        if ([x, y, z].every(Number.isFinite)) {
+          s.addHolds([{
+            id: String(e.p.id), pos: { x, y, z }, radius: 0.14,
+            type: "rock_firm", bandIndex: 0, camp: false, portable: true,
+          }], this.d.data.hud.anchorTypeColors);
+        }
       }
     }
 

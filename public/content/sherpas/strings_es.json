@@ -97,7 +97,12 @@
     "coopImpulseNeed": "Anclate primero (Q/J) para dar el impulso",
     "coopImpulseScore": "¡El impulso sirvió! Propina +{n}",
     "ropeMash": "¡{name} COLGADO! PULSAD C (P1) Y N (P2) A SACO PARA TREPARLA",
-    "ropeReleased": "¡LA CUERDA SE ACABÓ! ¡{name} CAE AL ABISMO!"
+    "ropeReleased": "¡LA CUERDA SE ACABÓ! ¡{name} CAE AL ABISMO!",
+    "portablePlaced": "Anclaje portátil colocado — quedan {left}",
+    "portableEmpty": "No quedan anclajes portátiles",
+    "portableNoSpot": "Aquí no hay sitio factible para un anclaje",
+    "portableNeedFree": "Suelta una extremidad para colocar el anclaje",
+    "portableNeedClimb": "{name} no puede colocar anclajes colgado en caída"
   },
   "limb": {
     "hand_l": "M.Izq",
@@ -123,8 +128,8 @@
     "pataleando": "Pataleando"
   },
   "keys": {
-    "p1": "RATÓN: pulsa una extremidad y arrástrala hasta una presa (imán verde) · suéltala para fijarla · F: superpoder",
-    "p2": "J2: Flechas apuntar · I/O manos · K/L pies · U espantar · o mando: stick + A/B/X/Y + RB · P: superpoder · stick derecho: órbita de cámara",
+    "p1": "RATÓN: pulsa una extremidad y arrástrala hasta una presa (imán verde) · suéltala para fijarla · Q anclarse · E impulso · T anclaje portátil · F: superpoder",
+    "p2": "J2: Flechas apuntar · I/O manos · K/L pies · U espantar · J anclarse · M impulso · Y anclaje portátil · o mando: stick + A/B/X/Y + RB · P: superpoder · stick derecho: órbita",
     "shared": "Espacio pausa · H ayuda · Z/X órbita lateral · V/B órbita vertical · G vista libre (mantener) · C reencuadrar · F3 depuración"
   },
   "settings": {

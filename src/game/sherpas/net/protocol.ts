@@ -36,6 +36,7 @@ export type NetRemoteInput = {
   fart: boolean;
   anchor: boolean;
   impulse: boolean;
+  place: boolean;                // T92: colocar anclaje portátil (flanco)
   mashCount: number;             // pulsaciones acumuladas desde el último envío
 }
 

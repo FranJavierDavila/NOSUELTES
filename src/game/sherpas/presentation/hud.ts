@@ -62,6 +62,8 @@ export type HudTickState = {
   propinaMax: number;
   resting: boolean;
   richState: string;
+  /** T92: anclajes portátiles restantes [A, B] (el chip de carga los muestra). */
+  portable: [number, number];
 }
 
 // ids de anclaje (data) → clave de rotulación en strings.anchor
@@ -555,8 +557,11 @@ export class SherpaHud {
     this.el.level!.textContent = `${this.t(levelKey)} (${state.deltaH.toFixed(1)} m)`;
     const lvlColor = this.hud.levelBubble.colors[state.balanceState === "equilibrado" ? "ok" : state.balanceState === "aviso" ? "warn" : "bad"];
     this.el.level!.style.color = lvlColor;
-    // reparto de carga
-    this.el.share!.innerHTML = `${this.t("hud.loadShare")} <b style="color:${SHERPA_HEX[0]}">${Math.round(state.share[0] * 100)}%</b>/<b style="color:${SHERPA_HEX[1]}">${Math.round(state.share[1] * 100)}%</b>${state.resting ? ` · ${esc(this.t("hud.resting"))}` : ""}`;
+    // reparto de carga + T92: anclajes portátiles restantes por escalador
+    const port = state.portable ?? [0, 0];
+    this.el.share!.innerHTML = `${this.t("hud.loadShare")} <b style="color:${SHERPA_HEX[0]}">${Math.round(state.share[0] * 100)}%</b>/<b style="color:${SHERPA_HEX[1]}">${Math.round(state.share[1] * 100)}%</b>`
+      + ` · ⚓ <b style="color:${SHERPA_HEX[0]}">${port[0]}</b>/<b style="color:${SHERPA_HEX[1]}">${port[1]}</b>`
+      + `${state.resting ? ` · ${esc(this.t("hud.resting"))}` : ""}`;
     // propina
     this.el.propinaVal!.textContent = String(Math.round(state.propina));
     this.el.propinaBar!.style.width = `${Math.round(Math.min(1, state.propina / Math.max(1, state.propinaMax)) * 100)}%`;

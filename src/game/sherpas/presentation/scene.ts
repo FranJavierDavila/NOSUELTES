@@ -224,6 +224,8 @@ export class SherpaScene {
   private sunRel = new Vector3(3.5, 9, -6.5);
   private holdMeshes = new Map<string, Mesh>();
   private holdMasters = new Map<string, Mesh>();
+  /** T92: master del empotrador portátil (placa + argolla metálicas). */
+  private portableMaster: Mesh | null = null;
   // T65/T66-FB/T69 — anillos sobre las presas: la presa AGARRADA POR LAS MANOS
   // lleva el anillo de FATIGA en dos piezas (T69, petición del jugador: "la
   // fatiga para llegar al descuelgue debe ser del 100%, lo que se corresponde
@@ -2476,6 +2478,15 @@ export class SherpaScene {
     }
     for (const h of holds) {
       if (this.holdMeshes.has(h.id)) continue;
+      // T92 — ANCLAJE PORTÁTIL: empotrador metálico propio (placa + argolla),
+      // NO usa la receta de presa natural. Se agarra igual (rock_firm).
+      if (h.portable) {
+        const instP = this.ensurePortableMaster().createInstance(`hold_${h.id}`);
+        instP.position.set(h.pos.x, h.pos.y, h.pos.z);
+        instP.metadata = { holdType: "rock_firm", holdRadius: h.radius, portable: true };
+        this.holdMeshes.set(h.id, instP as unknown as Mesh);
+        continue;
+      }
       const typeHex = colors[h.type] ?? TYPE_COLORS[h.type] ?? "#8d99ae";
       // T63 — PRESAS NATURALES: la forma sale de la receta del tipo y la
       // VARIANTE del hash del id (3 siluetas por tipo: la pared no se clona).
@@ -2694,6 +2705,26 @@ export class SherpaScene {
    *  COLOR POR VÉRTICE: tinte del trozo, magnesio blanco, grietas oscuras).
    *  La roca usa el MATERIAL DEL MURO (UV triplanar de mundo → la presa ES
    *  piedra de la misma pared); hielo/nieve/brillo llevan material propio. */
+  /** T92 — MASTER del anclaje portátil: placa + argolla metálicas fusionadas
+   *  (empotrador). Instancias por presa colocada; agarrable como rock_firm. */
+  private ensurePortableMaster(): Mesh {
+    if (this.portableMaster) return this.portableMaster;
+    const plate = MeshBuilder.CreateCylinder("pa_plate", { diameter: 0.17, height: 0.035, tessellation: 12 }, this.scene);
+    plate.rotation.x = Math.PI / 2; // eje del cilindro hacia la cámara (pared en z)
+    const ring = MeshBuilder.CreateTorus("pa_ring", { diameter: 0.11, thickness: 0.028, tessellation: 12 }, this.scene);
+    ring.position.z = 0.035;
+    const merged = Mesh.MergeMeshes([plate, ring], true, true, undefined, false, false)!;
+    merged.name = "portableMaster";
+    merged.isVisible = false;
+    merged.receiveShadows = true;
+    const m = matPBR(this.scene, "portableM", "#c9ccd1", { rough: 0.35, metal: 0.8 });
+    m.emissiveColor = new Color3(0.05, 0.05, 0.06);
+    merged.material = m;
+    merged.metadata = { holdType: "rock_firm", natural: true };
+    this.portableMaster = merged;
+    return merged;
+  }
+
   private buildHoldMaster(type: string, key: string, rec: HoldShapeRecipe, typeHex: string): Mesh {
     const parts: Mesh[] = [];
     for (const p of rec.parts) {

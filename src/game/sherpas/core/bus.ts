@@ -42,6 +42,8 @@ export interface SherpasEvents {
   // SUPER FLATULENCIA (presa verde → pedo-propulsor)
   FartGained: { playerId: 0 | 1 };
   FartLaunched: { playerId: 0 | 1; fromY: number };
+  // T92 ANCLAJES PORTÁTILES: el guest replica la presa colocada por el host
+  PortableAnchorPlaced: { id: string; x: number; y: number; z: number; p: 0 | 1 };
   // Progresión
   PlayerFell: { playerId: 0 | 1; cause?: "two_hands" | "no_grips" };
   TeamFell: { record: unknown };

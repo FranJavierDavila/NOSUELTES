@@ -20,6 +20,8 @@ export interface InputIntent {
   anchor: boolean;
   /** CUERDA COOPERATIVA: dar un impulso al compañero (flanco). */
   impulse: boolean;
+  /** T92 ANCLAJES PORTÁTILES: colocar uno en la pared (flanco). */
+  place: boolean;
   /** T58-E TREPAR A PULSO: pulsaciones A SACO recibidas desde el último poll
    *  (CONTADOR — a bajo fps varias teclas caen en el mismo tick y NINGUNA se
    *  pierde: cada pulsación cuenta para la fuerza). */
@@ -87,6 +89,7 @@ export class InputManager {
   private pendingFart = new Map<0 | 1, boolean>();
   private pendingAnchor = new Map<0 | 1, boolean>();
   private pendingImpulse = new Map<0 | 1, boolean>();
+  private pendingPlace = new Map<0 | 1, boolean>(); // T92 anclajes portátiles
   private pendingMash = new Map<0 | 1, number>(); // T58-E: CONTADOR de pulsaciones
   private gamepadPrev = new Map<number, boolean[]>();
   private handlers: SharedKeysHandlers;
@@ -124,6 +127,8 @@ export class InputManager {
         // CUERDA COOPERATIVA (opcional en el mapa: sin tecla → nunca dispara)
         if (k.anchor && code === k.anchor && !e.repeat) { this.pendingAnchor.set(b.playerId, true); e.preventDefault(); }
         if (k.impulse && code === k.impulse && !e.repeat) { this.pendingImpulse.set(b.playerId, true); e.preventDefault(); }
+        // T92: COLOCAR anclaje portátil (opcional en el mapa: sin tecla → nunca)
+        if (k.place && code === k.place && !e.repeat) { this.pendingPlace.set(b.playerId, true); e.preventDefault(); }
         // T58-E: TECLA A SACO (opcional en el mapa: sin tecla → nunca dispara).
         // CONTADOR: cada pulsación física cuenta, aunque caigan en el mismo tick.
         if (k.mash && code === k.mash && !e.repeat) {
@@ -173,12 +178,14 @@ export class InputManager {
       let fart = this.pendingFart.get(b.playerId) ?? false;
       let anchor = this.pendingAnchor.get(b.playerId) ?? false;
       let impulse = this.pendingImpulse.get(b.playerId) ?? false;
+      let place = this.pendingPlace.get(b.playerId) ?? false;
       let mashCount = this.pendingMash.get(b.playerId) ?? 0;
       this.pendingToggles.set(b.playerId, []);
       this.pendingShoo.set(b.playerId, false);
       this.pendingFart.set(b.playerId, false);
       this.pendingAnchor.set(b.playerId, false);
       this.pendingImpulse.set(b.playerId, false);
+      this.pendingPlace.set(b.playerId, false);
       this.pendingMash.set(b.playerId, 0);
 
       // gamepad (opcional, solo P2 por defecto): el stick suma al apuntado.
@@ -211,6 +218,11 @@ export class InputManager {
             const now = !!pad.buttons[b.gamepad.impulse]?.pressed;
             if (now && !prev[b.gamepad.impulse]) impulse = true;
           }
+          // T92: colocar anclaje portátil por mando (botón opcional del mapa)
+          if (b.gamepad.place !== undefined) {
+            const now = !!pad.buttons[b.gamepad.place]?.pressed;
+            if (now && !prev[b.gamepad.place]) place = true;
+          }
           // T58-E: A SACO por mando (botón opcional del mapa, flanco → 1)
           if (b.gamepad.mash !== undefined) {
             const now = !!pad.buttons[b.gamepad.mash]?.pressed;
@@ -228,6 +240,7 @@ export class InputManager {
         fart,
         anchor,
         impulse,
+        place,
         mashCount,
       });
     }

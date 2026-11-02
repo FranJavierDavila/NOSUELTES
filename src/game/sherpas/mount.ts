@@ -324,6 +324,8 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         if (rig) rig.aim = { x, y, z: rig.aim.z } as typeof rig.aim;
       },
       holds: () => state.match ? [...state.match["anchors"].holds.values()].map((h) => ({ id: h.id, x: h.pos.x, y: h.pos.y })) : [],
+      /** T92: anclajes portátiles (inventario + colocados) para el E2E. */
+      portables: () => state.match?.portableProbe?.() ?? null,
       rich: () => state.match?.["rich"] ? state.match["rich"].pelvis() : null,
       particles: (p: number) => state.match?.["sherpas"][p]?.rig.particles.map((q) => [q.pos.x, q.pos.y, q.pos.z]) ?? null,
       /** proyección mundo→pantalla CSS (E2E a prueba de cámara móvil). */

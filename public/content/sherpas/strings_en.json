@@ -97,7 +97,12 @@
     "coopImpulseNeed": "Anchor yourself first (Q/J) to give a boost",
     "coopImpulseScore": "The boost paid off! Tip +{n}",
     "ropeMash": "{name} IS HANGING! MASH C (P1) AND N (P2) TO CLIMB THE ROPE",
-    "ropeReleased": "THE ROPE RAN OUT! {name} FALLS INTO THE VOID!"
+    "ropeReleased": "THE ROPE RAN OUT! {name} FALLS INTO THE VOID!",
+    "portablePlaced": "Portable anchor placed — {left} left",
+    "portableEmpty": "No portable anchors left",
+    "portableNoSpot": "No feasible spot for an anchor here",
+    "portableNeedFree": "Release a limb to place the anchor",
+    "portableNeedClimb": "{name} cannot place anchors while falling"
   },
   "limb": {
     "hand_l": "L.Hand",
@@ -123,8 +128,8 @@
     "pataleando": "Kicking"
   },
   "keys": {
-    "p1": "MOUSE: press a limb and drag it onto a hold (green ring) · release to fix it · F: superpower",
-    "p2": "P2: Arrows aim · I/O hands · K/L feet · U shoo · or gamepad: stick + A/B/X/Y + RB · P: superpower · right stick: camera orbit",
+    "p1": "MOUSE: press a limb and drag it to a hold (green magnet) · release to lock it · Q belay · E impulse · T portable anchor · F: superpower",
+    "p2": "P2: Arrows aim · I/O hands · K/L feet · U shoo · J belay · M impulse · Y portable anchor · or gamepad: stick + A/B/X/Y + RB · P: superpower · right stick: camera orbit",
     "shared": "Space pause · H help · Z/X lateral orbit · V/B vertical orbit · G free look (hold) · C recenter · F3 debug"
   },
   "settings": {

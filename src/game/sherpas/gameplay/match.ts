@@ -20,6 +20,7 @@ import { InsultSystem } from "../events/insults";
 import { EventDirector, type DirectorContext } from "../events/director";
 import { spawnTrash, stepTrash, spawnUrine, stepUrine, type TrashProjectile, type UrineEffect } from "../events/effects";
 import { BalanceMonitor, TeamFallWatcher, PropinaMeter, newStats } from "./coop";
+import { choosePortableSpot, PortableInventory, PORTABLE_PER_CLIMBER_DEFAULT } from "./portableAnchor"; // T92
 import { WeatherSystem } from "./weather";
 import { SnowSystem } from "./snow"; // T61: nevada a cotas altas
 import { resolveDayPreset } from "./daycycle"; // T61: hora del día
@@ -130,6 +131,9 @@ export class SherpasMatch {
   private unsubscribes: (() => void)[] = [];
   /** T60 RED: último estado de HUD construido (a 10 Hz) para el snapshot. */
   private lastHud: HudTickState | null = null;
+  /** T92 ANCLAJES PORTÁTILES: inventario por escalador + presas colocadas. */
+  private portableInv = new PortableInventory(PORTABLE_PER_CLIMBER_DEFAULT);
+  private placedPortables: HoldInstance[] = [];
   private lastMmMeta: { key: string; fracA: number; fracB: number; campFrac: number; metersLeft: number; campId: string | null; xA: number; xB: number; cps: { frac: number; reached: boolean }[] } | null = null;
   /** T60 RED: tramo del minimapa ya enviado (holdsStatic solo al cambiar). */
   private mmSentKey = "";
@@ -192,6 +196,8 @@ export class SherpasMatch {
     this.data = deps.data;
     this.wallFrontZ = this.data.wallGen.wall.zFront;
     this.wallWidthM = this.data.wallGen.wall.widthM;
+    // T92: el tuning puede ajustar los anclajes portátiles por escalador.
+    this.portableInv = new PortableInventory(this.data.tuning.coop?.portableAnchorsPerClimber ?? PORTABLE_PER_CLIMBER_DEFAULT);
     const preset = this.preset;
     const seed = deps.choice.resume && deps.resumeSave ? deps.resumeSave.seed : deps.choice.seed;
 
@@ -422,7 +428,74 @@ export class SherpasMatch {
       // CUERDA COOPERATIVA (petición del jugador): anclarse / dar impulso.
       if (intent.anchor) this.doToggleAnchor(intent.playerId);
       if (intent.impulse) this.doGiveImpulse(intent.playerId);
+      // T92 ANCLAJES PORTÁTILES (petición del jugador): colocar uno en la pared.
+      if (intent.place) this.doPlacePortableAnchor(intent.playerId);
     }
+  }
+
+  // ---------- T92 anclajes portátiles ----------
+
+  /** COLOCAR ANCLAJE PORTÁTIL: gasta 1 del inventario del escalador y nace una
+   *  presa firme en una posición FACTIBLE de la pared — alcanzable por una de
+   *  sus extremidades libres (misma sonda que canReach), separada de las presas
+   *  existentes y sobre el plano z correcto (salientes/entrantes incluidos).
+   *  A partir de ahí se agarra como CUALQUIER anclaje (y sirve de seguro). */
+  private doPlacePortableAnchor(p: 0 | 1): void {
+    const rig = this.sherpas[p];
+    const g = this.data.wallGen;
+    if (this.portableInv.remaining(p) <= 0) {
+      this.d.audio.play("release");
+      this.d.hud.subtitle(this.d.hud.t("hud.portableEmpty"), 2.2);
+      return;
+    }
+    if (rig.ropeState !== "climbing") {
+      this.d.hud.subtitle(this.d.hud.fmt("hud.portableNeedClimb", { name: `P${p + 1}` }), 2.2);
+      return;
+    }
+    // sondas de las extremidades LIBRES (las ancladas no pueden alcanzar nada)
+    const probes = LIMBS
+      .filter((l) => !rig.states.get(l)!.anchored)
+      .map((l) => {
+        const pr = rig.reachProbe(l);
+        return { ax: pr.a.x, ay: pr.a.y, az: pr.a.z, bx: pr.b.x, by: pr.b.y, bz: pr.b.z, reachM: pr.reachM };
+      });
+    if (!probes.length) {
+      this.d.hud.subtitle(this.d.hud.t("hud.portableNeedFree"), 2.4);
+      return;
+    }
+    const spot = choosePortableSpot({
+      aimX: rig.aim.x,
+      aimY: rig.aim.y,
+      probes,
+      holds: [...this.anchors.holds.values()].map((h) => h.pos),
+      halfWidthM: this.wallWidthM / 2,
+      marginXM: g.sample.marginXM,
+      yMin: 1.2,
+      yMax: this.gen.layout.totalHeightM - 0.2,
+      zOf: (y: number): number => this.gen.zAt(rig.aim.x, y),
+      minDistM: Math.max(0.42, g.sample.minDistanceM * 0.85),
+    });
+    if (!spot) {
+      this.d.hud.subtitle(this.d.hud.t("hud.portableNoSpot"), 2.4);
+      return;
+    }
+    this.portableInv.consume(p);
+    const hold: HoldInstance = {
+      id: `pa${this.placedPortables.length}_${p}`,
+      pos: v3(spot.x, spot.y, spot.z),
+      radius: g.sample.holdRadiusMax,
+      type: "rock_firm",
+      bandIndex: this.gen.bandIndexOf(spot.y),
+      camp: false,
+      portable: true,
+    };
+    this.anchors.registerHolds([hold]);
+    this.placedPortables.push(hold);
+    this.mmCache = null; // el minimapa del tramo ahora incluye el anclaje nuevo
+    this.d.scene.addHolds([hold], this.holdColors());
+    this.d.audio.play("grab");
+    this.d.hud.subtitle(this.d.hud.fmt("hud.portablePlaced", { left: String(this.portableInv.remaining(p)) }), 2.6);
+    this.d.bus.emit("PortableAnchorPlaced", { id: hold.id, x: spot.x, y: spot.y, z: spot.z, p });
   }
 
   // ---------- cuerda cooperativa (Task 37, petición del jugador) ----------
@@ -1868,6 +1941,14 @@ export class SherpasMatch {
 
   /** Info de mundo que el GUEST necesita ANTES del primer snapshot (construye
    *  la MISMA pared desde la semilla; los checkpoints van aparte). */
+  /** Sonda E2E T92: inventario de anclajes portátiles y colocados. */
+  portableProbe(): { left: [number, number]; placed: { id: string; x: number; y: number }[] } {
+    return {
+      left: [this.portableInv.remaining(0), this.portableInv.remaining(1)],
+      placed: this.placedPortables.map((h) => ({ id: h.id, x: h.pos.x, y: h.pos.y })),
+    };
+  }
+
   netWorldInfo(): { cpsYs: number[]; wallFrontZ: number; wallWidthM: number; wallHeightM: number } {
     return {
       cpsYs: this.cps.list.map((c) => c.y),
@@ -2001,6 +2082,7 @@ export class SherpasMatch {
       propinaMax: this.data.hud.propina.maxValue,
       resting: this.camps.resting,
       richState: this.brain.state,
+      portable: [this.portableInv.remaining(0), this.portableInv.remaining(1)], // T92
     };
     this.lastHud = st; // T60 RED: el snapshot reutiliza este estado
     this.d.hud.update(st);
@@ -2046,6 +2128,13 @@ export class SherpasMatch {
                     : "normal",
           occupied: 0,
         });
+      }
+      // T92: los anclajes PORTÁTILES colocados también salen en el minimapa.
+      for (const h of this.placedPortables) {
+        if (h.pos.y < yLow - 0.4 || h.pos.y > yHigh + 0.4) continue;
+        if (idx.has(h.id)) continue;
+        idx.set(h.id, base.length);
+        base.push({ x: normX(h.pos.x), y: (h.pos.y - yLow) / span, kind: "normal", occupied: 0 });
       }
       this.mmCache = { key: mmKey, holds: base, idx };
     }
@@ -2101,6 +2190,7 @@ export class SherpasMatch {
       `A(${waD.x.toFixed(2)},${waD.y.toFixed(2)}) B(${wbD.x.toFixed(2)},${wbD.y.toFixed(2)}) R(${rD.x.toFixed(2)},${rD.y.toFixed(2)}) anclas ${this.sherpas[0].anchorsCount()}+${this.sherpas[1].anchorsCount()}` +
       ` · cuerda A:${this.sherpas[0].ropeState} B:${this.sherpas[1].ropeState}` +
       ` · cota ${this.cps.reachedCount()}/${this.cps.list.length} · ancla A:${this.sherpas[0].belaying ? "SÍ" : "no"} B:${this.sherpas[1].belaying ? "SÍ" : "no"}` +
+      ` · portátiles A:${this.portableInv.remaining(0)} B:${this.portableInv.remaining(1)} (puestos ${this.placedPortables.length})` +
       (this.dragLimb ? ` · arrastre ${this.dragLimb}` : ""),
     );
     // sonda E2E (DOM compartido: los eval del agente no ven globals de la página).
