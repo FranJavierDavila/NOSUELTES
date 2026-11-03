@@ -6,7 +6,7 @@
 import { describe, it, expect } from "vitest";
 import {
   GROUND_TINT_DEFAULTS, GROUND_KIND, resolveGroundTintCfg, groundMaterialAt,
-  computeGroundTint, scatterDrifts, cabinBoulderRing,
+  computeGroundTint, scatterDrifts, cabinBoulderRing, scatterFieldBoulders,
   type GroundTintCtx,
 } from "../../src/game/sherpas/world/groundTint";
 
@@ -153,5 +153,61 @@ describe("T98 — decoro determinista", () => {
       expect(s).toBeLessThanOrEqual(0.68);
       expect(Math.hypot(x - CTX.cabin!.x, z - CTX.cabin!.z)).toBeLessThan(CTX.cabin!.r * 1.05);
     }
+  });
+});
+
+describe("T101 — suelo familia AZUL de la Base.glb", () => {
+  const cfg = resolveGroundTintCfg(null);
+
+  it("la media de color del suelo sigue por encima del umbral del smoke (0.75)", () => {
+    // rejilla REAL del suelo: CreateGround 40×24 con 64×40 subdivisiones
+    const pos = new Float32Array(65 * 41 * 3);
+    let p = 0;
+    for (let j = 0; j < 41; j++) {
+      for (let i = 0; i < 65; i++) {
+        pos[p * 3] = -20 + (i / 64) * 40;
+        pos[p * 3 + 1] = 0;
+        pos[p * 3 + 2] = -12 + (j / 40) * 24;
+        p++;
+      }
+    }
+    const out = computeGroundTint(pos, cfg, CTX);
+    let sum = 0;
+    for (const v of out) sum += v;
+    const mean = sum / out.length;
+    expect(mean).toBeGreaterThan(0.78); // el smoke exige > 0.75 (margen 0.03)
+  });
+
+  it("el conjunto es más AZUL que cálido (b medio > r medio en piedra y hielo)", () => {
+    const full = { ...cfg, ctx: CTX };
+    for (const [x, z] of [[7.5, 0.1], [8.2, -6.5], [2.2, 6.4]] as const) {
+      const [r, g, b, kind] = groundMaterialAt(x, z, full);
+      if (kind === GROUND_KIND.stone || kind === GROUND_KIND.ice) {
+        expect(b).toBeGreaterThan(r); // la familia azulada del GLB, no gris cálido
+        expect(b).toBeGreaterThan(g);
+      }
+    }
+  });
+
+  it("tarrones de campo: suficientes, fuera de franja/pedriz/explanada y acotados", () => {
+    const field = scatterFieldBoulders(cfg, CTX);
+    expect(field.length).toBeGreaterThanOrEqual(16);
+    for (const [x, z, s] of field) {
+      expect(s).toBeGreaterThanOrEqual(0.16);
+      expect(s).toBeLessThanOrEqual(0.5);
+      if (Math.abs(x) < CTX.corridor.halfX + 0.9 && z > CTX.corridor.zMin - 0.5 && z < CTX.corridor.zMax + 0.9) {
+        throw new Error(`tarrón en la franja de caída: ${x},${z}`);
+      }
+      if (z < CTX.wallZ + 1.1) throw new Error(`tarrón en el pedriz: ${x},${z}`);
+      if (Math.hypot(x - CTX.cabin!.x, z - CTX.cabin!.z) < CTX.cabin!.r + 2.1) {
+        throw new Error(`tarrón en la explanada del GLB: ${x},${z}`);
+      }
+    }
+  });
+
+  it("tarrones de campo: deterministas", () => {
+    const a = scatterFieldBoulders(cfg, CTX);
+    const b = scatterFieldBoulders(cfg, CTX);
+    expect(a).toEqual(b);
   });
 });

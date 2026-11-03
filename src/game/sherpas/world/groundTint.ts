@@ -13,10 +13,14 @@
 // de ella la piedra se reduce a la mitad para que el punto de aterrizaje siga
 // siendo legible (misma razón por la que el pedriz la aplana, T56).
 //
-// La PALETA es la del campamento GLB (muestreada de la captura T93): piedra
-// gris cálida, nieve blanca fría, hielo celeste pálido. El material PBR del
-// suelo pasa a albedo casi blanco: el TONO lo portan estos colores por
-// vértice (igual que la pared T55: textura/albedo neutro + vértice manda).
+// La PALETA es la del campamento GLB (muestreada de la textura REAL de
+// Base.glb en T101: dominante azul glaciar con rocas oscuras). T101 la
+// ENFRIÓ (petición: «el suelo que recuerde mucho más al material de la
+// base.glb, tonos azulados… haciéndolo extensible a todo el suelo»): nieve
+// azulada, piedra gris-AZULada del macizo y placas de hielo glacial. El
+// material PBR del suelo pasa a albedo casi blanco: el TONO lo portan estos
+// colores por vértice (igual que la pared T55: textura/albedo neutro +
+// vértice manda).
 
 export interface GroundTintCtx {
   /** z de la cara del muro (wallFrontZ ≈ −0.3): el talud de piedra vive cerca. */
@@ -42,7 +46,7 @@ export interface GroundTintCfg {
 export const GROUND_TINT_DEFAULTS: GroundTintCfg = {
   enabled: true,
   stoneCover: 0.42,
-  iceAmount: 0.85,
+  iceAmount: 0.95, // T101: el glaciar azul de la base se nota más desde el aire
   cabinRingM: 1.7,
   seed: 90210,
 };
@@ -102,12 +106,14 @@ const smooth = (a: number, b: number, v: number): number => {
 };
 
 // --- paleta (multiplicadores sobre albedo casi blanco) ---
-// Piedra = familia de la cabaña: gris cálido de la Base.glb (piedra del muro
-// de piedra vista en la captura T93), con variación de macizo en el shader.
+// T101 — FAMILIA AZUL DE LA BASE.GLB: textura muestreada (dominantes
+// #6080e0/#6060e0 azules + rocas oscuras #402020). La saturación cruda del
+// GLB se modula para el terreno (el PBR del juego la multiplica por el HDRI):
+// nieve azulada, piedra gris-AZUL del macizo y hielo glacial bien presente.
 
-const SNOW = [0.93, 0.955, 0.975] as const;
-const STONE = [0.6, 0.565, 0.525] as const;
-const ICE = [0.76, 0.885, 0.97] as const;
+const SNOW = [0.905, 0.93, 0.962] as const;
+const STONE = [0.505, 0.532, 0.605] as const;
+const ICE = [0.60, 0.745, 0.90] as const;
 
 export const GROUND_KIND = { snow: 0, stone: 1, ice: 2 } as const;
 
@@ -129,10 +135,11 @@ export function groundMaterialAt(x: number, z: number, ctx: GroundTintCfg & { ct
   const corridor = Math.abs(x) < c.corridor.halfX && z > c.corridor.zMin && z < c.corridor.zMax ? 1 : 0;
   const stoneA = 0.86 - stoneCover * 0.55; // calibrado sobre la distribución real del fbm
   const stone = smooth(stoneA, stoneA + 0.09, nStone + boost) * (1 - 0.55 * corridor);
-  // 2) HIELO: placas en depresiones (ruido de sombreado bajo) donde no hay piedra.
+  // 2) HIELO: placas en depresiones (ruido de sombreado bajo) donde no hay
+  //    piedra. T101: umbral más bajo → el glaciar azul se ve desde el aire.
   const nShade = fbm(x * 0.33, z * 0.33, (seed ^ 0x5eed) >>> 0);
   const nIce = fbm(x * 0.78 + 13.1, z * 0.78 + 7.7, (seed ^ 0x1ce) >>> 0);
-  const ice = smooth(0.74, 0.84, nIce) * smooth(0.62, 0.4, nShade) * (1 - stone) * iceAmount;
+  const ice = smooth(0.71, 0.82, nIce) * smooth(0.62, 0.4, nShade) * (1 - stone) * iceAmount;
   // 3) composición: nieve sombreada por ventisca, piedra con macizo, hielo pálido.
   const shade = 0.86 + 0.14 * nShade;
   const mac = 1 + (vnoise(x * 0.21, z * 0.21, (seed ^ 0x77aa) >>> 0) - 0.5) * 0.2;
@@ -183,7 +190,7 @@ export function computeGroundTint(positions: ArrayLike<number>, cfg: GroundTintC
 export function scatterIce(cfg: GroundTintCfg, ctx: GroundTintCtx): [number, number, number, number][] {
   const out: [number, number, number, number][] = [];
   const seed = (cfg.seed ^ 0x1ce5) >>> 0;
-  for (let k = 0; k < 260 && out.length < 8; k++) {
+  for (let k = 0; k < 400 && out.length < 14; k++) {
     const r1 = vnoise(k * 1.31 + 0.7, k * 0.77 + 3.1, seed);
     const r2 = vnoise(k * 0.71 + 9.2, k * 1.17 + 5.5, seed ^ 0x2f);
     const r3 = vnoise(k * 1.9 + 2.2, k * 0.53 + 8.8, seed ^ 0x4a);
@@ -252,6 +259,36 @@ export function cabinBoulderRing(cabinX: number, cabinZ: number, cabinR: number,
     if (Math.abs(x) < ctx.corridor.halfX - 0.2 && z > ctx.corridor.zMin && z < ctx.corridor.zMax) continue;
     if (z > ctx.wallZ + 1.2) continue;
     const s = 0.3 + vnoise(k * 3.3, 2.2, seed ^ 0x6b) * 0.38;
+    out.push([x, z, s]);
+  }
+  return out;
+}
+
+/**
+ * T101 — TARRONES DE CAMPO [x, z, escala]: trozos de roca SOBRESALIENTES por
+ * TODO el suelo visible (petición: «material que recuerde mucho más al
+ * material de la base.glb… trozos sobresalientes de rocas… haciéndolo
+ * extensible a todo el suelo que vemos»), de la MISMA familia de roca que el
+ * anillo del campamento: la base deja de ser una isla. Determinista; fuera de
+ * la franja de caída, del pie del muro (ahí viven las rocas del pedriz) y de
+ * la explanada del GLB (ahí manda su anillo).
+ */
+export function scatterFieldBoulders(cfg: GroundTintCfg, ctx: GroundTintCtx): [number, number, number][] {
+  const out: [number, number, number][] = [];
+  const seed = (cfg.seed ^ 0x101b) >>> 0;
+  for (let k = 0; k < 500 && out.length < 24; k++) {
+    const r1 = vnoise(k * 1.23 + 2.6, k * 0.71 + 5.4, seed);
+    const r2 = vnoise(k * 0.67 + 8.8, k * 1.37 + 1.5, seed ^ 0x3c);
+    const r3 = vnoise(k * 1.77 + 6.1, k * 0.91 + 7.3, seed ^ 0x59);
+    const x = (r1 - 0.5) * 2 * 18.5; // suelo visible: 40 m de ancho
+    const z = (r2 - 0.5) * 2 * 10.5; // … 24 de fondo (del pedriz al borde)
+    // franja de caída con colchón (aterrizaje siempre legible)
+    if (Math.abs(x) < ctx.corridor.halfX + 0.9 && z > ctx.corridor.zMin - 0.5 && z < ctx.corridor.zMax + 0.9) continue;
+    // pie del muro/pedriz: territorio del derrubio (scatterRocks)
+    if (z < ctx.wallZ + 1.1) continue;
+    // explanada del campamento: su anillo de bloques ya abraza el GLB
+    if (ctx.cabin && Math.hypot(x - ctx.cabin.x, z - ctx.cabin.z) < ctx.cabin.r + 2.1) continue;
+    const s = 0.16 + r3 * 0.34; // pequeños-medianos: composición, no obstáculos
     out.push([x, z, s]);
   }
   return out;

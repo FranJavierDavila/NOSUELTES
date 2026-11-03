@@ -110,7 +110,7 @@ import {
 } from "../world/baseCamp"; // T56: faldones de continuidad + pedriz
 import {
   cabinBoulderRing, computeGroundTint, resolveGroundTintCfg, scatterDrifts,
-  type GroundTintCtx,
+  scatterFieldBoulders, type GroundTintCtx,
 } from "../world/groundTint"; // T98: suelo alpino integrado (nieve+hielo+piedra)
 import {
   buildSideMassifGeometry, resolveSideMassifCfg, type SideMassifCfg,
@@ -1078,7 +1078,9 @@ export class SherpaScene {
     };
     const fpos = floor.getVerticesData(VertexBuffer.PositionKind);
     if (fpos) floor.setVerticesData(VertexBuffer.ColorKind, computeGroundTint(fpos, gCfg, this.groundTintCtx));
-    this.floorMat = matPBR(this.scene, "snowFloor", "#eef3f8", { rough: 0.88 });
+    // T101: albedo con PUNTO AZUL (la textura de Base.glb es azul glaciar):
+    // el tinte por vértice manda, este sesgo refuerza la familia del GLB.
+    this.floorMat = matPBR(this.scene, "snowFloor", "#e8eef7", { rough: 0.88 });
     this.floorBase = this.floorMat.albedoColor.clone();
     floor.material = this.floorMat;
     floor.receiveShadows = true;
@@ -1269,7 +1271,8 @@ export class SherpaScene {
     // ROCAS SUELTAS: 3 masters low-poly deformados + instancias sembradas
     // (fuera de la franja de caída y de la cabaña): 3 draw calls.
     // T98: tono #7b766e — más cercano a la piedra gris de la Base.glb.
-    const rockMat = matPBR(this.scene, "screeRockM", "#736e67", { rough: 0.95 });
+    // T101: #6e7078 — gris AZULADO (familia de la textura del GLB).
+    const rockMat = matPBR(this.scene, "screeRockM", "#6e7078", { rough: 0.95 });
     const masters: Mesh[] = [];
     const rngR = makeRng((cfg.seed ^ 0x0770) >>> 0);
     for (let k = 0; k < 3; k++) {
@@ -1367,6 +1370,29 @@ export class SherpaScene {
         merged.name = "snowDrifts";
         merged.freezeWorldMatrix();
       }
+      // T101 — TARRONES DE CAMPO: la familia de roca de la Base.glb SOBRESALE
+      // por TODO el suelo visible (petición: «trozos sobresalientes de rocas
+      // como muestra la base sherpa… haciéndolo extensible a todo el suelo»).
+      // Mismo master+material que el anillo del campamento (continuidad de
+      // piedra) + gorro de nieve en los grandes: el lenguaje material del GLB
+      // extendido a la montaña entera. Fuera de franja/pedriz/explanada
+      // (scatterFieldBoulders) y sin colisión: composición, no obstáculos.
+      for (const [fx, fz, fs] of scatterFieldBoulders(gTint, this.groundTintCtx)) {
+        const inst = boulderMaster.createInstance(`fieldBoulder${this.baseCampStats.rocks}`);
+        inst.position.set(fx, fs * 0.34, fz);
+        inst.scaling.set(fs * (0.9 + rngR.next() * 0.5), fs * (0.6 + rngR.next() * 0.45), fs * (0.9 + rngR.next() * 0.5));
+        inst.rotation.y = rngR.next() * Math.PI * 2;
+        inst.freezeWorldMatrix();
+        this.castShadow(inst);
+        this.baseCampStats.rocks++;
+        if (fs >= 0.36) {
+          const cap = snowCapMaster.createInstance(`fieldCap${this.baseCampStats.rocks}`);
+          cap.position.set(fx, fs * 0.72, fz);
+          cap.scaling.set(fs * 0.62, fs * 0.22, fs * 0.58);
+          cap.rotation.y = rngR.next() * Math.PI;
+          cap.freezeWorldMatrix();
+        }
+      }
     }
 
     // CABAÑA SHERPA (relleno temporal; luego modelos propios del jugador)
@@ -1390,7 +1416,9 @@ export class SherpaScene {
     ped.wrapV = Texture.WRAP_ADDRESSMODE;
     ped.anisotropicFilteringLevel = 4;
     m.albedoTexture = ped;
-    m.albedoColor = new Color3(0.98, 0.96, 0.92); // casi blanco: manda la textura
+    // T101: multiplicador FRÍO (antes (0.98,0.96,0.92) cálido) — el pedriz y
+    // sus rocas leen de la misma familia azulada que la Base.glb.
+    m.albedoColor = new Color3(0.945, 0.958, 0.995);
     this.baseCampStats.pedrizaTex = true;
     m.metallic = 0;
     m.roughness = 0.95;
@@ -3503,9 +3531,17 @@ export class SherpaScene {
       // el rig articulado (T84) les aplica el Δ del marco del torso SENTADO y
       // acaban apuntando hacia fuera/abajo — se ve una correa suelta flotando
       // tras la espalda y bajo la tabla (verificado E2E: ocultando tirantes
-      // la escena queda limpia). La mochila (maciza) se queda: asienta bien.
+      // la escena queda limpia).
+      // T101 — MOCHILA FUERA TAMBIÉN (petición del jugador: «sigue teniendo
+      // algún objeto en su interior que se hace muy evidente cuando cae, una
+      // especie de caja amarilla que no forma parte de nuestro personaje»).
+      // La mochila del GLB del rico es una CAJA lisa de 24 vértices con el
+      // dorado de identidad (#d4af37): al caer el ragdoll y asomar bajo el
+      // torso texturizado se lee como un cajón ajeno al personaje. Las
+      // cuerdas cuelgan de las mochilas de los ESCALADORES (plank.ts), no de
+      // la suya: aquí es decoración y sobra.
       for (const [name, node] of inst.pieceEntries()) {
-        if (name === "tirante_izq" || name === "tirante_der") {
+        if (name === "tirante_izq" || name === "tirante_der" || name === "mochila") {
           for (const m of node.getChildMeshes()) m.isVisible = false;
           if (node instanceof Mesh) node.isVisible = false;
         }
@@ -4986,6 +5022,52 @@ export class SherpaScene {
     this.tmpProj.set(p.x, p.y, p.z);
     const v = Vector3.ProjectToRef(this.tmpProj, this.idMatrix, this.scene.getTransformMatrix(), this.projViewport.vp, this.projResult);
     return { x: (v.x / vp) * 100, y: (v.y / vh) * 100 };
+  }
+
+  /** T101 INVENTARIO DE MOCHILA: posición en pantalla (px CSS del canvas) de
+   *  la mochila del escalador (pieza «mochila» del GLB; cápsulas → la caja del
+   *  pack). null si no hay títere o la mochila está fuera de cámara. */
+  backpackScreenPx(player: 0 | 1): { x: number; y: number } | null {
+    const canvas = this.engine.getRenderingCanvas();
+    if (!canvas) return null;
+    let world: Vector3 | null = null;
+    const inst = this.puppet[player];
+    if (inst) {
+      for (const [name, node] of inst.pieceEntries()) {
+        if (name !== "mochila") continue;
+        node.computeWorldMatrix(true);
+        world = node.getAbsolutePosition().clone();
+      }
+    } else {
+      const pack = (this.rigVisuals[player] as (RigVisual & { pack?: Mesh }) | undefined)?.pack;
+      if (pack) {
+        pack.computeWorldMatrix(true);
+        world = pack.getAbsolutePosition().clone();
+      }
+    }
+    if (!world) return null;
+    const pct = this.projectToScreenCss({ x: world.x, y: world.y, z: world.z });
+    if (!Number.isFinite(pct.x) || !Number.isFinite(pct.y)) return null;
+    if (pct.x < -5 || pct.x > 105 || pct.y < -5 || pct.y > 105) return null;
+    return { x: (pct.x / 100) * canvas.clientWidth, y: (pct.y / 100) * canvas.clientHeight };
+  }
+
+  /** T101: ¿el punto (px CSS del canvas) cae sobre la mochila de un escalador?
+   *  Devuelve el escalador MÁS CERCANO dentro del radio de clic, o null. */
+  backpackAt(cssX: number, cssY: number): 0 | 1 | null {
+    const radiusPx = 52; // generoso: la mochila es pequeña en pantalla
+    let best: 0 | 1 | null = null;
+    let bestD = radiusPx * radiusPx;
+    for (const p of [0, 1] as const) {
+      const s = this.backpackScreenPx(p);
+      if (!s) continue;
+      const d = (s.x - cssX) * (s.x - cssX) + (s.y - cssY) * (s.y - cssY);
+      if (d <= bestD) {
+        bestD = d;
+        best = p;
+      }
+    }
+    return best;
   }
 
   /** Métricas de rendimiento para la sonda E2E (se refrescan cada ventana de

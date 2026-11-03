@@ -103,7 +103,10 @@
     "portableEmpty": "No portable anchors left",
     "portableNoSpot": "No feasible spot for an anchor here",
     "portableNeedFree": "Release a limb to place the anchor",
-    "portableNeedClimb": "{name} cannot place anchors while falling"
+    "portableNeedClimb": "{name} cannot place anchors while falling",
+    "backpackTitle": "Backpack · Player {n}",
+    "itemAnchor": "Anchor",
+    "backpackUse": "Click the anchor to place it on the wall"
   },
   "limb": {
     "hand_l": "L.Hand",

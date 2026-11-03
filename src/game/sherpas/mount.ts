@@ -87,6 +87,24 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
   });
   input.attach(window);
 
+  // T101 INVENTARIO DE MOCHILA: el «usar» del hueco coloca el anclaje por la
+  // misma vía que la tecla (solo partida local: el invitado no decide nada).
+  hud.setBackpackUseHandler((p) => state.match?.requestPortablePlace(p));
+  // Clic sobre la mochila de un escalador → ventana-interior de la mochila.
+  // Hit-test por proyección a coordenadas de pantalla (sin scene.pick, la
+  // escena decide 500+ instancias con otro sistema). En menú (sin match) o
+  // invitado el clic no hace nada.
+  opts.canvas.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || state.disposed) return;
+    if (!state.scene || !state.match || state.guest) return;
+    const rect = opts.canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const p = state.scene.backpackAt(x, y);
+    if (p === null) return;
+    hud.backpackOpen(p, x, y, state.match.portableRemaining(p));
+  });
+
   const makePreviewScene = async (seed?: number): Promise<SherpaScene> => {
     const scene = await SherpaScene.create(opts.canvas, data.camera, data.hud, data.tuning.perf, data.vfx, data.wallGen.relief ?? null, data.climber);
     const gen = new WallGenerator(

@@ -103,7 +103,10 @@
     "portableEmpty": "No quedan anclajes portátiles",
     "portableNoSpot": "Aquí no hay sitio factible para un anclaje",
     "portableNeedFree": "Suelta una extremidad para colocar el anclaje",
-    "portableNeedClimb": "{name} no puede colocar anclajes colgado en caída"
+    "portableNeedClimb": "{name} no puede colocar anclajes colgado en caída",
+    "backpackTitle": "Mochila · Jugador {n}",
+    "itemAnchor": "Anclaje",
+    "backpackUse": "Clic en el anclaje: colocarlo en la pared"
   },
   "limb": {
     "hand_l": "M.Izq",

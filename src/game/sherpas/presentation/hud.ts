@@ -200,6 +200,32 @@ const CSS = `
 .sphud .gear { position: absolute; top: 12px; right: 12px; width: 44px; height: 44px; padding: 0; font-size: 21px; line-height: 1; border-radius: 50%; background: rgba(10,14,18,.72); backdrop-filter: blur(4px); }
 .sphud .gear:hover { background: rgba(38,49,61,.9); }
 .sphud .net-status { font-size:13px; min-height:20px; text-align:center; opacity:.9; margin:8px 0; }
+/* T101 INVENTARIO DE MOCHILA: ventana con la forma del INTERIOR de la mochila
+ * (tejido ocre, solapa en la boca y costura punteada). Abre al pulsar la
+ * mochila del escalador, se cierra cuando el puntero la abandona y el hueco
+ * del Anclaje muestra el icono con el contador encima. */
+.sphud .bpk { position:absolute; width:236px; padding:30px 12px 12px; border-radius:16px 16px 20px 20px; z-index:30;
+  background: linear-gradient(180deg, #6d5335, #57422a 58%, #4a3823);
+  box-shadow: 0 14px 38px rgba(0,0,0,.6), inset 0 0 0 2px rgba(0,0,0,.35), inset 0 2px 0 rgba(255,225,170,.14);
+  transform-origin: 26px 92%; pointer-events:auto;
+  transition: transform .19s cubic-bezier(.34,1.56,.64,1), opacity .15s ease-out; }
+.sphud .bpk::before { content:""; position:absolute; left:6px; right:6px; top:6px; height:20px; border-radius:12px 12px 6px 6px;
+  background:linear-gradient(180deg,#7d6440,#6a5233); box-shadow: inset 0 -3px 6px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,235,190,.2); }
+.sphud .bpk::after { content:""; position:absolute; inset:34px 8px 8px; border:1px dashed rgba(255,228,170,.28); border-radius:12px; pointer-events:none; }
+.sphud .bpk-title { position:relative; z-index:1; font-size:11.5px; font-weight:700; letter-spacing:.05em; color:#f3e3c2; margin:0 0 8px 2px; text-shadow:0 1px 2px rgba(0,0,0,.55); }
+.sphud .bpk-slot { position:relative; z-index:1; display:block; width:66px; padding:7px 4px 5px; border-radius:12px; background:rgba(30,22,12,.55); border:0; color:inherit; font:inherit; text-align:center; cursor:pointer;
+  box-shadow: inset 0 2px 8px rgba(0,0,0,.55), inset 0 0 0 1px rgba(255,230,180,.12); transition: transform .12s, background .12s; }
+.sphud .bpk-slot:hover { background:rgba(76,56,30,.9); transform:translateY(-1px); }
+.sphud .bpk-slot:disabled { opacity:.45; cursor:default; transform:none; }
+.sphud .bpk-ico { display:block; font-size:26px; line-height:1.15; filter:drop-shadow(0 2px 2px rgba(0,0,0,.5)); }
+.sphud .bpk-name { display:block; font-size:9.5px; font-weight:600; color:#e8d9b8; margin-top:2px; }
+.sphud .bpk-count { position:absolute; top:-8px; right:-8px; min-width:20px; height:20px; padding:0 5px; border-radius:10px; background:linear-gradient(180deg,#ffd76a,#e0a92f); color:#3a2b10; font-size:11px; font-weight:800; line-height:20px;
+  box-shadow:0 2px 6px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.55); }
+.sphud .bpk-hint { position:relative; z-index:1; font-size:10px; color:#cdbd9b; margin:8px 2px 0; opacity:.9; }
+/* pliegue (estado base) → despliegue (.open): crece desde la boca de la mochila */
+.sphud .bpk.hidden { display:none; }
+.sphud .bpk:not(.open) { transform: scale(.5) translateY(10px); opacity:0; }
+.sphud .bpk.open { transform: scale(1) translateY(0); opacity:1; }
 `;
 
 function esc(s: string): string {
@@ -227,6 +253,13 @@ export class SherpaHud {
   private choice: Partial<HudStartChoice> = { lang: "en" };
   /** T100: datos del menú que el re-render necesita (cambio de idioma). */
   private startOpts: { difficulties: string[]; saveCampLabel: string | null } | null = null;
+  /** T101 INVENTARIO DE MOCHILA: escalador con la ventana abierta (y su
+   *  contador vivo, refrescado desde update) + handler de «usar» (mount lo
+   *  conecta con match.requestPortablePlace en partida local). */
+  private bpkPlayer: 0 | 1 | null = null;
+  private bpkCountVal = 0;
+  private bpkUseHandler: ((p: 0 | 1) => void) | null = null;
+  private bpkCloseTimer = 0;
 
   // T61 — AJUSTES PERSISTENTES de clima/hora (localStorage defensivo, patrón
   // onboarding: un storage roto NUNCA rompe el menú).
@@ -291,6 +324,17 @@ export class SherpaHud {
       <div class="telegraph chip" data-e="telegraph"></div>
       <div class="subtitle-bar hidden" data-e="subtitle"></div>
       <div data-e="bubbles" style="position:absolute;inset:0;overflow:hidden"></div>
+      <!-- T101: ventana del INVENTARIO DE MOCHILA (abre al pulsar la mochila
+           del escalador; hueco del Anclaje con icono + contador encima). -->
+      <div class="bpk hidden" data-e="bpk">
+        <div class="bpk-title" data-e="bpkTitle"></div>
+        <button class="bpk-slot" data-e="bpkSlot" type="button">
+          <span class="bpk-count" data-e="bpkCount">0</span>
+          <span class="bpk-ico">⚓</span>
+          <span class="bpk-name" data-e="bpkName"></span>
+        </button>
+        <div class="bpk-hint" data-e="bpkHint"></div>
+      </div>
       <div class="debug" data-e="debug"></div>
       <div class="overlay hidden" data-e="help"><div class="panel" data-e="helpBody"></div></div>
       <div class="overlay hidden" data-e="pause"><div class="panel" style="text-align:center;max-width:340px">
@@ -315,6 +359,17 @@ export class SherpaHud {
     this.el.mmLgRecess!.textContent = this.t("hud.mmRecess");
     // VIÑETA DE PELIGRO: color desde datos (hud.json dangerVignette.color).
     if (hud.dangerVignette) this.el.vignette!.style.setProperty("--vc", hud.dangerVignette.color);
+    // T101 INVENTARIO DE MOCHILA: usar el Anclaje del hueco (sin stock → aviso)
+    // y CERRAR cuando el puntero abandona la ventana (petición del jugador).
+    this.el.bpkSlot!.addEventListener("click", () => {
+      if (this.bpkPlayer === null) return;
+      if (this.bpkCountVal <= 0) {
+        this.subtitle(this.t("hud.portableEmpty"), 2.2);
+        return;
+      }
+      this.bpkUseHandler?.(this.bpkPlayer);
+    });
+    this.el.bpk!.addEventListener("pointerleave", () => this.backpackClose());
   }
 
   t(path: string): string {
@@ -601,9 +656,75 @@ export class SherpaHud {
     // propina
     this.el.propinaVal!.textContent = String(Math.round(state.propina));
     this.el.propinaBar!.style.width = `${Math.round(Math.min(1, state.propina / Math.max(1, state.propinaMax)) * 100)}%`;
+    // T101: badge del inventario abierto — contador VIVO (cada anclaje colocado
+    // lo baja al instante; a cero el hueco se desactiva).
+    if (this.bpkPlayer !== null) this.backpackRefresh(port[this.bpkPlayer]);
     // subtítulos expiran
     if (performance.now() > this.subtitleUntil) this.el.subtitle!.classList.add("hidden");
     if (performance.now() > this.telegraphUntil) this.el.telegraph!.classList.remove("show");
+  }
+
+  // ---------- T101 inventario de mochila ----------
+
+  /** Conecta el «usar» del hueco (mount: match.requestPortablePlace). null
+   *  (invitado) → la ventana ni llega a abrirse. */
+  setBackpackUseHandler(fn: ((p: 0 | 1) => void) | null): void {
+    this.bpkUseHandler = fn;
+  }
+
+  /** ABRE la ventana-interior de la mochila del escalador junto al punto
+   *  pulsado (px CSS del canvas). Despliegue con rebote desde la boca. */
+  backpackOpen(player: 0 | 1, cssX: number, cssY: number, count: number): void {
+    if (this.bpkCloseTimer) {
+      clearTimeout(this.bpkCloseTimer);
+      this.bpkCloseTimer = 0;
+    }
+    const win = this.el.bpk!;
+    const wasHidden = win.classList.contains("hidden") || this.bpkPlayer !== player;
+    this.bpkPlayer = player;
+    this.el.bpkTitle!.innerHTML =
+      `<span class="p-dot" style="background:${SHERPA_HEX[player]}"></span>${esc(this.fmt("hud.backpackTitle", { n: player + 1 }))}`;
+    this.el.bpkName!.textContent = this.t("hud.itemAnchor");
+    this.el.bpkHint!.textContent = this.t("hud.backpackUse");
+    this.backpackRefresh(count);
+    if (wasHidden) {
+      win.classList.remove("hidden");
+      win.style.pointerEvents = "auto";
+      void win.offsetWidth; // reflow: el pliegue es estado inicial real
+      win.classList.add("open");
+    }
+    // anclada al clic, dentro del viewport (ventana ~236×150 px)
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    win.style.left = `${Math.round(Math.min(Math.max(cssX + 14, 8), vw - 248))}px`;
+    win.style.top = `${Math.round(Math.min(Math.max(cssY - 46, 8), vh - 170))}px`;
+  }
+
+  /** Contador vivo del hueco (lo llama update con el estado del match). */
+  backpackRefresh(count: number): void {
+    this.bpkCountVal = count;
+    if (this.el.bpkCount) this.el.bpkCount.textContent = String(count);
+    if (this.el.bpkSlot) (this.el.bpkSlot as HTMLButtonElement).disabled = count <= 0;
+  }
+
+  /** CIERRA con animación de pliegue. Lo dispara el pointerleave de la propia
+   *  ventana (petición: «sacar el puntero hace que se cierre»). */
+  backpackClose(): void {
+    if (this.bpkPlayer === null) return;
+    this.bpkPlayer = null;
+    const win = this.el.bpk!;
+    win.classList.remove("open");
+    win.style.pointerEvents = "none";
+    if (this.bpkCloseTimer) clearTimeout(this.bpkCloseTimer);
+    this.bpkCloseTimer = window.setTimeout(() => {
+      this.bpkCloseTimer = 0;
+      win.classList.add("hidden");
+    }, 210);
+  }
+
+  /** ¿Ventana de mochila visible? (sonda E2E / ajustes) */
+  backpackIsOpen(): boolean {
+    return this.bpkPlayer !== null;
   }
 
   // ---------- burbujas / subtítulos / banners ----------
@@ -755,6 +876,7 @@ export class SherpaHud {
   }
 
   showStart(opts: { difficulties: string[]; defaultPreset: string; seed: number; saveCampLabel: string | null; onGo: (c: HudStartChoice) => void; onHowToDone?: () => void; onNet?: () => void; onWeather?: (id: string) => void; onDaytime?: (id: string) => void; defaultWeather?: string; defaultDaytime?: string }): void {
+    this.backpackClose(); // T101: al volver al menú no queda ninguna mochila abierta
     this.opts = { onGo: opts.onGo, onHowToDone: opts.onHowToDone, onNet: opts.onNet, onWeather: opts.onWeather, onDaytime: opts.onDaytime };
     // T61: clima y hora PERSISTEN entre sesiones (localStorage defensivo); la
     // URL (?clima= / ?hora=) manda si el mount la trae — E2E determinista.

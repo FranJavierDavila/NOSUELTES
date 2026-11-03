@@ -100,6 +100,10 @@ export class SherpasMatch {
   private cps: CheckpointSystem;
   /** CUERDA COOPERATIVA: cooldown del impulso por jugador (simTime). */
   private impulseReadyAt: [number, number] = [0, 0];
+  /** T101 INVENTARIO DE MOCHILA: «usar anclaje» pedido desde la ventana del
+   *  HUD (clic en el hueco del Anclaje). Se consume en applyIntents como si
+   *  fuera el intent.place de teclado (mismas reglas y avisos). */
+  private uiPlacePending: [boolean, boolean] = [false, false];
   /** Último respawn (sonda E2E): desde dónde continuó la ascensión. */
   private lastRespawn: { kind: "camp" | "checkpoint" | "start"; y: number } | null = null;
   /** Última altura del equipo CON agarres (referencia PRE-caída para elegir la
@@ -429,11 +433,28 @@ export class SherpasMatch {
       if (intent.anchor) this.doToggleAnchor(intent.playerId);
       if (intent.impulse) this.doGiveImpulse(intent.playerId);
       // T92 ANCLAJES PORTÁTILES (petición del jugador): colocar uno en la pared.
+      // T101: la ventana de la mochila también lo pide (clic en el Anclaje).
       if (intent.place) this.doPlacePortableAnchor(intent.playerId);
+      if (this.uiPlacePending[intent.playerId]) {
+        this.uiPlacePending[intent.playerId] = false;
+        this.doPlacePortableAnchor(intent.playerId);
+      }
     }
   }
 
   // ---------- T92 anclajes portátiles ----------
+
+  /** T101 INVENTARIO DE MOCHILA: anclajes portátiles sin usar del escalador
+   *  (la ventana del HUD lee aquí el contador del badge). */
+  portableRemaining(p: 0 | 1): number {
+    return this.portableInv.remaining(p);
+  }
+
+  /** T101 INVENTARIO DE MOCHILA: «usar» desde la ventana (clic en el hueco del
+   *  Anclaje). Difiere a applyIntents: mismas reglas/avisos que la tecla. */
+  requestPortablePlace(p: 0 | 1): void {
+    this.uiPlacePending[p] = true;
+  }
 
   /** COLOCAR ANCLAJE PORTÁTIL: gasta 1 del inventario del escalador y nace una
    *  presa firme en una posición FACTIBLE de la pared — alcanzable por una de
