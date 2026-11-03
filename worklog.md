@@ -1860,3 +1860,19 @@ Stage Summary:
 - El suelo ya NO es un remiendo verde: nieve alpina con parches de piedra e hielo, la misma familia de tonos de la cabaña Base.glb.
 - El campamento ASIENTA en el terreno: anillo de bloques texturados con gorros de nieve y tarros pequeños; la piedra del campamento y la de la montaña son la misma.
 - La franja de caída sigue legible y la física no cambia (todo es color por vértice + decoro sin colisión).
+
+---
+Task ID: 98-push
+Agent: Z.ai (principal)
+Task: «Actualiza el github, y la página para poder jugar y verificarlo» (llega PAT por chat)
+
+Work Log:
+- El sandbox había perdido .token-github con el reciclado; buscado sin éxito en upload/, .env, .zscripts y entorno hasta que el jugador pegó el PAT en el chat. Guardado en .token-github (chmod 600, gitignored, nunca impreso).
+- Comprobaciones ANTES de empujar: token válido vía API (user FranJavierDavila, repo 200); .env idéntico al ya publicado en 9e3be6f (cero exposición nueva); el auto-commit b0c2f14 (infra) solo trae .worklog-tmp.md, bun.lock y capturas, sin secretos.
+- PUSH: 9e3be6f..b0c2f14 → origin/main (incluye T98 f81d177). Deploy Pages (Actions) en success tras ~2,5 min de sondeo.
+- agent-browser se quedó sordo con la página WebGL (daemon sin responder a snapshot/eval) → plan B: nueva sonda scripts/sonda-live-t98.py (Playwright + __SHERPAS_DEBUG) contra la URL pública https://franjavierdavila.github.io/NOSUELTES/?test=escalada.
+- RESULTADO EN PRODUCCIÓN: TODO VERDE (9/9) — floor 2.665 vértices/10.660 colores, nieve media RGB 0.857, albedo 0.93/0.95/0.97 (sin rastro del verde #79a054); 43 rocas; 7 bloques del anillo; 6 gorros de nieve; tarros 840 verts; pedriz nevado; 0 errores JS; 0 peticiones fallidas. Capturas en vivo: download/live-t98-general.png y live-t98-campamento.png (cabaña asentada en el anillo de bloques con nieve, banderines y pedriz a juego con el muro).
+
+Stage Summary:
+- GitHub actualizado (T98 en origin/main) y GitHub Pages re desplegado con éxito.
+- La web en vivo verificada E2E + visualmente: el jugador ya puede jugar el suelo alpino nevado de T98 en https://franjavierdavila.github.io/NOSUELTES/
