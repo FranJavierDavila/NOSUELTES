@@ -109,6 +109,10 @@ import {
   type BaseCampCfg, type GeomData,
 } from "../world/baseCamp"; // T56: faldones de continuidad + pedriz
 import {
+  cabinBoulderRing, computeGroundTint, resolveGroundTintCfg, scatterDrifts,
+  type GroundTintCtx,
+} from "../world/groundTint"; // T98: suelo alpino integrado (nieve+hielo+piedra)
+import {
   buildSideMassifGeometry, resolveSideMassifCfg, type SideMassifCfg,
 } from "../world/sideMassif"; // T62: macizos naturales (cortinas desplazadas)
 import { generateRopeColor, generateRopeNormalRGBA } from "../world/ropeTexture"; // T62: cuerda con bandas
@@ -501,6 +505,7 @@ export class SherpaScene {
   private baseRockMat: PBRMaterial | null = null; // material COMPARTIDO pedriz+faldones
   private flagWind: PlantWindPlugin | null = null; // viento propio de los banderines
   private baseCampStats = { enabled: false, screeTris: 0, spurTris: 0, rocks: 0, cabinPieces: 0, flags: 0, smoke: false, pedrizaTex: false, massifTris: 0 };
+  private groundTintCtx: GroundTintCtx | null = null; // T98: contexto del suelo alpino (franja de caída + campamento)
   /** T55 SONDA E2E: nº de chunks de roca con tinte por vértice aplicado. */
   rockTintChunks = 0;
   /** materiales PBR de roca creados (sonda E2E: material/triplanar/normales). */
@@ -1055,11 +1060,25 @@ export class SherpaScene {
       this.shadowGen?.addShadowCaster(merged, false);
     }
 
-    const floor = MeshBuilder.CreateGround("floor", { width: 40, height: 24 }, this.scene);
+    const floor = MeshBuilder.CreateGround("floor", { width: 40, height: 24, subdivisionsX: 64, subdivisionsY: 40 }, this.scene);
     floor.position.y = -0.02;
-    // T63 — VIVEZA: pradera alpina bajo la pared (antes losa lavada #dfe8ee que
-    // sumaba al conjunto plano y uniforme). La nevada la ENCALA (setSnowVisual).
-    this.floorMat = matPBR(this.scene, "snowFloor", "#79a054", { rough: 0.9 });
+    // T98 — SUELO ALPINO INTEGRADO (petición: «el suelo verde parece un
+    // remiendo… estamos en una zona alta de montaña con el suelo nevado y zona
+    // rocosa»): la pradera #79a054 muere. El tono lo portan COLORES POR
+    // VÉRTICE (groundTint.ts): nieve alpina dominante, parches de piedra de la
+    // familia de la cabaña (talud al pie del muro + anillo del campamento) y
+    // placas de hielo en depresiones. La franja de caída sigue más limpia
+    // (aterrizaje legible). El encalado T63 sigue vivo (base casi blanca).
+    const bcFloor = resolveBaseCampCfg((this.reliefRaw as { baseCamp?: unknown } | null)?.baseCamp);
+    const gCfg = resolveGroundTintCfg((this.reliefRaw as { groundTint?: unknown } | null)?.groundTint);
+    this.groundTintCtx = {
+      wallZ: this.reliefFaceZ,
+      corridor: { halfX: bcFloor.fallFlatXM + 0.6, zMin: bcFloor.fallFlatZMinM - 0.6, zMax: bcFloor.fallFlatZMaxM + 0.6 },
+      cabin: { x: SherpaScene.BASE_POS.x, z: SherpaScene.BASE_POS.z, r: 2.4 },
+    };
+    const fpos = floor.getVerticesData(VertexBuffer.PositionKind);
+    if (fpos) floor.setVerticesData(VertexBuffer.ColorKind, computeGroundTint(fpos, gCfg, this.groundTintCtx));
+    this.floorMat = matPBR(this.scene, "snowFloor", "#eef3f8", { rough: 0.88 });
     this.floorBase = this.floorMat.albedoColor.clone();
     floor.material = this.floorMat;
     floor.receiveShadows = true;
@@ -1249,7 +1268,8 @@ export class SherpaScene {
 
     // ROCAS SUELTAS: 3 masters low-poly deformados + instancias sembradas
     // (fuera de la franja de caída y de la cabaña): 3 draw calls.
-    const rockMat = matPBR(this.scene, "screeRockM", "#6f6a62", { rough: 0.95 });
+    // T98: tono #7b766e — más cercano a la piedra gris de la Base.glb.
+    const rockMat = matPBR(this.scene, "screeRockM", "#736e67", { rough: 0.95 });
     const masters: Mesh[] = [];
     const rngR = makeRng((cfg.seed ^ 0x0770) >>> 0);
     for (let k = 0; k < 3; k++) {
@@ -1279,6 +1299,74 @@ export class SherpaScene {
       inst.freezeWorldMatrix();
       this.castShadow(inst); // sombritas cortas sobre el pedriz
       this.baseCampStats.rocks++;
+    }
+
+    // T98 — EL CAMPO DE BLOQUES DEL CAMPAMENTO: la Base.glb vive rodeada de
+    // rocas grises y nieve; en el pedriz liso «flotaba» (petición: «parece un
+    // pegote»). Anillo de bloques de la MISMA familia (mismos masters+material
+    // que el pedriz) abrazando el GLB + GORRO DE NIEVE en los grandes (el
+    // lenguaje material del modelo extendido al terreno) — 0 coste de material.
+    const driftMat = matPBR(this.scene, "driftSnowM", "#f1f5f9", { rough: 0.72 });
+    const snowCapMaster = MeshBuilder.CreateIcoSphere("snowCapM", { radius: 1, subdivisions: 1 }, this.scene);
+    snowCapMaster.material = driftMat;
+    snowCapMaster.isVisible = false;
+    snowCapMaster.isPickable = false;
+    const gTint = resolveGroundTintCfg((this.reliefRaw as { groundTint?: unknown } | null)?.groundTint);
+    // T98 — master de BLOQUES con el material del pedriz: textura de clastos +
+    // estratos triplanar en ESPACIO MUNDO (el patrón continúa por roca y
+    // terreno: la piedra del campamento es la MISMA piedra que la montaña, no
+    // un pegote gris liso).
+    const boulderMaster = MeshBuilder.CreateIcoSphere("boulderM", { radius: 1, subdivisions: 2 }, this.scene);
+    {
+      const p = boulderMaster.getVerticesData(VertexBuffer.PositionKind);
+      if (p) {
+        const out = new Array<number>(p.length);
+        for (let i = 0; i < p.length; i += 3) {
+          const f = 0.68 + rngR.next() * 0.6;
+          out[i] = p[i]! * f;
+          out[i + 1] = p[i + 1]! * (0.55 + rngR.next() * 0.45);
+          out[i + 2] = p[i + 2]! * f;
+        }
+        boulderMaster.updateVerticesData(VertexBuffer.PositionKind, out);
+      }
+    }
+    boulderMaster.material = baseMat;
+    boulderMaster.isVisible = false;
+    boulderMaster.isPickable = false;
+    if (this.groundTintCtx) {
+      const ring = cabinBoulderRing(SherpaScene.BASE_POS.x, SherpaScene.BASE_POS.z, 2.4, this.groundTintCtx);
+      for (const [bx, bz, bs] of ring) {
+        const inst = boulderMaster.createInstance(`campBoulder${this.baseCampStats.rocks}`);
+        inst.position.set(bx, bs * 0.34, bz);
+        inst.scaling.set(bs * (0.9 + rngR.next() * 0.5), bs * (0.6 + rngR.next() * 0.45), bs * (0.9 + rngR.next() * 0.5));
+        inst.rotation.y = rngR.next() * Math.PI * 2;
+        inst.freezeWorldMatrix();
+        this.castShadow(inst);
+        this.baseCampStats.rocks++;
+        if (bs >= 0.42) {
+          const cap = snowCapMaster.createInstance(`snowCap${this.baseCampStats.rocks}`);
+          cap.position.set(bx, bs * 0.72, bz);
+          cap.scaling.set(bs * 0.62, bs * 0.22, bs * 0.58);
+          cap.rotation.y = rngR.next() * Math.PI;
+          cap.freezeWorldMatrix();
+        }
+      }
+      // TARRONES DE NIEVE: falda alrededor del campamento + cordón al pie del
+      // muro + salteados en el campo — UNA malla fusionada (1 draw call).
+      const driftParts: Mesh[] = [];
+      for (const [dx, dz, ds] of scatterDrifts(gTint, this.groundTintCtx)) {
+        const p = MeshBuilder.CreateIcoSphere(`drift${driftParts.length}`, { radius: ds, subdivisions: 1 }, this.scene);
+        p.position.set(dx, ds * 0.14, dz);
+        p.scaling.y = 0.3;
+        p.material = driftMat;
+        p.receiveShadows = true;
+        driftParts.push(p);
+      }
+      if (driftParts.length) {
+        const merged = Mesh.MergeMeshes(driftParts, true, true, undefined, false, false)!;
+        merged.name = "snowDrifts";
+        merged.freezeWorldMatrix();
+      }
     }
 
     // CABAÑA SHERPA (relleno temporal; luego modelos propios del jugador)

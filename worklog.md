@@ -1842,3 +1842,21 @@ Stage Summary:
 - El minimapa desaparece en móvil (táctil y pantallas de teléfono) y en ventanas estrechas; el escritorio lo conserva.
 - El Ricachón está LIMPIO por debajo: fuera la correa suelta (tirantes del GLB mal orientados por el rig sentado).
 - Las 5 caras del jugador aparecen en partida normal (las voces cotidianas las reparten) y cada bocadillo dice EXACTAMENTE lo que suena.
+
+---
+Task ID: 98
+Agent: Z.ai (principal)
+Task: «Mejorar la integración estética de la pared de escalada con los tonos de la caseta de la base.glb, hacer que el suelo se parezca al de la base (hielo, rocas del modelo), misma línea estética — ahora parece un remiendo y un pegote. Zona alta de montaña: suelo nevado y zona rocosa.»
+
+Work Log:
+- SANDBOX RECICLADO otra vez (repo atrás en ba25453): restaurado a origin/main 9e3be6f con git reset. node_modules sin trystero (T86) → bun install + rebuild. Sin PAT en el entorno → push pendiente del token del jugador.
+- T98a SUELO ALPINO (módulo puro world/groundTint.ts + tests/sherpas/ground-tint.test.ts, 11 tests): muere la pradera #79a054 (el «remiendo»). El suelo (CreateGround 40×24 SUBDIVIDIDO 64×40 = 2.665 vértices) lleva COLORES POR VÉRTICE deterministas: NIEVE alpina dominante (media RGB 0.857 en E2E, material casi blanco #eef3f8), PARCHES DE PIEDRA de la familia de la cabaña (gris cálido, refuerzos al pie del muro y en el anillo del campamento) y PLACAS DE HIELO pálidas en depresiones. La FRANJA DE CAÍDA queda más limpia (−55% piedra) para leer el aterrizaje. El encalado T63 sigue vivo. BUG cazado en tests: smoothstep con rangos decrecientes (el ingenuo devuelve SIEMPRE 1 y saturaba todos los refuerzos) → variante de baseCamp.ts.
+- T98b PEDRIZ NEVADO (baseCamp.ts): snowStartM 4.6→2.4, FALDA DE NIEVE alrededor del campamento (funde la nieve del GLB con el terreno), placas de HIELO pálidas en depresiones y nieve −25% dentro de la franja de caída. El hielo va en colores por vértice (cero riesgo de flotar sobre el relieve, cero draw calls).
+- T98c CAMPO DE BLOQUES DEL CAMPAMENTO: anillo de 7 bloques abrazando el GLB (cabinBoulderRing) con GORROS DE NIEVE instanciados en los grandes (6, 1 draw call); scatterRocks 16→36 rocas; los bloques usan el MATERIAL DEL PEDRIZ (pedriza + estratos triplanar en espacio mundo: la misma piedra que la montaña, no un pegote gris liso — lección de la revisión visual); tarros de nieve fusionados en UNA malla (840 verts, 1 draw) — los grandes leían como «dados» y se redujeron; rockMat a #736e67.
+- VERIFICACIÓN: 705/705 tests sherpas (694 + 11 nuevos; el único fallo colateral — presupuesto de rocas en basecamp.test.ts — actualizado a 36), suite completa 860 tests con SOLO los 38 fallos preexistentes del snapshot en tests/game/*, tsc limpio, build OK, sonda E2E scripts/sonda-t98.py TODO VERDE (floor cols 10.660, nieve 0.857, 43 rocas, 7 bloques, 6 gorros, tarros, 0 errores JS). Revisión visual de capturas: closeup de campamento reconstruido tras verlo (bloques con textura + tarros pequeños). Capturas en download/: t98-general, t98-campamento, t98-suelo.
+- PENDIENTE: push (sin credenciales en el sandbox) — commit local listo para empujar en cuanto llegue el PAT.
+
+Stage Summary:
+- El suelo ya NO es un remiendo verde: nieve alpina con parches de piedra e hielo, la misma familia de tonos de la cabaña Base.glb.
+- El campamento ASIENTA en el terreno: anillo de bloques texturados con gorros de nieve y tarros pequeños; la piedra del campamento y la de la montaña son la misma.
+- La franja de caída sigue legible y la física no cambia (todo es color por vértice + decoro sin colisión).

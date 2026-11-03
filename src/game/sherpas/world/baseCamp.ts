@@ -68,7 +68,9 @@ export interface BaseCampCfg {
   fallFlatZMinM: number;
   /** franja de caída: z máximo (m). */
   fallFlatZMaxM: number;
-  /** distancia a partir de la que el pedriz admite placas de nieve (m). */
+  /** distancia a partir de la que el pedriz admite placas de nieve (m).
+   *  T98: rebajada de 4.6 a 2.4 — el pedriz también pertenece a la montaña
+   *  nevada (antes se leía de piedra seca y chocaba con la cabaña nevada). */
   snowStartM: number;
   /** semilla determinista. */
   seed: number;
@@ -92,7 +94,7 @@ export const BASE_CAMP_DEFAULTS: BaseCampCfg = {
   fallFlatXM: 4.4,
   fallFlatZMinM: -2.8,
   fallFlatZMaxM: 0.7,
-  snowStartM: 4.6,
+  snowStartM: 2.4,
   seed: 561123,
 };
 
@@ -372,11 +374,14 @@ export function buildScreeGeometry(opts: ScreeOpts): GeomData {
       idx.push(a, d, c, a, c, b);
     }
   }
-  // colores: piedra con variación + AO de contacto con la pared + placas de nieve lejos
+  // colores: piedra con variación + AO de contacto con la pared + NIEVE ALPINA
+  // (T98: desde más cerca, con falda alrededor del campamento que funde la
+  // nieve del GLB con el terreno) + PLACAS DE HIELO pálidas en depresiones.
   const n = pos.length / 3;
   const colors = new Float32Array(n * 4);
   const seedM = (seedS ^ 0x1234) >>> 0;
   const seedN = (seedS ^ 0x9876) >>> 0;
+  const seedI = (seedS ^ 0x01ce) >>> 0;
   for (let v = 0; v < n; v++) {
     const x = pos[v * 3]!;
     const y = pos[v * 3 + 1]!;
@@ -388,10 +393,22 @@ export function buildScreeGeometry(opts: ScreeOpts): GeomData {
     // AO de contacto con la base de la pared (línea de sombra)
     const wallAo = 1 - 0.34 * smooth(1.9, 0.1, Math.abs(z - (-0.35))) * smooth(3.6, 2.6, Math.abs(x));
     r *= wallAo; g *= wallAo; b *= wallAo;
-    // placas de nieve: lejos de la zona de juego y con ruido a favor
+    // T98 — nieve: lejos del centro (con ruido a favor) + FALDA del campamento
+    // (funde la nieve del GLB con el pedriz). Dentro de la franja de caída la
+    // nieve se aclara un 25% para que el aterrizaje siga siendo legible.
     const far = smooth(cfg.snowStartM, cfg.snowStartM + 2.4, Math.hypot(x, z * 1.35));
-    const snow = far * smooth(0.58, 0.78, vnoise(x * 0.45, z * 0.45, seedN)) * (0.55 + 0.35 * clamp01(y * 2));
+    let snow = far * smooth(0.58, 0.78, vnoise(x * 0.45, z * 0.45, seedN)) * (0.55 + 0.35 * clamp01(y * 2));
+    if (cabin) {
+      const dc = Math.hypot(x - cabin.x, z - cabin.z);
+      const skirt = smooth(cabin.r * 1.35, cabin.r * 0.75, dc) * (0.42 + 0.42 * vnoise(x * 0.6, z * 0.6, seedN));
+      snow = Math.max(snow, skirt);
+    }
+    const inCorridor = Math.abs(x) < cfg.fallFlatXM && z > cfg.fallFlatZMinM && z < cfg.fallFlatZMaxM ? 1 : 0;
+    snow *= 1 - 0.25 * inCorridor;
+    // T98 — hielo: placas pálidas en depresiones (ruido propio, donde no hay nieve)
+    const ice = smooth(0.76, 0.86, vnoise(x * 0.7 + 13.1, z * 0.7 + 7.7, seedI)) * smooth(0.62, 0.4, t) * (1 - snow) * 0.9;
     r += (0.92 - 1) * snow; g += (0.94 - 1) * snow; b += (0.99 - 1) * snow;
+    r += (0.78 - 1) * ice; g += (0.885 - 1) * ice; b += (0.97 - 1) * ice;
     colors[v * 4] = Math.min(1.25, Math.max(0.25, r));
     colors[v * 4 + 1] = Math.min(1.25, Math.max(0.25, g));
     colors[v * 4 + 2] = Math.min(1.25, Math.max(0.25, b));
@@ -450,7 +467,7 @@ export function scatterRocks(cfg: BaseCampCfg, cabinX: number, cabinZ: number, c
   const out: [number, number, number, number][] = [];
   const seed = cfg.seed ^ 0x040c;
   let n = 0;
-  for (let k = 0; k < 220 && out.length < 16; k++) {
+  for (let k = 0; k < 260 && out.length < 36; k++) {
     const r1 = vnoise(k * 1.7 + 0.3, k * 0.9 + 7.1, seed);
     const r2 = vnoise(k * 0.8 + 11.7, k * 1.3 + 2.3, seed ^ 0x77f);
     const r3 = vnoise(k * 2.3 + 4.9, k * 1.1 + 8.8, seed ^ 0x1d3);
@@ -460,7 +477,7 @@ export function scatterRocks(cfg: BaseCampCfg, cabinX: number, cabinZ: number, c
     if (Math.abs(x) < cfg.fallFlatXM + 0.5 && z > cfg.fallFlatZMinM - 0.5 && z < cfg.fallFlatZMaxM + 0.5) continue;
     // fuera del radio de la cabaña
     if (Math.hypot(x - cabinX, z - cabinZ) < cabinR) continue;
-    const s = 0.16 + r3 * 0.34; // escala (radio aprox)
+    const s = 0.18 + r3 * 0.42; // escala (radio aprox) — T98: algo mayores
     out.push([x, 0, z, s]);
     n++;
   }
