@@ -210,7 +210,13 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         { phases: data.phases, wallGen: data.wallGen, safePathRockRatio: 0.4 }, seed,
       );
       state.scene.buildWorld(mkGen(params.wallSeed).layout);
-      state.scene.addHolds(mkGen(params.seed).allGeneratedHolds(), data.hud.anchorTypeColors);
+      // T103: PARED HORNEADA también en el invitado — el generador es PEREZOZO
+      // (sin ensureUpToY, allGeneratedHolds() nacía VACÍO y el invitado NO
+      // veía las presas de la pared). Toda la pared se genera y registra de
+      // una vez, igual que el anfitrión (misma semilla → misma pared).
+      const genGuest = mkGen(params.seed);
+      genGuest.ensureUpToY(genGuest.layout.totalHeightM);
+      state.scene.addHolds(genGuest.allGeneratedHolds(), data.hud.anchorTypeColors);
       state.scene.setCheckpoints(params.cpsYs, params.wallFrontZ, params.wallWidthM);
       await audio.start();
       audio.setMuted(false);

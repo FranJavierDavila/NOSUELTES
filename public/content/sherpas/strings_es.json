@@ -101,12 +101,13 @@
     "ropeReleased": "¡LA CUERDA SE ACABÓ! ¡{name} CAE AL ABISMO!",
     "portablePlaced": "Anclaje portátil colocado — quedan {left}",
     "portableEmpty": "No quedan anclajes portátiles",
+    "portableArmed": "Anclaje en la mano: muévelo a un hueco libre de la pared y suéltalo",
     "portableNoSpot": "Aquí no hay sitio factible para un anclaje",
     "portableNeedFree": "Suelta una extremidad para colocar el anclaje",
     "portableNeedClimb": "{name} no puede colocar anclajes colgado en caída",
     "backpackTitle": "Mochila · Jugador {n}",
     "itemAnchor": "Anclaje",
-    "backpackUse": "Clic en el anclaje: colocarlo en la pared"
+    "backpackUse": "Clic: coges el anclaje · suéltalo con la mano en un hueco libre"
   },
   "limb": {
     "hand_l": "M.Izq",

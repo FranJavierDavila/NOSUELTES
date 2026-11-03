@@ -143,6 +143,33 @@ export function choosePortableSpot(input: PortableSpotInput): PortableSpot | nul
   return null;
 }
 
+/** T103 COLOCACIÓN DIRECTA: validación PURA del punto donde se SUELTA la mano
+ *  (mochila → seleccionar anclaje → mano a un hueco vacío → colocado ahí).
+ *  true = el anclaje puede nacer EXACTAMENTE ahí: dentro de pared, sobre la
+ *  altura mínima, separado de otras presas y al alcance de la mano que suelta
+ *  (reachOk ya evaluado con canReach del rig — sin goma). */
+export function directPlaceCheck(opts: {
+  x: number;
+  y: number;
+  halfWidthM: number;
+  marginXM: number;
+  yMin: number;
+  yMax: number;
+  minDistM: number;
+  holds: readonly { x: number; y: number }[];
+  reachOk: boolean;
+}): boolean {
+  if (!opts.reachOk) return false;
+  const half = Math.max(0, opts.halfWidthM - opts.marginXM);
+  if (!Number.isFinite(opts.x) || !Number.isFinite(opts.y)) return false;
+  if (Math.abs(opts.x) > half) return false;
+  if (opts.y < Math.max(opts.yMin, PORTABLE_MIN_Y_M) || opts.y > opts.yMax) return false;
+  for (const h of opts.holds) {
+    if (Math.hypot(opts.x - h.x, opts.y - h.y) < opts.minDistM) return false;
+  }
+  return true;
+}
+
 /** Inventario plano y testeable de anclajes portátiles de la pareja. */
 export class PortableInventory {
   private left: [number, number];

@@ -20,7 +20,7 @@ import { InsultSystem } from "../events/insults";
 import { EventDirector, type DirectorContext } from "../events/director";
 import { spawnTrash, stepTrash, spawnUrine, stepUrine, type TrashProjectile, type UrineEffect } from "../events/effects";
 import { BalanceMonitor, TeamFallWatcher, PropinaMeter, newStats } from "./coop";
-import { choosePortableSpot, PortableInventory, PORTABLE_PER_CLIMBER_DEFAULT } from "./portableAnchor"; // T92
+import { choosePortableSpot, directPlaceCheck, PortableInventory, PORTABLE_PER_CLIMBER_DEFAULT } from "./portableAnchor"; // T92+T103
 import { WeatherSystem } from "./weather";
 import { SnowSystem } from "./snow"; // T61: nevada a cotas altas
 import { resolveDayPreset } from "./daycycle"; // T61: hora del día
@@ -108,6 +108,10 @@ export class SherpasMatch {
    *  HUD (clic en el hueco del Anclaje). Se consume en applyIntents como si
    *  fuera el intent.place de teclado (mismas reglas y avisos). */
   private uiPlacePending: [boolean, boolean] = [false, false];
+  /** T103 COLOCACIÓN DIRECTA (petición del jugador): el anclaje SELECCIONADO
+   *  en la mochila queda "en la mano" — se clava donde sueltes una MANO sobre
+   *  un hueco vacío de la pared. Un flag por escalador. */
+  private portableArmed: [boolean, boolean] = [false, false];
   /** Último respawn (sonda E2E): desde dónde continuó la ascensión. */
   private lastRespawn: { kind: "camp" | "checkpoint" | "start"; y: number } | null = null;
   /** Última altura del equipo CON agarres (referencia PRE-caída para elegir la
@@ -265,8 +269,15 @@ export class SherpasMatch {
       wallFrontZ: this.wallFrontZ,
       rope: this.data.tuning.rope,
     });
-    this.gen.ensureUpToY(16);
-    this.registerNewHolds();
+    this.gen.ensureUpToY(16); // arranque: presas del pie de pared para nacer colgado
+    // SOLO las presas de arranque entran aquí en el sistema de anclajes
+    // (acquire las exige para nacer colgado) y SIN marcar knownHolds: el
+    // registro completo de toda la pared ocurre tras buildWorld (hornada
+    // única de semillas del relieve) vía registerNewHolds().
+    this.anchors.registerHolds([
+      ...Object.values(this.gen.startHolds()),
+      ...Object.values(this.gen.secondStartHolds()),
+    ]);
     this.sherpas = [
       new SherpaRig(mkDeps(0), this.gen.startHolds()),
       new SherpaRig(mkDeps(1), this.gen.secondStartHolds()),
@@ -347,7 +358,13 @@ export class SherpasMatch {
     // escena: mundo + visuales
     deps.scene.buildWorld(this.gen.layout);
     deps.scene.setCheckpoints(this.cps.list.map((c) => c.y), this.wallFrontZ, this.wallWidthM);
-    deps.scene.addHolds(this.gen.allGeneratedHolds(), this.holdColors());
+    // PARED HORNEADA DE UNA VEZ (petición del jugador: "la pared no se
+    // modifica, solo el anclaje"): TODAS las presas de toda la ascensión se
+    // registran AQUÍ, con el mundo ya construido y antes de la primera losa —
+    // la pared se tesela con su geometría DEFINITIVA (asientos incluidos) y
+    // durante la partida jamás se recalcula ni redibuja por presas nuevas.
+    this.gen.ensureUpToY(this.gen.layout.totalHeightM);
+    this.registerNewHolds();
     deps.scene.spawnSherpa(0, this.sherpas[0].rig);
     deps.scene.spawnSherpa(1, this.sherpas[1].rig);
     deps.scene.spawnRichMan();
@@ -454,10 +471,19 @@ export class SherpasMatch {
     return this.portableInv.remaining(p);
   }
 
-  /** T101 INVENTARIO DE MOCHILA: «usar» desde la ventana (clic en el hueco del
-   *  Anclaje). Difiere a applyIntents: mismas reglas/avisos que la tecla. */
+  /** T103 COLOCACIÓN DIRECTA: «selecciono el anclaje» en la mochila — el clic
+   *  del hueco ARMA el anclaje (queda en la mano). Se clava soltando una MANO
+   *  sobre un hueco vacío de la pared (onDragUp → doPlacePortableAnchorAt):
+   *  pulso mochila → selecciono → mano al hueco → colocado. Sin más pasos. */
   requestPortablePlace(p: 0 | 1): void {
-    this.uiPlacePending[p] = true;
+    if (this.portableInv.remaining(p) <= 0) {
+      this.d.audio.play("release");
+      this.d.hud.subtitle(this.d.hud.t("hud.portableEmpty"), 2.2);
+      return;
+    }
+    this.portableArmed[p] = true;
+    this.d.audio.play("grab");
+    this.d.hud.subtitle(this.d.hud.t("hud.portableArmed"), 3.4);
   }
 
   /** COLOCAR ANCLAJE PORTÁTIL: gasta 1 del inventario del escalador y nace una
@@ -521,6 +547,64 @@ export class SherpasMatch {
     this.d.audio.play("grab");
     this.d.hud.subtitle(this.d.hud.fmt("hud.portablePlaced", { left: String(this.portableInv.remaining(p)) }), 2.6);
     this.d.bus.emit("PortableAnchorPlaced", { id: hold.id, x: spot.x, y: spot.y, z: spot.z, p });
+    this.portableArmed[p] = false; // si estaba armado, se acaba de usar
+  }
+
+  /** COLOCACIÓN DIRECTA en el PUNTO EXACTO (T103, petición del jugador:
+   *  "muevo una de las dos manos a un sitio vacío y se coloca en ese punto el
+   *  anclaje, sin más complicaciones"). Mismas reglas que la vía de tecla:
+   *  inventario, escalando, dentro de pared y separado de otras presas; el
+   *  alcance lo pone la MANO que sueltas (canReach, sin goma). La pared NO se
+   *  toca: la presa nace con la profundidad justa hasta la roca (addHolds).
+   *  Devuelve true si clavó el anclaje. */
+  private doPlacePortableAnchorAt(p: 0 | 1, x: number, y: number, limb: Limb): boolean {
+    const rig = this.sherpas[p];
+    const g = this.data.wallGen;
+    if (this.portableInv.remaining(p) <= 0) {
+      this.d.hud.subtitle(this.d.hud.t("hud.portableEmpty"), 2.2);
+      return false;
+    }
+    if (rig.ropeState !== "climbing") {
+      this.d.hud.subtitle(this.d.hud.fmt("hud.portableNeedClimb", { name: `P${p + 1}` }), 2.2);
+      return false;
+    }
+    // validación PURA (testeable): límites de pared, altura mínima y separación
+    // de presas existentes (sitio VACÍO). Alcance: canReach anti-goma, PERO si
+    // la mano está ARRASTRANDO, el punto ES donde el jugador la tiene (el
+    // clamp del esqueleto garantiza que el cuerpo puede honrar esa posición —
+    // y sin esto, un soltar rápido con la punta un pelín atrás se rechaza).
+    if (!directPlaceCheck({
+      x, y,
+      halfWidthM: this.wallWidthM / 2,
+      marginXM: g.sample.marginXM,
+      yMin: 1.2,
+      yMax: this.gen.layout.totalHeightM - 0.2,
+      minDistM: Math.max(0.42, g.sample.minDistanceM * 0.85),
+      holds: [...this.anchors.holds.values()].map((h) => ({ x: h.pos.x, y: h.pos.y })),
+      reachOk: rig.canReach(limb, v3(x, y, this.wallFrontZ)) || rig.dragging === limb,
+    })) {
+      this.d.hud.subtitle(this.d.hud.t("hud.portableNoSpot"), 2.4);
+      return false;
+    }
+    this.portableInv.consume(p);
+    const hold: HoldInstance = {
+      id: `pa${this.placedPortables.length}_${p}`,
+      pos: v3(x, y, this.gen.zAt(x, y)),
+      radius: g.sample.holdRadiusMax,
+      type: "rock_firm",
+      bandIndex: this.gen.bandIndexOf(y),
+      camp: false,
+      portable: true,
+    };
+    this.anchors.registerHolds([hold]);
+    this.placedPortables.push(hold);
+    this.mmCache = null; // el minimapa del tramo ahora incluye el anclaje nuevo
+    this.d.scene.addHolds([hold], this.holdColors());
+    this.d.audio.play("grab");
+    this.d.hud.subtitle(this.d.hud.fmt("hud.portablePlaced", { left: String(this.portableInv.remaining(p)) }), 2.6);
+    this.d.bus.emit("PortableAnchorPlaced", { id: hold.id, x: hold.pos.x, y: hold.pos.y, z: hold.pos.z, p });
+    this.portableArmed[p] = false;
+    return true;
   }
 
   // ---------- cuerda cooperativa (Task 37, petición del jugador) ----------
@@ -640,7 +724,17 @@ export class SherpasMatch {
 
   private onDragUp(): void {
     if (this.dragLimb !== null && this.dragPlayer !== null) {
-      this.sherpas[this.dragPlayer].endDrag();
+      const p = this.dragPlayer;
+      const limb = this.dragLimb;
+      const cur = this.dragCursor;
+      // COLOCACIÓN DIRECTA (T103): anclaje ARMADO en la mochila + soltar una
+      // MANO sobre un hueco VACÍO = anclaje clavado EXACTAMENTE ahí. Si nace,
+      // el imán de endDrag agarra la presa recién colocada (viaje normal).
+      if (this.portableArmed[p] && cur && (limb === "hand_l" || limb === "hand_r")
+        && this.doPlacePortableAnchorAt(p, cur.x, cur.y, limb)) {
+        this.sherpas[p].moveDrag(cur); // el imán ya ve la presa recién nacida
+      }
+      this.sherpas[p].endDrag();
     }
     this.dragPlayer = null;
     this.dragLimb = null;
@@ -1165,8 +1259,14 @@ export class SherpasMatch {
     }
     this.lastMinY = minY;
     // referencia PRE-caída para el respawn por cotas: mientras ALGUIEN agarra,
-    // la altura del equipo es "progreso" (Task 37).
-    if (totalAnchors > 0) this.lastProgressY = Math.min(wa.y, wb.y);
+    // la altura del equipo es "progreso" (Task 37). PETICIÓN DEL JUGADOR: el
+    // progreso es un FIJO que solo SUBE — la caída (aunque sea con anclajes
+    // puestos y sigáis colgando más abajo) NO reescribe la referencia hacia
+    // abajo, así el respawn jamás elige un tramo anterior al alcanzado.
+    if (totalAnchors > 0) {
+      const progY = Math.min(wa.y, wb.y);
+      if (progY > this.lastProgressY) this.lastProgressY = progY;
+    }
 
     // 10. director de caos + pájaros + DRON + proyectiles.
     this.director.tick(dt, this.currentPhase());
@@ -1210,7 +1310,12 @@ export class SherpasMatch {
     if (this.respawnTimer > 0) {
       this.respawnTimer -= dt;
       if (this.respawnTimer <= 0) {
-        const refY = this.lastProgressY;
+        // TRAMOS SIN RETROCESO (petición del jugador): el suelo del respawn es
+        // el tramo más alto ALCANZADO — una vez pisado el campamento, ninguna
+        // caída (ni repetida) devuelve a un tramo anterior. Dentro del tramo
+        // siguen mandando las cotas/campamento por debajo de la referencia.
+        const floorCamp = this.camps.highestReachedZone();
+        const refY = Math.max(this.lastProgressY, floorCamp ? floorCamp.yBase : -1);
         const camp = this.gen.campAtOrBelow(refY);
         const cp = this.cps.highestAtOrBelow(refY);
         const target: CampZone | Checkpoint | null = cp && cp.y > (camp ? camp.yBase : -1) ? cp : camp;

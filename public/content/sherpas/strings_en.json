@@ -101,12 +101,13 @@
     "ropeReleased": "THE ROPE RAN OUT! {name} FALLS INTO THE VOID!",
     "portablePlaced": "Portable anchor placed — {left} left",
     "portableEmpty": "No portable anchors left",
+    "portableArmed": "Anchor in hand: move it to a free wall spot and release",
     "portableNoSpot": "No feasible spot for an anchor here",
     "portableNeedFree": "Release a limb to place the anchor",
     "portableNeedClimb": "{name} cannot place anchors while falling",
     "backpackTitle": "Backpack · Player {n}",
     "itemAnchor": "Anchor",
-    "backpackUse": "Click the anchor to place it on the wall"
+    "backpackUse": "Click: grab the anchor · release it with a hand on a free spot"
   },
   "limb": {
     "hand_l": "L.Hand",

@@ -2,10 +2,11 @@
  * T92 — ANCLAJES PORTÁTILES: colocación factible (núcleo puro) + inventario.
  * Petición del jugador: "10 anclajes por escalador que se colocan en
  * posiciones factibles de la pared y actúan como un anclaje normal".
+ * T103 — COLOCACIÓN DIRECTA: validación del punto donde se SUELTA la mano.
  */
 import { describe, it, expect } from "vitest";
 import {
-  choosePortableSpot, PortableInventory, PORTABLE_PER_CLIMBER_DEFAULT, PORTABLE_MIN_Y_M,
+  choosePortableSpot, directPlaceCheck, PortableInventory, PORTABLE_PER_CLIMBER_DEFAULT, PORTABLE_MIN_Y_M,
 } from "../../src/game/sherpas/gameplay/portableAnchor";
 
 const Z_FLAT = (y: number): number => -0.64; // plano base de pared (tests sin salientes)
@@ -103,5 +104,33 @@ describe("choosePortableSpot (T92: posiciones factibles)", () => {
     });
     expect(s).not.toBeNull();
     expect(s!.z).toBeCloseTo(-1.2, 5);
+  });
+});
+
+describe("directPlaceCheck (T103 colocación directa: mano → hueco vacío → colocado)", () => {
+  const base = {
+    halfWidthM: 3.3, marginXM: 0.35, yMin: 1.2, yMax: 100,
+    minDistM: 0.42, holds: [] as { x: number; y: number }[], reachOk: true,
+  };
+
+  it("hueco vacío y al alcance → el anclaje nace EXACTAMENTE donde sueltas la mano", () => {
+    expect(directPlaceCheck({ ...base, x: 0.8, y: 4.2 })).toBe(true);
+  });
+
+  it("sin alcance de la mano soltada → NO se coloca (sin goma)", () => {
+    expect(directPlaceCheck({ ...base, x: 0.8, y: 4.2, reachOk: false })).toBe(false);
+  });
+
+  it("sobre una presa existente → NO se coloca (solo sitio VACÍO)", () => {
+    expect(directPlaceCheck({ ...base, x: 0.8, y: 4.2, holds: [{ x: 0.8, y: 4.2 }] })).toBe(false);
+    // justo al otro lado de la separación mínima sí
+    expect(directPlaceCheck({ ...base, x: 0.8, y: 4.2, holds: [{ x: 0.8, y: 4.2 - 0.43 }] })).toBe(true);
+  });
+
+  it("fuera de la pared o bajo la altura mínima → NO se coloca", () => {
+    expect(directPlaceCheck({ ...base, x: 3.3, y: 4.2 })).toBe(false); // marginXM aplica
+    expect(directPlaceCheck({ ...base, x: 0, y: 0.5 })).toBe(false);   // ras de suelo
+    expect(directPlaceCheck({ ...base, x: 0, y: 100.1 })).toBe(false); // por encima del techo
+    expect(directPlaceCheck({ ...base, x: Number.NaN, y: 4 })).toBe(false);
   });
 });

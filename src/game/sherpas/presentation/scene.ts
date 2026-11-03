@@ -83,7 +83,7 @@ import {
   type ReliefCell, type ReliefData, type ReliefResolved, type Rect,
 } from "../world/wallRelief";
 import {
-  buildRockChunk, makeRockField, rockFromData, rockNormalRGBA, rockTextureRGBA, ROCK_SEED,
+  buildRockChunk, makeRockField, rockFromData, rockNormalRGBA, rockTextureRGBA, rockZAt, ROCK_SEED,
   type RockData, type RockField, type RockResolved,
 } from "../world/wallRock";
 import {
@@ -457,6 +457,9 @@ export class SherpaScene {
   // cámara (chunks LRU) para optimizar el dibujado.
   private reliefCfg: ReliefResolved | null = null;
   private reliefHolds: { x: number; y: number }[] = [];
+  /** PARED INTOCABLE: la hornada de semillas solo ocurre UNA vez (antes de la
+   *  primera losa); después ninguna presa vuelve a moldear la pared. */
+  private reliefBaked = false;
   private reliefMeshes = new Map<number, { mesh: Mesh; plants?: Mesh; plantsN?: number; cells: number; tris: number }>();
   private reliefHoleRects: Rect[] = [];
   private reliefSalientRects: Rect[] = [];
@@ -2555,47 +2558,44 @@ export class SherpaScene {
 
   addHolds(holds: HoldInstance[], colors: Record<string, string>): void {
     // RELIEVE (T39): los anclajes son SEMILLAS de la teselación — cada presa
-    // genera SU piedra (cara centrada en ella, fractura a su alrededor). Si la
-    // losa ya estaba construida sin ellas, se reconstruye.
-    // ROCA (T40): cada presa APLANA el campo a SU cota (la piedra descansa en
-    // la roca: superficie 12 mm por detrás del centro de la presa).
+    // genera SU piedra (cara centrada en ella, fractura a su alrededor).
+    // PARED INTOCABLE (petición del jugador: "la pared no se modifica, solo el
+    // anclaje, que tendrá la profundidad precisa para llegar hasta la pared"):
+    // la hornada INICIAL moldea la pared una sola vez (antes de que exista
+    // cualquier losa). Cualquier presa que llegue DESPUÉS NO recalc ni
+    // redibuja NADA: ya no se destruyen chunks ni se funde la roca — era el
+    // redibujado que hacía desaparecer la pared antes de volver a aparecer.
+    // La presa tardía se ASENTA sobre la superficie que YA hay: su malla baja
+    // hasta la cota real de la roca en su (x, y) (profundidad precisa).
     if (this.reliefCfg && holds.length) {
-      let minY = Infinity, maxY = -Infinity;
-      for (const h of holds) {
-        this.reliefHolds.push({ x: h.pos.x, y: h.pos.y });
-        if (this.rockField) {
-          this.rockField.anchors.push({
-            x: h.pos.x, y: h.pos.y,
-            dz: this.reliefFaceZ - (h.pos.z + this.rockField.cfg.anchorBackM),
-          });
+      const primeraHornada = !this.reliefBaked && !this.reliefMeshes.size;
+      if (primeraHornada) {
+        for (const h of holds) {
+          this.reliefHolds.push({ x: h.pos.x, y: h.pos.y });
+          if (this.rockField) {
+            this.rockField.anchors.push({
+              x: h.pos.x, y: h.pos.y,
+              dz: this.reliefFaceZ - (h.pos.z + this.rockField.cfg.anchorBackM),
+            });
+          }
+          // DIACLASAS (T43): cada presa FUNDE la roca a su cota. T68: el asiento
+          // queda anchorBackM DETRÁS del centro de la presa (mesh z = h.pos.z −
+          // anchorBackM), como dictaba el contrato T40 — la presa se ve MONTADA
+          // SOBRE su piedra y no a media tapa (el knob sigue mordiendo la pared
+          // por detrás del asiento, T41). r modera la atenuación de grietas.
+          if (this.rockCtx) {
+            this.rockCtx.anchors.push({
+              x: h.pos.x, y: h.pos.y,
+              hz: this.reliefFaceZ - (h.pos.z - this.rockCtx.style.anchorBackM),
+              r: Math.min(0.12, Math.max(0.05, h.radius)),
+              kind: "hand", // magnesio en todas las presas visibles
+            });
+          }
         }
-        // DIACLASAS (T43): cada presa FUNDE la roca a su cota. T68: el asiento
-        // queda anchorBackM DETRÁS del centro de la presa (mesh z = h.pos.z −
-        // anchorBackM), como dictaba el contrato T40 — la presa se ve MONTADA
-        // SOBRE su piedra y no a media tapa (el knob sigue mordiendo la pared
-        // por detrás del asiento, T41). r modera la atenuación de grietas.
-        if (this.rockCtx) {
-          this.rockCtx.anchors.push({
-            x: h.pos.x, y: h.pos.y,
-            hz: this.reliefFaceZ - (h.pos.z - this.rockCtx.style.anchorBackM),
-            r: Math.min(0.12, Math.max(0.05, h.radius)),
-            kind: "hand", // magnesio en todas las presas visibles
-          });
-        }
-        if (h.pos.y < minY) minY = h.pos.y;
-        if (h.pos.y > maxY) maxY = h.pos.y;
+        this.reliefBaked = true;
       }
-      const ch = this.reliefCfg.chunkHeightM;
-      for (const [c, entry] of this.reliefMeshes) {
-        if (c * ch <= maxY + 0.55 && (c + 1) * ch >= minY - 0.55) {
-          entry.plants?.dispose(); // T48: la vegetación muere con su chunk
-          this.plantasSpots.delete(c);
-          this.plantasTotal -= entry.plantsN ?? 0;
-          entry.mesh.dispose(false, this.rockCtx !== null); // T43: material+texturas propios
-          this.reliefMeshes.delete(c);
-        }
-        this.cancelRockJob(c);
-      }
+      // SIN disposición de chunks jamás: el ciclo de vida de las losas manda
+      // SOLO el streaming por cámara (updateRelief), nunca un anclaje.
     }
     for (const h of holds) {
       if (this.holdMeshes.has(h.id)) continue;
@@ -2619,7 +2619,11 @@ export class SherpaScene {
         this.holdMasters.set(key, master);
       }
       const inst = master.createInstance(`hold_${h.id}`);
-      inst.position.set(h.pos.x, h.pos.y, h.pos.z);
+      // PROFUNDIDAD PRECISA (petición del jugador): la presa llega HASTA la
+      // pared — si la roca de su columna está más atrás que el plano de juego,
+      // el knob se hunde hasta la superficie existente (nunca al revés).
+      const zWall = this.rockField ? rockZAt(this.rockField, h.pos.x, h.pos.y) : h.pos.z;
+      inst.position.set(h.pos.x, h.pos.y, Math.min(h.pos.z, zWall));
       inst.metadata = { holdType: h.type, holdRadius: h.radius }; // T61 swaps + T66-FB anillos
       // PRESAS PROFUNDAS (T41, petición del jugador: "hacer los puntos de
       // agarre más profundos"): el knob se ESTIRA en z hasta morder la pared —

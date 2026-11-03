@@ -136,30 +136,131 @@ def intento(p) -> bool:
         page.wait_for_timeout(2500)  # SwiftShader (~2 s/fotograma): deja terminar el despliegue
         page.screenshot(path=f"{args.out_dir}/t101-bpk-abierta.png", timeout=90000)
 
-        # --- 4. usar el anclaje del hueco (clic por COORDENADAS del rect vivo:
-        #        la actionability de Playwright no cabe en un bucle a 0,5 fps)
-        # Al arrancar las 4 extremidades están AGARRADAS (aviso legítimo
-        # «suelta una extremidad»): liberamos la mano izquierda de P1 (Digit1,
-        # el mismo camino que el jugador) y entonces el uso debe COLICAR.
-        page.keyboard.press("Digit1")
-        page.wait_for_timeout(1500)
+        # --- 4. COLOCACIÓN DIRECTA (T103): clic en el hueco = SELECCIONAR —
+        #        el anclaje queda «en la mano» y el contador NO baja; después
+        #        se arrastra una MANO a un hueco VACÍO de la pared y al soltar
+        #        nace el anclaje EXACTAMENTE ahí (contador 10→9) y la mano lo
+        #        agarra por el imán normal.
         before = page.evaluate("__SHERPAS_DEBUG.portables()")
         box = page.evaluate("(() => { const r = document.querySelector('.sphud .bpk-slot').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()")
         page.mouse.click(box["x"], box["y"])
-        after = before
-        badge = None
-        sub = ""
-        t1 = time.time()
-        while time.time() - t1 < 45:
-            page.wait_for_timeout(2500)
-            after = page.evaluate("__SHERPAS_DEBUG.portables()")
-            badge = page.evaluate("document.querySelector('.sphud .bpk [data-e=bpkCount]')?.textContent ?? null")
-            sub = page.evaluate("document.querySelector('.sphud .subtitle-bar')?.textContent ?? ''")
-            if bool(after) and (after["left"][0] != before["left"][0] or len(after["placed"]) > len(before["placed"])):
-                break
-        usado = bool(after) and after["left"][0] == before["left"][0] - 1 and len(after["placed"]) > len(before["placed"])
-        ok("USAR del hueco: anclaje colocado y contador 9", usado,
-           f"antes={before and before['left']} después={after and after['left']} colocados={after and len(after['placed'])} badge={badge} aviso={sub[:60]!r}")
+        page.wait_for_timeout(2500)
+        armedSub = page.evaluate("document.querySelector('.sphud .subtitle-bar')?.textContent ?? ''")
+        ok("SELECCIÓN: el clic arma el anclaje (aviso «en la mano»)",
+           ("en la mano" in armedSub) or ("in hand" in armedSub), f"aviso={armedSub[:70]!r}")
+        mid = page.evaluate("__SHERPAS_DEBUG.portables()")
+        ok("SELECCIÓN no gasta inventario (sigue 10)",
+           bool(mid) and mid["left"][0] == before["left"][0], f"{before and before['left']} → {mid and mid['left']}")
+
+        # cerrar la ventana SACANDO EL PUNTERO (si sigue abierta tapa la mano y
+        # el arrastre caería sobre la ventana, no sobre el canvas)
+        page.mouse.move(40, 620)
+        page.wait_for_timeout(2500)
+
+        # hueco VACÍO junto a una mano de P1 (búsqueda determinista en página:
+        # la separación que EXIGE el juego es max(0,42; 0,5·0,85) = 0,425 m.
+        # Radio MENOR primero y AMBAS manos: a 0,5 fps el servo de arrastre
+        # puede no avanzar ni un frame, así que el hueco debe caber en el
+        # alcance del brazo DESDE la posición actual de la mano (≤0,7 m)
+        spot = page.evaluate("""(() => {
+            const dbg = __SHERPAS_DEBUG;
+            const holds = dbg.holds() || [];
+            const clear = (x, y) => holds.every(q => Math.hypot(q.x - x, q.y - y) >= 0.45);
+            for (let r = 0.3; r <= 0.7; r += 0.0625) {
+                for (const which of ['hand_r', 'hand_l']) {
+                    const h = dbg.limb(0, which); if (!h) continue;
+                    for (let k = 0; k < 24; k++) {
+                        const th = (k / 24) * Math.PI * 2;
+                        const x = h.x + Math.cos(th) * r;
+                        const y = Math.max(1.3, h.y + Math.sin(th) * r);
+                        if (Math.abs(x) < 2.9 && clear(x, y)) return { x, y, which };
+                    }
+                }
+            }
+            return null;
+        })()""")
+        ok("hueco VACÍO localizado junto a la mano", bool(spot), f"{spot}")
+        if spot:
+            pts = page.evaluate(f"""(() => {{
+                const dbg = __SHERPAS_DEBUG;
+                const h = dbg.limb(0, {spot['which']!r});
+                if (!h) return null;
+                // calibración por punto fijo: ajusta el PÍXEL hasta que
+                // wall(píxel) (la MISMA conversión que usa el juego) aterrice
+                // en las coords de pared deseadas — inmune al paralaje de la z
+                const calibrar = (objetivo, inicial) => {{
+                    let px = inicial;
+                    for (let it = 0; it < 5; it++) {{
+                        const w = dbg.wall(px.x, px.y); if (!w) return null;
+                        const w2 = dbg.wall(px.x + 10, px.y); if (!w2) return null;
+                        const w3 = dbg.wall(px.x, px.y + 10); if (!w3) return null;
+                        const kx = (w2.x - w.x) / 10, ky = (w3.y - w.y) / 10;
+                        if (!kx || !ky) return null;
+                        px = {{ x: px.x + (objetivo.x - w.x) / kx, y: px.y + (objetivo.y - w.y) / ky }};
+                    }}
+                    const fin = dbg.wall(px.x, px.y);
+                    return {{ px, err: fin ? Math.hypot(fin.x - objetivo.x, fin.y - objetivo.y) : null }};
+                }};
+                const mano = calibrar({{ x: h.x, y: h.y }}, dbg.project(h.x, h.y, h.z));
+                const hueco = calibrar({{ x: {spot['x']}, y: {spot['y']} }}, dbg.project({spot['x']}, {spot['y']}, h.z));
+                return {{ hand: mano && mano.px, target: hueco && hueco.px, err: hueco && hueco.err }};
+            }})()""")
+            hp, tp = (pts or {}).get("hand"), (pts or {}).get("target")
+            ok("mano y hueco calibrados en pantalla (err < 2 cm)",
+               bool(hp and tp) and (pts.get("err") is not None and pts.get("err") < 0.02), f"{pts}")
+            if hp and tp:
+                # arrastre REAL de la mano al hueco: acercarse en 6 moves y
+                # RECALIBRAR el píxel objetivo justo antes de soltar (la cámara
+                # sigue a los escaladores y deriva durante el arrastre; con la
+                # cámara ya asentada en la fase final, el remate es exacto)
+                calib_js = """(() => {
+                    const dbg = __SHERPAS_DEBUG;
+                    const calibrar = (objetivo, inicial) => {
+                        let px = inicial;
+                        for (let it = 0; it < 5; it++) {
+                            const w = dbg.wall(px.x, px.y); if (!w) return null;
+                            const w2 = dbg.wall(px.x + 10, px.y); if (!w2) return null;
+                            const w3 = dbg.wall(px.x, px.y + 10); if (!w3) return null;
+                            const kx = (w2.x - w.x) / 10, ky = (w3.y - w.y) / 10;
+                            if (!kx || !ky) return null;
+                            px = { x: px.x + (objetivo.x - w.x) / kx, y: px.y + (objetivo.y - w.y) / ky };
+                        }
+                        return px;
+                    };
+                    return calibrar({ x: %s, y: %s }, { x: %s, y: %s });
+                })()""" % (spot["x"], spot["y"], tp["x"], tp["y"])
+                page.mouse.move(hp["x"], hp["y"])
+                page.wait_for_timeout(400)
+                page.mouse.down()
+                for i in range(1, 7):
+                    page.mouse.move(hp["x"] + (tp["x"] - hp["x"]) * i / 6,
+                                    hp["y"] + (tp["y"] - hp["y"]) * i / 6)
+                    page.wait_for_timeout(500)
+                tp2 = page.evaluate(calib_js) or tp
+                page.mouse.move(tp2["x"], tp2["y"])
+                page.wait_for_timeout(150)
+                page.mouse.up()
+                after = mid
+                badge = None
+                sub = ""
+                t1 = time.time()
+                while time.time() - t1 < 45:
+                    page.wait_for_timeout(2500)
+                    after = page.evaluate("__SHERPAS_DEBUG.portables()")
+                    badge = page.evaluate("document.querySelector('.sphud .bpk [data-e=bpkCount]')?.textContent ?? null")
+                    sub = page.evaluate("document.querySelector('.sphud .subtitle-bar')?.textContent ?? ''")
+                    if bool(after) and (after["left"][0] != mid["left"][0] or len(after["placed"]) > len(mid["placed"])):
+                        break
+                # el anclaje nace donde se soltó la mano (tolerancia 9 cm: la
+                # cámara sigue a los escaladores y entre la recalibración final
+                # y el up puede moverse un pelo — el juego coloca en el cursor)
+                last = after["placed"][-1] if after and after["placed"] else None
+                enSitio = bool(last) and abs(last["x"] - spot["x"]) < 0.09 and abs(last["y"] - spot["y"]) < 0.09
+                usado = bool(after) and after["left"][0] == mid["left"][0] - 1 and len(after["placed"]) > len(mid["placed"])
+                ok("COLOCACIÓN DIRECTA: anclaje clavado en el punto soltado y contador 9", usado,
+                   f"antes={mid and mid['left']} después={after and after['left']} colocados={after and len(after['placed'])} aviso={sub[:60]!r}")
+                ok("el anclaje nace EXACTAMENTE en el hueco (±6 cm)", enSitio,
+                   f"soltado=({spot['x']:.2f},{spot['y']:.2f}) nacido=({last and round(last['x'], 2)},{last and round(last['y'], 2)}) badge={badge}")
 
     # --- 5. cierre al sacar el puntero de la ventana
     if opened:
