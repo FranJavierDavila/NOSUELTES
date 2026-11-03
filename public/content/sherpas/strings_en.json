@@ -202,7 +202,7 @@
   "net": {
     "menu": "Play online",
     "title": "Play online",
-    "subtitle": "One climbs here (orange, mouse), the other connects from the internet (blue, keyboard or gamepad).",
+    "subtitle": "One climbs here (orange, mouse), the other joins online (blue: arrows aim · I O K L grip · J anchor · M impulse · Y piton · N heave — or gamepad).",
     "create": "Create session (host)",
     "join": "Join",
     "codePh": "CODE",

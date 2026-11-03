@@ -155,9 +155,10 @@ export class GuestNet extends NetEndpoint {
   onSession: (p: NetSessionParams | null) => void = () => { };
   onSnapshot: (s: NetSnapshot) => void = () => { };
   onClosed: (reason: string) => void = () => { };
-  /** configurable para tests. 20 s en producción: la señalización por relays
-   *  públicos tarda más que un servidor local (descubrimiento ~5-15 s). */
-  static joinTimeoutMs = 20000;
+  /** configurable para tests. 30 s en producción: la señalización por relays
+   *  públicos tarda más que un servidor local (descubrimiento ~5-15 s, y
+   *  puede ir peor si algún relay amanece lento). */
+  static joinTimeoutMs = 30000;
   private sendInt: ((m: NetRemoteInput) => void) | null = null;
   private hostPeerId: string | null = null;
 

@@ -1928,3 +1928,19 @@ Work Log:
 
 Stage Summary:
 - El ricachón cae limpio (sin caja amarilla ni tirantes). La mochila de cada escalador es INVENTARIO: clic → ventana con la forma de su interior, Anclaje ×10 con contador vivo, usar = colocar en la pared por la misma vía que la tecla, se cierra sola al sacar el puntero, con despliegue/pliegue. Todo el suelo comparte la familia azulada de la base con tarrones sobresalientes. TIP = propina (puntuación), sin cambios.
+
+---
+Task ID: 102
+Agent: Z.ai (principal)
+Task: RED 2 JUGADORES JUGABLE (reporte del anfitrión: el invitado no podía mover su sherpa, ni colocar anclajes, ni usar su mochila; y el anfitrión movía a ambos).
+
+Work Log:
+- CAUSAS (3): (1) el mixer solo se instalaba si el guest estaba DENTRO al pulsar GO — uniéndose a mitad de partida no había sesión ni input remoto; (2) el ratón del anfitrión arrastraba a AMBOS sherpas (onDragDown sin filtro); (3) la mochila del invitado estaba excluida por diseño (sin ventana ni «usar» por red).
+- MATCH (match.ts): deps.dragLock {player: 0|null}; onDragDown con candado solo considera extremidades del jugador designado (el azul es del invitado).
+- MOUNT (mount.ts): mixer SIEMPRE que haya sala (gating por hasGuest en cada poll → relevo en ambos sentidos); publishNetSession() vale en GO y en unión tardía (onGuestJoined → syncNetLocks + sesión; onGuestLeft → relevo local, el host recupera ambos); syncNetLocks; el invitado abre SOLO la mochila de su azul y su «usar» viaja por red (requestPortablePlace del guest → flanco place al host, mismas reglas que la tecla Y); accesores E2E (limb/frozen/netFake dragProbe) y __NS_GUEST_BPK.
+- GUEST (guestRunner.ts): portableRemaining (badge vivo desde el snapshot) + requestPortablePlace (solo p1, flanco place por datachannel); netClient: joinTimeout 20→30 s (relays públicos).
+- INPUT (remoteInput/protocol ya T92): el flanco place sobrevive a la fusión del buffer; mixer descarta el place LOCAL de P2 con guest (el azul ya no es dual).
+- VERIFICACIÓN: tests net 14/14 (2 nuevos T102: place en la fusión, mixer con guest); suite sherpas sin regresiones (6 fallos t78/vozreal preexistentes del entorno); sonda E2E real 2 NAVEGADORES (scripts/sonda-t102.py, relays Nostr vivos): sala+unión real OK, snapshots OK, ArrowLeft del guest → +431 intents y aim dx 0,27 m OK, mochila del guest: ventana «Mochila · Jugador 2» con badge vivo 10→9, «usar» coloca el anclaje en el host (left 10→9, placed+1) y se replica al invitado OK, veto a la mochila del anfitrión OK, FASE B (netFake determinista): unión tardía con snapshots y candado activo + RELEVO al irse el guest OK, 0 errores JS en ambos; única excepción: el check «drag del NARANJA» en FASE A no agarra con clic a 5 cm de la mano — lockedFor post-generación que a ~1 fps de SwiftShader dura minutos de reloj (artificio del entorno; el candado está probado determinísticamente en FASE B). Capturas: download/t102-guest-mochila.png, t102-host-con-anclaje.png; log: download/t102-sonda-log.txt.
+
+Stage Summary:
+- En red cada jugador es dueño de SU sherpa: el anfitrión mueve el naranja (ratón) y el invitado el azul (flechas/I O K L/J/M/Y/N o mando); el invitado ve y usa SU mochila con contador vivo y coloca anclajes reales por la misma vía que el teclado; unirse a mitad de partida funciona y si el invitado se va el anfitrión recupera el control de ambos.

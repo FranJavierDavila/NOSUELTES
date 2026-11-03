@@ -69,6 +69,10 @@ export interface SherpasMatchDeps {
   choice: HudStartChoice;
   resumeSave: SavedAscent | null;
   onRestart(): void;
+  /** T102 NET: jugador que el RATÓN puede arrastrar (null = ambos, co-op
+   *  local). En red el anfitrión solo mueve al SUYO: el azul es del invitado.
+   *  Mutado por mount cuando el guest entra o se va (el objeto es compartido). */
+  dragLock?: { player: 0 | 1 | null };
 }
 
 export class SherpasMatch {
@@ -602,8 +606,12 @@ export class SherpasMatch {
     if (!p) return;
     // candidatas: extremidad más cercana al clic en el plano de pared
     // (radios generosos en metros de escalada, no píxeles: 0,55 manos / 0,7 pies).
+    // T102 NET: con candado (invitado conectado) el ratón SOLO arranca
+    // extremidades del jugador designado — el azul es del invitado.
     const cands: { player: 0 | 1; limb: Limb; d: number }[] = [];
-    for (const pi of [0, 1] as const) {
+    const lock = this.d.dragLock?.player ?? null;
+    const pis: readonly (0 | 1)[] = lock === null ? [0, 1] : [lock];
+    for (const pi of pis) {
       for (const limb of LIMBS) {
         const lp = this.sherpas[pi].limbPos(limb);
         const d = Math.hypot(lp.x - p.x, lp.y - p.y);

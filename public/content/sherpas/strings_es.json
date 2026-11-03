@@ -202,7 +202,7 @@
   "net": {
     "menu": "Jugar online",
     "title": "Jugar online",
-    "subtitle": "Uno escala aquí (naranja, ratón) y el otro conecta desde internet (azul, teclado o mando).",
+    "subtitle": "Uno escala aquí (naranja, ratón) y el otro conecta desde internet (azul: flechas apuntan · I O K L agarran · J ancla · M impulso · Y anclaje · N a saco — o mando).",
     "create": "Crear sesión (anfitrión)",
     "join": "Unirse",
     "codePh": "CÓDIGO",

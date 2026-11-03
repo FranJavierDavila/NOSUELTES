@@ -78,7 +78,13 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     snapTimer: number;
     unSubNet: (() => void) | null;
     guestBuilding: boolean;
-  } = { match: null, scene: null, disposed: false, menuRaf: 0, previewSeed: 0, hostNet: null, guestNet: null, guest: null, snapTimer: 0, unSubNet: null, guestBuilding: false };
+    /** T102 NET: a quién deja arrastrar el ratón el match (compartido con él). */
+    dragLock: { player: 0 | 1 | null };
+    /** T102 NET: elección de arranque vigente, para mandar la sesión al guest
+     *  que entre a MITAD de partida (después del GO del anfitrión). */
+    netChoice: HudStartChoice | null;
+    netResumeSeed: number | null;
+  } = { match: null, scene: null, disposed: false, menuRaf: 0, previewSeed: 0, hostNet: null, guestNet: null, guest: null, snapTimer: 0, unSubNet: null, guestBuilding: false, dragLock: { player: null }, netChoice: null, netResumeSeed: null };
 
   const input = new InputManager(data.inputMaps, {
     onPause: () => { if (state.guest) state.guest.togglePause(); else state.match?.togglePause(); },
@@ -88,20 +94,29 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
   input.attach(window);
 
   // T101 INVENTARIO DE MOCHILA: el «usar» del hueco coloca el anclaje por la
-  // misma vía que la tecla (solo partida local: el invitado no decide nada).
-  hud.setBackpackUseHandler((p) => state.match?.requestPortablePlace(p));
+  // misma vía que la tecla. T102: en el invitado el «usar» VIAJA POR RED
+  // (flanco de colocación al host); la ventana local solo muestra el contador.
+  hud.setBackpackUseHandler((p) => {
+    if (state.guest) state.guest.requestPortablePlace(p);
+    else state.match?.requestPortablePlace(p);
+  });
   // Clic sobre la mochila de un escalador → ventana-interior de la mochila.
   // Hit-test por proyección a coordenadas de pantalla (sin scene.pick, la
-  // escena decide 500+ instancias con otro sistema). En menú (sin match) o
-  // invitado el clic no hace nada.
+  // escena decide 500+ instancias con otro sistema). En menú (sin match) el
+  // clic no hace nada; el invitado abre SOLO la mochila de su azul.
   opts.canvas.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0 || state.disposed) return;
-    if (!state.scene || !state.match || state.guest) return;
+    if (e.button !== 0 || state.disposed || !state.scene) return;
     const rect = opts.canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
     const p = state.scene.backpackAt(x, y);
     if (p === null) return;
+    if (state.guest) {
+      if (p !== 1) return; // la naranja es del anfitrión
+      hud.backpackOpen(p, x, y, state.guest.portableRemaining(p));
+      return;
+    }
+    if (!state.match) return;
     hud.backpackOpen(p, x, y, state.match.portableRemaining(p));
   });
 
@@ -133,6 +148,41 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
   const stopSnapshots = (): void => {
     if (state.snapTimer) { window.clearInterval(state.snapTimer); state.snapTimer = 0; }
     if (state.unSubNet) { state.unSubNet(); state.unSubNet = null; }
+  };
+
+  /** T102 NET: candados de rol según haya invitado — con guest, el ratón del
+   *  anfitrión SOLO arrastra a su naranja (el azul es del invitado) y el mixer
+   *  ya desvía el teclado de P2 al remoto; sin guest, relevo local de ambos. */
+  const syncNetLocks = (): void => {
+    state.dragLock.player = state.hostNet?.hasGuest ? 0 : null;
+  };
+
+  /** T102 NET: sesión + publicación de snapshots. Vale al pulsar GO con el
+   *  guest ya dentro Y cuando el guest entra a MITAD de partida. */
+  const publishNetSession = (): void => {
+    if (!state.match || !state.hostNet?.hasGuest) return;
+    const choice = state.netChoice;
+    if (!choice) return;
+    stopSnapshots();
+    const info = state.match.netWorldInfo();
+    state.hostNet.sendSession({
+      wallSeed: state.previewSeed,
+      seed: state.netResumeSeed ?? choice.seed,
+      difficulty: choice.difficulty,
+      lang: choice.lang,
+      resume: choice.resume,
+      daytime: choice.daytime ?? "dia", // T61: el guest replica el ambiente
+      snow: choice.weather ?? "clear",
+      ...info,
+    });
+    const evs: { n: string; p: Record<string, NetJson> }[] = [];
+    state.unSubNet = bus.onAny((n, p) => { if (evs.length < 40) evs.push({ n, p: p as Record<string, NetJson> }); });
+    const hz = data.net?.snapshotHz ?? 30;
+    state.snapTimer = window.setInterval(() => {
+      if (!state.match || !state.hostNet?.hasGuest) return;
+      const ev = evs.splice(0, evs.length);
+      state.hostNet.sendSnapshot(state.match.captureSnapshot({ ev }));
+    }, Math.max(20, Math.round(1000 / hz)));
   };
 
   const endGuestToMenu = async (): Promise<void> => {
@@ -173,6 +223,8 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
       // sonda E2E del extremo invitado (solo lectura + hold de render E2E)
       (window as unknown as Record<string, unknown>).__NS_GUEST = () => state.guest?.debug() ?? null;
       (window as unknown as Record<string, unknown>).__NS_GUEST_HOLD = (v: boolean) => { if (state.guest) state.guest.holdRender = !!v; };
+      // T102: proyección de la mochila del invitado (sonda E2E de la ventana)
+      (window as unknown as Record<string, unknown>).__NS_GUEST_BPK = (p: number) => state.scene?.backpackScreenPx(p as 0 | 1) ?? null;
     } catch (err) {
       console.error("fallo al montar la partida remota:", err instanceof Error ? err.stack : err);
       hud.subtitle(`Error: ${String(err instanceof Error ? err.message : err)}`, 8);
@@ -192,8 +244,17 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
             const code = await state.hostNet.create();
             hud.netWaiting(code);
             hud.netStatus(hud.t("net.waitingGuest"));
-            state.hostNet.onGuestJoined = () => hud.netStatus(hud.t("net.guestJoined"));
-            state.hostNet.onGuestLeft = () => hud.netStatus(hud.t("net.guestLeft"));
+            state.hostNet.onGuestJoined = () => {
+              hud.netStatus(hud.t("net.guestJoined"));
+              syncNetLocks();
+              // T102: el guest puede entrar con la partida YA empezada
+              publishNetSession();
+            };
+            state.hostNet.onGuestLeft = () => {
+              hud.netStatus(hud.t("net.guestLeft"));
+              syncNetLocks();
+              stopSnapshots(); // nadie recibe ya; el host sigue con ambos (relevo)
+            };
           } catch {
             hud.netStatus(hud.t("net.err.timeout-creando-sala"));
           }
@@ -275,38 +336,22 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     const scene = state.scene;
     // T76: bocadillos del ricachón (cara + frases) — opción del menú inicial.
     scene.setRichBubbles(choice.bubbles ?? true);
-    // T60 RED: con guest conectado, el jugador 2 es DEL GUEST — el mixer
-    // sustituye el input local de P2 por el que llega por socket.
-    const netMixer = state.hostNet?.hasGuest
+    // T60 RED: el mixer SUSTITUYE el input local de P2 por el que llega por
+    // red. T102: se instala SIEMPRE que el anfitrión tenga sala (aunque el
+    // guest entre DESPUÉS de pulsar GO) — el candado consulta hasGuest en
+    // cada poll, así que el relevo funciona en los dos sentidos.
+    const netMixer = state.hostNet
       ? new HostInputMixer(input, state.hostNet.remote, () => state.hostNet?.hasGuest ?? false)
       : null;
     state.match = new SherpasMatch({
       data, scene, audio, hud, bus, input: netMixer ?? input, character, profile, choice, resumeSave,
       onRestart: () => { void backToMenu(); },
+      dragLock: state.dragLock, // T102: en red el ratón del host solo mueve al naranja
     });
-    if (netMixer && state.hostNet?.hasGuest) {
-      // sesión para el guest (dos semillas: pared reutilizada + presas) y
-      // publicación de snapshots a data.net.snapshotHz con el tap del bus.
-      const info = state.match.netWorldInfo();
-      state.hostNet.sendSession({
-        wallSeed: state.previewSeed,
-        seed: resumeSave?.seed ?? choice.seed,
-        difficulty: choice.difficulty,
-        lang: choice.lang,
-        resume: choice.resume,
-        daytime: choice.daytime ?? "dia", // T61: el guest replica el ambiente
-        snow: choice.weather ?? "clear",
-        ...info,
-      });
-      const evs: { n: string; p: Record<string, NetJson> }[] = [];
-      state.unSubNet = bus.onAny((n, p) => { if (evs.length < 40) evs.push({ n, p: p as Record<string, NetJson> }); });
-      const hz = data.net?.snapshotHz ?? 30;
-      state.snapTimer = window.setInterval(() => {
-        if (!state.match || !state.hostNet?.hasGuest) return;
-        const ev = evs.splice(0, evs.length);
-        state.hostNet.sendSnapshot(state.match.captureSnapshot({ ev }));
-      }, Math.max(20, Math.round(1000 / hz)));
-    }
+    state.netChoice = choice;
+    state.netResumeSeed = resumeSave?.seed ?? null;
+    syncNetLocks();
+    if (state.hostNet?.hasGuest) publishNetSession();
     installDebug();
   };
 
@@ -323,6 +368,19 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         relays: debugRelays(),
       }),
       waist: (p: number) => state.match?.["sherpas"][p]?.waist() ?? null,
+      /** T102: posición mundo de una extremidad (sonda del candado de arrastre). */
+      limb: (p: number, limb: "hand_l" | "hand_r" | "foot_l" | "foot_r") => state.match?.["sherpas"][p]?.limbPos(limb) ?? null,
+      /** T102: ¿match congelado (caída/cumbre)? (la sonda no debe arrastrar). */
+      frozen: () => (state.match as unknown as { frozen?: boolean } | null)?.frozen ?? false,
+      /** T102: ensayo DETERMINISTA de la unión tardía sin señalización real
+       *  (SwiftShader ahoga los offers WebRTC con la partida en marcha):
+       *  dispara los MISMOS handlers que un peer real de Trystero. */
+      netFake: (on: boolean) => {
+        if (!state.hostNet) return;
+        state.hostNet.hasGuest = on;
+        if (on) state.hostNet.onGuestJoined();
+        else state.hostNet.onGuestLeft();
+      },
       anchors: (p: number) => state.match?.["sherpas"][p]?.anchorsCount() ?? null,
       tension: (p: number) => state.match?.["sherpas"][p]?.maxTension() ?? null,
       /** pausa el rAF del menú (E2E T86: con SwiftShader el render sofware

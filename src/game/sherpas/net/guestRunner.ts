@@ -138,6 +138,24 @@ export class GuestRunner {
     }
   }
 
+  /** T102: anclajes portátiles restantes (del HudTickState del snapshot).
+   *  Alimenta el badge de la ventana de mochila del invitado. */
+  portableRemaining(p: 0 | 1): number {
+    return this.lastSnap?.hud?.portable?.[p] ?? 0;
+  }
+
+  /** T102: «usar» del hueco ⚓ de SU mochila (solo el azul) → flanco de
+   *  colocación hacia el host, el MISMO mensaje que su tecla Y: la simulación
+   *  del host decide el punto y replica la presa por PortableAnchorPlaced. */
+  requestPortablePlace(p: 0 | 1): void {
+    if (p !== 1 || this.disposed) return;
+    this.d.net.sendIntent({
+      ax: 0, ay: 0, speed: 0, toggles: [],
+      shoo: false, fart: false, anchor: false, impulse: false,
+      place: true, mashCount: 0,
+    });
+  }
+
   private lastSnap: NetSnapshot | null = null;
 
   private onSnap(s: NetSnapshot): void {
