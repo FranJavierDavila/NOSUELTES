@@ -1893,3 +1893,4 @@ Work Log:
 Stage Summary:
 - Primera carga: modelos 51,7→9,7 MB, audio 67→12,9 MB; out/ 140→34 MB (-76%). Repo: deja de engordar con capturas; 16 MB de huérfanos fuera del deploy.
 - Cada deploy queda verificado automáticamente por el smoke test (rojo si algo se rompe).
+- PRODUCCIÓN: deploy de e610723 SUCCESS y el workflow «Smoke test del juego publicado» se disparó SOLO (workflow_run) y acabó en SUCCESS: la web publicada pasa los 10 checks y los 14 assets comprimidos se sirven. Repo con T99 completo y verificado en GitHub Pages.
