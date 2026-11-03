@@ -14,17 +14,17 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "SHERPAS AL LÍMITE",
+  title: "CARRY ME",
   description:
     "Cooperativo de escalada para 2 jugadores: dos sherpas ragdoll suben al Everest cargando con un ricachón colgado de la cuerda. TypeScript + Babylon.js, contenido data-driven.",
-  keywords: ["SHERPAS AL LÍMITE", "cooperativo", "ragdoll", "fisica", "Babylon.js", "escalada", "videojuego", "Everest"],
+  keywords: ["CARRY ME", "SHERPAS AL LÍMITE", "cooperativo", "ragdoll", "fisica", "Babylon.js", "escalada", "videojuego", "Everest"],
   icons: {
     icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
   },
   openGraph: {
-    title: "SHERPAS AL LÍMITE",
-    description: "Dos sherpas ragdoll suben al Everest cargando con un ricachón colgado de la cuerda",
-    siteName: "SHERPAS AL LÍMITE",
+    title: "CARRY ME",
+    description: "Two sherpas, a rich man on his plank, and Everest",
+    siteName: "CARRY ME",
     type: "website",
   },
 };

@@ -1,6 +1,6 @@
 {
   "menu": {
-    "title": "SHERPAS AT THE LIMIT",
+    "title": "CARRY ME",
     "subtitle": "Two sherpas, a rich man on his plank, and Everest.",
     "start": "GO!",
     "difficulty": "Difficulty",
@@ -11,7 +11,8 @@
     "resume": "Continue from {camp}",
     "newAscent": "New ascent",
     "loading": "Preparing the wall…",
-    "soloTest": "Solo test (control both)"
+    "soloTest": "Solo test (control both)",
+    "seed": "Seed"
   },
   "hud": {
     "altitude": "Altitude",
@@ -140,7 +141,8 @@
     "daltonism": "Colorblind palette",
     "reduceShake": "Reduce camera shake",
     "subtitles": "Subtitles always on",
-    "bubbles": "Boss speech bubbles (face and lines)"
+    "bubbles": "Boss speech bubbles (face and lines)",
+    "close": "Done"
   },
   "save": {
     "saved": "Progress saved at {camp}",

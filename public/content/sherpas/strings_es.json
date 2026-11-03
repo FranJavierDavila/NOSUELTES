@@ -1,6 +1,6 @@
 {
   "menu": {
-    "title": "SHERPAS AL LÍMITE",
+    "title": "CARRY ME",
     "subtitle": "Dos sherpas, un ricachón en su tabla y el Everest.",
     "start": "¡GO!",
     "difficulty": "Dificultad",
@@ -11,7 +11,8 @@
     "resume": "Continuar desde {camp}",
     "newAscent": "Nueva ascensión",
     "loading": "Preparando la pared…",
-    "soloTest": "Probar solo (controla a ambos)"
+    "soloTest": "Probar solo (controla a ambos)",
+    "seed": "Semilla"
   },
   "hud": {
     "altitude": "Altitud",
@@ -140,7 +141,8 @@
     "daltonism": "Paleta para daltonismo",
     "reduceShake": "Reducir sacudidas de cámara",
     "subtitles": "Subtítulos siempre activos",
-    "bubbles": "Bocadillos del jefe (cara y frases)"
+    "bubbles": "Bocadillos del jefe (cara y frases)",
+    "close": "Listo"
   },
   "save": {
     "saved": "Progreso guardado en {camp}",

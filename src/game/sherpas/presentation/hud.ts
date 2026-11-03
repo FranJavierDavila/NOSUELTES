@@ -9,6 +9,7 @@ import {
   type OnboardingState,
 } from "../gameplay/onboarding";
 import { DAYTIME_IDS } from "../gameplay/daycycle"; // T61: selector de hora del día
+import { assetUrl } from "../../assetPath"; // T100: portada bajo subruta (GitHub Pages)
 
 export type Lang = "es" | "en";
 export type BalanceUiState = "equilibrado" | "aviso" | "desequilibrado";
@@ -19,6 +20,9 @@ export const WEATHER_PREF_KEY = "ns.weather.v1";
 export const DAYTIME_PREF_KEY = "ns.daytime.v1";
 /** T76: preferencia de bocadillos ("si"/"no") — persiste como el clima. */
 export const BUBBLES_PREF_KEY = "ns.bubbles.v1";
+/** T100: idioma del menú ("es"/"en") — INGLÉS por defecto; el jugador lo
+ *  cambia en el engranaje y persiste entre sesiones. */
+export const LANG_PREF_KEY = "ns.lang.v1";
 
 export interface HudStartChoice { difficulty: string; seed: number; lang: Lang; resume: boolean; mute: boolean; daltonism: boolean; reduceShake: boolean; disablePee: boolean; /** T76: bocadillos del ricachón visibles (cara y frases en el globo). */ bubbles: boolean; /** T61: clima (clear/snow/snow_low) y hora del día (dia/atardecer/noche). */ weather: string; daytime: string }
 
@@ -182,6 +186,19 @@ const CSS = `
 .sphud .ob-foot { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:20px; }
 /* T60 RED: panel de juego online. */
 .sphud .net-code { font:26px/1.2 ui-monospace,monospace; letter-spacing:.35em; text-align:center; background:rgba(255,255,255,.06); border:1px dashed rgba(255,255,255,.3); border-radius:12px; padding:12px 10px 12px 16px; margin:12px 0; user-select:text; }
+/* T100 CARRY ME: portada de arranque — imagen de cabecera + tres botones
+ * (GO grande, «¿Cómo se juega?» y «Jugar online» pequeños); el resto de las
+ * opciones vive en el panel de ajustes que abre el engranaje. */
+.sphud .start-hero { max-width: 460px; width: 100%; max-height: 97%; overflow-y: auto; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 6px; }
+.sphud .hero-art { display: block; width: auto; height: auto; max-width: min(440px, 94vw); max-height: 55vh; border-radius: 18px; box-shadow: 0 12px 48px rgba(0,0,0,.65), 0 0 0 1px rgba(255,255,255,.09); background: #0e141a; -webkit-user-drag: none; }
+.sphud .hero-sub { font-size: 13.5px; opacity: .95; text-align: center; text-shadow: 0 1px 10px rgba(0,0,0,.85); margin: 0; }
+.sphud .hero-go { font-size: 26px; font-weight: 800; padding: 13px 76px; border-radius: 14px; letter-spacing: .22em; text-indent: .22em; background: linear-gradient(180deg, #37a35f, #22663e); border-color: #63c98c; box-shadow: 0 6px 24px rgba(46,125,79,.5); }
+.sphud .hero-go:hover { background: #38985f; }
+.sphud .hero-resume { font-size: 12.5px; padding: 6px 14px; opacity: .95; border-radius: 9px; background: rgba(16,22,28,.82); }
+.sphud .hero-row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+.sphud .hero-row button { font-size: 13.5px; padding: 9px 16px; border-radius: 10px; background: rgba(16,22,28,.82); }
+.sphud .gear { position: absolute; top: 12px; right: 12px; width: 44px; height: 44px; padding: 0; font-size: 21px; line-height: 1; border-radius: 50%; background: rgba(10,14,18,.72); backdrop-filter: blur(4px); }
+.sphud .gear:hover { background: rgba(38,49,61,.9); }
 .sphud .net-status { font-size:13px; min-height:20px; text-align:center; opacity:.9; margin:8px 0; }
 `;
 
@@ -193,7 +210,9 @@ export class SherpaHud {
   private root: HTMLElement;
   private hud: HudData;
   private strings: Record<Lang, StringsData>;
-  lang: Lang = "es";
+  /** T100: idioma del menú — INGLÉS por defecto; el constructor lo carga de
+   *  la preferencia persistida (el jugador puede fijar castellano). */
+  lang: Lang = "en";
   private el: Record<string, HTMLElement | null> = {};
   private bubbles: { node: HTMLElement; until: number }[] = [];
   private subtitleUntil = 0;
@@ -205,7 +224,9 @@ export class SherpaHud {
   private mute = false;
   private disablePee = false;
   private opts?: { onGo: (c: HudStartChoice) => void; onHowToDone?: () => void; onNet?: () => void; onWeather?: (id: string) => void; onDaytime?: (id: string) => void };
-  private choice: Partial<HudStartChoice> = { lang: "es" };
+  private choice: Partial<HudStartChoice> = { lang: "en" };
+  /** T100: datos del menú que el re-render necesita (cambio de idioma). */
+  private startOpts: { difficulties: string[]; saveCampLabel: string | null } | null = null;
 
   // T61 — AJUSTES PERSISTENTES de clima/hora (localStorage defensivo, patrón
   // onboarding: un storage roto NUNCA rompe el menú).
@@ -229,6 +250,8 @@ export class SherpaHud {
     this.root = root;
     this.hud = hud;
     this.strings = strings;
+    this.lang = this.loadPref(LANG_PREF_KEY, ["es", "en"], "en") as Lang;
+    this.choice.lang = this.lang;
     const style = document.createElement("style");
     style.textContent = CSS;
     root.appendChild(style);
@@ -273,6 +296,8 @@ export class SherpaHud {
       <div class="overlay hidden" data-e="pause"><div class="panel" style="text-align:center;max-width:340px">
         <h1 style="font-size:24px">⏸</h1><p class="sub" data-e="pauseHint"></p></div></div>
       <div class="overlay hidden" data-e="start"></div>
+      <!-- T100: ajustes del engranaje — sobre la portada, bajo el onboarding. -->
+      <div class="overlay hidden" data-e="settings"></div>
       <div class="overlay hidden" data-e="finale"></div>
       <div class="overlay hidden" data-e="net"><div class="panel" data-e="netBody"></div></div>
       <!-- T59: el onboarding es el ÚLTIMO overlay: desde el menú ("¿Cómo se
@@ -738,48 +763,105 @@ export class SherpaHud {
     // T76: bocadillos (cara + frase en el globo) — ON por defecto, persiste.
     const bubbles0 = this.loadPref(BUBBLES_PREF_KEY, ["si", "no"], "si") === "si";
     this.choice = { lang: this.lang, resume: false, mute: false, daltonism: false, reduceShake: false, disablePee: false, bubbles: bubbles0, difficulty: opts.defaultPreset, seed: opts.seed, weather: weather0, daytime: daytime0 };
+    this.startOpts = { difficulties: opts.difficulties, saveCampLabel: opts.saveCampLabel };
+    // T100: portada limpia (3 botones + engranaje) y ajustes en su overlay.
+    this.renderStart();
+    this.renderSettings();
+    this.el.start!.classList.remove("hidden");
+  }
+
+  /** T100 CARRY ME — portada: imagen de cabecera con la marca, subtítulo y
+   *  TRES botones (GO grande; «¿Cómo se juega?» y «Jugar online» pequeños).
+   *  El engranaje abre el panel de ajustes. Los data-a (go/howto/net/resume)
+   *  se conservan: sondas E2E y smoke del CI dependen de ellos. */
+  private renderStart(): void {
+    const o = this.startOpts;
+    if (!o) return;
     const el = this.el.start!;
+    el.innerHTML = `
+      <button class="gear" data-a="settings" title="${esc(this.t("settings.title"))}">⚙️</button>
+      <div class="start-hero">
+        <img class="hero-art" src="${assetUrl("/content/sherpas/portada.jpg")}" alt="CARRY ME" draggable="false">
+        <div class="hero-sub">${esc(this.t("menu.subtitle"))}</div>
+        ${o.saveCampLabel ? `<button class="hero-resume" data-a="resume">⏩ ${esc(this.fmt("menu.resume", { camp: o.saveCampLabel }))}</button>` : ""}
+        <button class="go hero-go" data-a="go">${esc(this.t("menu.start"))}</button>
+        <div class="hero-row">
+          <button data-a="howto">🎓 ${esc(this.t("onboarding.menuButton"))}</button>
+          <button data-a="net">🌐 ${esc(this.t("net.menu"))}</button>
+        </div>
+      </div>`;
+    el.querySelector<HTMLElement>("[data-a=settings]")!.onclick = () => this.toggleSettings(true);
+    el.querySelector<HTMLElement>("[data-a=howto]")!.onclick = () => {
+      this.showOnboarding({ onDone: () => this.opts?.onHowToDone?.() });
+    };
+    el.querySelector<HTMLElement>("[data-a=net]")!.onclick = () => {
+      this.hideStart();
+      this.opts?.onNet?.();
+    };
+    el.querySelectorAll<HTMLElement>("[data-a=resume]").forEach((b) => { b.onclick = () => { this.choice.resume = true; this.hideStart(); this.opts?.onGo?.(this.choice as HudStartChoice); }; });
+    const go = el.querySelector<HTMLElement>("[data-a=go]")!;
+    go.onclick = () => { this.choice.resume = false; this.hideStart(); this.opts?.onGo?.(this.choice as HudStartChoice); };
+  }
+
+  /** T100 — panel del engranaje: TODAS las opciones que antes llenaban la
+   *  portada (dificultad, idioma, clima, hora, semilla y accesibilidad). El
+   *  cambio de idioma re-pinta portada y ajustes: todo rota con la lengua. */
+  private renderSettings(): void {
+    const el = this.el.settings!;
+    const c = this.choice;
+    const checks = [
+      ["mute", "settings.mute", c.mute ?? false],
+      ["daltonism", "settings.daltonism", c.daltonism ?? false],
+      ["shake", "settings.reduceShake", c.reduceShake ?? false],
+      ["nopee", "settings.disablePee", c.disablePee ?? false],
+      ["bubbles", "settings.bubbles", c.bubbles ?? false],
+    ] as const;
     el.innerHTML = `<div class="panel">
-      <h1>⛰️ ${esc(this.t("menu.title"))}</h1>
-      <div class="sub">${esc(this.t("menu.subtitle"))}</div>
-      ${opts.saveCampLabel ? `<div class="row"><button data-a="resume">${esc(this.fmt("menu.resume", { camp: opts.saveCampLabel }))}</button><button data-a="new">${esc(this.t("menu.newAscent"))}</button></div>` : ""}
+      <h1 style="font-size:22px">⚙️ ${esc(this.t("settings.title"))}</h1>
       <div class="row" data-a="resumeRow"><label>${esc(this.t("menu.difficulty"))}</label><span data-a="diffs"></span></div>
       <div class="row"><label>${esc(this.t("menu.language"))}</label><span data-a="langs"></span></div>
       <div class="row"><label>${esc(this.t("menu.weather"))}</label><span data-a="weathers"></span></div>
       <div class="row"><label>${esc(this.t("menu.daytime"))}</label><span data-a="daytimes"></span></div>
-      <div class="row"><label>Semilla</label><input type="number" data-a="seed" value="${opts.seed}" step="1" min="0" max="999999"><button data-a="dice">🎲</button></div>
+      <div class="row"><label>${esc(this.t("menu.seed"))}</label><input type="number" data-a="seed" value="${c.seed ?? 0}" step="1" min="0" max="999999"><button data-a="dice">🎲</button></div>
       <div class="row" style="gap:14px">
-        <span class="chk"><input type="checkbox" data-a="mute" id="ck_m"><label for="ck_m">${esc(this.t("settings.mute"))}</label></span>
-        <span class="chk"><input type="checkbox" data-a="daltonism" id="ck_d"><label for="ck_d">${esc(this.t("settings.daltonism"))}</label></span>
-        <span class="chk"><input type="checkbox" data-a="shake" id="ck_s"><label for="ck_s">${esc(this.t("settings.reduceShake"))}</label></span>
-        <span class="chk"><input type="checkbox" data-a="nopee" id="ck_p"><label for="ck_p">${esc(this.t("settings.disablePee"))}</label></span>
-        <span class="chk"><input type="checkbox" data-a="bubbles" id="ck_b" ${bubbles0 ? "checked" : ""}><label for="ck_b">${esc(this.t("settings.bubbles"))}</label></span>
+        ${checks.map(([attr, key, on]) => `<span class="chk"><input type="checkbox" data-a="${attr}" id="ck_${attr}" ${on ? "checked" : ""}><label for="ck_${attr}">${esc(this.t(key))}</label></span>`).join("")}
       </div>
-      <div class="row" style="margin-top:18px"><button class="go" data-a="go">${esc(this.t("menu.start"))}</button></div>
-      <div class="row" style="justify-content:center"><button data-a="howto">🎓 ${esc(this.t("onboarding.menuButton"))}</button>
-      <button data-a="net">🌐 ${esc(this.t("net.menu"))}</button></div>
-      <div class="keys">${esc(this.t("keys.p1"))}<br>${esc(this.t("keys.p2"))}<br>${esc(this.t("keys.shared"))}</div>
+      <div class="row" style="justify-content:center;margin-top:16px"><button class="go" style="font-size:15px;padding:9px 42px" data-a="close">${esc(this.t("settings.close"))}</button></div>
     </div>`;
     const diffs = el.querySelector("[data-a=diffs]")!;
-    for (const d of opts.difficulties) {
+    for (const d of this.startOpts?.difficulties ?? []) {
       const b = document.createElement("button");
       b.textContent = this.t(`menu.difficulty.${d}`);
       b.dataset.d = d;
-      if (d === opts.defaultPreset) b.classList.add("sel");
+      if (d === this.choice.difficulty) b.classList.add("sel");
       b.onclick = () => {
         this.choice.difficulty = d;
         diffs.querySelectorAll("button").forEach((x) => x.classList.toggle("sel", x === b));
       };
       diffs.appendChild(b);
     }
+    // Idioma (ES/EN): persiste y repinta AMBOS paneles en la lengua elegida.
     const langs = el.querySelector("[data-a=langs]")!;
-    // T61 — SELECTOR DE CLIMA (Despejado / Nevada / Nevada de validación)
+    for (const l of ["es", "en"] as Lang[]) {
+      const b = document.createElement("button");
+      b.textContent = l.toUpperCase();
+      if (l === this.lang) b.classList.add("sel");
+      b.onclick = () => {
+        this.lang = l;
+        this.choice.lang = l;
+        this.savePref(LANG_PREF_KEY, l);
+        this.renderStart();
+        this.renderSettings();
+      };
+      langs.appendChild(b);
+    }
+    // T61 — CLIMA (Despejado / Nevada / Nevada de validación): vista previa en vivo
     const weathers = el.querySelector("[data-a=weathers]")!;
     for (const w of WEATHER_IDS) {
       const b = document.createElement("button");
       b.textContent = this.t(`menu.weather.${w}`);
       b.dataset.w = w;
-      if (w === weather0) b.classList.add("sel");
+      if (w === this.choice.weather) b.classList.add("sel");
       b.onclick = () => {
         this.choice.weather = w;
         this.savePref(WEATHER_PREF_KEY, w);
@@ -788,13 +870,13 @@ export class SherpaHud {
       };
       weathers.appendChild(b);
     }
-    // T61 — SELECTOR DE HORA (Día / Atardecer / Noche): vista previa EN VIVO
+    // T61 — HORA (Día / Atardecer / Noche): el sol se mueve al instante
     const daytimes = el.querySelector("[data-a=daytimes]")!;
     for (const d of DAYTIME_IDS) {
       const b = document.createElement("button");
       b.textContent = this.t(`menu.daytime.${d}`);
       b.dataset.d = d;
-      if (d === daytime0) b.classList.add("sel");
+      if (d === this.choice.daytime) b.classList.add("sel");
       b.onclick = () => {
         this.choice.daytime = d;
         this.savePref(DAYTIME_PREF_KEY, d);
@@ -803,34 +885,8 @@ export class SherpaHud {
       };
       daytimes.appendChild(b);
     }
-    for (const l of ["es", "en"] as Lang[]) {
-      const b = document.createElement("button");
-      b.textContent = l.toUpperCase();
-      if (l === this.lang) b.classList.add("sel");
-      b.onclick = () => {
-        this.lang = l;
-        this.choice.lang = l;
-        langs.querySelectorAll("button").forEach((x) => x.classList.toggle("sel", x === b));
-        el.querySelector("h1")!.innerHTML = `⛰️ ${esc(this.t("menu.title"))}`;
-        (el.querySelector(".sub") as HTMLElement).textContent = this.t("menu.subtitle");
-        const go = el.querySelector("[data-a=go]") as HTMLElement;
-        go.textContent = this.t("menu.start");
-        const howto = el.querySelector("[data-a=howto]") as HTMLElement | null;
-        if (howto) howto.innerHTML = `🎓 ${esc(this.t("onboarding.menuButton"))}`;
-        const netBtn = el.querySelector("[data-a=net]") as HTMLElement | null;
-        if (netBtn) netBtn.innerHTML = `🌐 ${esc(this.t("net.menu"))}`;
-      };
-      langs.appendChild(b);
-    }
     (el.querySelector("[data-a=seed]") as HTMLInputElement).oninput = (e) => {
       this.choice.seed = Math.abs(Math.floor(Number((e.target as HTMLInputElement).value) || 0)) % 1000000;
-    };
-    el.querySelector<HTMLElement>("[data-a=howto]")!.onclick = () => {
-      this.showOnboarding({ onDone: () => this.opts?.onHowToDone?.() });
-    };
-    el.querySelector<HTMLElement>("[data-a=net]")!.onclick = () => {
-      this.hideStart();
-      this.opts?.onNet?.();
     };
     (el.querySelector("[data-a=dice]") as HTMLElement).onclick = () => {
       const s = Math.floor(Math.random() * 1000000);
@@ -848,19 +904,14 @@ export class SherpaHud {
       this.choice.bubbles = on;
       this.savePref(BUBBLES_PREF_KEY, on ? "si" : "no");
     };
-    el.querySelectorAll<HTMLElement>("[data-a=resume]").forEach((b) => { b.onclick = () => { this.choice.resume = true; this.hideStart(); opts.onGo(this.choice as HudStartChoice); }; });
-    el.querySelector<HTMLElement>("[data-a=new]")?.addEventListener("click", () => { this.choice.resume = false; this.hideStart(); opts.onGo(this.choice as HudStartChoice); });
-    if (!opts.saveCampLabel) {
-      const go = el.querySelector<HTMLElement>("[data-a=go]")!;
-      go.onclick = () => { this.hideStart(); opts.onGo(this.choice as HudStartChoice); };
-    } else {
-      const go = el.querySelector<HTMLElement>("[data-a=go]")!;
-      go.onclick = () => { this.choice.resume = false; this.hideStart(); opts.onGo(this.choice as HudStartChoice); };
-    }
-    el.classList.remove("hidden");
+    el.querySelector<HTMLElement>("[data-a=close]")!.onclick = () => this.toggleSettings(false);
   }
 
-  hideStart(): void { this.el.start!.classList.add("hidden"); }
+  private toggleSettings(on: boolean): void {
+    this.el.settings!.classList.toggle("hidden", !on);
+  }
+
+  hideStart(): void { this.el.start!.classList.add("hidden"); this.el.settings?.classList.add("hidden"); }
 
   showHelp(): boolean {
     const el = this.el.help!;

@@ -1894,3 +1894,20 @@ Stage Summary:
 - Primera carga: modelos 51,7→9,7 MB, audio 67→12,9 MB; out/ 140→34 MB (-76%). Repo: deja de engordar con capturas; 16 MB de huérfanos fuera del deploy.
 - Cada deploy queda verificado automáticamente por el smoke test (rojo si algo se rompe).
 - PRODUCCIÓN: deploy de e610723 SUCCESS y el workflow «Smoke test del juego publicado» se disparó SOLO (workflow_run) y acabó en SUCCESS: la web publicada pasa los 10 checks y los 14 assets comprimidos se sirven. Repo con T99 completo y verificado en GitHub Pages.
+
+---
+Task ID: 100
+Agent: Z.ai (principal)
+Task: Menú de arranque profesional — imagen de cabecera + solo 3 botones (GO grande, ¿Cómo se juega?, Jugar online), resto de opciones en un engranaje, textos EN por defecto (ES al elegirlo) y renombrado del juego a «CARRY ME».
+
+Work Log:
+- SANBOX RECICLADO: el .git restaurado era una línea vieja (T85); GitHub main seguía en a66b1ad (T99 completo, deploy+smoke verdes). Alineado con origin/main (reset --hard a66b1ad, respaldo del commit suelto en rama local respaldo-t85; las 2 imágenes pegadas que solo existían en ese commit se copiaron a upload/).
+- PORTADA (scripts/t100-portada.py): upload/Cabecera.jpg (848×1264, 934 KB) → public/content/sherpas/portada.jpg re-encodeada (234 KB, q80 progressive, resolución intacta).
+- STRINGS (scripts/t100-strings.py): menu.title = «CARRY ME» en es/en; claves nuevas menu.seed («Semilla»/«Seed», antes en duro) y settings.close («Listo»/«Done»).
+- HUD (showStart → renderStart/renderSettings/toggleSettings): portada con la imagen (assetUrl → subruta), subtítulo y TRES botones (GO grande .hero-go; howto y net pequeños) + botón resume SOLO si hay partida guardada; el engranaje (esquina superior derecha) abre el panel de ajustes con TODO lo que salía antes: dificultad, idioma, clima, hora, semilla+dado, silenciar, daltonismo, sacudidas, pis, bocadillos. data-a (go/howto/net/resume/settings) intactos para sondas E2E y smoke del CI. El bloque de teclas sale de la portada (sigue en ayuda y tutorial).
+- IDIOMA: inglés por defecto (hud.lang="en"), selector ES/EN en ajustes con persistencia ns.lang.v1; al cambiar re-pinta portada y ajustes.
+- METADATOS: layout.tsx title/openGraph/keywords → CARRY ME; comentarios mount/SherpaMount.
+- VERIFICACIÓN LOCAL: npm install (el reciclaje había perdido trystero), build export EXACTO al CI (rm src/app/api → build → restaurar) EXIT=0, out/ 34 MB; servido en subruta /NOSUELTES (scripts/sirve-out-subruta.py); sonda de menú (scripts/t100-capturas.py) 20/20 TODO VERDE (portada cargada, solo 3 botones+engranaje, EN por defecto, panel completo, ES al vuelo, persistencia) con capturas download/t100-menu-{en,es,ajustes}.png; smoke completo local TODO VERDE (el CI entra en partida pulsando data-a=go sin cambios). NOTA E2E: bajo SwiftShader el pipeline de acción/esperas de Playwright se ahoga — todo por evaluate + wait_for_function (patrón de la sonda del CI).
+
+Stage Summary:
+- Arranque tipo juego comercial: portada CARRY ME + GO! + 2 botones; ajustes completos en el engranaje; inglés por defecto (castellano al elegirlo, persistente); título visible, pestaña del navegador y metadatos = CARRY ME.

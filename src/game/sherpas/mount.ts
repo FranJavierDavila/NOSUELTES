@@ -1,4 +1,4 @@
-// Arranque de SHERPAS AL LÍMITE (variación cooperativa, doc 0/2.1).
+// Arranque de CARRY ME (antes «Sherpas al límite», variación cooperativa).
 // Carga el pack de datos (/content/sherpas), el personaje del prototipo,
 // monta menú → partida y gestiona el ciclo de vida desde React.
 import { loadSherpasData } from "./core/data";
