@@ -139,6 +139,13 @@ const CSS = `
  * panel con CANVAS que dibuja la pared del tramo (presas por tipo, salientes
  * con borde blanco, hielo, verdes de superpoder, campamento) + metros restantes. */
 .sphud .minimap { position:absolute; right:14px; top:50%; transform:translateY(-50%); width:184px; padding:10px 8px 8px; text-align:center; }
+/* T94 (petición del jugador: «en la versión móvil es mejor ocultar el minimapa
+ * porque ocupa mucha pantalla y no permite jugar bien»): fuera en TÁCTIL con
+ * pantalla de teléfono (angosta en vertical o baja en horizontal) y en cualquier
+ * ventana estrecha; escritorio y tabletas grandes lo conservan entero. */
+@media (max-width: 700px), (pointer: coarse) and (max-width: 950px), (pointer: coarse) and (max-height: 540px) {
+  .sphud .minimap { display: none; }
+}
 .sphud .mm-canvas { width:100%; height:46vh; min-height:300px; max-height:500px; border-radius:8px; display:block; background:#171d24; }
 .sphud .mm-legend { display:flex; gap:8px; justify-content:center; align-items:center; margin-top:6px; font-size:9.5px; opacity:.85; white-space:nowrap; }
 .sphud .mm-legend i { width:7px; height:7px; border-radius:50%; display:inline-block; margin-right:3px; vertical-align:-1px; }
@@ -388,6 +395,10 @@ export class SherpaHud {
     /** COTAS de seguro (Task 37): línea verde discontinua + banderitas al fijar. */
     checkpoints?: { frac: number; reached: boolean }[];
   }): void {
+    // T94 — móvil: con el panel oculto por CSS no se pinta nada (el teléfono
+    // se ahorra el repintado del lienzo cada tick).
+    const mmRoot = this.el.minimap as HTMLElement | undefined;
+    if (mmRoot && mmRoot.offsetParent === null) return;
     this.el.mmLabel!.textContent = m.campId
       ? this.fmt("hud.minimapTo", { m: Math.max(0, Math.round(m.metersLeft)), camp: m.campId })
       : this.t("hud.summit");

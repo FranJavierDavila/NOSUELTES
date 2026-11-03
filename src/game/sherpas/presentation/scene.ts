@@ -1186,10 +1186,15 @@ export class SherpaScene {
   // LADO VISIBLE: la cámara del juego vive en z NEGATIVO mirando a +z — la
   // cabaña tiene que estar en -z (delante del muro, junto a la zona de caída)
   // o quedaría DETRÁS de la pared (invisible; bug visto en la E2E T56).
-  // (2.9, -3.6): en pantalla cae a la derecha del centro (no bajo el minimapa),
-  // fuera de la línea de caída (el ricachón aterriza en x≈0.8..1.7, z≈-1.2) y
-  // de la abombadera del faldón (x≥3.2). Giro 3.49 rad: puerta a la cámara.
-  private static readonly BASE_POS = { x: 7.9, z: -5.2, ry: Math.PI, scale: 7 }; // T90: campamento GLB
+  // T93 (petición del jugador: «la base prácticamente no se ve, debería estar
+  // más pegada a la pared para que entre en plano»): de (7.9, -5.2) a
+  // (4.8, -2.9) — el dorso del modelo (fondo local z≈+2.7 con escala 5.2)
+  // queda a ~0.3 m de la cara del muro y el conjunto entra en el encuadre
+  // (borde derecho ≈ x 7.4, dentro del semiancho visible ~7.7@16:9); sigue
+  // fuera de la línea de caída (el ricachón aterriza en x≈0.8..1.7, z≈-1.2).
+  // El pie derecho se apoya contra el faldón (abombadera x≥3.2): campamento
+  // arrimado a la roca, sin huecos flotantes. Giro π: la cara del GLB a cámara.
+  private static readonly BASE_POS = { x: 4.8, z: -2.9, ry: Math.PI, scale: 5.2 }; // T90: campamento GLB · T93 pegado a la pared
 
   /** VertexData de un GeomData puro (baseCamp.ts) → malla de Babylon. */
   private geomToMesh(name: string, g: GeomData): Mesh {
@@ -3404,6 +3409,19 @@ export class SherpaScene {
     if (inst) {
       this.richPuppet = inst;
       this.richPoseSmooth.reset(); // T85-SMOOTH: títere nuevo, historia fuera
+      // T95 — TIRANTES FUERA (petición del jugador: «revisa la geometría del
+      // Ricachón que por debajo hay algún objeto que molesta»). Los tirantes
+      // del GLB son cajas planas de 0,6 m (largo en z) en la jerarquía plana:
+      // el rig articulado (T84) les aplica el Δ del marco del torso SENTADO y
+      // acaban apuntando hacia fuera/abajo — se ve una correa suelta flotando
+      // tras la espalda y bajo la tabla (verificado E2E: ocultando tirantes
+      // la escena queda limpia). La mochila (maciza) se queda: asienta bien.
+      for (const [name, node] of inst.pieceEntries()) {
+        if (name === "tirante_izq" || name === "tirante_der") {
+          for (const m of node.getChildMeshes()) m.isVisible = false;
+          if (node instanceof Mesh) node.isVisible = false;
+        }
+      }
       // T76 — DIMS DESDE EL BIND: los hombros/caderas derivados deben caer
       // DONDE el modelo tiene las articulaciones (el artista esculpió el rico
       // con hombros anchos, ±0.2965: los defaults de la plantilla dejaban las

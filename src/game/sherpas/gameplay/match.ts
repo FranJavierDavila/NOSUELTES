@@ -184,7 +184,7 @@ export class SherpasMatch {
   private rngIdle: Rng = makeRng(0x1d0e);
   /** T80 — frase pendiente de pronunciar EN EL RENDER (tras setRichMood): la
    *  cara del globo sale del ánimo NUEVO, no del que la escena tenía al sonar. */
-  private pendingRichLine: { text: string; durS: number } | null = null;
+  private pendingRichLine: { text: string; durS: number; retryUntilMs: number } | null = null;
   private plankCenterPrev: V3 | null = null;
   private plankSpeedMs = 0;
   private lastReachRings: ReachRingEntry[] = []; // para el snapshot de red (rr)
@@ -978,7 +978,7 @@ export class SherpasMatch {
     if (this.richMood.spokeIdle) {
       this.richMood.spokeIdle = false; // borde: se consume al decir la frase
       const line = pickIdleLine(this.richMood.mood, this.d.hud.lang, this.rngIdle.next);
-      if (line) this.pendingRichLine = { text: line, durS: 3.2 };
+      if (line) this.pendingRichLine = { text: line, durS: 3.2, retryUntilMs: performance.now() + 3000 };
     }
     // T44 — VOZ REAL POR ESCORA (petición: "...o la tabla se inclina bastante"):
     // al alcanzar la escora dramática UNA VEZ por episodio suelta una voz real
@@ -1682,49 +1682,65 @@ export class SherpasMatch {
     // CÓNDOR (petición del jugador): landed → peso visible + ricachón NERVIOSO.
     on("CondorLanded", () => {
       this.d.hud.subtitle(this.d.hud.t("hud.condorLanded"), 2.6);
-      const line = this.insults.pick("condor_angry");
-      // T80: la frase ELEGIDA viaja (antes se tiraba y el bocadillo salía mudo)
-      if (line) this.d.bus.emit("InsultSaid", { lineId: "condor_angry", context: "condor_angry", text: line });
+      // T97: SIN texto pre-elegido — el handler de InsultSaid dice la
+      // transcripción de la grabación que suena (voz ↔ texto).
+      this.d.bus.emit("InsultSaid", { lineId: "condor_angry", context: "condor_angry", text: "" });
     });
     on("CondorLeft", () => { /* se va solo: la carga desaparece con él */ });
     on("InsultSaid", (p) => {
       // VOZ DEL RICACHÓN — SOLO GRABACIONES REALES DEL JUGADOR (petición:
       // "Solo usar las audios que he subido yo, no uses los que generas tú").
       // El fichero viene por evento o se elige por CONTEXTO (audio.json →
-      // realVoice.contexts); el subtítulo SIEMPRE es la transcripción de la
-      // grabación que suena. Cero TTS / speechSynthesis / gibberish.
-      // T80 — LA FRASE SIEMPRE SE VE (petición: «en los bocadillos no aparecen
-      // los textos de las frases, solo CABRONEESSS»): solo 6 grabaciones tienen
-      // transcripción; sin ella, el texto cae al BANCO DE INSULTOS escrito
-      // (data.insults) del contexto — nunca más una frase muda.
+      // realVoice.contexts). Cero TTS / speechSynthesis / gibberish.
+      // T97 (petición: «los audios vayan en consonancia con los textos de los
+      // bocadillos, no tiene sentido que diga por voz una cosa y en el texto
+      // otra diferente»): el bocadillo es SIEMPRE la transcripción de la
+      // grabación que de verdad SUENA — nunca el banco escrito (que era la
+      // fuente del desajuste: texto de un lado, voz de otro) — y si la voz es
+      // RECHAZADA (otra grabación en curso) no se estampa texto nuevo: el
+      // subtítulo en pantalla ya es el de la voz que suena. Solo sin audio
+      // posible (mudo / fichero ausente) la transcripción se ve igual para no
+      // perder la frase (T80).
       const rvCfg = this.d.audio.realVoiceCfg;
-      const isScream = p.context === "rich_fell";
-      const text = isScream
-        ? p.text || (this.d.hud.lang === "en" ? "YOU BASTAAAARDS!!!" : "¡¡CABRONEEEEESSSS!!!!")
-        : (p.text
-          || this.d.audio.realLineFor(p.file ?? null, this.d.hud.lang)
-          || this.insults.pick(p.context)
-          || this.insults.pick("auto")
-          || "");
+      const lang = this.d.hud.lang;
+      if (p.context === "rich_fell") {
+        // grito protegido: grabación original fuera del banco; su texto fijo
+        // (la transcripción de ESA grabación).
+        this.richMood = forceRichMood(this.richMood, MOOD_FOR_CONTEXT.rich_fell ?? "sorpresa", 3.8);
+        this.d.scene.fxRage(this.rich.bodies[RM.head].pos);
+        const dS = this.d.audio.shoutPath(rvCfg?.screamPath ?? "/audio/rico/es/cd0e9f33.mp3");
+        const text = p.text || (lang === "en" ? "YOU BASTAAAARDS!!!" : "¡¡CABRONEEEEESSSS!!!!");
+        void Promise.resolve(dS).then((dur) => {
+          if (dur > 0) this.rich.ostentate(this.simTime, dur + 0.35);
+          this.pendingRichLine = { text, durS: 3.8, retryUntilMs: performance.now() + 4000 };
+        });
+        return;
+      }
       // T80 — LA FRASE MANDA LA CARA (petición: «la frase identifique la
       // emoción que se corresponde con la cara»): el contexto del evento fija
       // el ánimo (y MOOD_FACE pone la cara) por encima de la histéresis.
       const ctxMood = MOOD_FOR_CONTEXT[p.context];
       if (ctxMood) this.richMood = forceRichMood(this.richMood, ctxMood, 3.8);
-      const dS = isScream
-        ? this.d.audio.shoutPath(rvCfg?.screamPath ?? "/audio/rico/es/cd0e9f33.mp3")
-        : this.d.audio.shoutRealFile(p.file ?? this.d.audio.pickBankFile(p.context) ?? "");
       // JUICE T38: bocanadas de furia sobre su cabeza — el enojo se VE.
       this.d.scene.fxRage(this.rich.bodies[RM.head].pos);
-      // T80 — la frase se dice EN EL RENDER (tras setRichMood): así el globo
-      // compone con la cara del ánimo FORZADO por el contexto, no con el que
-      // la escena tenía al sonar la grabación.
-      if (text) this.pendingRichLine = { text, durS: 3.8 };
-      // T44 — BRAZOS EN ALTO mientras EMITE UN SONIDO (petición: "para saber
-      // que el ricachón habla... de forma muy clara y ostentosa"): gesto
-      // "exaltado" durante la duración EFECTIVA del clip.
+      // 1º el FICHERO (evento o contexto), después su TRANSCRIPCIÓN: texto y
+      // voz salen del MISMO file — imposible que discrepen.
+      const file = p.file ?? this.d.audio.pickBankFile(p.context) ?? "";
+      const trans = this.d.audio.realLineFor(file || null, lang)
+        || (lang !== "es" ? this.d.audio.realLineFor(file || null, "es") : "");
+      const dS = this.d.audio.shoutRealFile(file);
       void Promise.resolve(dS).then((dur) => {
-        if (dur > 0) this.rich.ostentate(this.simTime, dur + 0.35);
+        if (dur > 0) {
+          // T44 — BRAZOS EN ALTO mientras EMITE (petición: "para saber que el
+          // ricachón habla... de forma muy clara y ostentosa").
+          this.rich.ostentate(this.simTime, dur + 0.35);
+          this.pendingRichLine = { text: trans, durS: Math.max(2.6, dur + 0.7), retryUntilMs: performance.now() + 4000 };
+        } else if (!this.d.audio.realBusy() && trans) {
+          // la voz no sonó Y nada más está sonando (mudo/fichero ausente):
+          // la frase se ve — es exactamente lo que la grabación diría.
+          this.pendingRichLine = { text: trans, durS: 3.2, retryUntilMs: performance.now() + 4000 };
+        }
+        // dur === 0 con otra voz en curso: SIN texto nuevo (voz ↔ texto).
       });
     });
     on("Telegraph", (p) => {
@@ -1860,12 +1876,20 @@ export class SherpasMatch {
     // T66 — ÁNIMO del ricachón: la escena SOLO muestra el bocadillo mientras
     // "habla" (ventana say tras cada cambio de ánimo; el pin de E2E manda).
     s.setRichMood(this.richMood.mood, false, richBubbleVisible(this.richMood));
-    // T80 — la frase pendiente se dice AHORA: la cara del globo es la del
-    // ánimo recién aplicado (frase ↔ cara, petición del jugador).
+    // T80 — la frase pendiente se dice EN EL RENDER (tras setRichMood): así el
+    // globo compone con la cara del ánimo recién aplicado (frase ↔ cara).
+    // T97 — CON REINTENTO: el PNG del ánimo carga async (richFaceRaw); si el
+    // primer tick aún no está en crudo, la frase se REINTENTA unos frames
+    // antes de caer al subtítulo — no se pierde y sale como BOCADILLO.
     if (this.pendingRichLine) {
       const line = this.pendingRichLine;
-      this.pendingRichLine = null;
-      if (!s.sayRichLine(line.text, line.durS)) this.d.hud.subtitle(line.text, line.durS);
+      if (s.sayRichLine(line.text, line.durS)) {
+        this.pendingRichLine = null;
+      } else if (performance.now() > line.retryUntilMs) {
+        this.pendingRichLine = null;
+        this.d.hud.subtitle(line.text, line.durS);
+      }
+      // aún con ventana de gracia: se reintenta el próximo frame
     }
     const t0 = this.trash[0];
     s.syncTrash(t0 && t0.alive ? t0.pos : null, this.simTime * 6);
