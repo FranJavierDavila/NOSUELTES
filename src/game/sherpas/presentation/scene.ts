@@ -3766,8 +3766,8 @@ export class SherpaScene {
     if (cached) return cached;
     if (typeof document === "undefined") return null;
     const img = new Image();
-    img.src = assetUrl(`/models/sherpas/emotes/r_${m}.png`);
-    // marcador temporal: hasta que el PNG decodifique, la sonda texReady=false
+    img.src = assetUrl(`/models/sherpas/emotes/r_${m}.webp`);
+    // marcador temporal: hasta que el webp decodifique, la sonda texReady=false
     // y el plano muestra el material base (blanco) — pocas frames a 4 fps.
     img.onload = () => {
       if (this.disposed) return;

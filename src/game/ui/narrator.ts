@@ -100,7 +100,7 @@ export class Narrator {
   private play(src: string): void {
     this.stopAudio();
     try {
-      const a = new Audio(assetUrl(`/${src}.wav`));
+      const a = new Audio(assetUrl(`/${src}.mp3`));
       a.volume = this.volume;
       void a.play().catch(() => {
         /* politica de autoplay o archivo ausente: el texto sigue en la barra */

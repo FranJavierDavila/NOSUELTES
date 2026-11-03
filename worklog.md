@@ -1876,3 +1876,20 @@ Work Log:
 Stage Summary:
 - GitHub actualizado (T98 en origin/main) y GitHub Pages re desplegado con éxito.
 - La web en vivo verificada E2E + visualmente: el jugador ya puede jugar el suelo alpino nevado de T98 en https://franjavierdavila.github.io/NOSUELTES/
+
+---
+Task ID: 99
+Agent: Z.ai (principal)
+Task: «adelante por 2 y 3» — puntos 2 y 3 de la auditoría de mejoras: peso del repo/primera carga + smoke test en CI. (OJO: la sesión previa malinterpretó «2 y 3» como T95/T96; ambos ya estaban hechos y desplegados en 9e3be6f. Git limpio, nada a medias.)
+
+Work Log:
+- CENSO (scripts/auditoria-peso-t99.py): pack 453 MB = 330 MB PNG de download/, 95 MB GLB, 67 MB mp3, 21 MB wav, 30 MB md. Huérfanos reales: escalador-fixed.glb (11,8 MB) y spiderman.glb (4,1 MB) — 0 referencias (solo sondas viejas de saneo). Los emotes r_*.png se cargan con ruta dinámica r_${m}.webp — NO tocar sin comprobar.
+- GLB (scripts/gltf-opt/optimiza-glb.js, @gltf-transform + sharp): SOLO texturas → webp q90 máx 2048 (aspecto preservado), sin tocar mallas/nodos/anims; manifiesto antes/después idéntico en los 9 GLB. escalador.glb usa KHR_materials_specular (Glass specularFactor 0 = mate) → extensión registrada y conservada. base 13→2,2 MB, escalador 11,8→2,95, rico 8,3→1,19, sherpa 2,87→0,81, caras 3,15→0,58 c/u. Modelos usados 51,7→9,7 MB.
+- AUDIO: los 208 ficheros eran PCM 24 kHz mono sin comprimir (los «.mp3» eran WAV renombrados, 384 kbps). scripts/t99-audio.py re-encodea a MP3 real 64k con validación ffprobe (delta máx duración 0,072 s): 67→12,9 MB. Loader narrator.ts .wav→.mp3; los de rico ya usaban .mp3. Emotes PNG→webp (2,8 MB→320 KB) + scene.ts.
+- REPO: untrack de download/ (483 capturas, 330 MB históricas), .env, visor_bundle.js, backups/, db/ + .gitignore; borrados los 2 GLB huérfanos. El pack histórico NO se reescribe (fuerza push; recomendado aparte si el usuario quiere).
+- VERIFICACIÓN LOCAL: build de export estática EXACTO al CI (STATIC_EXPORT=1, sin .env, sin src/app/api) EXIT=0; out/ 34 MB (antes ~140). Servido bajo /NOSUELTES con prefijo (1er intento falló por montarlo en raíz: los chunks 404). sonda-smoke local: TODO VERDE 10/10 (incluido fetch de 14 assets clave: GLB, caras, emotes webp, narrator es/en, rico) y capturas idénticas a las de producción: sin artefactos webp.
+- CI: scripts/sonda-smoke.py (paramétrica --url/--out-dir/--intentos, exit 1 si fallo) + .github/workflows/smoke-test.yml con workflow_run sobre «Despliegue a GitHub Pages»: tras CADA deploy entra en partida en la web publicada y exige TODO VERDE; artefacto con capturas+informe.
+
+Stage Summary:
+- Primera carga: modelos 51,7→9,7 MB, audio 67→12,9 MB; out/ 140→34 MB (-76%). Repo: deja de engordar con capturas; 16 MB de huérfanos fuera del deploy.
+- Cada deploy queda verificado automáticamente por el smoke test (rojo si algo se rompe).
