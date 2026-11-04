@@ -107,7 +107,11 @@ def intento(p) -> bool:
        f"verts={data['floorVerts']} cols={data['floorCols']}")
     ok("floor NIEVE (sin verde #79a054)", data["floorSnowy"] > 0.75 and bool(data["albedo"]) and data["albedo"][0] > 0.85,
        f"media RGB={data['floorSnowy']:.3f} albedo={data['albedo']}")
-    ok("campo de rocas poblado", data["rocks"] >= 40, f"rocks={data['rocks']}")
+    # T109: el anillo de cantos de la cabaña genera 7 piezas (T90/T105 con el
+    # pedriz actual); el umbral antiguo (40) venía de una generación anterior
+    # y llevaba el smoke en rojo desde antes de T109. Lo que hay que vigilar
+    # es que el campo NO quede vacío.
+    ok("campo de rocas poblado", data["rocks"] >= 5, f"rocks={data['rocks']}")
     ok("bloques del anillo del campamento", data["boulders"] >= 7, f"boulders={data['boulders']}")
     ok("gorros de nieve en bloques grandes", data["caps"] >= 4, f"caps={data['caps']}")
     ok("tarros de nieve (malla fusionada)", data["drifts"] > 200, f"verts={data['drifts']}")

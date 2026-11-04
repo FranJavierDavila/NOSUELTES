@@ -127,7 +127,19 @@ export abstract class NetEndpoint {
         window.setTimeout(poll, 300);
       }
     });
-    if (this.voiceReqSend) this.voiceReqSend({ r: 1 });
+    if (this.voiceReqSend) {
+      this.voiceReqSend({ r: 1 });
+      // T109a: re-petir la petición mientras no llegue NADA remoto (el emisor
+      // puede haber perdido el primer vreq o haber emitido demasiado pronto).
+      const t0 = performance.now();
+      const reping = (): void => {
+        if (this.remoteStreams.size > 0 || !this.room || this.voiceState === "off") return;
+        if (performance.now() - t0 > 30000) return;
+        if (this.voiceReqSend) this.voiceReqSend({ r: 1 });
+        window.setTimeout(reping, 5000);
+      };
+      window.setTimeout(reping, 5000);
+    }
   }
 
   /** plumbado de vreq (lo conectan create()/join() tras makeAction). */
@@ -147,6 +159,12 @@ export abstract class NetEndpoint {
     if (!this.room || !this.micStream) return;
     if (!force && this.voiceSentPeers.has(peerId)) return;
     try {
+      if (force) {
+        // T109a: re-emisión PEDIDA — si el track ya tenía sender, el addStream
+        // directo lanza y la entrega NO se repite; quitarlo primero fuerza la
+        // renegociación y el receptor vuelve a recibir onPeerStream.
+        try { void this.room.removeStream(this.micStream, peerId); } catch { /* no estaba */ }
+      }
       void this.room.addStream(this.micStream, peerId);
       this.voiceSentPeers.add(peerId);
     } catch {
@@ -179,9 +197,12 @@ export abstract class NetEndpoint {
         }
       };
       if (this.emitDelayMs > 0) {
-        // T109a EMISIÓN A PETICIÓN (host): solo cuando el invitado confirme
-        // que escucha (vreq); red de seguridad si el vreq se pierde.
-        window.setTimeout(emit, 8000);
+        // T109a EMISIÓN A PETICIÓN (host): solo cuando el receptor confirme
+        // que escucha (vreq). La red de seguridad ya no compite: si a los 20 s
+        // sigue sin haber entregado NADA, emite igualmente.
+        window.setTimeout(() => {
+          if (this.voiceSentPeers.size === 0) emit();
+        }, 20000);
       } else {
         emit();
       }
