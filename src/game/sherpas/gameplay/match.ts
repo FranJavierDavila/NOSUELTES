@@ -204,18 +204,31 @@ export class SherpasMatch {
   private pendingRichLine: { text: string; durS: number; retryUntilMs: number } | null = null;
   // T109b BOCADILLO EN EL INVITADO: la frase viva del ricachón viaja en el
   // snapshot (t = texto, i = id incremental, rs = segundos restantes).
-  private richLineLive: { id: number; text: string; untilMs: number } | null = null;
+  // T110 — VOZ EN AMBOS (petición: «no se escucha al ricachón para los dos
+  // jugadores, solo en uno»): la voz real también viaja (vf = fichero del
+  // banco o grito protegido; vk = "bank"|"path") y el invitado la reproduce
+  // localmente — el MISMO fichero que suena en el anfitrión.
+  private richLineLive: { id: number; text: string; untilMs: number; voice?: { kind: "bank" | "path"; file: string } } | null = null;
   private richLineId = 0;
+
+  /** T110 SONDA E2E: voz viva (el fichero que suena ahora del ricachón).
+   *  `live` = la frase sigue dentro de su ventana (lo que viaja al invitado). */
+  richVoiceLive(): { kind: string; file: string; live: boolean } | null {
+    const l = this.richLineLive;
+    const v = l?.voice;
+    if (!v) return null;
+    return { kind: v.kind, file: v.file, live: performance.now() < l.untilMs };
+  }
 
   /** T109b SONDA E2E: el ricachón dice UNA frase (bocadillo + snapshot). */
   debugRichSay(text: string): void {
     this.queueRichLine(text, 4.5, 6000);
   }
 
-  private queueRichLine(text: string, durS: number, retryMs: number): void {
+  private queueRichLine(text: string, durS: number, retryMs: number, voice?: { kind: "bank" | "path"; file: string }): void {
     this.pendingRichLine = { text, durS, retryUntilMs: performance.now() + retryMs };
     this.richLineId++;
-    this.richLineLive = { id: this.richLineId, text, untilMs: performance.now() + durS * 1000 + 700 };
+    this.richLineLive = { id: this.richLineId, text, untilMs: performance.now() + durS * 1000 + 700, voice };
   }
   private plankCenterPrev: V3 | null = null;
   private plankSpeedMs = 0;
@@ -1874,8 +1887,12 @@ export class SherpasMatch {
       // BRAZOS EN ALTO mientras suena SU voz (se le ve hablar: petición)
       this.rich.ostentate(this.simTime, dur + 0.4);
       this.d.scene.fxRage(this.rich.bodies[RM.head].pos);
-      const line = rvCfg.lines[this.d.audio.realLastFile() ?? ""];
+      const file = this.d.audio.realLastFile() ?? "";
+      const line = rvCfg.lines[file];
       if (line) this.d.hud.subtitle(line, dur + 0.8);
+      // T110: la voz por escora también VIAJA — el invitado reproduce el MISMO
+      // fichero y ve la misma transcripción (antes solo sonaba en el anfitrión).
+      if (file) this.queueRichLine(line || "…", Math.max(2.6, dur + 0.7), 4000, { kind: "bank", file });
     });
     return true;
   }
@@ -1952,11 +1969,13 @@ export class SherpasMatch {
         // (la transcripción de ESA grabación).
         this.richMood = forceRichMood(this.richMood, MOOD_FOR_CONTEXT.rich_fell ?? "sorpresa", 3.8);
         this.d.scene.fxRage(this.rich.bodies[RM.head].pos);
-        const dS = this.d.audio.shoutPath(rvCfg?.screamPath ?? "/audio/rico/es/cd0e9f33.mp3");
+        const scream = rvCfg?.screamPath ?? "/audio/rico/es/cd0e9f33.mp3";
+        const dS = this.d.audio.shoutPath(scream);
         const text = p.text || (lang === "en" ? "YOU BASTAAAARDS!!!" : "¡¡CABRONEEEEESSSS!!!!");
         void Promise.resolve(dS).then((dur) => {
           if (dur > 0) this.rich.ostentate(this.simTime, dur + 0.35);
-          this.queueRichLine(text, 3.8, 4000);
+          // T110: el grito también VIAJA (el invitado lo reproduce localmente)
+          this.queueRichLine(text, 3.8, 4000, dur > 0 ? { kind: "path", file: scream } : undefined);
         });
         return;
       }
@@ -1978,7 +1997,8 @@ export class SherpasMatch {
           // T44 — BRAZOS EN ALTO mientras EMITE (petición: "para saber que el
           // ricachón habla... de forma muy clara y ostentosa").
           this.rich.ostentate(this.simTime, dur + 0.35);
-          this.queueRichLine(trans, Math.max(2.6, dur + 0.7), 4000);
+          // T110: el fichero suena también en el invitado (misma grabación)
+          this.queueRichLine(trans, Math.max(2.6, dur + 0.7), 4000, { kind: "bank", file });
         } else if (!this.d.audio.realBusy() && trans) {
           // la voz no sonó Y nada más está sonando (mudo/fichero ausente):
           // la frase se ve — es exactamente lo que la grabación diría.
@@ -2309,6 +2329,9 @@ export class SherpasMatch {
         t: this.richLineLive && performance.now() < this.richLineLive.untilMs ? this.richLineLive.text : "",
         i: this.richLineLive?.id ?? 0,
         rs: this.richLineLive ? Math.max(0, Math.round(((this.richLineLive.untilMs - performance.now()) / 1000) * 10) / 10) : 0,
+        // T110: la VOZ real viaja con la frase (el invitado la reproduce)
+        vf: this.richLineLive && performance.now() < this.richLineLive.untilMs ? (this.richLineLive.voice?.file ?? "") : "",
+        vk: this.richLineLive?.voice?.kind ?? "bank",
       },
       // T66-FB: anillos de alcance (presas cercanas con círculo blanco) — el
       // guest replica EXACTAMENTE lo que ve el host sin repetir la física.
@@ -2611,12 +2634,17 @@ export class SherpasMatch {
 
   /** Sonda E2E (solo pruebas, como setAim): fuerza los eventos del Task 31
    *  para verificar su presentación sin esperar al azar del director. */
-  debugForce(what: "boxes" | "condor" | "storm" | "fart" | "drone" | "subir" | "subir2" | "caida_rico" | "caida" | "ancla" | "impulso" | "voz" | "nieve" | "nieve_off" | "rockfall" | "dia" | "atardecer" | "noche", player: 0 | 1 = 0): boolean {
+  debugForce(what: "boxes" | "condor" | "storm" | "fart" | "drone" | "subir" | "subir2" | "caida_rico" | "caida" | "ancla" | "impulso" | "voz" | "voz_red" | "nieve" | "nieve_off" | "rockfall" | "dia" | "atardecer" | "noche", player: 0 | 1 = 0): boolean {
     switch (what) {
       case "voz":
         // SONDA E2E T44: suelta UNA voz real del banco (ignora cooldown) —
         // el gesto de brazos en alto se dispara solo por el pipeline.
         this.fireRealVoice(true);
+        return true;
+      case "voz_red":
+        // SONDA E2E T110: el pipeline REAL del insulto (InsultSaid → fichero
+        // del banco + transcripción + viaje vf/vk al invitado) sin red.
+        this.d.bus.emit("InsultSaid", { lineId: "e2e_voz_red", context: "condor_angry", text: "" });
         return true;
       case "subir2": {
         // SONDA E2E Task 37: como "subir" pero SIN redirigir al entrante —

@@ -87,7 +87,7 @@ import {
   type RockData, type RockField, type RockResolved,
 } from "../world/wallRock";
 import {
-  buildSideSkirts, ROCKWALL_SEED, rockwallStyleFromData, sampleRegion,
+  buildSideSkirts, generateChunk, ROCKWALL_SEED, rockwallStyleFromData, sampleRegion,
   type RockwallAnchorIn, type RockwallFeature, type RockwallRegionResult, type RockwallStyle,
 } from "../world/rockwall"; // T43: módulo del jugador (diaclasas) + worker
 import { createRockwallPool, defaultPoolSize, type RockwallPool } from "../world/rockwallPool"; // T67: pool de workers
@@ -514,6 +514,10 @@ export class SherpaScene {
   // T56 — BASE CAMP: faldones de continuidad lateral + pedriz de piedra + cabaña
   private baseCampCfg: BaseCampCfg | null = null;
   private baseRockMat: PBRMaterial | null = null; // material COMPARTIDO pedriz+faldones
+  // T110 — CARGA REAL: se resuelve cuando la cabaña GLB termina (bien o mal):
+  // la pantalla de carga espera a esto antes de descubrir la escena.
+  whenReady: Promise<void> = Promise.resolve();
+  private baseCampReadyResolve: (() => void) | null = null;
   private flagWind: PlantWindPlugin | null = null; // viento propio de los banderines
   private baseCampStats = { enabled: false, screeTris: 0, spurTris: 0, rocks: 0, cabinPieces: 0, flags: 0, smoke: false, pedrizaTex: false, massifTris: 0, snowTiles: 0, cabinTex: false };
   private groundTintCtx: GroundTintCtx | null = null; // T98: contexto del suelo alpino (franja de caída + campamento)
@@ -1180,11 +1184,19 @@ export class SherpaScene {
    *  familia lateral se lee como UNA montaña. La tapa trasera se queda
    *  (vista libre alta). Sonda E2E en getBaseCampInfo. */
   private buildSideMassifs(halfW: number, faceZ: number, topY: number): void {
+    // T110 — MATERIAL PARAMÉTRICO DEL MURO (petición: «las paredes que
+    // flanquean a ambos lados el muro de escalada están muy feas o se mejoran
+    // o las metes también con el mismo material paramétrico del muro de
+    // escalada para homogenizar todo»): los laterales dejan la pedriza y pasan
+    // a hornearse con EL MISMO módulo rockwall que la pared (diaclasas +
+    // estratos + tinte rojizo). La pedriza se queda para pedriz/faldones,
+    // que sí deben parecer el suelo de grava.
     const baseMat = this.ensureBaseRockMaterial();
+    const massifMat = this.ensureMassifRockMaterial();
     const rawCfg = ((this.reliefRaw as { sideMassif?: unknown } | null)?.sideMassif
       ?? (this.reliefRaw as { baseCamp?: unknown; sideMassif?: unknown } | null)?.sideMassif) as unknown;
     const cfg: SideMassifCfg = resolveSideMassifCfg(rawCfg);
-    const parts: Mesh[] = [];
+    const curtains: Mesh[] = [];
     for (const dir of [-1, 1] as const) {
       const g = buildSideMassifGeometry(dir, {
         ...cfg,
@@ -1194,14 +1206,22 @@ export class SherpaScene {
         yTop: topY + 8,
       });
       const curtain = this.geomToMesh(`sideMassifCurtain${dir}`, g);
-      curtain.material = baseMat;
+      this.applyMassifTileUvs(curtain); // UVs de mundo en metros de loseta
+      curtain.material = massifMat;
       curtain.receiveShadows = true;
       curtain.freezeWorldMatrix();
-      parts.push(curtain);
+      curtains.push(curtain);
     }
+    const merged = Mesh.MergeMeshes(curtains, true, true, undefined, false, false)!;
+    merged.name = "sideMassifs";
+    merged.material = massifMat;
+    merged.receiveShadows = true;
+    merged.freezeWorldMatrix();
+    this.baseCampStats.massifTris = Math.round(merged.getTotalIndices() / 3);
+    // T62: la NEVADA blanquea también el macizo (base restaurable al despejar)
+    this.massifSnow = { mesh: merged, base: null };
     // TAPA TRASERA: cierra la vista por detrás de la pared (vista libre alta).
-    // Colores blancos explícitos: el merge conserva el buffer de color de las
-    // cortinas (la nevada T62 lo retinta por vértice).
+    // Se queda con la pedriza: solo se ve desde atrás, nunca en el encuadre.
     const height = topY + 8;
     const back = MeshBuilder.CreateBox("massifBack", { width: (halfW + 7.4) * 2, height: height + 2, depth: 2.6 }, this.scene);
     back.position.set(0, (height + 2) / 2 - 2, 5.2);
@@ -1209,15 +1229,70 @@ export class SherpaScene {
     back.receiveShadows = true;
     back.material = baseMat;
     back.freezeWorldMatrix();
-    parts.push(back);
-    const merged = Mesh.MergeMeshes(parts, true, true, undefined, false, false)!;
-    merged.name = "sideMassifs";
-    merged.material = baseMat;
-    merged.receiveShadows = true;
-    merged.freezeWorldMatrix();
-    this.baseCampStats.massifTris = Math.round(merged.getTotalIndices() / 3);
-    // T62: la NEVADA blanquea también el macizo (base restaurable al despejar)
-    this.massifSnow = { mesh: merged, base: null };
+  }
+
+  /** T110 — UVs de la loseta de roca sobre un macizo: u = x/tile, v =
+   *  (0,7y+0,7z)/tile (la misma proyección de mundo que traían, reescalada al
+   *  tamaño de loseta horneada — 6,4 m — para que la piedra caiga a escala). */
+  private applyMassifTileUvs(mesh: Mesh): void {
+    const TILE_M = 6.4;
+    const pos = mesh.getVerticesData(VertexBuffer.PositionKind);
+    if (!pos) return;
+    const uv = new Float32Array((pos.length / 3) * 2);
+    for (let i = 0, j = 0; i < pos.length; i += 3, j += 2) {
+      const x = pos[i]!, y = pos[i + 1]!, z = pos[i + 2]!;
+      uv[j] = x / TILE_M;
+      uv[j + 1] = (y * 0.7 + z * 0.7) / TILE_M;
+    }
+    mesh.setVerticesData(VertexBuffer.UVKind, uv);
+  }
+
+  /** T110 — HORNADO COMPARTIDO de loseta rockwall para los macizos: EL MISMO
+   *  módulo que la pared (sampleRegion con el estilo del pack, sin anclajes
+   *  ni salientes) sobre una región genérica de 6,4×6,4 m. Misma hornada que
+   *  los chunks → misma piedra, mismas diaclasas, mismo tinte. */
+  private massifRockMat: PBRMaterial | null = null;
+  private ensureMassifRockMaterial(): PBRMaterial {
+    if (this.massifRockMat) return this.massifRockMat;
+    const style = rockwallStyleFromData((this.reliefRaw as { rockwall?: Partial<RockwallStyle> } | null)?.rockwall ?? null);
+    const res = generateChunk({
+      seed: (ROCKWALL_SEED ^ 0x51a7) >>> 0,
+      cell: 6.4 / 512, // 512 px → 6,4 m (detalle ~1,25 cm/px, como los chunks)
+      W: 512, H: 512,
+      origin: { x: 40, y: 260 }, // región genérica: sin presas ni salientes
+      style,
+    });
+    const m = new PBRMaterial("massifRockM", this.scene);
+    const cm = RawTexture.CreateRGBATexture(res.colorMap, res.W, res.H, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
+    cm.wrapU = Texture.WRAP_ADDRESSMODE;
+    cm.wrapV = Texture.WRAP_ADDRESSMODE;
+    cm.anisotropicFilteringLevel = 4;
+    m.albedoTexture = cm;
+    const nmt = RawTexture.CreateRGBATexture(res.normalMap, res.W, res.H, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
+    nmt.wrapU = Texture.WRAP_ADDRESSMODE;
+    nmt.wrapV = Texture.WRAP_ADDRESSMODE;
+    nmt.anisotropicFilteringLevel = 4;
+    m.bumpTexture = nmt;
+    m.bumpTexture.level = 1.05;
+    m.albedoColor = new Color3(1.05, 0.85, 0.74); // EL MISMO tinte del muro
+    m.metallic = 0;
+    m.roughness = 0.93;
+    m.backFaceCulling = false; // los faldones/cortinas se ven por detrás al orbitar
+    const strata = this.ensureStrataTexture();
+    if (strata) {
+      const plugin = new TriPlanarStrataPlugin(m);
+      plugin.configure(strata, this.strataCfg?.scale ?? 0.6, this.strataCfg?.strength ?? 0.5, 0.24);
+      this.strataPlugins.push(plugin);
+    }
+    const clima = this.ensureClimateTextures();
+    if (clima) {
+      const plugin = new ClimateRockPlugin(m);
+      plugin.configure(clima.fields, clima.normal, clima.scale, clima.strength, clima.freezeY);
+      this.climaPlugins.push(plugin);
+    }
+    if (this.strataPlugins.length || this.climaPlugins.length) this.refreshMaterialUboLayout(m);
+    this.massifRockMat = m;
+    return m;
   }
 
   // ---------- T56 BASE CAMP: pedriz + faldones + cabaña sherpa ----------
@@ -1253,7 +1328,11 @@ export class SherpaScene {
    *  Todo con la MISMA capa triplanar de estratos que la pared (el patrón de
    *  estratos vive en espacio mundo → continuidad de tono sin costuras). */
   private buildBaseCamp(): void {
+    // T110 — CARGA REAL: la pantalla de carga no se retira hasta que el
+    // campamento GLB (cabaña) está cargado (o ha fallado: la escena sigue).
+    this.whenReady = new Promise<void>((res) => { this.baseCampReadyResolve = res; });
     const cfg = resolveBaseCampCfg((this.reliefRaw as { baseCamp?: unknown } | null)?.baseCamp);
+    if (!cfg.enabled) this.baseCampReadyResolve?.();
     this.baseCampCfg = cfg;
     this.baseCampStats.enabled = cfg.enabled; // sonda E2E: refleja el estado REAL
     if (!cfg.enabled) return;
@@ -1462,57 +1541,82 @@ export class SherpaScene {
           }
           this.baseCampStats.cabinTex = painted > 0;
         } catch (err) { console.warn("[basecamp] textura base_cabana.jpg no aplicada:", err); }
-        // T109d — HUMO DE LA CHIMENEA: emisor continuo en el PUNTO MÁS ALTO de
-        // la cabaña (cumbrera ≈ chimenea en el GLB de Tripo), en coordenadas de
-        // mundo ya transformadas por el root.
+        // T110 — HUMO DE LA CHIMENEA en SU SITIO (petición: «el humo debe salir
+        // perfectamente de la chimenea de la caseta»): el GLB de Tripo es UNA
+        // malla horneada, así que la boca se fija por GEOMETRÍA offline
+        // (scripts/t110_chimenea_mundo.py + verificación cenital renderizada):
+        // punto LOCAL del glTF (0.190, −0.090, −0.994) = la boca del tubo
+        // (el GLB viene normalizado a [−1,1] y el nodo Tripo rota X+90°).
+        // Se transforma con la matriz MUNDIAL del root (pos/ry/escala de
+        // BASE_POS) — si el campamento se mueve, el humo lo sigue.
         try {
           root.computeWorldMatrix(true);
-          let topY = -1e9, cx = 0, cz = 0, n = 0;
-          for (const m of res.meshes) {
-            m.computeWorldMatrix(true);
-            const c = m.getBoundingInfo().boundingBox.centerWorld;
-            const y = m.getBoundingInfo().boundingBox.maximumWorld.y;
-            cx += c.x; cz += c.z; n++;
-            if (y > topY) topY = y;
-          }
-          if (n > 0 && topY > 0) {
-            this.startChimneySmoke(new Vector3(cx / n, topY - 0.15, cz / n));
+          const CHIMNEY_LOCAL = new Vector3(-0.19, -0.09, -0.994);
+          // la matriz MUNDIAL DEL MESH (no la del root): el mesh cuelga del
+          // nodo Tripo que trae SU rotación X+90° propia — sin ella el punto
+          // cae fuera de la cabaña y el humo vuelve al pico medio (T109).
+          const mesh0 = res.meshes[0];
+          mesh0?.computeWorldMatrix(true);
+          const mouth = mesh0
+            ? Vector3.TransformCoordinates(CHIMNEY_LOCAL, mesh0.getWorldMatrix())
+            : new Vector3(0, -1, 0);
+          if (Number.isFinite(mouth.y) && mouth.y > 0.5) {
+            this.startChimneySmoke(mouth);
             this.baseCampStats.smoke = true;
+          } else {
+            // red de seguridad: pico del GLB (heurística antigua)
+            let topY = -1e9, cx = 0, cz = 0, n = 0;
+            for (const m of res.meshes) {
+              m.computeWorldMatrix(true);
+              const c = m.getBoundingInfo().boundingBox.centerWorld;
+              const y = m.getBoundingInfo().boundingBox.maximumWorld.y;
+              cx += c.x; cz += c.z; n++;
+              if (y > topY) topY = y;
+            }
+            if (n > 0 && topY > 0) {
+              this.startChimneySmoke(new Vector3(cx / n, topY - 0.15, cz / n));
+              this.baseCampStats.smoke = true;
+            }
           }
         } catch (err) { console.warn("[basecamp] humo de chimenea no arrancó:", err); }
+        this.baseCampReadyResolve?.(); // T110: campamento listo (la carga puede acabar)
       })
-      .catch((err) => console.warn("[basecamp] base.glb no cargó:", err));
+      .catch((err) => {
+        console.warn("[basecamp] base.glb no cargó:", err);
+        this.baseCampReadyResolve?.(); // T110: falló, pero la carga NO se cuelga
+      });
   }
 
-  /** T109d — HUMILLO CONTINUO de la chimenea: columnita gris que sube, crece
-   *  y se disipa (el toque vivo del campamento). Emisión constante y barata
-   *  (≈7 part/s, BLENDMODE_STANDARD). */
+  /** T110 — HUMO DE LA CHIMENEA BIEN VISIBLE (petición: «prácticamente no se
+   *  aprecia»): columnita GRIS CLARA que nace DENTRO del tubo (así sale de la
+   *  boca, no flotando), sube creciendo y se disipa. Emisión generosa
+   *  (~20 part/s) con gradiente de tamaño y opacidad que se lee a distancia. */
   private startChimneySmoke(worldPos: Vector3): void {
     if (!this.scene || this.chimneySmoke) return;
-    const ps = new ParticleSystem("chimenea", 42, this.scene);
+    const ps = new ParticleSystem("chimenea", 90, this.scene);
     ps.particleTexture = this.fxTexture;
-    ps.emitter = worldPos.clone();
-    ps.minEmitBox = new Vector3(-0.06, 0, -0.06);
-    ps.maxEmitBox = new Vector3(0.06, 0.05, 0.06);
-    ps.color1 = new Color4(0.86, 0.87, 0.9, 0.42);
-    ps.color2 = new Color4(0.74, 0.75, 0.79, 0.34);
-    ps.colorDead = new Color4(0.85, 0.86, 0.9, 0);
-    ps.minSize = 0.16; ps.maxSize = 0.3;
-    ps.minLifeTime = 2.2; ps.maxLifeTime = 3.6;
-    ps.emitRate = 7;
+    ps.emitter = worldPos.clone().subtract(new Vector3(0, 0.18, 0)); // dentro del tubo
+    ps.minEmitBox = new Vector3(-0.09, 0, -0.09);
+    ps.maxEmitBox = new Vector3(0.09, 0.14, 0.09);
+    ps.color1 = new Color4(0.93, 0.93, 0.95, 0.62);
+    ps.color2 = new Color4(0.82, 0.83, 0.87, 0.5);
+    ps.colorDead = new Color4(0.9, 0.91, 0.95, 0);
+    ps.minSize = 0.26; ps.maxSize = 0.5;
+    ps.minLifeTime = 3.0; ps.maxLifeTime = 5.2;
+    ps.emitRate = 20;
     ps.blendMode = ParticleSystem.BLENDMODE_STANDARD;
     // deriva de viento (+x) y ascensión; crece al subir (gradiente de tamaño)
-    ps.direction1 = new Vector3(0.1, 1.0, -0.06);
-    ps.direction2 = new Vector3(0.28, 1.5, 0.1);
-    ps.minEmitPower = 0.35; ps.maxEmitPower = 0.8;
-    ps.gravity = new Vector3(0, 0.4, 0);
-    ps.addSizeGradient(0, 0.14);
-    ps.addSizeGradient(0.45, 0.34);
-    ps.addSizeGradient(1, 0.62);
-    ps.addColorGradient(0, new Color4(0.82, 0.83, 0.87, 0.0));
-    ps.addColorGradient(0.18, new Color4(0.86, 0.87, 0.9, 0.4));
-    ps.addColorGradient(0.7, new Color4(0.8, 0.81, 0.85, 0.22));
-    ps.addColorGradient(1, new Color4(0.9, 0.91, 0.95, 0));
+    ps.direction1 = new Vector3(0.08, 1.0, -0.05);
+    ps.direction2 = new Vector3(0.26, 1.55, 0.09);
+    ps.minEmitPower = 0.4; ps.maxEmitPower = 0.85;
+    ps.gravity = new Vector3(0, 0.35, 0);
+    ps.addSizeGradient(0, 0.2);
+    ps.addSizeGradient(0.4, 0.5);
+    ps.addSizeGradient(1, 1.05);
+    ps.addColorGradient(0, new Color4(0.88, 0.89, 0.93, 0.0));
+    ps.addColorGradient(0.14, new Color4(0.93, 0.93, 0.96, 0.6));
+    ps.addColorGradient(0.65, new Color4(0.85, 0.86, 0.9, 0.34));
+    ps.addColorGradient(1, new Color4(0.92, 0.93, 0.97, 0));
     ps.start();
     this.chimneySmoke = ps;
   }
@@ -2005,10 +2109,13 @@ export class SherpaScene {
     nmt.anisotropicFilteringLevel = 4;
     mat.bumpTexture = nmt; // DETALLE FINO: normales horneadas a 1 cm
     mat.bumpTexture.level = 1.15;
-    // T109e — TONO ROJIZO (petición: paredes = desprendimientos con la
-    // apariencia de las piedras rojizo-marrón del suelo): multiplicador
-    // cálido sobre el colorMap horneado (antes neutro).
-    mat.albedoColor = new Color3(1.05, 0.85, 0.74); // el tono final = colorMap horneado × tinte rojizo
+    // T110 — TONO ROJIZO DE LAS PIEDRAS DEL SUELO (petición: «el color de la
+    // piedra del muro que escalamos que tenga el tono rojizo igual de las
+    // piedras del suelo que están sobre la nieve (de los modelos glb)»): las
+    // piedras de los GLB del suelo miden #bd7e6e (0.743, 0.496, 0.432) —
+    // medido en scripts/t110_glb_analysis.py. El tinte multiplicador lleva el
+    // colorMap horneado hacia ESA terracota (T109e era demasiado suave).
+    mat.albedoColor = new Color3(1.14, 0.76, 0.62); // el tono final = colorMap horneado × tinte piedra
     mat.metallic = 0; // piedra: sin reflejo metálico
     mat.roughness = 0.93; // rugosidad de roca (micro-brillo solo en cantos)
     mat.backFaceCulling = true;

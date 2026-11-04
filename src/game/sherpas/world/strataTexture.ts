@@ -57,13 +57,17 @@ const sstep = (a: number, b: number, x: number): number => {
  *  claro/oscuro con saltos de luma > 10/255 entre bandas contiguas (franjas
  *  legibles sin dejar de ser piedra). El ORDEN del array ES el ciclo: cada
  *  banda toma el siguiente tono (dos contiguas jamás comparten tono). */
+/** Paleta de bandas (0..1). T110 — TERRACOTA (petición del jugador: el muro
+ *  con el tono rojizo de las piedras del suelo de los GLB, #bd7e6e): los seis
+ *  tonos viran a ocres/terracotas conservando el ORDEN claro/oscuro y la
+ *  separación de luma entre bandas (dos contiguas jamás comparten tono). */
 export const STRATA_PALETTE: [number, number, number][] = [
-  [0.73, 0.70, 0.63], // crema (clara cálida)
-  [0.55, 0.52, 0.47], // pardo (oscura)
-  [0.72, 0.66, 0.55], // arena (clara dorada)
-  [0.58, 0.62, 0.65], // pizarra (fría)
-  [0.64, 0.55, 0.40], // ocre (media saturada)
-  [0.62, 0.60, 0.55], // granito (media neutra)
+  [0.78, 0.64, 0.54], // arena rosada (clara cálida)
+  [0.58, 0.44, 0.37], // pardo rojizo (oscura)
+  [0.76, 0.61, 0.46], // ocre dorado (clara)
+  [0.64, 0.51, 0.46], // terracota grisácea (media fría, ya cálida)
+  [0.70, 0.52, 0.38], // ocre quemado (media saturada)
+  [0.67, 0.55, 0.47], // arcilla (media neutra cálida)
 ];
 
 export interface StrataOptions {

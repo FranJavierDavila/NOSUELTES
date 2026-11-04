@@ -101,7 +101,10 @@ export type NetSnapshot = {
    *  `s` = segundos de bocadillo restantes ("está hablando"; 0 = callado). */
   rich: { b: number[]; g: string; seated: boolean; m: string; s: number;
     /** T109b: frase viva del ricachón para el bocadillo del invitado. */
-    t?: string; i?: number; rs?: number };
+    t?: string; i?: number; rs?: number;
+    /** T110: la VOZ real que suena (fichero del banco o grito protegido) —
+     *  el invitado la reproduce localmente: ambos lados oyen al ricachón. */
+    vf?: string; vk?: "bank" | "path" };
   /** T66-FB: anillos de alcance — presas cercanas con fino círculo blanco
    *  (i = holdId, d = distancia normalizada 0..1 que gobierna la transparencia).
    *  El host los calcula con la física real; el guest los replica tal cual. */

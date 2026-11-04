@@ -78,6 +78,14 @@ const ANCHOR_LABEL_KEY: Record<string, string> = {
 
 const CSS = `
 .sphud { position:absolute; inset:0; font-family:'Segoe UI',system-ui,sans-serif; color:#e8eef4; user-select:none; }
+/* T110 — MÓVIL: toques limpios (sin retardo ni doble-toque) y el input del
+   código de sala a 16px para que iOS NO dispare su zoom automático al
+   enfocarlo (el zoom desplazaba el panel online y los toques caían fuera de
+   los botones: «los botones del modo online no funcionan en móvil»). */
+.sphud button, .sphud input, .sphud label { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+@media (pointer: coarse) {
+  .sphud .panel input { font-size:16px; }
+}
 .sphud * { box-sizing:border-box; }
 .sphud .chip { background:rgba(10,14,18,.72); border:1px solid rgba(255,255,255,.09); border-radius:10px; padding:8px 12px; backdrop-filter:blur(4px); }
 .sphud .p-panel { position:absolute; top:14px; width:214px; }
@@ -391,7 +399,7 @@ export class SherpaHud {
         <button class="chat-mic off" data-e="micBtn" type="button" title="Micrófono"></button>
         <span class="voice-label" data-e="voiceLabel">VOZ</span>
       </div>
-      <div class="buildtag" data-e="buildTag">vT109</div>
+      <div class="buildtag" data-e="buildTag">vT110</div>
       <div data-e="bubbles" style="position:absolute;inset:0;overflow:hidden"></div>
       <!-- T101: ventana del INVENTARIO DE MOCHILA (abre al pulsar la mochila
            del escalador; hueco del Anclaje con icono + contador encima). -->

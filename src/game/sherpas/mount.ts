@@ -22,6 +22,7 @@ import { loadAscent, clearAscent, type SavedAscent } from "./world/camps";
 import { v3, type V3 } from "../physics/pbd/math";
 import { Vector3, Matrix } from "@babylonjs/core/Maths/math.vector";
 import { assetUrl } from "../assetPath";
+import { showLoading } from "./ui/loading"; // T110: pantalla de carga con pico + barra + mensajes
 
 export interface SherpasMountOptions {
   canvas: HTMLCanvasElement;
@@ -39,6 +40,12 @@ const fetchJson = async (path: string): Promise<unknown> => {
 };
 
 export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<SherpasHandles> {
+  // T110 — PANTALLA DE CARGA: nada se ve hasta que el mundo está montado
+  // (petición: «la pantalla no debe mostrarse hasta que esté todo cargado… un
+  // texto tipo barra de progreso o un pico de sherpa y mensajes de espera
+  // graciosos relativos a la escalada»). Se muestra ANTES de cualquier carga.
+  const loading = showLoading();
+  loading.set(6, "Llamando a los sherpas…");
   // StrictMode/HMR pueden montar dos veces: una UNICA instancia viva.
   const w = window as unknown as { __NS_SHERPAS?: { dispose(): void } };
   if (w.__NS_SHERPAS) {
@@ -47,6 +54,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
   }
 
   const data = await loadSherpasData(fetchJson, "/content/sherpas");
+  loading.set(24, "Leyendo el cuaderno de ruta…");
   // T89 MODO TEST: insignia fija mientras la depuración esté activa.
   if (TEST_MODE.enabled && !document.getElementById("sherpas-test-badge")) {
     const badge = document.createElement("div");
@@ -59,6 +67,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
   }
   const repo = new ContentRepository();
   const bundle = await repo.load(browserJsonLoader, "/content");
+  loading.set(34, "Repartiendo el material entre los sherpas…");
   const character = bundle.characters.get("prototype_climber");
   const profile = bundle.bodyProfiles.get("standard_humanoid");
   if (!character || !profile) throw new Error("el personaje del prototipo no está en /content (manifest)");
@@ -196,12 +205,19 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
   });
 
   const makePreviewScene = async (seed?: number): Promise<SherpaScene> => {
+    loading.phase("Fijando cuerdas en la pared…", 55);
     const scene = await SherpaScene.create(opts.canvas, data.camera, data.hud, data.tuning.perf, data.vfx, data.wallGen.relief ?? null, data.climber);
     const gen = new WallGenerator(
       { phases: data.phases, wallGen: data.wallGen, safePathRockRatio: 0.4 },
       seed ?? Math.floor(Math.random() * 1000000),
     );
+    loading.phase("Levantando la pared del Everest…", 72);
     scene.buildWorld(gen.layout);
+    // T110: la pantalla de carga aguanta hasta que la cabaña GLB del campamento
+    // termina de cargar (con red de seguridad de 15 s por si un asset cuelga).
+    loading.phase("Montando el campamento base…", 86);
+    await Promise.race([scene.whenReady, new Promise<void>((r) => setTimeout(r, 15000))]);
+    loading.set(94, "Afinando los mosquetones…");
     scene.updateCamera(1 / 60, [v3(0, 2.2, -0.4)], 1.5);
     return scene;
   };
@@ -271,22 +287,26 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     if (!state.disposed) {
       if (!state.scene) state.scene = await makePreviewScene();
       await showMenu();
+      await showLoading().hide(); // T110: la vuelta al menú también rehace escena
     }
   };
 
   const beginGuest = async (params: NetSessionParams): Promise<void> => {
     if (state.guestBuilding || state.guest || !state.guestNet) return;
     state.guestBuilding = true;
+    const gLoad = showLoading(); // T110: el invitado también construye SU pared
     try {
       hud.hideNet();
       hud.hideStart();
       // el guest NO reutiliza la escena del menú: su pared debe coincidir con
       // la que el host REUTILIZA de SU menú (semilla de pared de la sesión).
       if (state.scene) { state.scene.dispose(); state.scene = null; }
+      gLoad.phase("Fijando cuerdas en la pared…", 55);
       state.scene = await SherpaScene.create(opts.canvas, data.camera, data.hud, data.tuning.perf, data.vfx, data.wallGen.relief ?? null, data.climber);
       const mkGen = (seed: number): WallGenerator => new WallGenerator(
         { phases: data.phases, wallGen: data.wallGen, safePathRockRatio: 0.4 }, seed,
       );
+      gLoad.phase("Levantando la pared del anfitrión…", 72);
       state.scene.buildWorld(mkGen(params.wallSeed).layout);
       // T103: PARED HORNEADA también en el invitado — el generador es PEREZOZO
       // (sin ensureUpToY, allGeneratedHolds() nacía VACÍO y el invitado NO
@@ -294,8 +314,11 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
       // una vez, igual que el anfitrión (misma semilla → misma pared).
       const genGuest = mkGen(params.seed);
       genGuest.ensureUpToY(genGuest.layout.totalHeightM);
+      gLoad.phase("Clavando las presas…", 84);
       state.scene.addHolds(genGuest.allGeneratedHolds(), data.hud.anchorTypeColors);
       state.scene.setCheckpoints(params.cpsYs, params.wallFrontZ, params.wallWidthM);
+      gLoad.phase("Montando el campamento base…", 90);
+      await Promise.race([state.scene.whenReady, new Promise<void>((r) => setTimeout(r, 15000))]);
       await audio.start();
       audio.setMuted(false);
       const runner = await GuestRunner.create({
@@ -314,7 +337,9 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         state.guest?.limbScreenPx(p as 0 | 1, limb as Limb) ?? null;
       // T105: anillos de agarre/alcance vistos por el invitado (replicados)
       (window as unknown as Record<string, unknown>).__NS_GUEST_RINGS = () => state.scene?.gripRingsDebug() ?? null;
+      await gLoad.hide(); // T110: partida remota lista → se descubre la pantalla
     } catch (err) {
+      await gLoad.hide();
       console.error("fallo al montar la partida remota:", err instanceof Error ? err.stack : err);
       hud.subtitle(`Error: ${String(err instanceof Error ? err.message : err)}`, 8);
       await endGuestToMenu();
@@ -409,6 +434,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     // la escena (y su motor) SOBREVIVEN: son la misma que usará la próxima partida.
     if (!state.scene) state.scene = await makePreviewScene();
     await showMenu();
+    await showLoading().hide(); // T110: si se rehizo la escena, ya está lista
   };
 
   const begin = async (choice: HudStartChoice): Promise<void> => {
@@ -682,6 +708,10 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         m.debugRichSay(text);
         return true;
       },
+      /** T110 VOZ DEL RICACHÓN: fichero real que suena AHORA en el host
+       *  (lo mismo que el invitado recibe por snapshot y reproduce). */
+      richVoice: (): { kind: string; file: string; live: boolean } | null =>
+        (state.match as unknown as { richVoiceLive?(): { kind: string; file: string; live: boolean } } | null)?.richVoiceLive?.() ?? null,
       /** T84 RIG ARTICULADO: las 11 articulaciones del ricachón (mundo, mm
        *  redondeados) para medir AMPLITUD DE MOVIMIENTO desde la sonda E2E. */
       richPose: (): [string, number, number, number][] | null => {
@@ -978,6 +1008,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
 
   installDebug(); // T61: sonda disponible también en el MENÚ (graphics/baseCamp/sun)
   await showMenu();
+  await loading.hide(); // T110: mundo montado y menú pintado → se descubre la pantalla
 
   return {
     dispose(): void {

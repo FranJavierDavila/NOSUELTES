@@ -146,7 +146,7 @@ export class GuestRunner {
   /** Sonda E2E/diagnóstico: estado compacto del último snapshot. `hud` es
    *  PEGAJOSO (el bloque viaja a 10 Hz: 1 de cada 3 snapshots). T105: añade el
    *  estado del caché del minimapa (tramos con presas) y el drag en curso. */
-  debug(): { tick: number; wa: [number, number, number]; wb: [number, number, number]; hud: boolean; size: number; sent: number; got: number; mmCached: number; mmKey: string; drag: string | null; richSaid: string | null } | null {
+  debug(): { tick: number; wa: [number, number, number]; wb: [number, number, number]; hud: boolean; size: number; sent: number; got: number; mmCached: number; mmKey: string; drag: string | null; richSaid: string | null; richVoices: number; richSnap: { t: string; i: number; vf: string; vk: string } } | null {
     const s = this.lastSnap;
     if (!s) return null;
     return {
@@ -160,6 +160,8 @@ export class GuestRunner {
       mmCached: this.mmCache.size,
       mmKey: s.hud?.mm?.key ?? "",
       richSaid: this.lastSaidText, // T109b sonda E2E
+      richVoices: this.richVoiceCount, // T110 sonda E2E: voces del ricachón reproducidas
+      richSnap: { t: s.rich?.t ?? "", i: s.rich?.i ?? 0, vf: s.rich?.vf ?? "", vk: s.rich?.vk ?? "" }, // T110 diag
       drag: this.dragLimb,
     };
   }
@@ -201,6 +203,13 @@ export class GuestRunner {
   private richLineId = 0;
   private pendingLine: { text: string; durS: number; untilMs: number } | null = null;
   private lastSaidText: string | null = null; // T109b sonda E2E
+  // T110 — VOZ DEL RICACHÓN EN EL INVITADO: el snapshot trae el fichero real
+  // (vf/vk) que suena en el anfitrión; aquí se reproduce localmente para que
+  // AMBOS jugadores lo oigan. Guard aparte del id del bocadillo: la voz puede
+  // llegar en un snapshot posterior al texto (el anfitrión la adjunta cuando
+  // la grabación de verdad arranca).
+  private richVoiceId = 0;
+  private richVoiceCount = 0; // sonda E2E: voces reproducidas por red
 
   private onSnap(s: NetSnapshot): void {
     if (s.hud) this.everHud = true;
@@ -399,6 +408,14 @@ export class GuestRunner {
           this.lastSaidText = this.pendingLine.text; // T109b sonda E2E
           this.pendingLine = null;
         } else if (performance.now() > this.pendingLine.untilMs) this.pendingLine = null;
+      }
+      // T110 — VOZ: el fichero que suena en el anfitrión suena AQUÍ también.
+      if (cur.rich.vf && cur.rich.i && cur.rich.i !== this.richVoiceId) {
+        this.richVoiceId = cur.rich.i;
+        this.richVoiceCount++;
+        void (cur.rich.vk === "path"
+          ? this.d.audio.shoutPath(cur.rich.vf)
+          : this.d.audio.shoutRealFile(cur.rich.vf));
       }
     }
     s.syncRichMan(this.richView, 1);
