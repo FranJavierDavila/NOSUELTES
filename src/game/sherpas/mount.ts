@@ -16,6 +16,7 @@ import { HostInputMixer } from "./net/remoteInput";
 import { GuestRunner } from "./net/guestRunner";
 import { TEST_MODE } from "./gameplay/testMode"; // T89: modo test oculto (?test=escalada)
 import type { NetJson, NetSessionParams } from "./net/protocol";
+import type { Limb } from "./core/bus";
 import { WallGenerator } from "./world/wallGenerator";
 import { loadAscent, clearAscent, type SavedAscent } from "./world/camps";
 import { v3, type V3 } from "../physics/pbd/math";
@@ -231,6 +232,11 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
       (window as unknown as Record<string, unknown>).__NS_GUEST_HOLD = (v: boolean) => { if (state.guest) state.guest.holdRender = !!v; };
       // T102: proyección de la mochila del invitado (sonda E2E de la ventana)
       (window as unknown as Record<string, unknown>).__NS_GUEST_BPK = (p: number) => state.scene?.backpackScreenPx(p as 0 | 1) ?? null;
+      // T105: extremidad del snapshot → píxeles CSS (clic REAL sobre SU sherpa)
+      (window as unknown as Record<string, unknown>).__NS_GUEST_LIMB = (p: number, limb: string) =>
+        state.guest?.limbScreenPx(p as 0 | 1, limb as Limb) ?? null;
+      // T105: anillos de agarre/alcance vistos por el invitado (replicados)
+      (window as unknown as Record<string, unknown>).__NS_GUEST_RINGS = () => state.scene?.gripRingsDebug() ?? null;
     } catch (err) {
       console.error("fallo al montar la partida remota:", err instanceof Error ? err.stack : err);
       hud.subtitle(`Error: ${String(err instanceof Error ? err.message : err)}`, 8);
@@ -247,6 +253,10 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
           try {
             hud.netStatus(hud.t("net.connecting"));
             if (!state.hostNet) state.hostNet = new HostNet();
+            // T105: el drag del invitado aplica SIEMPRE al match vivo (si lo
+            // hay) y el aviso de escena lista fuerza el reenvío del minimapa.
+            state.hostNet.onDrag = (m) => state.match?.remoteDrag(m);
+            state.hostNet.onGuestReady = () => state.match?.forceMinimapResend();
             const code = await state.hostNet.create();
             hud.netWaiting(code);
             hud.netStatus(hud.t("net.waitingGuest"));
@@ -259,6 +269,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
             state.hostNet.onGuestLeft = () => {
               hud.netStatus(hud.t("net.guestLeft"));
               syncNetLocks();
+              state.match?.cancelRemoteDrag(); // T105: sin dueño, suelto SU drag
               stopSnapshots(); // nadie recibe ya; el host sigue con ambos (relevo)
             };
           } catch {
@@ -439,6 +450,11 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         const rig = state.match?.["sherpas"][p] as unknown as { dragging?: string | null; dragHold?: { id: string } | null } | undefined;
         return rig ? { dragging: rig.dragging ?? null, hold: rig.dragHold?.id ?? null } : null;
       },
+      /** T105: recepción de drags del invitado (diagnóstico E2E). */
+      netHost: (): { hasGuest: boolean; dragCount: number; intents: number } | null =>
+        state.hostNet ? { hasGuest: state.hostNet.hasGuest, dragCount: state.hostNet.dragCount, intents: state.hostNet.intentCount } : null,
+      /** T105: drag remoto visto por el match (estado separado del local). */
+      remoteDrag: () => state.match?.dragDebug() ?? null,
       /** T47 SOL ORBITAL: dirección/posición del sol (E2E: el azimut sigue el
        *  yaw de la órbita y a yaw 0 restaura EXACTO). null si aún no hay luz. */
       sun: (): { dx: number; dy: number; dz: number; px: number; py: number; pz: number } | null => {

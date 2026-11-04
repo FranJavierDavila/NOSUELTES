@@ -40,6 +40,15 @@ export type NetRemoteInput = {
   mashCount: number;             // pulsaciones acumuladas desde el último envío
 }
 
+/** T105 ARRASTRE REMOTO: el invitado arrastra extremidades de SU escalador
+ *  (jugador 1) con ratón/táctil, igual que el anfitrión en local. El punto
+ *  viaja en el PLANO DE PARED (x,y mundiales; el host lo proyecta a su
+ *  wallFrontZ) y el host aplica beginDrag/moveDrag/endDrag sobre su rig. */
+export type NetRemoteDrag =
+  | { k: "b"; l: string; x: number; y: number }  // begin: extremidad + punto
+  | { k: "m"; x: number; y: number }             // move: punto de pared
+  | { k: "e" };                                  // end: soltar botón
+
 /** Un escalador en el snapshot: 15 partículas planas + estado visible. */
 export type NetSnapSherpa = {
   /** 45 números: particles[0..14].pos xyz (el guest interpola ENTRE snapshots). */

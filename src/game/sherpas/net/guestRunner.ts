@@ -8,11 +8,15 @@ import type { SherpaScene, RichManRenderView } from "../presentation/scene";
 import type { SherpaHud, MinimapHold } from "../presentation/hud";
 import type { SherpaAudio } from "../presentation/audio";
 import type { InputManager } from "../input/input";
+import type { Limb } from "../core/bus";
 import { LIMBS } from "../core/data";
 import { P } from "../../physics/pbd/ragdoll";
 import { PLANK_DEFAULTS } from "../physics/plank";
-import { SnapBuffer, type NetSessionParams, type NetSnapshot } from "./protocol";
+import { SnapBuffer, type NetRemoteDrag, type NetSessionParams, type NetSnapshot } from "./protocol";
 import type { GuestNet } from "./netClient";
+import { pickLimbNear, type DragPickPts } from "./dragPick";
+import { PointerDrag } from "../input/drag";
+import { Matrix } from "@babylonjs/core/Maths/math.vector";
 import { SnowSystem } from "../gameplay/snow"; // T61: nevada replicada
 import { resolveDayPreset } from "../gameplay/daycycle"; // T61: hora del día replicada
 
@@ -63,6 +67,21 @@ export class GuestRunner {
   private ropeA: { x: number; y: number; z: number }[] = [];
   private ropeB: { x: number; y: number; z: number }[] = [];
 
+  // ---- T105 ARRASTRE REMOTO (el ratón/táctil del invitado mueve SU escalador)
+  /** extremidad agarrada por el puntero del invitado (null = sin arrastre). */
+  private dragLimb: Limb | null = null;
+  /** punto de pared pendiente de enviar (coalescencia del move). */
+  private dragPending: { x: number; y: number } | null = null;
+  private lastDragSendMs = 0;
+  private dragBeginSent = false;
+  /** throttling del move: ~30 Hz como el resto del input. */
+  private static DRAG_SEND_MS = 30;
+  private pointerDrag: PointerDrag;
+  /** T105 MINIMAPA: «escena lista» enviada y hora del último reintento (el
+   *  primer bloque hud con holdsStatic se pierde mientras el guest monta SU
+   *  escena: se pide reenvío hasta tener el tramo cacheado). */
+  private lastReadyMs = -1e9;
+
   private flatToVecs(flat: number[], out: { x: number; y: number; z: number }[]): { x: number; y: number; z: number }[] {
     const n = Math.floor(flat.length / 3);
     out.length = n;
@@ -91,6 +110,15 @@ export class GuestRunner {
       this.d.params.daytime ?? "dia",
       resolveDayPreset(this.d.data.tuning.daycycle, this.d.params.daytime ?? "dia"),
     );
+    // T105 — ARRASTRE REMOTO: mismo esquema que el anfitrión (pulsar extremidad
+    // → arrastrar hasta presa → soltar), pero cada gesto sale por red y la
+    // simulación del host mueve al escalador del invitado (jugador 1).
+    this.pointerDrag = new PointerDrag({
+      down: (x, y) => this.onDragDown(x, y),
+      move: (x, y) => this.onDragMove(x, y),
+      up: () => this.onDragUp(false),
+      cancel: () => this.onDragUp(true),
+    });
   }
 
   static async create(d: GuestRunnerDeps): Promise<GuestRunner> {
@@ -100,6 +128,9 @@ export class GuestRunner {
       { p1: r.d.hud.t("net.hostLabel"), p2: r.d.hud.t("net.guestLabel") },
       ["hand_l", "hand_r", "foot_l", "foot_r"],
     );
+    // T105: el arrastre del invitado escucha en el MISMO canvas que el anfitrión
+    const canvas = r.d.scene.engine.getRenderingCanvas();
+    if (canvas) r.pointerDrag.attach(canvas);
     return r;
   }
 
@@ -113,8 +144,9 @@ export class GuestRunner {
   holdRender = false;
 
   /** Sonda E2E/diagnóstico: estado compacto del último snapshot. `hud` es
-   *  PEGAJOSO (el bloque viaja a 10 Hz: 1 de cada 3 snapshots). */
-  debug(): { tick: number; wa: [number, number, number]; wb: [number, number, number]; hud: boolean; size: number; sent: number; got: number } | null {
+   *  PEGAJOSO (el bloque viaja a 10 Hz: 1 de cada 3 snapshots). T105: añade el
+   *  estado del caché del minimapa (tramos con presas) y el drag en curso. */
+  debug(): { tick: number; wa: [number, number, number]; wb: [number, number, number]; hud: boolean; size: number; sent: number; got: number; mmCached: number; mmKey: string; drag: string | null } | null {
     const s = this.lastSnap;
     if (!s) return null;
     return {
@@ -125,6 +157,9 @@ export class GuestRunner {
       size: this.buf.size,
       sent: this.sentCount,
       got: this.gotCount,
+      mmCached: this.mmCache.size,
+      mmKey: s.hud?.mm?.key ?? "",
+      drag: this.dragLimb,
     };
   }
   private everHud = false;
@@ -177,6 +212,10 @@ export class GuestRunner {
     this.lastFrame = performance.now();
     // input del guest → host a 30 Hz (eje crudo + flancos + mash contador)
     this.sendTimer = window.setInterval(() => this.sendInput(), 33);
+    // T105 MINIMAPA: SU escena ya está montada → pide el listado de presas del
+    // tramo (el bloque hud con holdsStatic viajó mientras construía y se perdió)
+    this.d.net.sendReady();
+    this.lastReadyMs = performance.now();
     const frame = (ms: number): void => {
       if (this.disposed) return;
       this.raf = requestAnimationFrame(frame);
@@ -221,6 +260,80 @@ export class GuestRunner {
     const pads = typeof navigator !== "undefined" && navigator.getGamepads ? navigator.getGamepads() : [];
     if (padIdx !== undefined && pads[padIdx]) return maps.players.p2?.gamepad?.aim.aimSpeed ?? 2.4;
     return maps.players.p2?.keyboard.aimSpeed ?? 1.8;
+  }
+
+  // ---------- T105 ARRASTRE REMOTO (ratón/táctil del invitado) ----------
+
+  /** Punto del plano de pared bajo el puntero (misma sonda analítica que el
+   *  anfitrión: rayo cámara→pared en z = wallFrontZ). */
+  private wallPointFromPointer(xCss: number, yCss: number): { x: number; y: number } | null {
+    const s = this.d.scene;
+    const ray = s.scene.createPickingRay(xCss, yCss, Matrix.Identity(), s.camera);
+    const o = ray.origin;
+    const dir = ray.direction;
+    if (Math.abs(dir.z) < 1e-4) return null;
+    const t = (this.d.params.wallFrontZ - o.z) / dir.z;
+    if (t <= 0) return null;
+    return { x: o.x + dir.x * t, y: o.y + dir.y * t };
+  }
+
+  /** Extremidades de SU escalador (jugador 1) en el último snapshot: el guest
+   *  no tiene rigs (pinta lo que recibe), así que el clic se coteja con las
+   *  partículas del snapshot (fresco a ≤1 envío de red). */
+  private myLimbPts(): DragPickPts {
+    const s = this.lastSnap;
+    if (!s) return {};
+    const out: DragPickPts = {};
+    for (const limb of LIMBS) {
+      const pi = LIMB_PARTICLE[limb]!;
+      out[limb] = { x: s.b.p[pi * 3]!, y: s.b.p[pi * 3 + 1]! };
+    }
+    return out;
+  }
+
+  private onDragDown(xCss: number, yCss: number): void {
+    if (this.disposed || this.paused) return;
+    const p = this.wallPointFromPointer(xCss, yCss);
+    if (!p) return;
+    // escala 1.7: el snapshot va POR DELANTE de lo pintado (interp 100 ms +
+    // frames de render) — el radio generoso absorbe el hueco de lag
+    const limb = pickLimbNear(this.myLimbPts(), p.x, p.y, 1.7);
+    if (!limb) return; // clic al aire: igual que el anfitrión (nada)
+    this.dragLimb = limb;
+    this.dragBeginSent = false;
+    this.dragPending = p;
+    this.flushDrag(true); // el begin sale YA, con su punto
+  }
+
+  private onDragMove(xCss: number, yCss: number): void {
+    if (!this.dragLimb) return;
+    const p = this.wallPointFromPointer(xCss, yCss);
+    if (p) this.dragPending = p;
+    this.flushDrag(false);
+  }
+
+  private onDragUp(_cancel: boolean): void {
+    if (!this.dragLimb) return;
+    this.flushDrag(true); // el último punto conocido sale antes del end
+    this.d.net.sendDrag({ k: "e" });
+    this.dragLimb = null;
+    this.dragPending = null;
+  }
+
+  /** Envía el begin/move pendiente respetando el throttle (~30 Hz, el mismo
+   *  ritmo que el resto del input; el begin y el end salen SIEMPRE). */
+  private flushDrag(force: boolean): void {
+    if (!this.dragLimb || !this.dragPending) return;
+    const now = performance.now();
+    if (!force && now - this.lastDragSendMs < GuestRunner.DRAG_SEND_MS) return;
+    this.lastDragSendMs = now;
+    const { x, y } = this.dragPending;
+    if (this.dragBeginSent) {
+      this.d.net.sendDrag({ k: "m", x, y });
+    } else {
+      this.dragBeginSent = true;
+      this.d.net.sendDrag({ k: "b", l: this.dragLimb, x, y });
+    }
   }
 
   private renderFrame(frameDt: number, now: number): void {
@@ -343,6 +456,12 @@ export class GuestRunner {
       const mm = cur.hud.mm;
       if (mm) {
         if (mm.holdsStatic) this.mmCache.set(mm.key, mm.holdsStatic.map((h) => ({ ...h })));
+        // T105: tramo SIN caché local = el holdsStatic de ese tramo se perdió
+        // (montando la escena) → pide reenvío cada 2 s hasta tenerlo
+        if (!this.mmCache.has(mm.key) && now - this.lastReadyMs > 2000) {
+          this.lastReadyMs = now;
+          this.d.net.sendReady();
+        }
         const holds = this.mmCache.get(mm.key) ?? [];
         for (const h of holds) h.occupied = 0;
         for (let i = 0; i + 1 < mm.occ.length; i += 2) {
@@ -394,6 +513,23 @@ export class GuestRunner {
     }
 
     s.render();
+  }
+
+  /** Sonda E2E T105: extremidad del snapshot (0=anfitrión, 1=invitado) →
+   *  píxeles CSS en pantalla (para hacer clic de verdad sobre SU sherpa).
+   *  projectToScreenCss devuelve PORCENTAJES (×100): igual que backpackScreenPx,
+   *  se convierte a px del canvas con el mismo guard de fuera de cámara. */
+  limbScreenPx(p: 0 | 1, limb: Limb): { x: number; y: number } | null {
+    const s = this.lastSnap;
+    if (!s) return null;
+    const pi = LIMB_PARTICLE[limb]!;
+    const flat = p === 0 ? s.a.p : s.b.p;
+    const pct = this.d.scene.projectToScreenCss({ x: flat[pi * 3]!, y: flat[pi * 3 + 1]!, z: flat[pi * 3 + 2]! });
+    if (!Number.isFinite(pct.x) || !Number.isFinite(pct.y)) return null;
+    if (pct.x < -5 || pct.x > 105 || pct.y < -5 || pct.y > 105) return null;
+    const canvas = this.d.scene.engine.getRenderingCanvas();
+    if (!canvas) return null;
+    return { x: (pct.x / 100) * canvas.clientWidth, y: (pct.y / 100) * canvas.clientHeight };
   }
 
   dispose(): void {

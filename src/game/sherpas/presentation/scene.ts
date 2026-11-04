@@ -1483,51 +1483,56 @@ export class SherpaScene {
       .catch((err) => console.warn("[basecamp] base.glb no cargó:", err));
   }
 
-  /** T104 — SUELOS NEVADOS GLB (petición del jugador: "te voy a pasar dos
-   *  mallas para colocar sobre el suelo (suelonevado1.glb y suelonevado2.glb),
-   *  de tal forma que puedas solapar alguna de ellas para cubrir el actual
-   *  suelo y que esté en sintonía con la cabaña, base.glb").
-   *  Son láminas de terreno (21k/14.6k verts, textura base embebida 4 MB;
-   *  se sirven filtradas a solo-baseColor ≈ 4,8 MB cada una). Cotas medidas
-   *  del relieve real: superficie superior a y local ≈ +0.044 (tile 1) y
-   *  ≈ −0.002 (tile 2), ondulación ±0.04 — con sy bajo el campo queda a pie
-   *  de juego (±10 cm) y los bordes caen DEBAJO del suelo procedural
-   *  (y −0.02): fundición natural sin costuras. Los y de cada tile se fijan
-   *  para que tile1 quede 2-3 cm POR ENCIMA de tile2 en la zona de solape
-   *  (sin z-fighting) y ambos tapen el "snowFloor" procedural. La pedriz, las
-   *  rocas, los tarrones y la cabaña (todo a y≥0) emergen de la nieve. */
+  /** T105 — MOSAICO DE PARCELAS NEVADAS (petición del jugador: las dos mallas
+   *  "deberían estar a una escala mucho menor, como 10 veces más pequeños, son
+   *  retículas/parcelas que se colocan a modo de mosaico sobre el suelo para
+   *  que se note la irregularidad y las piedras sobresaliendo sobre la nieve").
+   *  Los dos GLB alternan en DAMERO de parcelas de ~4 m (1/10 de la escala
+   *  T104) sobre el suelo procedural visible (x −20..20, z −4..12; z<−4 queda
+   *  tras el muro). El borde hundido de cada parcela dibuja la retícula del
+   *  mosaico y el relieve (piedras) sobresale ~2-4 cm sobre la nieve plana.
+   *  Instancias por hardware (patrón de las rocas del pedriz: malla semilla
+   *  invisible + instancias): geometría y textura cargadas UNA vez por
+   *  variante, ~380k tris estáticos en total, sin coste por frame. */
   private buildSnowGroundTiles(): void {
-    const defs = [
-      // tile 1 (grande, lado izquierdo): cubre el pie de pared y la franja
-      { file: "/models/suelonevado1.glb", x: -4.0, z: 1.5, s: 40, sy: 2.5, y: 0.03 - 0.0438 * 2.5, ry: 0 },
-      // tile 2 (cabaña): abraza el campamento por la derecha, solapa ~5 m
-      { file: "/models/suelonevado2.glb", x: 6.0, z: 2.0, s: 34, sy: 2.2, y: 0.005 + 0.0024 * 2.2, ry: 0 },
-    ];
-    for (const d of defs) {
-      void SceneLoader.ImportMeshAsync("", assetUrl(d.file), undefined, this.scene)
+    const S = 4.0;   // lado de la parcela (10× más pequeño que T104)
+    const SY = 0.25; // relieve escalado igual: ondulación ±1 cm, piedras asoman
+    const Y = 0.025; // cota: parcela a 2-4 cm sobre el snowFloor (y −0.02)
+    const XS = [-18, -14, -10, -6, -2, 2, 6, 10, 14, 18];
+    const ZS = [-2, 2, 6, 10];
+    const cells: { x: number; z: number; v: 0 | 1; ry: number }[] = [];
+    for (let r = 0; r < ZS.length; r++) {
+      for (let c = 0; c < XS.length; c++) {
+        const alt = (r + c) % 2 === 1;
+        cells.push({ x: XS[c]!, z: ZS[r]!, v: alt ? 1 : 0, ry: alt ? Math.PI : 0 });
+      }
+    }
+    for (let v = 0; v <= 1; v++) {
+      const mine = cells.filter((cl) => cl.v === v);
+      const file = v === 0 ? "/models/suelonevado1.glb" : "/models/suelonevado2.glb";
+      void SceneLoader.ImportMeshAsync("", assetUrl(file), undefined, this.scene)
         .then((res) => {
-          const root = new TransformNode(`snowTileRoot_${d.file.slice(-5, -4)}`, this.scene);
-          root.position.set(d.x, d.y, d.z);
-          root.scaling.set(d.s, d.sy, d.s);
-          root.rotation.y = d.ry;
-          // PRIMERO parentar (el root lleva la escala/cota del terreno) y solo
-          // DESPUÉS congelar la matriz mundo — congelado antes de parentar, la
-          // losa queda clavada en identidad (0,7 m en el origen, enterrada).
-          for (const n of [...res.transformNodes, ...res.meshes]) {
-            if (!n.parent) n.parent = root;
+          const src = res.meshes.find((m) => m.getTotalVertices() > 0) as Mesh | undefined;
+          if (!src) return;
+          src.parent = null; // la malla ES el portador (las parcelas: instancias)
+          for (const n of res.transformNodes) n.dispose();
+          // dieléctrico limpio (nieve): sin brillos metálicos espurios
+          const mat = src.material as PBRMaterial | null;
+          if (mat) { mat.metallic = 0; mat.roughness = Math.max(0.9, mat.roughness ?? 0.95); }
+          src.isPickable = false;
+          src.isVisible = false; // solo semilla (patrón de las rocas del pedriz)
+          for (const [i, cl] of mine.entries()) {
+            const inst = src.createInstance(`snowParcel_v${v}_${i}`);
+            inst.position.set(cl.x, Y, cl.z);
+            inst.scaling.set(S, SY, S);
+            inst.rotation.y = cl.ry;
+            inst.isPickable = false;
+            inst.receiveShadows = true; // cabaña/rocas proyectan sobre las parcelas
+            inst.freezeWorldMatrix(); // terreno estático
           }
-          for (const m of res.meshes) {
-            m.isPickable = false;
-            m.receiveShadows = true; // la cabaña/rocas proyectan sombra sobre la nieve
-            // dieléctrico limpio (nieve): sin brillos metálicos espurios
-            const mat = m.material as PBRMaterial | null;
-            if (mat) { mat.metallic = 0; mat.roughness = Math.max(0.9, mat.roughness ?? 0.95); }
-            m.computeWorldMatrix(true); // absorbe la transformación del root
-            m.freezeWorldMatrix(); // terreno estático
-          }
-          this.baseCampStats.snowTiles += res.meshes.length;
+          this.baseCampStats.snowTiles += mine.length;
         })
-        .catch((err) => console.warn(`[snowtiles] ${d.file} no cargó:`, err));
+        .catch((err) => console.warn(`[snowtiles] ${file} no cargó:`, err));
     }
   }
 

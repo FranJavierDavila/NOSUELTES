@@ -42,7 +42,7 @@ import type { SherpaScene } from "../presentation/scene";
 import type { SherpaHud, HudStartChoice, HudTickState, MinimapHold } from "../presentation/hud";
 import type { SherpaAudio } from "../presentation/audio";
 import type { InputManager, InputIntent, OrbitAxis } from "../input/input";
-import type { NetSnapSherpa, NetSnapshot } from "../net/protocol";
+import type { NetRemoteDrag, NetSnapSherpa, NetSnapshot } from "../net/protocol";
 
 // física de juego (reescritura): sin preset PBD — el rig es estable por construcción.
 const SHOO_COOLDOWN_S = 3;
@@ -739,6 +739,72 @@ export class SherpasMatch {
     this.dragPlayer = null;
     this.dragLimb = null;
     this.dragCursor = null;
+  }
+
+  // ---------- T105 ARRASTRE REMOTO (el ratón del invitado, vía red) ----------
+
+  /** Estado del drag REMOTO SEPARADO del local (el anfitrión puede arrastrar
+   *  SU escalador con el ratón mientras el invitado arrastra el suyo: campos
+   *  compartidos harían que el onDragUp local borrara el drag remoto vivo). */
+  private remoteDragLimb: Limb | null = null;
+  private remoteDragCursor: V3 | null = null;
+
+  /** Aplica un mensaje de arrastre del GUEST sobre SU escalador (jugador 1).
+   *  Mismo camino físico que el drag local (beginDrag/moveDrag/endDrag del
+   *  rig) con sanitize estricto del mensaje (entra por red). */
+  remoteDrag(m: NetRemoteDrag): void {
+    if (this.frozen || this.paused) return;
+    if (m.k === "b") {
+      const limb = LIMBS.find((l) => l === m.l);
+      if (!limb) return;
+      const x = Number(m.x), y = Number(m.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      if (this.remoteDragLimb) return; // ya hay un drag remoto en curso
+      if (this.sherpas[1].beginDrag(limb)) {
+        this.remoteDragLimb = limb;
+        this.remoteDragCursor = v3(x, y, this.wallFrontZ);
+        this.sherpas[1].moveDrag(this.remoteDragCursor);
+      }
+    } else if (m.k === "m") {
+      if (!this.remoteDragLimb) return;
+      const x = Number(m.x), y = Number(m.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      this.remoteDragCursor = v3(x, y, this.wallFrontZ);
+      this.sherpas[1].moveDrag(this.remoteDragCursor);
+    } else if (m.k === "e") {
+      if (!this.remoteDragLimb) return;
+      const cur = this.remoteDragCursor;
+      // COLOCACIÓN DIRECTA (T103) también desde el invitado: anclaje armado
+      // por SU ventana de mochila + soltar mano sobre hueco = clavado ahí.
+      if (this.portableArmed[1] && cur && (this.remoteDragLimb === "hand_l" || this.remoteDragLimb === "hand_r")
+        && this.doPlacePortableAnchorAt(1, cur.x, cur.y, this.remoteDragLimb)) {
+        this.sherpas[1].moveDrag(cur);
+      }
+      this.sherpas[1].endDrag();
+      this.remoteDragLimb = null;
+      this.remoteDragCursor = null;
+    }
+  }
+
+  /** Sonda E2E T105: drag remoto en curso (extremidad del jugador 1). */
+  dragDebug(): { remoteLimb: string | null } {
+    return { remoteLimb: this.remoteDragLimb };
+  }
+
+  /** T105: el invitado se fue en pleno arrastre → soltar SU extremidad (si el
+   *  rig quedara en drag sin dueño, la extremidad seguiría al último punto). */
+  cancelRemoteDrag(): void {
+    if (!this.remoteDragLimb) return;
+    this.sherpas[1].endDrag();
+    this.remoteDragLimb = null;
+    this.remoteDragCursor = null;
+  }
+
+  /** T105 MINIMAPA: fuerza el reenvío del listado de presas del tramo actual
+   *  (holdsStatic) en el próximo snapshot — el invitado avisó de que su escena
+   *  está lista (el primer bloque hud se perdió mientras construía). */
+  forceMinimapResend(): void {
+    this.mmSentKey = "";
   }
 
   // ---------- tick de simulación (doc 3.2) ----------

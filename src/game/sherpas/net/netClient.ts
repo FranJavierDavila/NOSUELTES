@@ -13,7 +13,7 @@
 import { joinRoom, getRelaySockets, type Room } from "trystero/nostr";
 import {
   isRoomCode, makeRoomCode, normalizeRoomCode,
-  type NetRemoteInput, type NetSessionParams, type NetSnapshot,
+  type NetRemoteDrag, type NetRemoteInput, type NetSessionParams, type NetSnapshot,
 } from "./protocol";
 import { RemoteIntentBuffer } from "./remoteInput";
 
@@ -37,19 +37,24 @@ const RELAYS = [
 ];
 
 /** Namespaces de acciones Trystero. */
-const NS = { ctl: "ctl", sess: "sess", snap: "snap", int: "int" } as const;
+const NS = { ctl: "ctl", sess: "sess", snap: "snap", int: "int", drg: "drg" } as const;
 
 export type NetStatus = "off" | "connecting" | "waiting-guest" | "waiting-session" | "playing" | "error";
 
 /** Diagnóstico de señalización (probes E2E y verificación en vivo): estado de
  *  cada relay — 0 conectando, 1 abierto, 2 cerrando, 3 cerrado. */
 export const debugRelays = (): Record<string, number> =>
-  Object.fromEntries(Object.entries(getRelaySockets()).map(([u, s]) => [u, s.readyState]));
+  Object.fromEntries(
+    Object.entries(getRelaySockets() as Record<string, { readyState: number }>).map(([u, s]) => [u, s.readyState]),
+  );
 
 export interface NetAck { ok: boolean; code?: string; error?: string }
 
-/** Mensajes del handshake de entrada (antes: acks del servidor T60). */
-type CtlMsg = { join?: boolean; ack?: boolean; bye?: string };
+/** Mensajes del handshake de entrada (antes: acks del servidor T60).
+ *  T105: `ready` = el invitado ya montó SU escena y quiere el estado completo
+ *  (el primer bloque hud con holdsStatic del minimapa se perdió mientras
+ *  construía: el host lo reenvía). */
+type CtlMsg = { join?: boolean; ack?: boolean; bye?: string; ready?: boolean };
 
 abstract class NetEndpoint {
   protected room: Room | null = null;
@@ -83,6 +88,12 @@ export class HostNet extends NetEndpoint {
   snapshotCount = 0;
   onGuestJoined: () => void = () => { };
   onGuestLeft: () => void = () => { };
+  /** T105: drag del invitado (el match lo aplica a SU escalador) y aviso de
+   *  escena lista (reenvío del listado de presas del minimapa). */
+  onDrag: (m: NetRemoteDrag) => void = () => { };
+  onGuestReady: () => void = () => { };
+  /** diagnóstico E2E: mensajes de arrastre recibidos. */
+  dragCount = 0;
   private guestPeerId: string | null = null;
   private sendSess: ((p: NetSessionParams | null) => void) | null = null;
   private sendSnap: ((s: NetSnapshot) => void) | null = null;
@@ -99,6 +110,7 @@ export class HostNet extends NetEndpoint {
     const [sendInt, getInt] = room.makeAction<NetRemoteInput>(NS.int);
     const [sendSess] = room.makeAction<NetSessionParams | null>(NS.sess);
     const [sendSnap] = room.makeAction<NetSnapshot>(NS.snap);
+    const [, getDrag] = room.makeAction<NetRemoteDrag>(NS.drg);
     this.sendSess = (p) => { void sendSess(p, this.guestPeerId ?? undefined); };
     this.sendSnap = (s) => { void sendSnap(s, this.guestPeerId ?? undefined); };
 
@@ -118,6 +130,8 @@ export class HostNet extends NetEndpoint {
       this.onGuestLeft();
     });
     getCtl((m, peerId) => {
+      // T105: el invitado avisó que SU escena está lista → reenvío de estado
+      if (m?.ready) { if (peerId === this.guestPeerId) this.onGuestReady(); return; }
       if (!m?.join) return;
       // ack solo al designado; a cualquiera más, sala llena
       void sendCtl(peerId === this.guestPeerId ? { ack: true } : { bye: "sala-llena" }, peerId);
@@ -125,6 +139,12 @@ export class HostNet extends NetEndpoint {
     getInt((m) => {
       this.intentCount++;
       this.remote.push(m);
+    });
+    getDrag((m) => {
+      if (!m || typeof m !== "object") return;
+      if (m.k !== "b" && m.k !== "m" && m.k !== "e") return;
+      this.dragCount++;
+      this.onDrag(m);
     });
     return code;
   }
@@ -160,6 +180,9 @@ export class GuestNet extends NetEndpoint {
    *  puede ir peor si algún relay amanece lento). */
   static joinTimeoutMs = 30000;
   private sendInt: ((m: NetRemoteInput) => void) | null = null;
+  private sendDragMsg: ((m: NetRemoteDrag) => void) | null = null;
+  /** canal ctl vivo tras el join (T105: aviso de escena lista). */
+  private sendCtlMsg: ((m: CtlMsg) => void) | null = null;
   private hostPeerId: string | null = null;
 
   async join(rawCode: string): Promise<string> {
@@ -172,7 +195,10 @@ export class GuestNet extends NetEndpoint {
     const [, getSess] = room.makeAction<NetSessionParams | null>(NS.sess);
     const [, getSnap] = room.makeAction<NetSnapshot>(NS.snap);
     const [sendInt] = room.makeAction<NetRemoteInput>(NS.int);
+    const [sendDrag] = room.makeAction<NetRemoteDrag>(NS.drg);
     this.sendInt = (m) => { void sendInt(m, this.hostPeerId ?? undefined); };
+    this.sendDragMsg = (m) => { void sendDrag(m, this.hostPeerId ?? undefined); };
+    this.sendCtlMsg = (m) => { void sendCtl(m, this.hostPeerId ?? undefined); };
 
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -221,8 +247,21 @@ export class GuestNet extends NetEndpoint {
     if (this.sendInt) this.sendInt(m);
   }
 
+  /** T105: mensaje de arrastre (begin/move/end) hacia el host. */
+  sendDrag(m: NetRemoteDrag): void {
+    if (this.sendDragMsg) this.sendDragMsg(m);
+  }
+
+  /** T105: aviso ctl «mi escena está lista» → el host reenvía el listado de
+   *  presas del minimapa (el primer bloque hud se perdió al montar). */
+  sendReady(): void {
+    if (this.sendCtlMsg) this.sendCtlMsg({ ready: true });
+  }
+
   override disconnect(): void {
     this.sendInt = null;
+    this.sendDragMsg = null;
+    this.sendCtlMsg = null;
     this.hostPeerId = null;
     super.disconnect();
   }

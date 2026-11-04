@@ -1,6 +1,28 @@
 # Worklog
 
 ---
+Task ID: 43
+Agent: Z.ai (principal)
+Task: "En la partida de multijugador el invitado no puede mover su sherpa ni le aparecen las marcas en los agarres... Los modelos del suelo (suelonevado1/2.glb) deberían estar a una escala mucho menor como 10 veces más pequeños, son retículas/parcelas que se colocan a modo de mosaico sobre el suelo para que se note la irregularidad y las piedras sobresaliendo sobre la nieve... el invitado ahora sí ve las marcas sobre el muro pero no puede controlar a su jugador ya que no detecta la pulsación sobre sus extremidades... En el invitado tampoco aparecen las marcas en el minimapa."
+
+Work Log:
+- INCIDENCIA DE REPO (reciclaje del sandbox): HEAD local quedó en un commit basura sobre T85 y TODO el trabajo T86-T104 aparecía como «sin commitear» (origin/main real estaba en 05344c6 = T104). Resincronización con el método de T85b: fetch + `git reset origin/main` (mixed: mueve HEAD+índice SIN tocar el working tree) → el diff quedó EXACTAMENTE en los 7 ficheros de T105. Cero pérdidas.
+- CONTROL DEL INVITADO (la causa raíz): el invitado NO tenía PointerDrag — el «pulsa y arrastra» solo existía en match.ts (host) y manipulaba SU física; el guest solo enviaba teclado/mando (InputManager.poll(1)). Su clic sobre las extremidades no sonaba a nada. T105 ARRASTRE REMOTO: (1) protocolo NetRemoteDrag {b: begin limb+punto| m: move| e: end} por acción 'drg' de Trystero; (2) GuestRunner monta PointerDrag sobre el MISMO canvas, coteja el clic con las partículas de SU escalador del snapshot (pickLimbNear, radios del anfitrión ×1.7 para absorber el hueco entre lo pintado —interpolado— y el último snapshot) y envía begin/move/end con throttle ~30 Hz + coalescencia del último punto; (3) el HOST aplica con match.remoteDrag(): MISMO camino físico que el drag local (beginDrag/moveDrag/endDrag del rig del jugador 1), sanitize estricto del mensaje (limb∈LIMBS, x/y finitos), estado SEPARADO del drag local (campos propios remoteDragLimb/Cursor: compartirlos haría que el onDragUp local borrara un drag remoto vivo) y cancelRemoteDrag() cuando el invitado se va a mitad de arrastre. La colocación directa T103 (mochila armada + soltar mano en hueco) también funciona desde el invitado.
+- MINIMAPA DEL INVITADO (segunda causa): el listado de presas del tramo (holdsStatic) viaja UNA sola vez por clave de tramo, y el primer bloque hud se perdía mientras el invitado montaba SU escena (async, segundos) → su caché mmCache quedaba vacía hasta el siguiente campamento. FIX: mensaje ctl `ready` (GuestNet.sendReady al arrancar SU runner; el host responde con match.forceMinimapResend() que vacía mmSentKey → el próximo snapshot reenvía el listado) + REINTENTO cada 2 s desde el guest mientras haya tramo sin caché (a prueba de cualquier pérdida futura).
+- MARCAS EN LOS AGARRES del invitado: el cableado ya existía (rr del snapshot + presas horneadas en su escena desde T103) — el E2E lo confirma: reach=16-17 anillos de alcance visibles y 4 arcos de fatiga activos en el invitado.
+- SUELO — MOSAICO DE PARCELAS (petición literal): escala 1/10 (parcelas de ~4 m, sy 0.25) en DAMERO de las dos mallas alternadas (ry 0/π) cubriendo el suelo visible (x −20..20, z −4..12; z<−4 queda tras el muro): 40 parcelas como instancias por hardware (patrón de las rocas del pedriz: malla semilla invisible + instancias; geometría/textura cargadas UNA vez por variante, ~380k tris estáticos). El borde hundido de cada parcela dibuja la retícula y las piedras sobresalen ~2-4 cm sobre la nieve. VERIFICADO EN IMAGEN (3 vistas camPin): damero con clastos rojizos emergiendo, transición natural con la pedriz y el tarrón, 0 errores JS.
+- SONDA E2E T105 (scripts/e2e-t105-guest-drag.py, 2 pestañas + Nostr real): A) mmCached=1 con clave '0|90' tras el ready; B) reach>0; C) clic REAL del invitado sobre SU mano proyectada → el rig del HOST arrastra hand_l con imán en 'start2_hl' (9 mensajes 'drg') y suelta al levantar; D) 0 errores JS en ambos. TRAMPA DE SONDA: projectToScreenCss devuelve PORCENTAJES (×100), no píxeles — la sonda clicaba en la esquina (55,36) y el drag «no llegaba»; limbScreenPx ahora convierte %→px igual que backpackScreenPx.
+- Otras correcciones de paso: debugRelays tipado (TS18046), sondas host netHost()/remoteDrag() y guest __NS_GUEST_LIMB/__NS_GUEST_RINGS, debug() del guest ampliado (mmCached/mmKey/drag).
+- VERIFICACIÓN: vitest sherpas 709/715-equivalente (mismos 6 fallos preexistentes por assets fuera del repo; +8 tests nuevos de dragPick/protocolo), tsc src/game 0 errores, build espejo del CI (rm -rf src/app/api + STATIC_EXPORT=1), export servido bajo /NOSUELTES.
+
+Stage Summary:
+- El invitado ya JUEGA: arrastra sus extremidades con el ratón/táctil igual que el anfitrión en local (mismos imanes, misma física, colocación directa incluida), y el host sigue solo con SU naranja (candados T102 intactos).
+- El minimapa del invitado muestra las presas del tramo (listado repedido con `ready` + reintentos hasta cachearlo).
+- Los anillos de agarre/alcance se confirman visibles en el invitado por E2E.
+- El suelo es ahora un mosaico de 40 parcelas a escala 1/10 con las piedras sobresaliendo de la nieve (2 draw calls por instancias, mismo peso).
+- 709/715 tests, tsc limpio, build+export OK, E2E de 2 pestañas verde (drag real del invitado verificado en el host).
+
+---
 Task ID: 42
 Agent: Z.ai (principal)
 Task: "Te paso el PAT (push de la T103 pendiente). Te voy a pasar dos mallas para colocar sobre el suelo (suelonevado1.glb y suelonevado2.glb), de tal forma que puedas solapar alguna de ellas para cubrir el actual suelo y que esté en sintonía con la cabaña, base.glb. Te paso la textura del sherpa 2 (sherpa_rojo.jpg) para actualizar también, le ponemos el casco rojo."
