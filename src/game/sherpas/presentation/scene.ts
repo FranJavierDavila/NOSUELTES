@@ -1554,8 +1554,13 @@ export class SherpaScene {
           const CHIMNEY_LOCAL = new Vector3(-0.19, -0.09, -0.994);
           // la matriz MUNDIAL DEL MESH (no la del root): el mesh cuelga del
           // nodo Tripo que trae SU rotación X+90° propia — sin ella el punto
-          // cae fuera de la cabaña y el humo vuelve al pico medio (T109).
-          const mesh0 = res.meshes[0];
+          // cae fuera de la cabaña y el humo vuelve al pico medio (T109). El
+          // GLB trae VARIAS mallas: la hornada buena es la de MÁS VÉRTICES
+          // (la cabaña horneada; meshes[0] puede ser una pieza auxiliar).
+          const mesh0 = res.meshes.reduce(
+            (a, b) => (b.getTotalVertices() > a.getTotalVertices() ? b : a),
+            res.meshes[0]!,
+          );
           mesh0?.computeWorldMatrix(true);
           const mouth = mesh0
             ? Vector3.TransformCoordinates(CHIMNEY_LOCAL, mesh0.getWorldMatrix())
