@@ -39,7 +39,7 @@
     "ropeHaul": "{name} hauls back up the rope…",
     "summit": "EVEREST SUMMIT!",
     "summitSub": "The rich man wants a selfie. You want your pay.",
-    "voiceOff": "Voice not available in this version",
+    "voiceOff": "VOICE",
     "birdTelegraph": "BIRD INCOMING! Press shoo",
     "peeTelegraph": "What's that zipper doing…?",
     "trashTelegraph": "Flying wrapper!",
@@ -115,7 +115,10 @@
     "micMuted": "Voice muted — click to unmute",
     "micDenied": "No microphone permission — click to retry",
     "player0": "Green Sherpa",
-    "player1": "Red Sherpa"
+    "player1": "Red Sherpa",
+    "voiceLive": "VOICE · on",
+    "voiceMuted": "VOICE · muted",
+    "voiceDenied": "VOICE · no access"
   },
   "limb": {
     "hand_l": "L.Hand",
@@ -238,7 +241,8 @@
       "host-recreated": "The host created another room."
     },
     "hostName": "Green",
-    "guestName": "Red"
+    "guestName": "Red",
+    "go": "GO — ¡EMPEZAR!"
   },
   "menu.weather": "Weather",
   "menu.weather.clear": "☀️ Clear",

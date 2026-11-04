@@ -146,7 +146,7 @@ export class GuestRunner {
   /** Sonda E2E/diagnóstico: estado compacto del último snapshot. `hud` es
    *  PEGAJOSO (el bloque viaja a 10 Hz: 1 de cada 3 snapshots). T105: añade el
    *  estado del caché del minimapa (tramos con presas) y el drag en curso. */
-  debug(): { tick: number; wa: [number, number, number]; wb: [number, number, number]; hud: boolean; size: number; sent: number; got: number; mmCached: number; mmKey: string; drag: string | null } | null {
+  debug(): { tick: number; wa: [number, number, number]; wb: [number, number, number]; hud: boolean; size: number; sent: number; got: number; mmCached: number; mmKey: string; drag: string | null; richSaid: string | null } | null {
     const s = this.lastSnap;
     if (!s) return null;
     return {
@@ -159,6 +159,7 @@ export class GuestRunner {
       got: this.gotCount,
       mmCached: this.mmCache.size,
       mmKey: s.hud?.mm?.key ?? "",
+      richSaid: this.lastSaidText, // T109b sonda E2E
       drag: this.dragLimb,
     };
   }
@@ -195,6 +196,11 @@ export class GuestRunner {
   }
 
   private lastSnap: NetSnapshot | null = null;
+  // T109b BOCADILLO: última frase recibida + pendiente de pintar (la textura
+  // de la cara carga async; se reintenta en cada snapshot hasta expirar).
+  private richLineId = 0;
+  private pendingLine: { text: string; durS: number; untilMs: number } | null = null;
+  private lastSaidText: string | null = null; // T109b sonda E2E
 
   private onSnap(s: NetSnapshot): void {
     if (s.hud) this.everHud = true;
@@ -375,6 +381,26 @@ export class GuestRunner {
     // T66: el guest ve la MISMA cara del ricachón (ánimo + ventana de habla
     // viajan en el snapshot: bocadillo visible SOLO mientras rich.s > 0)
     s.setRichMood(cur.rich.m ?? null, false, (cur.rich.s ?? 0) > 0);
+    // T109b BOCADILLO: la frase viva viaja en el snapshot (t/i/rs). Con
+    // REINTENTO: la textura de la cara carga async, así que la frase pendiente
+    // se repite en cada snapshot hasta que sayRichLine la pinta o expira.
+    {
+      const line = cur.rich.t ?? "";
+      if (line && cur.rich.i && cur.rich.i !== this.richLineId) {
+        this.richLineId = cur.rich.i;
+        this.pendingLine = {
+          text: line,
+          durS: Math.min(8, Math.max(1.5, cur.rich.rs ?? 3)),
+          untilMs: performance.now() + ((cur.rich.rs ?? 3) + 1.2) * 1000,
+        };
+      }
+      if (this.pendingLine) {
+        if (s.sayRichLine(this.pendingLine.text, this.pendingLine.durS)) {
+          this.lastSaidText = this.pendingLine.text; // T109b sonda E2E
+          this.pendingLine = null;
+        } else if (performance.now() > this.pendingLine.untilMs) this.pendingLine = null;
+      }
+    }
     s.syncRichMan(this.richView, 1);
     // T65: anillos de agarre del guest — las presas ocupadas por LAS MANOS del
     // snapshot pintan la fatiga de su extremidad (mismo rampa que el host). El

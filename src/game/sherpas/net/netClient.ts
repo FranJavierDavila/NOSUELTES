@@ -37,7 +37,7 @@ const RELAYS = [
 ];
 
 /** Namespaces de acciones Trystero. */
-const NS = { ctl: "ctl", sess: "sess", snap: "snap", int: "int", drg: "drg", msg: "msg" } as const;
+const NS = { ctl: "ctl", sess: "sess", snap: "snap", int: "int", drg: "drg", msg: "msg", vreq: "vreq" } as const;
 
 /** T107c CHAT: saneado de un mensaje escrito (una línea, techo 140). */
 const cleanChatText = (t: unknown): string =>
@@ -97,30 +97,59 @@ export abstract class NetEndpoint {
    *  mismo track lanza "sender already exists"). */
   private voiceSentPeers = new Set<string>();
 
-  /** Instala los handlers de voz (se llama desde enableVoice: instalarlos en
-   *  create()/join() era innecesario y el handler-setter único de trystero
-   *  hizo peligrar el handshake del guest — revertido en el E2E T108d). */
+  /** T109a PETICIÓN DE VOZ (vreq): el receptor instala sus handlers y AVISA;
+   *  el emisor re-emite SOLO entonces. Sin esto, el stream del anfitrión se
+   *  emitía antes de que el invitado registrara onPeerStream (el await de
+   *  getUserMedia retrasa el registro) y la entrega se perdía para siempre:
+   *  «no se oye nada» aunque el canal estuviera vivo. */
   protected installVoiceHandlers(): void {
     if (!this.room) return;
     this.room.onPeerJoin((peerId) => {
       if (this.micStream && this.voiceState !== "off") this.sendMicTo(peerId);
     });
     this.room.onPeerStream((stream) => {
-      if (stream.getAudioTracks().length && !this.remoteStreams.has(stream)) {
+      // el MediaStream puede llegar SIN tracks (el addtrack remoto llega un
+      // instante después): esperarlos antes de darlo por bueno (el RMS del
+      // E2E medía -1 con streams vacíos).
+      const accept = (): void => {
+        if (!stream.getAudioTracks().length || this.remoteStreams.has(stream)) return;
         this.remoteStreams.add(stream);
         this.onVoiceStream(stream);
+      };
+      accept();
+      if (!this.remoteStreams.has(stream)) {
+        const t0 = performance.now();
+        const poll = (): void => {
+          if (this.remoteStreams.has(stream)) return;
+          accept();
+          if (!this.remoteStreams.has(stream) && performance.now() - t0 < 4000) window.setTimeout(poll, 250);
+        };
+        window.setTimeout(poll, 300);
       }
+    });
+    if (this.voiceReqSend) this.voiceReqSend({ r: 1 });
+  }
+
+  /** plumbado de vreq (lo conectan create()/join() tras makeAction). */
+  protected voiceReqSend: ((m: { r: number }) => void) | null = null;
+  /** wire de la acción vreq (SIMÉTRICO: cualquiera puede pedir re-emisión). */
+  protected wireVoiceRequest(send: (m: { r: number }) => void, get: (fn: (m: { r: number }, peerId: string) => void) => void): void {
+    this.voiceReqSend = send;
+    get((_m, peerId) => {
+      if (this.micStream && this.voiceState !== "off") this.sendMicTo(peerId, true);
     });
   }
 
-  /** Emite el mic a UN par una sola vez (y reintenta si trystero lanzó). */
-  private sendMicTo(peerId: string): void {
-    if (!this.room || !this.micStream || this.voiceSentPeers.has(peerId)) return;
+  /** Emite el mic a UN par una sola vez (y reintenta si trystero lanzó).
+   *  force=true: el par lo PIDIÓ (vreq) — el re-add puede lanzar si el track
+   *  ya tenía sender: se captura y no pasa nada (ya estaba). */
+  protected sendMicTo(peerId: string, force = false): void {
+    if (!this.room || !this.micStream) return;
+    if (!force && this.voiceSentPeers.has(peerId)) return;
     try {
       void this.room.addStream(this.micStream, peerId);
       this.voiceSentPeers.add(peerId);
     } catch {
-      // canal aún negociando: al reintentar de onPeerJoin/enableVoice se limpia
       this.voiceSentPeers.delete(peerId);
     }
   }
@@ -143,23 +172,24 @@ export abstract class NetEndpoint {
     this.micStream.getAudioTracks().forEach((t) => { t.enabled = true; });
     this.voiceState = "live";
     if (this.room) {
-      this.installVoiceHandlers();
+      this.installVoiceHandlers(); // ya envía vreq (el receptor queda escuchando)
       const emit = (): void => {
         if (this.micStream && this.voiceState !== "off" && this.room) {
           for (const id of Object.keys(this.room.getPeers())) this.sendMicTo(id);
         }
       };
-      // T108e: retardo de emisión (host) — el guest registra sus handlers en
-      // SU onSession, un viaje DC después del onGuestJoined del host; sin
-      // margen, el stream del anfitrión llegaba antes de que el invitado
-      // escuchara (remote:0 del E2E).
-      if (this.emitDelayMs > 0) window.setTimeout(emit, this.emitDelayMs);
-      else emit();
+      if (this.emitDelayMs > 0) {
+        // T109a EMISIÓN A PETICIÓN (host): solo cuando el invitado confirme
+        // que escucha (vreq); red de seguridad si el vreq se pierde.
+        window.setTimeout(emit, 8000);
+      } else {
+        emit();
+      }
     }
     return true;
   }
 
-  /** retardo antes de emitir el mic (ms). El HOST lo fija a 3000. */
+  /** >0 = el emisor espera la PETICIÓN del receptor (host). 0 = eager (guest). */
   protected emitDelayMs = 0;
 
   /** Silenciar/reactivar el micrófono SIN renegociar (track.enabled). */
@@ -225,6 +255,8 @@ export class HostNet extends NetEndpoint {
     this.sendSnap = (s) => { void sendSnap(s, this.guestPeerId ?? undefined); };
     this.sendChatMsg = (m) => { void sendMsg(m, this.guestPeerId ?? undefined); };
     getMsg((m) => { const t = cleanChatText(m?.t); if (t) this.onChat(1, t); });
+    const [sendVreq, getVreq] = room.makeAction<{ r: number }>(NS.vreq); // T109a voz
+    this.wireVoiceRequest(sendVreq, getVreq);
 
     room.onPeerJoin((peerId) => {
       if (!this.guestPeerId) {
@@ -324,6 +356,8 @@ export class GuestNet extends NetEndpoint {
     this.sendCtlMsg = (m) => { void sendCtl(m, this.hostPeerId ?? undefined); };
     this.sendChatMsg = (m) => { void sendMsg(m, this.hostPeerId ?? undefined); };
     getMsg((m) => { const t = cleanChatText(m?.t); if (t) this.onChat(0, t); });
+    const [sendVreq, getVreq] = room.makeAction<{ r: number }>(NS.vreq); // T109a voz
+    this.wireVoiceRequest(sendVreq, getVreq);
 
     return new Promise((resolve, reject) => {
       let settled = false;

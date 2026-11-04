@@ -515,7 +515,7 @@ export class SherpaScene {
   private baseCampCfg: BaseCampCfg | null = null;
   private baseRockMat: PBRMaterial | null = null; // material COMPARTIDO pedriz+faldones
   private flagWind: PlantWindPlugin | null = null; // viento propio de los banderines
-  private baseCampStats = { enabled: false, screeTris: 0, spurTris: 0, rocks: 0, cabinPieces: 0, flags: 0, smoke: false, pedrizaTex: false, massifTris: 0, snowTiles: 0 };
+  private baseCampStats = { enabled: false, screeTris: 0, spurTris: 0, rocks: 0, cabinPieces: 0, flags: 0, smoke: false, pedrizaTex: false, massifTris: 0, snowTiles: 0, cabinTex: false };
   private groundTintCtx: GroundTintCtx | null = null; // T98: contexto del suelo alpino (franja de caída + campamento)
   /** T55 SONDA E2E: nº de chunks de roca con tinte por vértice aplicado. */
   rockTintChunks = 0;
@@ -1387,9 +1387,9 @@ export class SherpaScene {
     ped.wrapV = Texture.WRAP_ADDRESSMODE;
     ped.anisotropicFilteringLevel = 4;
     m.albedoTexture = ped;
-    // T101: multiplicador FRÍO (antes (0.98,0.96,0.92) cálido) — el pedriz y
-    // sus rocas leen de la misma familia azulada que la Base.glb.
-    m.albedoColor = new Color3(0.945, 0.958, 0.995);
+    // T109e: multiplicador ROJIZO-MARRÓN (petición: laterales/pedriz con el
+    // tono de las piedras del suelo — desprendimientos de la misma pared).
+    m.albedoColor = new Color3(1.0, 0.87, 0.78);
     this.baseCampStats.pedrizaTex = true;
     m.metallic = 0;
     m.roughness = 0.95;
@@ -1444,9 +1444,80 @@ export class SherpaScene {
           if (!n.parent) n.parent = root;
         }
         this.baseCampStats.cabinPieces = res.meshes.length;
+        // T109d — TEXTURA NUEVA DE LA CABAÑA (petición: "te actualizo la
+        // textura (base.jpg) de la cabaña"): el horneado de Tripo que trae el
+        // GLB se SUSTITUYE por la textura del usuario en todos los materiales.
+        try {
+          const tex = new Texture(assetUrl("/models/base_cabana.jpg"), this.scene, true, false);
+          tex.anisotropicFilteringLevel = 4;
+          const seen = new Set<string>();
+          let painted = 0;
+          for (const m of res.meshes) {
+            const mat = m.material as PBRMaterial | null;
+            if (!mat || seen.has(mat.id)) continue;
+            seen.add(mat.id);
+            const pm = mat as PBRMaterial;
+            if (typeof pm.albedoTexture !== "undefined") { pm.albedoTexture = tex; pm.metallic = 0; painted++; }
+            else if ("diffuseTexture" in mat) { (mat as unknown as { diffuseTexture: Texture }).diffuseTexture = tex; painted++; }
+          }
+          this.baseCampStats.cabinTex = painted > 0;
+        } catch (err) { console.warn("[basecamp] textura base_cabana.jpg no aplicada:", err); }
+        // T109d — HUMO DE LA CHIMENEA: emisor continuo en el PUNTO MÁS ALTO de
+        // la cabaña (cumbrera ≈ chimenea en el GLB de Tripo), en coordenadas de
+        // mundo ya transformadas por el root.
+        try {
+          root.computeWorldMatrix(true);
+          let topY = -1e9, cx = 0, cz = 0, n = 0;
+          for (const m of res.meshes) {
+            m.computeWorldMatrix(true);
+            const c = m.getBoundingInfo().boundingBox.centerWorld;
+            const y = m.getBoundingInfo().boundingBox.maximumWorld.y;
+            cx += c.x; cz += c.z; n++;
+            if (y > topY) topY = y;
+          }
+          if (n > 0 && topY > 0) {
+            this.startChimneySmoke(new Vector3(cx / n, topY - 0.15, cz / n));
+            this.baseCampStats.smoke = true;
+          }
+        } catch (err) { console.warn("[basecamp] humo de chimenea no arrancó:", err); }
       })
       .catch((err) => console.warn("[basecamp] base.glb no cargó:", err));
   }
+
+  /** T109d — HUMILLO CONTINUO de la chimenea: columnita gris que sube, crece
+   *  y se disipa (el toque vivo del campamento). Emisión constante y barata
+   *  (≈7 part/s, BLENDMODE_STANDARD). */
+  private startChimneySmoke(worldPos: Vector3): void {
+    if (!this.scene || this.chimneySmoke) return;
+    const ps = new ParticleSystem("chimenea", 42, this.scene);
+    ps.particleTexture = this.fxTexture;
+    ps.emitter = worldPos.clone();
+    ps.minEmitBox = new Vector3(-0.06, 0, -0.06);
+    ps.maxEmitBox = new Vector3(0.06, 0.05, 0.06);
+    ps.color1 = new Color4(0.86, 0.87, 0.9, 0.42);
+    ps.color2 = new Color4(0.74, 0.75, 0.79, 0.34);
+    ps.colorDead = new Color4(0.85, 0.86, 0.9, 0);
+    ps.minSize = 0.16; ps.maxSize = 0.3;
+    ps.minLifeTime = 2.2; ps.maxLifeTime = 3.6;
+    ps.emitRate = 7;
+    ps.blendMode = ParticleSystem.BLENDMODE_STANDARD;
+    // deriva de viento (+x) y ascensión; crece al subir (gradiente de tamaño)
+    ps.direction1 = new Vector3(0.1, 1.0, -0.06);
+    ps.direction2 = new Vector3(0.28, 1.5, 0.1);
+    ps.minEmitPower = 0.35; ps.maxEmitPower = 0.8;
+    ps.gravity = new Vector3(0, 0.4, 0);
+    ps.addSizeGradient(0, 0.14);
+    ps.addSizeGradient(0.45, 0.34);
+    ps.addSizeGradient(1, 0.62);
+    ps.addColorGradient(0, new Color4(0.82, 0.83, 0.87, 0.0));
+    ps.addColorGradient(0.18, new Color4(0.86, 0.87, 0.9, 0.4));
+    ps.addColorGradient(0.7, new Color4(0.8, 0.81, 0.85, 0.22));
+    ps.addColorGradient(1, new Color4(0.9, 0.91, 0.95, 0));
+    ps.start();
+    this.chimneySmoke = ps;
+  }
+
+  private chimneySmoke: ParticleSystem | null = null;
 
   /** T106 — MOSAICO DE PARCELAS NEVADAS A ESCALA 1/10 SIN APLANAR (petición:
    *  "debe conservar su geometría 3D original y cubrir completamente el suelo,
@@ -1530,7 +1601,7 @@ export class SherpaScene {
 
   /** T56 SONDA E2E: estado del base camp (pedriz/faldones/cabaña/banderines).
    *  T61: añade el sellado lateral (massifTris). */
-  getBaseCampInfo(): { enabled: boolean; screeTris: number; spurTris: number; rocks: number; cabinPieces: number; flags: number; smoke: boolean; pedrizaTex: boolean; flagWindActive: boolean; massifTris: number; snowTiles: number } {
+  getBaseCampInfo(): { enabled: boolean; screeTris: number; spurTris: number; rocks: number; cabinPieces: number; flags: number; smoke: boolean; pedrizaTex: boolean; flagWindActive: boolean; massifTris: number; snowTiles: number; cabinTex: boolean } {
     return { ...this.baseCampStats, flagWindActive: this.flagWind?.debugInfo().active ?? false };
   }
 
@@ -1934,7 +2005,10 @@ export class SherpaScene {
     nmt.anisotropicFilteringLevel = 4;
     mat.bumpTexture = nmt; // DETALLE FINO: normales horneadas a 1 cm
     mat.bumpTexture.level = 1.15;
-    mat.albedoColor = new Color3(1, 1, 1); // el tono final = colorMap horneado
+    // T109e — TONO ROJIZO (petición: paredes = desprendimientos con la
+    // apariencia de las piedras rojizo-marrón del suelo): multiplicador
+    // cálido sobre el colorMap horneado (antes neutro).
+    mat.albedoColor = new Color3(1.05, 0.85, 0.74); // el tono final = colorMap horneado × tinte rojizo
     mat.metallic = 0; // piedra: sin reflejo metálico
     mat.roughness = 0.93; // rugosidad de roca (micro-brillo solo en cantos)
     mat.backFaceCulling = true;

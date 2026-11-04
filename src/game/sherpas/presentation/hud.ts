@@ -122,6 +122,8 @@ const CSS = `
 .sphud .propina .bar { height:8px; border-radius:4px; background:rgba(255,255,255,.12); overflow:hidden; margin-top:4px; }
 .sphud .propina .bar > i { display:block; height:100%; background:var(--pc,#e8c547); border-radius:4px; }
 .sphud .debug { position:absolute; bottom:12px; right:12px; font:10.5px/1.5 ui-monospace,monospace; opacity:.65; text-align:right; white-space:pre; }
+/* T109c: la línea de depuración está OCULTA por defecto (solo ?debug=1). */
+.sphud .debug.hidden { display:none !important; }
 /* VIÑETA DE PELIGRO (juice T38): borde rojo que APARECE cuando la tensión roza
  * el límite o la tabla está al borde — el peligro se SIENTE sin leer un chip. */
 .sphud .danger-vignette { position:absolute; inset:0; pointer-events:none; opacity:0; transition:opacity .28s ease-out;
@@ -222,11 +224,20 @@ const CSS = `
   width:max-content; pointer-events:auto; cursor:pointer; user-select:none; }
 .sphud .chat-hint:hover { border-color:#7aa2ff; color:#fff; }
 .sphud .chat-hint.hidden { display:none; }
-/* T108e MICRÓFONO: botón al lado del aviso del chat (voz sincronizada en la
- * sesión). Estados: off (gris), live (verde), muted (ámbar), denied (rojo). */
-.sphud .chat-foot { display:flex; gap:6px; align-items:center; }
-.sphud .chat-mic { width:30px; height:30px; border-radius:8px; font-size:14px; line-height:1;
-  border:1px solid rgba(255,255,255,.14); background:rgba(10,14,18,.6); color:#e8eef5;
+/* T108e MICRÓFONO + T109a: chip de voz PROPIO (fuera del chat, abajo a la
+ * derecha, SIEMPRE visible durante la sesión). Estados: off (gris),
+ * live (verde), muted (ámbar), denied (rojo). El texto del título lo pone
+ * micState (VOZ · tocando = silenciar). */
+.sphud .chat-foot { display:flex; gap:6px; align-items:center; justify-content:flex-end; }
+.sphud .voice { position:absolute; right:14px; bottom:16px; z-index:27; display:flex;
+  gap:7px; align-items:center; pointer-events:auto; }
+.sphud .voice.hidden { display:none; }
+.sphud .voice-label { font-size:10.5px; letter-spacing:.09em; opacity:.75; color:#e8eef5;
+  text-shadow:0 1px 2px rgba(0,0,0,.7); }
+.sphud .buildtag { position:absolute; right:16px; bottom:2px; font-size:9px; letter-spacing:.08em;
+  opacity:.32; color:#e8eef5; z-index:5; pointer-events:none; }
+.sphud .chat-mic { width:34px; height:34px; border-radius:9px; font-size:16px; line-height:1;
+  border:1px solid rgba(255,255,255,.14); background:rgba(10,14,18,.72); color:#e8eef5;
   pointer-events:auto; cursor:pointer; }
 .sphud .chat-mic.live { border-color:#3fae5a; box-shadow:0 0 0 1px rgba(63,174,90,.5); }
 .sphud .chat-mic.muted { border-color:#d9a53f; }
@@ -371,10 +382,16 @@ export class SherpaHud {
           <input class="chat-in" data-e="chatIn" type="text" maxlength="140" autocomplete="off" spellcheck="false" />
         </div>
         <div class="chat-foot">
-          <button class="chat-mic off" data-e="micBtn" type="button" title="Micrófono"></button>
           <div class="chat-hint hidden" data-e="chatHint"></div>
         </div>
       </div>
+      <!-- T109a VOZ: chip SIEMPRE visible durante la sesión (fuera del
+           contenedor del chat: el anfitrión no lo encontraba). -->
+      <div class="voice hidden" data-e="voice">
+        <button class="chat-mic off" data-e="micBtn" type="button" title="Micrófono"></button>
+        <span class="voice-label" data-e="voiceLabel">VOZ</span>
+      </div>
+      <div class="buildtag" data-e="buildTag">vT109</div>
       <div data-e="bubbles" style="position:absolute;inset:0;overflow:hidden"></div>
       <!-- T101: ventana del INVENTARIO DE MOCHILA (abre al pulsar la mochila
            del escalador; hueco del Anclaje con icono + contador encima). -->
@@ -438,9 +455,22 @@ export class SherpaHud {
     // T108d: el aviso del chat es TAMBIÉN un botón — si el Enter nunca llega
     // (foco capturado por otra capa), el chat se abre por ratón igualmente.
     this.el.chatHint!.addEventListener("click", () => { if (this.chatOn) this.chatToggle(); });
-    // T108e: el micrófono se silencia/reactiva con un clic (el arranque lo
-    // hace mount al abrirse la sesión; aquí solo conmutamos).
-    this.el.micBtn!.addEventListener("click", () => { if (this.chatOn) this.micToggleHandler?.(); });
+    // T108e + T109a: el micrófono se silencia/reactiva con un clic (el arranque
+    // lo hace mount al abrirse la sesión). Ya no depende de chatOn: el chip
+    // vive FUERA del contenedor del chat y su clic siempre conmuta.
+    this.el.micBtn!.addEventListener("click", () => { this.micToggleHandler?.(); });
+    // T109c: la línea de DEBUG (fps/draws/estado de cuerda…) SOLO se muestra
+    // con ?debug=1 en la URL o localStorage.ns.debug=1 — el jugador no la ve.
+    const dbgOn = new URLSearchParams(window.location.search).has("debug")
+      || ((): boolean => { try { return localStorage.getItem("ns.debug") === "1"; } catch { return false; } })();
+    this.el.debug!.classList.toggle("hidden", !dbgOn);
+    if (dbgOn) this.el.debug!.classList.add("debug-on");
+  }
+
+  /** T109a: chip de voz visible/invisible (sesión activa / terminada). */
+  voiceVisible(on: boolean): void {
+    this.el.voice!.classList.toggle("hidden", !on);
+    if (!on) this.micState("off");
   }
 
   /** T108e VOZ: pinta el estado del micrófono en el chip. */
@@ -453,6 +483,11 @@ export class SherpaHud {
     };
     b.title = labels[st] ?? st;
     b.textContent = st === "live" ? "🎙" : st === "muted" ? "🔇" : st === "denied" ? "🎙✕" : "🎙";
+    const vl = this.el.voiceLabel;
+    if (vl) vl.textContent = st === "live" ? this.t("hud.voiceLive")
+      : st === "muted" ? this.t("hud.voiceMuted")
+      : st === "denied" ? this.t("hud.voiceDenied")
+      : this.t("hud.voiceOff");
   }
 
   private micToggleHandler: (() => void) | null = null;
@@ -1020,6 +1055,9 @@ export class SherpaHud {
       <div class="row" style="justify-content:center"><input data-a="netCode" placeholder="${esc(this.t("net.codePh"))}" maxlength="8" style="${esc("font:inherit;width:150px;background:#141b22;color:#e8eef4;border:1px solid rgba(255,255,255,.16);border-radius:8px;padding:8px 10px;text-transform:uppercase;letter-spacing:.2em;text-align:center")}"><button data-a="netJoin">${esc(this.t("net.join"))}</button></div>
       <div class="net-status" data-a="netStatus"></div>
       <div class="net-code hidden" data-a="netCodeBox"></div>
+      <!-- T109f: GO DENTRO del panel Online — no hay que volver a la portada
+           para arrancar la partida una vez creada/unida la sala. -->
+      <div class="row" style="justify-content:center;margin-top:12px"><button data-a="netGo" style="font-size:22px;padding:10px 46px;background:#1f7a3d;border-color:#3fae5a">${esc(this.t("net.go"))}</button></div>
       <div class="row" style="justify-content:center;margin-top:10px"><button data-a="netBack">${esc(this.t("net.back"))}</button></div>`;
     body.querySelector<HTMLElement>("[data-a=netHost]")!.onclick = () => opts.onHost();
     body.querySelector<HTMLElement>("[data-a=netJoin]")!.onclick = () => {
@@ -1033,6 +1071,13 @@ export class SherpaHud {
       }
     });
     body.querySelector<HTMLElement>("[data-a=netBack]")!.onclick = () => { this.hideNet(); opts.onBack(); };
+    // T109f: GO del panel = mismo flujo que el GO de la portada (misma
+    // elección de dificultad/clima ya hecha) sin volver atrás.
+    body.querySelector<HTMLElement>("[data-a=netGo]")!.onclick = () => {
+      this.hideNet();
+      this.hideStart();
+      this.opts?.onGo?.(this.choice as HudStartChoice);
+    };
     el.classList.remove("hidden");
   }
 

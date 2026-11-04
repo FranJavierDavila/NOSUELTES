@@ -99,7 +99,9 @@ export type NetSnapshot = {
   } | null;
   /** ricachón: 11 cuerpos planos (RM 0..10) + gesto. T66: `m` = ánimo (emote),
    *  `s` = segundos de bocadillo restantes ("está hablando"; 0 = callado). */
-  rich: { b: number[]; g: string; seated: boolean; m: string; s: number };
+  rich: { b: number[]; g: string; seated: boolean; m: string; s: number;
+    /** T109b: frase viva del ricachón para el bocadillo del invitado. */
+    t?: string; i?: number; rs?: number };
   /** T66-FB: anillos de alcance — presas cercanas con fino círculo blanco
    *  (i = holdId, d = distancia normalizada 0..1 que gobierna la transparencia).
    *  El host los calcula con la física real; el guest los replica tal cual. */

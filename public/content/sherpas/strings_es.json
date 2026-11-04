@@ -47,7 +47,7 @@
     "ropeHaul": "{name} recupera cuerda mano a mano…",
     "summit": "¡CIMA DEL EVEREST!",
     "summitSub": "El ricachón quiere selfi. Tú quieres cobrar.",
-    "voiceOff": "Voz no disponible en esta versión",
+    "voiceOff": "VOZ",
     "birdTelegraph": "¡PÁJARO AL ATACAR! Pulsa espantar",
     "peeTelegraph": "¿Qué hace ese cierre…?",
     "trashTelegraph": "¡Envase volador!",
@@ -115,7 +115,10 @@
     "micMuted": "Voz silenciada — clic para activar",
     "micDenied": "Sin permiso de micrófono — clic para reintentar",
     "player0": "Sherpa Verde",
-    "player1": "Sherpa Rojo"
+    "player1": "Sherpa Rojo",
+    "voiceLive": "VOZ · activa",
+    "voiceMuted": "VOZ · silenciada",
+    "voiceDenied": "VOZ · sin permiso"
   },
   "limb": {
     "hand_l": "M.Izq",
@@ -238,7 +241,8 @@
       "host-recreated": "El anfitrión creó otra sala."
     },
     "hostName": "Verde",
-    "guestName": "Rojo"
+    "guestName": "Rojo",
+    "go": "GO — ¡EMPEZAR!"
   },
   "menu.weather": "Clima",
   "menu.weather.clear": "☀️ Despejado",

@@ -1,6 +1,31 @@
 # Worklog
 
 ---
+Task ID: 47
+Agent: Z.ai (principal)
+Task: "Realiza las comprobaciones pendientes y vamos con lo siguiente: He probado la voz y no escucho nada y le he repatido varias veces. El anfitrion NO muestra por ningún lado, al menos visible en pantalla, el char de voz. Y en ninguno de los navegadores se escucha voz alguna. Esto es prioritario solucionarlo para poder jugar. En el invitado no se ven los bocadillos con los mensajes del ricachón. Y en el anfitrión se están mostrando los textos del modo depuración. Te actualizo la textura (base.jpg) de la cabaña sherpa para que la cambies. Estaría bien si pudiese poner un humillo saliendo de la chimenea de la cabaña. Estaría perfecto igual el tono de las paredes verticales, la pared escalable y las laterales al tono más marrón rojizo de las piedras que tenemos en el suelo. Cuando estamos en el menú de juego online debería haber un botón Go en el apartado Online."
+
+Work Log:
+- T109a VOZ (PRIORITARIO) — tres causas encontradas y arregladas:
+  (1) REPRODUCCIÓN: el audio remoto iba por <audio autoplay> con play().catch silencioso — los navegadores reales lo dejan bloqueado sin gesto (el E2E no lo veía porque corre con autoplay permitido). Ahora: AudioContext compartido + DESBLOQUEO por gesto (pointerdown/keydown, capture, + resume en cada gesto) + ganancia 1.5.
+  (2) CHIP INVISIBLE: el chip del mic vivía DENTRO del contenedor del chat; fuera de sesión nada se veía y el anfitrión no lo encontraba. Ahora es un chip PROPIO (abajo-derecha, 🎙 + «VOZ · activa/silenciada/...») que se muestra en cuanto la sesión arranca (voiceVisible(true) en las 5 fronteras de sesión) y es clicable SIEMPRE (sin guard chatOn). Además etiqueta de build «vT109» abajo-derecha: si un jugador sigue viendo el juego sin chip, está sirviendo la build CACHÉADA de Pages (Ctrl+F5) — señal visible para diagnosticarlo.
+  (3) EL STREAM DEL ANFITRIÓN NO LLEGABA AL INVITADO (la causa de «en ninguno se oye»): el receptor registra onPeerStream DESPUÉS del await de getUserMedia; el emisor había emitido ya (retardo fijo de 3 s insuficiente con el event loop cargado) y trystero NO repite streams pasados → entrega perdida. FIX DETERMINISTA: acción nueva NS.vreq — el receptor envía {r:1} al terminar de instalar sus handlers y el emisor entrega el mic ENTONCES (sendMicTo force, simétrico); red de seguridad de 8 s. Además onPeerStream ahora ESPERA los tracks de audio (el MediaStream llega a veces vacío: el RMS del E2E medía -1) antes de dárselo al reproductor.
+- T109b BOCADILLOS DEL RICACHÓN EN EL INVITADO: el snapshot llevaba rich.m (ánimo) y rich.s (ventana de habla) pero NO la frase → el invitado veía la cara pero nunca el globo. Ahora el snapshot lleva t (texto), i (id incremental) y rs (segundos restantes); el guestRunner replica con REINTENTO (la textura de la cara carga async) y la sonda __NS_GUEST().richSaid lo expone. match.queueRichLine centraliza las 4 colas de frases; debugRichSay + __SHERPAS_DEBUG.richSay para E2E (sustituye al richSay que solo pintaba en la escena LOCAL sin viajar por red).
+- T109c DEBUG OCULTO: la línea de fps/draws/tensión se pintaba SIEMPRE (hud.debug cada frame). Ahora solo con ?debug=1 o localStorage.ns.debug=1 (clase hidden).
+- T109d CABAÑA: upload/base.jpg → public/models/base_cabana.jpg, aplicada como albedoTexture a todos los materiales PBR del base.glb (metallic=0); HUMO DE CHIMENEA: emisor continuo en el punto más alto del GLB (≈ cumbrera) con gradientes de tamaño (0.14→0.62) y color (alpha 0→0.4→0), deriva de viento +x, ~7 part/s. Sonda getBaseCampInfo().cabinTex/.smoke.
+- T109e TONO ROJIZO: pared escalable (chunks rockDM) albedoColor (1,1,1)→(1.05,0.85,0.74) y pedriz+faldones+macizos (baseRockMat compartido) de frío (0.945,0.958,0.995) a rojizo-marrón (1.0,0.87,0.78) — la familia de desprendimientos lee como las piedras del suelo.
+- T109f GO EN EL PANEL ONLINE: botón grande data-a=netGo dentro del panel de red; mismo flujo que el GO de la portada (hideNet + hideStart + onGo(choice)) — se pulsa con la sala ya creada/unida sin volver atrás.
+- COMPROBACIONES PENDIENTES DE T108 (el E2E T109 las incluye): chat del anfitrión por BOTÓN (F3c VERDE), «Verde: …» en el invitado (F3d VERDE), «Rojo/Red: …» en el anfitrión (F3b VERDE), anclas del invitado por red (F6 con reintento de mochila). APRENDIZAJE E2E: la unión a MITAD de partida contra el anfitrión EN PARTIDA caduca los offers bajo SwiftShader («sala-no-existe») aunque el viewport se encoga — el E2E une con el anfitrión EN EL PANEL y pulsa netGo después (patrón T108); en GPU real no ocurre.
+- TESTS: vitest 43 fallos PREEXISTENTES verificados con stash (physics/selfcollision/twist/hinge/articulaciones/t78/content/vozreal — mismos conteos sin mis cambios); 0 regresiones.
+
+Stage Summary:
+- VOZ arreglada de raíz: desbloqueo de audio por gesto, chip 🎙 siempre visible en sesión, y el stream del anfitrión se entrega CUANDO el invitado está escuchando (vreq) — con el tono del dispositivo falso verificado por RMS en el E2E.
+- El invitado ya ve los bocadillos del ricachón (frase por snapshot con reintento).
+- Línea de depuración oculta salvo ?debug=1; etiqueta vT109 abajo-derecha para detectar caché.
+- Cabaña con la textura nueva (base.jpg) + humillo continuo en la chimenea; paredes y laterales con el tono rojizo-marrón del suelo.
+- Botón GO dentro del panel Online (con la sala creada, se empieza sin volver a la portada).
+
+---
 Task ID: 46
 Agent: Z.ai (principal)
 Task: "Al sherpa invitado lo vamos a llamar Rojo (por su casco y camiseta). Al otro Verde y aprovecho para actualizar su textura (sherpa_verde), que es el que escala por el lado izquierdo. El suelo aún presenta zonas sin cubrir por los modelos de suelo de rocas y hielo. El chat escrito funciona en el invitado pero en el anfitrión no veo nada ni me aparece el chat para escribir. Implementa ya en ambos lados y sincronizados el chat de voz."

@@ -202,6 +202,21 @@ export class SherpasMatch {
   /** T80 — frase pendiente de pronunciar EN EL RENDER (tras setRichMood): la
    *  cara del globo sale del ánimo NUEVO, no del que la escena tenía al sonar. */
   private pendingRichLine: { text: string; durS: number; retryUntilMs: number } | null = null;
+  // T109b BOCADILLO EN EL INVITADO: la frase viva del ricachón viaja en el
+  // snapshot (t = texto, i = id incremental, rs = segundos restantes).
+  private richLineLive: { id: number; text: string; untilMs: number } | null = null;
+  private richLineId = 0;
+
+  /** T109b SONDA E2E: el ricachón dice UNA frase (bocadillo + snapshot). */
+  debugRichSay(text: string): void {
+    this.queueRichLine(text, 4.5, 6000);
+  }
+
+  private queueRichLine(text: string, durS: number, retryMs: number): void {
+    this.pendingRichLine = { text, durS, retryUntilMs: performance.now() + retryMs };
+    this.richLineId++;
+    this.richLineLive = { id: this.richLineId, text, untilMs: performance.now() + durS * 1000 + 700 };
+  }
   private plankCenterPrev: V3 | null = null;
   private plankSpeedMs = 0;
   private lastReachRings: ReachRingEntry[] = []; // para el snapshot de red (rr)
@@ -1196,7 +1211,7 @@ export class SherpasMatch {
     if (this.richMood.spokeIdle) {
       this.richMood.spokeIdle = false; // borde: se consume al decir la frase
       const line = pickIdleLine(this.richMood.mood, this.d.hud.lang, this.rngIdle.next);
-      if (line) this.pendingRichLine = { text: line, durS: 3.2, retryUntilMs: performance.now() + 3000 };
+      if (line) this.queueRichLine(line, 3.2, 3000);
     }
     // T44 — VOZ REAL POR ESCORA (petición: "...o la tabla se inclina bastante"):
     // al alcanzar la escora dramática UNA VEZ por episodio suelta una voz real
@@ -1941,7 +1956,7 @@ export class SherpasMatch {
         const text = p.text || (lang === "en" ? "YOU BASTAAAARDS!!!" : "¡¡CABRONEEEEESSSS!!!!");
         void Promise.resolve(dS).then((dur) => {
           if (dur > 0) this.rich.ostentate(this.simTime, dur + 0.35);
-          this.pendingRichLine = { text, durS: 3.8, retryUntilMs: performance.now() + 4000 };
+          this.queueRichLine(text, 3.8, 4000);
         });
         return;
       }
@@ -1963,11 +1978,11 @@ export class SherpasMatch {
           // T44 — BRAZOS EN ALTO mientras EMITE (petición: "para saber que el
           // ricachón habla... de forma muy clara y ostentosa").
           this.rich.ostentate(this.simTime, dur + 0.35);
-          this.pendingRichLine = { text: trans, durS: Math.max(2.6, dur + 0.7), retryUntilMs: performance.now() + 4000 };
+          this.queueRichLine(trans, Math.max(2.6, dur + 0.7), 4000);
         } else if (!this.d.audio.realBusy() && trans) {
           // la voz no sonó Y nada más está sonando (mudo/fichero ausente):
           // la frase se ve — es exactamente lo que la grabación diría.
-          this.pendingRichLine = { text: trans, durS: 3.2, retryUntilMs: performance.now() + 4000 };
+          this.queueRichLine(trans, 3.2, 4000);
         }
         // dur === 0 con otra voz en curso: SIN texto nuevo (voz ↔ texto).
       });
@@ -2290,6 +2305,10 @@ export class SherpasMatch {
       rich: {
         b: rb, g: this.rich.gesture, seated: this.rich.seated, m: this.richMood.mood,
         s: Math.round(this.richMood.say * 10) / 10,
+        // T109b: la frase viva para el BOCADILLO del invitado
+        t: this.richLineLive && performance.now() < this.richLineLive.untilMs ? this.richLineLive.text : "",
+        i: this.richLineLive?.id ?? 0,
+        rs: this.richLineLive ? Math.max(0, Math.round(((this.richLineLive.untilMs - performance.now()) / 1000) * 10) / 10) : 0,
       },
       // T66-FB: anillos de alcance (presas cercanas con círculo blanco) — el
       // guest replica EXACTAMENTE lo que ve el host sin repetir la física.

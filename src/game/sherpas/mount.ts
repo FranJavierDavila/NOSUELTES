@@ -101,35 +101,55 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     if (state.guest) state.guest.requestPortablePlace(p);
     else state.match?.requestPortablePlace(p);
   });
-  // ---------- T108e CHAT DE VOZ ----------
+  // ---------- T108e CHAT DE VOZ (T109a: ruta de audio ROBUSTA) ----------
   // Sesión activa → micrófono ON automáticamente (ambos lados, el MISMO canal
-  // P2P que el resto). El chip del HUD silencia/reactiva; el audio remoto
-  // suena por elementos <audio> dedicados. Nada de esto toca la partida: si
-  // el permiso se rechaza, el juego sigue igual (chip en rojo, reintentable).
-  const voiceAudios: HTMLAudioElement[] = [];
+  // P2P que el resto). El audio REMOTO se reproduce por un AudioContext
+  // compartido: los navegadores bloquean <audio autoplay> sin gesto reciente
+  // (el síntoma era «no se oye nada en ninguno»), así que el contexto se
+  // DESBLOQUEA en el primer toque/tecla y en cada gesto si seguía suspendido.
+  // Si el permiso se rechaza, el juego sigue igual (chip en rojo, reintentable).
+  let voiceCtx: AudioContext | null = null;
+  let voiceCtxTried = false;
+  const unlockVoiceAudio = (): void => {
+    try {
+      if (!voiceCtx) {
+        const Ctor: typeof AudioContext | undefined =
+          window.AudioContext ??
+          (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+        if (!Ctor) return;
+        voiceCtx = new Ctor();
+        voiceCtxTried = true;
+      }
+      if (voiceCtx.state !== "running") void voiceCtx.resume();
+    } catch { /* sin WebAudio: queda la vía de siempre */ }
+  };
+  document.addEventListener("pointerdown", unlockVoiceAudio, true);
+  document.addEventListener("keydown", unlockVoiceAudio, true);
+  unlockVoiceAudio(); // en cuanto haya gesto alguno el contexto queda vivo
   const voiceNet = (): import("./net/netClient").NetEndpoint | null =>
     state.hostNet ?? state.guestNet;
   const voicePlayRemote = (stream: MediaStream): void => {
-    const a = document.createElement("audio");
-    a.srcObject = stream;
-    a.autoplay = true;
-    void a.play().catch(() => { /* autoplay bloqueado: sonará tras un gesto */ });
-    voiceAudios.push(a);
+    try {
+      if (!voiceCtx) unlockVoiceAudio();
+      if (!voiceCtx) return;
+      const src = voiceCtx.createMediaStreamSource(stream);
+      const gain = voiceCtx.createGain();
+      gain.gain.value = 1.5; // el mic del portátil llega flojo
+      src.connect(gain);
+      gain.connect(voiceCtx.destination);
+    } catch { /* stream ya cerrado o sin WebAudio */ }
   };
   const startVoice = (): void => {
     const net = voiceNet();
     if (!net) return;
     net.onVoiceStream = voicePlayRemote;
+    hud.voiceVisible(true); // T109a: chip SIEMPRE visible en sesión
     hud.micState(net.voiceState);
     void net.enableVoice().then(() => hud.micState(net.voiceState));
   };
   const stopVoice = (): void => {
     voiceNet()?.stopVoice();
-    hud.micState("off");
-    for (const a of voiceAudios.splice(0, voiceAudios.length)) {
-      a.srcObject = null;
-      a.remove();
-    }
+    hud.voiceVisible(false);
   };
   hud.setMicToggle(() => {
     const net = voiceNet();
@@ -243,7 +263,8 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
   const endGuestToMenu = async (): Promise<void> => {
     state.guest?.dispose(); state.guest = null;
     state.guestNet?.disconnect(); state.guestNet = null;
-    hud.chatActive(false); // T107c: sesión terminada, chat fuera
+    hud.chatActive(false);
+              hud.voiceVisible(false); // T109a: sin sesión, sin chip // T107c: sesión terminada, chat fuera
     stopVoice(); // T108e: y la voz
     // el guest montó una escena PROPIA (pared del host): volver a la local
     if (state.scene) { state.scene.dispose(); state.scene = null; }
@@ -320,7 +341,8 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
             hud.netStatus(hud.t("net.waitingGuest"));
             state.hostNet.onGuestJoined = () => {
               hud.netStatus(hud.t("net.guestJoined"));
-              hud.chatActive(true); // T107c: chat disponible en cuanto hay par
+              hud.chatActive(true);
+              hud.voiceVisible(true); // T109a: chip de voz junto al chat // T107c: chat disponible en cuanto hay par
               startVoice(); // T108e: voz sincronizada en cuanto hay par
               syncNetLocks();
               // T102: el guest puede entrar con la partida YA empezada
@@ -328,7 +350,8 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
             };
             state.hostNet.onGuestLeft = () => {
               hud.netStatus(hud.t("net.guestLeft"));
-              hud.chatActive(false); // T107c: sin par, sin chat
+              hud.chatActive(false);
+              hud.voiceVisible(false); // T109a: sin sesión, sin chip // T107c: sin par, sin chat
               stopVoice(); // T108e: sin par, sin voz
               syncNetLocks();
               state.match?.cancelRemoteDrag(); // T105: sin dueño, suelto SU drag
@@ -351,7 +374,8 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
             hud.netStatus(hud.t("net.waitingHost"));
             state.guestNet.onSession = (p) => {
               if (!p) { void endGuestToMenu(); return; }
-              hud.chatActive(true); // T107c: sesión aceptada → chat disponible
+              hud.chatActive(true);
+              hud.voiceVisible(true); // T109a: chip de voz junto al chat // T107c: sesión aceptada → chat disponible
               startVoice(); // T108e: voz sincronizada
               void beginGuest(p);
             };
@@ -370,7 +394,8 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         // el guest sí corta su conexión; el HOST conserva la sala abierta
         // (puede volver a entrar cuando quiera: GO arranca con quien haya)
         state.guestNet?.disconnect(); state.guestNet = null;
-        hud.chatActive(false); // T107c: sin conexión, sin chat
+        hud.chatActive(false);
+              hud.voiceVisible(false); // T109a: sin sesión, sin chip // T107c: sin conexión, sin chat
         void showMenu();
       },
     });
@@ -542,6 +567,14 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         const net = state.hostNet ?? state.guestNet;
         return net ? { st: net.voiceState, remote: net.remoteStreams.size, room: !!net } : null;
       },
+      /** T109a E2E: primer stream de audio REMOTO (para medir RMS de verdad
+       *  con el dispositivo falso de Chromium — el tono debe llegar). */
+      voiceRemoteStream: (): MediaStream | null => {
+        const net = state.hostNet ?? state.guestNet;
+        if (!net) return null;
+        for (const s of net.remoteStreams) return s;
+        return null;
+      },
       /** T47 SOL ORBITAL: dirección/posición del sol (E2E: el azimut sigue el
        *  yaw de la órbita y a yaw 0 restaura EXACTO). null si aún no hay luz. */
       sun: (): { dx: number; dy: number; dz: number; px: number; py: number; pz: number } | null => {
@@ -641,11 +674,13 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         } | null;
         return sc?.getRichFaceInfo?.() ?? null;
       },
+      // T109b: por MATCH (bocadillo + snapshot → el INVITADO también lo ve);
+      // el de escena directa no viaja por red.
       richSay: (text: string): boolean => {
-        const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
-          sayRichLine?: (text: string, durS?: number) => boolean;
-        } | null;
-        return sc?.sayRichLine?.(text, 8) ?? false;
+        const m = state.match;
+        if (!m) return false;
+        m.debugRichSay(text);
+        return true;
       },
       /** T84 RIG ARTICULADO: las 11 articulaciones del ricachón (mundo, mm
        *  redondeados) para medir AMPLITUD DE MOVIMIENTO desde la sonda E2E. */
