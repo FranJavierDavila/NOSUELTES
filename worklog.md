@@ -1,6 +1,26 @@
 # Worklog
 
 ---
+Task ID: 42
+Agent: Z.ai (principal)
+Task: "Te paso el PAT (push de la T103 pendiente). Te voy a pasar dos mallas para colocar sobre el suelo (suelonevado1.glb y suelonevado2.glb), de tal forma que puedas solapar alguna de ellas para cubrir el actual suelo y que esté en sintonía con la cabaña, base.glb. Te paso la textura del sherpa 2 (sherpa_rojo.jpg) para actualizar también, le ponemos el casco rojo."
+
+Work Log:
+- PUSH T103 DESBLOQUEADO: el sandbox había vuelto a arrancar sin credenciales GitHub (fatal: could not read Username); con el PAT del jugador vía credential-helper efímero, fd5ddd5 (tramos sin retroceso + pared intocable + colocación directa) está en origin/main. VERIFICADO EN PRODUCCIÓN: "Despliegue a GitHub Pages" success + "Smoke test del juego publicado" success sobre fd5ddd5.
+- SUELOS NEVADOS GLB (T104): suelonevado1.glb y suelonevado2.glb (Tripo, 22 MB cada uno) integrados en `scene.buildSnowGroundTiles()` (patrón buildCabin: ImportMeshAsync + root TransformNode + catch con aviso). Cotas MEDIDAS del relieve real (scripts/perfil-suelos.py): superficie superior a y local +0.044 (tile 1) / −0.002 (tile 2), ondulación ±0.04, bordes que caen por debajo del bbox — con sx=sz 40/34 y sy 2.5/2.2 las láminas quedan a pie de juego (±10 cm), tile1 2-3 cm por encima de tile2 en el solape (sin z-fighting), bordes fundidos bajo el suelo procedural (y −0.02) y pedriz/rocas/tarrones/cabaña emergiendo de la nieve. Colocación: tile1 centro (−4, 1.5) cubre pie de pared + franja de caída; tile2 centro (6, 2) abraza el campamento; solape de ~6 m en el centro.
+- AHORRO DE PESO 22→1,4 MB (93%): el GLB llevaba 3 imágenes (normal 9,2 MB + baseColor 4,1 MB + metallicRoughness 8,2 MB) — scripts/filtra-glb.py reescribe el GLB dejando SOLO la baseColor (metallic 0, rough 0.95) y scripts/textura-glb.py reescala la textura 4096²→2048² (a 30+ m de cámara, 2048 sobra). Tres trampas del glTF cazadas a base de E2E: (1) el exportador de Tripo escribe mimeType "image/" a secas → normalizado por bytes mágicos (JPEG/PNG); (2) la textura única debe REAPUNTAR a los índices NUEVOS (source 0) — el índice antiguo colgaba y Babylon se quedaba colgado sin resolver ni rechazar la promesa; (3) el bufferView de la IMAGEN también se remapea — sin él, la textura referenciaba una vista que ya no existía (mismo síntoma). Sonda determinista: la promesa de carga quedaba PENDIENTE para siempre sin ningún error en consola.
+- CUARTA TRAMPA (esta en el juego): congelar la matriz mundo ANTES de parentar dejaba las losas clavadas en identidad (0,7 m en el origen, enterradas en la pared) — snowTiles=4 pero invisible. FIX: parentar PRIMERO, computeWorldMatrix(true) y DESPUÉS freezeWorldMatrix. Sondeo de la depuración: bounding box mundial de los meshes == bbox local (pista definitiva).
+- SONDA VISUAL (scripts/sonda-suelos.py + scripts/captura-suelos.py): arranque por el flujo T101 + sondeo de getBaseCampInfo().snowTiles>=2 (nuevo campo E2E) + capturas con camPin (vista de campamento, primer plano de cabaña y vista ancha). VERIFICADO EN IMAGEN: el suelo visible es la nieve nueva (textura "rocky_snow_terrain": nieve con piedras rosadas), la pedriz funde en los bordes, la cabaña asienta con su zócalo de piedra entre nieve y los tarrones asoman — la familia de materiales casa con la Base.glb. El escalador rojo (P2) se ve en partida con el casco rojo.
+- SHERPA ROJO (actualización): el mapa de ropa lo integró T79 en public/models/sherpas/sherpa_rojo.jpg y el cableado ya existía (trySpawnPuppet pasa bodyTexture solo a P1) — sustituido por la NUEVA textura del jugador (4096², md5 0b1f2fa5…): el rojo pasa de 11,7% a 19,8% de cobertura (el casco rojo pintado en el atlas) sin tocar código.
+- VERIFICACIÓN: vitest sherpas 709/715 (mismos 6 fallos preexistentes por assets fuera del repo), tsc juego 0 errores, build + export estático OK, sonda visual con 0 errores JS.
+
+Stage Summary:
+- El suelo del campamento y del pie de pared es ahora el terreno nevado de las dos mallas del jugador, solapadas sin costuras ni z-fighting, con la pedriz de piedra fundiéndose en los bordes y la cabaña asentada en su zócalo: plena sintonía con base.glb.
+- Las mallas se sirven filtradas (solo baseColor, textura 2048²): 44 MB → 2,7 MB en total, con tres bug del glTF del exportador corregidos en el filtro (mimeType vacío, índices de textura/imagen sin remapear).
+- El escalador rojo lleva la textura nueva con el casco rojo (solo cambio de asset: el cableado de T79 ya lo aplicaba al P2).
+- 709/715 tests, tsc limpio, build/export OK, sonda visual en verde y verificado en el juego real.
+
+---
 Task ID: 41
 Agent: Z.ai (principal)
 Task: "Cuando se alcanza un tramo ya no se retrocede al anterior durante la partida por muchas veces que os caigáis. Cuando se coloca una presa desde la mochila se está volviendo a calcular la pared para adaptarla al nuevo anclaje — tenemos que evitar esto: la pared no se modifica, solo el anclaje, que podrá tener la profundidad precisa para llegar hasta la pared (evitar los redibujados de la pared, que en ese proceso desaparecen del juego antes de volver a aparecer). El mecanismo de colocación de los anclajes debe ser mucho más directo: pulso sobre la mochila, selecciono el anclaje, muevo una de las dos manos a un sitio vacío y se coloca en ese punto el anclaje, sin más complicaciones."

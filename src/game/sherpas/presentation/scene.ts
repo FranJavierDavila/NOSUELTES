@@ -507,7 +507,7 @@ export class SherpaScene {
   private baseCampCfg: BaseCampCfg | null = null;
   private baseRockMat: PBRMaterial | null = null; // material COMPARTIDO pedriz+faldones
   private flagWind: PlantWindPlugin | null = null; // viento propio de los banderines
-  private baseCampStats = { enabled: false, screeTris: 0, spurTris: 0, rocks: 0, cabinPieces: 0, flags: 0, smoke: false, pedrizaTex: false, massifTris: 0 };
+  private baseCampStats = { enabled: false, screeTris: 0, spurTris: 0, rocks: 0, cabinPieces: 0, flags: 0, smoke: false, pedrizaTex: false, massifTris: 0, snowTiles: 0 };
   private groundTintCtx: GroundTintCtx | null = null; // T98: contexto del suelo alpino (franja de caída + campamento)
   /** T55 SONDA E2E: nº de chunks de roca con tinte por vértice aplicado. */
   rockTintChunks = 0;
@@ -1148,6 +1148,9 @@ export class SherpaScene {
     // T56 — BASE CAMP: faldones de continuidad lateral + pedriz de piedra +
     // cabaña sherpa de partida (todo estático y fusionado: coste por frame ≈ 0).
     this.buildBaseCamp();
+    // T104 — SUELOS NEVADOS GLB (petición del jugador): las dos láminas de
+    // terreno nevado solapadas que visten el suelo procedural.
+    this.buildSnowGroundTiles();
     // T61 — MACIZOS LATERALES: sella los huecos que quedaban A LOS LADOS de la
     // pared (al orbitar a ±75° se veía el vacío tras el canto de la pared: la
     // montaña continúa a ambos lados). Ver abajo; sonda E2E en getBaseCampInfo.
@@ -1480,9 +1483,57 @@ export class SherpaScene {
       .catch((err) => console.warn("[basecamp] base.glb no cargó:", err));
   }
 
+  /** T104 — SUELOS NEVADOS GLB (petición del jugador: "te voy a pasar dos
+   *  mallas para colocar sobre el suelo (suelonevado1.glb y suelonevado2.glb),
+   *  de tal forma que puedas solapar alguna de ellas para cubrir el actual
+   *  suelo y que esté en sintonía con la cabaña, base.glb").
+   *  Son láminas de terreno (21k/14.6k verts, textura base embebida 4 MB;
+   *  se sirven filtradas a solo-baseColor ≈ 4,8 MB cada una). Cotas medidas
+   *  del relieve real: superficie superior a y local ≈ +0.044 (tile 1) y
+   *  ≈ −0.002 (tile 2), ondulación ±0.04 — con sy bajo el campo queda a pie
+   *  de juego (±10 cm) y los bordes caen DEBAJO del suelo procedural
+   *  (y −0.02): fundición natural sin costuras. Los y de cada tile se fijan
+   *  para que tile1 quede 2-3 cm POR ENCIMA de tile2 en la zona de solape
+   *  (sin z-fighting) y ambos tapen el "snowFloor" procedural. La pedriz, las
+   *  rocas, los tarrones y la cabaña (todo a y≥0) emergen de la nieve. */
+  private buildSnowGroundTiles(): void {
+    const defs = [
+      // tile 1 (grande, lado izquierdo): cubre el pie de pared y la franja
+      { file: "/models/suelonevado1.glb", x: -4.0, z: 1.5, s: 40, sy: 2.5, y: 0.03 - 0.0438 * 2.5, ry: 0 },
+      // tile 2 (cabaña): abraza el campamento por la derecha, solapa ~5 m
+      { file: "/models/suelonevado2.glb", x: 6.0, z: 2.0, s: 34, sy: 2.2, y: 0.005 + 0.0024 * 2.2, ry: 0 },
+    ];
+    for (const d of defs) {
+      void SceneLoader.ImportMeshAsync("", assetUrl(d.file), undefined, this.scene)
+        .then((res) => {
+          const root = new TransformNode(`snowTileRoot_${d.file.slice(-5, -4)}`, this.scene);
+          root.position.set(d.x, d.y, d.z);
+          root.scaling.set(d.s, d.sy, d.s);
+          root.rotation.y = d.ry;
+          // PRIMERO parentar (el root lleva la escala/cota del terreno) y solo
+          // DESPUÉS congelar la matriz mundo — congelado antes de parentar, la
+          // losa queda clavada en identidad (0,7 m en el origen, enterrada).
+          for (const n of [...res.transformNodes, ...res.meshes]) {
+            if (!n.parent) n.parent = root;
+          }
+          for (const m of res.meshes) {
+            m.isPickable = false;
+            m.receiveShadows = true; // la cabaña/rocas proyectan sombra sobre la nieve
+            // dieléctrico limpio (nieve): sin brillos metálicos espurios
+            const mat = m.material as PBRMaterial | null;
+            if (mat) { mat.metallic = 0; mat.roughness = Math.max(0.9, mat.roughness ?? 0.95); }
+            m.computeWorldMatrix(true); // absorbe la transformación del root
+            m.freezeWorldMatrix(); // terreno estático
+          }
+          this.baseCampStats.snowTiles += res.meshes.length;
+        })
+        .catch((err) => console.warn(`[snowtiles] ${d.file} no cargó:`, err));
+    }
+  }
+
   /** T56 SONDA E2E: estado del base camp (pedriz/faldones/cabaña/banderines).
    *  T61: añade el sellado lateral (massifTris). */
-  getBaseCampInfo(): { enabled: boolean; screeTris: number; spurTris: number; rocks: number; cabinPieces: number; flags: number; smoke: boolean; pedrizaTex: boolean; flagWindActive: boolean; massifTris: number } {
+  getBaseCampInfo(): { enabled: boolean; screeTris: number; spurTris: number; rocks: number; cabinPieces: number; flags: number; smoke: boolean; pedrizaTex: boolean; flagWindActive: boolean; massifTris: number; snowTiles: number } {
     return { ...this.baseCampStats, flagWindActive: this.flagWind?.debugInfo().active ?? false };
   }
 
