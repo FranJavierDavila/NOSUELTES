@@ -1074,6 +1074,10 @@ export class SherpaScene {
     // (aterrizaje legible). El encalado T63 sigue vivo (base casi blanca).
     const bcFloor = resolveBaseCampCfg((this.reliefRaw as { baseCamp?: unknown } | null)?.baseCamp);
     const gCfg = resolveGroundTintCfg((this.reliefRaw as { groundTint?: unknown } | null)?.groundTint);
+    // T106: el mosaico de parcelas cubre TODO el suelo — los parches de piedra
+    // del tinte (anillo del campamento) ya solo se verían asomando por los
+    // valles del relieve y leen como tierra; el suelo que asome debe ser NIEVE.
+    gCfg.stoneCover = 0;
     this.groundTintCtx = {
       wallZ: this.reliefFaceZ,
       corridor: { halfX: bcFloor.fallFlatXM + 0.6, zMin: bcFloor.fallFlatZMinM - 0.6, zMax: bcFloor.fallFlatZMaxM + 0.6 },
@@ -1483,30 +1487,47 @@ export class SherpaScene {
       .catch((err) => console.warn("[basecamp] base.glb no cargó:", err));
   }
 
-  /** T105 — MOSAICO DE PARCELAS NEVADAS (petición del jugador: las dos mallas
-   *  "deberían estar a una escala mucho menor, como 10 veces más pequeños, son
-   *  retículas/parcelas que se colocan a modo de mosaico sobre el suelo para
-   *  que se note la irregularidad y las piedras sobresaliendo sobre la nieve").
-   *  Los dos GLB alternan en DAMERO de parcelas de ~4 m (1/10 de la escala
-   *  T104) sobre el suelo procedural visible (x −20..20, z −4..12; z<−4 queda
-   *  tras el muro). El borde hundido de cada parcela dibuja la retícula del
-   *  mosaico y el relieve (piedras) sobresale ~2-4 cm sobre la nieve plana.
-   *  Instancias por hardware (patrón de las rocas del pedriz: malla semilla
-   *  invisible + instancias): geometría y textura cargadas UNA vez por
-   *  variante, ~380k tris estáticos en total, sin coste por frame. */
+  /** T106 — MOSAICO DE PARCELAS NEVADAS A ESCALA 1/10 SIN APLANAR (petición:
+   *  "debe conservar su geometría 3D original y cubrir completamente el suelo,
+   *  no dejar zonas libres… mantener ese tamaño pero que se vean los volúmenes
+   *  3D originales que es donde está la gracia").
+   *  Causa del T105 corregida: los GLB NO son cuadrados — huella local medida
+   *  (bbox POSITION) 0.710×1.058 (v1) y 0.696×1.054 (v2) → a S=4 cada parcela
+   *  mide ~2.84×4.23 m; la retícula antigua espaciaba 4.0 m en X y dejaba
+   *  franjas de suelo desnudo de ~1.2 m (las zonas rojas de la captura). Ahora
+   *  el paso se calcula desde la huella REAL con solape de ~10 cm: cero huecos.
+   *  Escala UNIFORME (S en los 3 ejes): los volúmenes originales — piedras
+   *  asomando ~30 cm sobre el dorso de la lámina — se leen tal cual. La cota
+   *  (TOP_MEAN 0.16) se fija para que los VALLES del relieve de la lámina 1
+   *  (ondulación local ±0.04 → ±0.16 m a escala 1/10) rocen el suelo plano sin
+   *  hundirse: con la cota baja T105 la mitad de cada parcela quedaba bajo la
+   *  nieve y el suelo tintado asomaba como llanuras de tierra. La base queda
+   *  bien enterrada (nada flota). Cobertura = TODO el suelo procedural (40×24:
+   *  x −20..20, z −12..12) con margen. Instancias por hardware (malla semilla
+   *  invisible + instancias): geometría y textura una vez por variante, ~1.1M
+   *  tris estáticos en 2 draw calls, sin coste por frame. */
   private buildSnowGroundTiles(): void {
-    const S = 4.0;   // lado de la parcela (10× más pequeño que T104)
-    const SY = 0.25; // relieve escalado igual: ondulación ±1 cm, piedras asoman
-    const Y = 0.025; // cota: parcela a 2-4 cm sobre el snowFloor (y −0.02)
-    const XS = [-18, -14, -10, -6, -2, 2, 6, 10, 14, 18];
-    const ZS = [-2, 2, 6, 10];
+    const S = 4.0;            // 1/10 de la escala T104, IGUAL en los 3 ejes
+    const TOP_MEAN = 0.16;    // dorso medio: los valles rozan la nieve plana
+    // huella real (bbox de los GLB) × S, con solape para sellar juntas
+    const FOOT_X = 0.7101 * S;  // 2.84 m (v1, la más ancha)
+    const FOOT_Z = 1.0544 * S;  // 4.22 m (v2, la más corta en fondo)
+    const SX = FOOT_X - 0.10;
+    const SZ = FOOT_Z - 0.12;
+    const nCols = Math.ceil(40 / SX) + 1;
+    const nRows = Math.ceil(24 / SZ) + 1;
+    const x0 = -20 - ((nCols - 1) * SX - 40) / 2; // centrado: cubre de sobra ±20
+    const z0 = -12 - ((nRows - 1) * SZ - 24) / 2;
     const cells: { x: number; z: number; v: 0 | 1; ry: number }[] = [];
-    for (let r = 0; r < ZS.length; r++) {
-      for (let c = 0; c < XS.length; c++) {
+    for (let r = 0; r < nRows; r++) {
+      for (let c = 0; c < nCols; c++) {
         const alt = (r + c) % 2 === 1;
-        cells.push({ x: XS[c]!, z: ZS[r]!, v: alt ? 1 : 0, ry: alt ? Math.PI : 0 });
+        cells.push({ x: x0 + c * SX, z: z0 + r * SZ, v: alt ? 1 : 0, ry: alt ? Math.PI : 0 });
       }
     }
+    // dorso medio medido en T104 (y local): v1 +0.044, v2 −0.002 → los valles
+    // de la lámina 1 rozan la nieve y las piedras asoman ~25-40 cm
+    const MEAN_Y: [number, number] = [0.044, -0.002];
     for (let v = 0; v <= 1; v++) {
       const mine = cells.filter((cl) => cl.v === v);
       const file = v === 0 ? "/models/suelonevado1.glb" : "/models/suelonevado2.glb";
@@ -1521,10 +1542,11 @@ export class SherpaScene {
           if (mat) { mat.metallic = 0; mat.roughness = Math.max(0.9, mat.roughness ?? 0.95); }
           src.isPickable = false;
           src.isVisible = false; // solo semilla (patrón de las rocas del pedriz)
+          const py = TOP_MEAN - MEAN_Y[v] * S;
           for (const [i, cl] of mine.entries()) {
             const inst = src.createInstance(`snowParcel_v${v}_${i}`);
-            inst.position.set(cl.x, Y, cl.z);
-            inst.scaling.set(S, SY, S);
+            inst.position.set(cl.x, py, cl.z);
+            inst.scaling.set(S, S, S); // UNIFORME: volumen 3D original intacto
             inst.rotation.y = cl.ry;
             inst.isPickable = false;
             inst.receiveShadows = true; // cabaña/rocas proyectan sobre las parcelas

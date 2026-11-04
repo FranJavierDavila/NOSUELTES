@@ -1,6 +1,25 @@
 # Worklog
 
 ---
+Task ID: 44
+Agent: Z.ai (principal)
+Task: "las piezas de suelo son elementos 3d con volumen para que se noten las piedras y tú lo has aplanado; ahora la escala está correcta pero debe conservar su geometría 3D original y cubrir completamente el suelo, no dejar zonas libres (captura con zonas rayadas) — mantener ese tamaño pero que se vean los volúmenes 3D originales, que es donde está la gracia."
+
+Work Log:
+- INCIDENCIA DE REPO (reciclaje del sandbox, 2ª vez): el working tree volvió a estado T85; todo T86-T106 está en origin/main (7bdf744). Restauración: git reset --hard origin/main (uploads intactos — sherpa_rojo.jpg idéntico byte a byte). node_modules también perdido → npm install + revert del package-lock.
+- DIAGNÓSTICO REAL (scripts/mede-glb-bbox.py, bbox del accessor POSITION de los GLB): las láminas NO son cuadradas — suelonevado1: 0.710×1.058 local (relieve ±0.04, dorso medio +0.044); suelonevado2: 0.696×1.054 (dorso −0.002). A S=4 cada parcela mide 2.84×4.23 m, pero la retícula T105 espaciaba 4.0 m en X → FRANJAS DE SUELO DESNUDO de ~1.2 m entre columnas (las zonas rojas de la captura del jugador); además la retícula solo llegaba a z −4 (la franja del pie de pared, z −12..−4, jamás se cubrió) y SY=0.25 APLANABA el relieve 4:1.
+- FIX 1 — ESCALA UNIFORME: inst.scaling.set(S,S,S) — los volúmenes 3D originales se leen tal cual (piedras asomando 25-40 cm sobre el dorso, nieve entre ellas por la propia textura).
+- FIX 2 — COBERTURA TOTAL: retícula calculada desde la huella REAL con solape de 10-12 cm (SX=2.74, SZ=4.10): 16×7=112 parcelas centradas que cubren TODO el suelo procedural (40×24: x −21.7..21.7, z −14.4..14.4 con margen) — incluida la franja del pie de pared y la zona izquierda marcada en rojo.
+- FIX 3 — COTA (hallazgo de la 1ª captura): con escala uniforme, los VALLES de la lámina 1 (ondulación ±0.04 → ±0.16 m) se hunden bajo el suelo plano y el groundTint del campamento (parches marrones) asomaba como LLANURAS DE TIERRA. TOP_MEAN 0.03→0.16: los valles rozan la nieve sin hundirse; y gCfg.stoneCover=0 en el tinte del SUELO (el mosaico lo cubre: lo que asome debe leerse nieve, no tierra). El anillo de bloques de la cabaña (2ª resolve, T98) no se toca.
+- VERIFICACIÓN VISUAL (scripts/captura-mosaico-t106.py, 5 vistas camPin, 0 errores JS, snowTiles=112): general = campo de bloques de borde a borde con volumen, nieve entre piedras, cabaña asentada; cenital = campo continuo; pie-pared = piedras hasta el muro; a ras = volumen 3D (cámara dentro de un bloque en 2 vistas: las piedras ahora TORREAN — recomponer con altura ≥1.6 m si hace falta otra pasada).
+- SANIDAD: vitest 717/723 (mismos 6 fallos preexistentes por assets fuera del repo), tsc limpio, build espejo del CI (rm -rf src/app/api + STATIC_EXPORT=1), E2E T105 (2 pestañas, Nostr real) relanzado tras el cambio de suelo.
+
+Stage Summary:
+- El mosaico conserva la GEOMETRÍA 3D ORIGINAL de las láminas (escala uniforme 1/10, sin aplanado) y CUBRE TODO el suelo del campamento sin zonas libres — incluidas las franjas que el jugador marcó en rojo.
+- Las piedras sobresalen 25-40 cm con su volumen real; la nieve entre ellas sale de la propia textura; nada flota (bases enterradas) y los valles ya no dejan asomar tierra del suelo viejo.
+- 112 parcelas instanciadas en 2 draw calls (~1.1M tris estáticos, sin coste por frame).
+
+---
 Task ID: 43
 Agent: Z.ai (principal)
 Task: "En la partida de multijugador el invitado no puede mover su sherpa ni le aparecen las marcas en los agarres... Los modelos del suelo (suelonevado1/2.glb) deberían estar a una escala mucho menor como 10 veces más pequeños, son retículas/parcelas que se colocan a modo de mosaico sobre el suelo para que se note la irregularidad y las piedras sobresaliendo sobre la nieve... el invitado ahora sí ve las marcas sobre el muro pero no puede controlar a su jugador ya que no detecta la pulsación sobre sus extremidades... En el invitado tampoco aparecen las marcas en el minimapa."
