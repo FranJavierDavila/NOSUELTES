@@ -134,7 +134,7 @@ const CSS = `
 .sphud .badges { position:absolute; inset:0; pointer-events:none; overflow:hidden; }
 .sphud .lbadge { position:absolute; width:22px; height:22px; border-radius:50%; transform:translate(-50%,-50%); border:2px solid rgba(255,255,255,.35); background:conic-gradient(var(--c) calc(var(--t)*360deg), rgba(10,14,18,.62) 0); box-shadow:0 1px 6px rgba(0,0,0,.55); transition:border-color .15s, opacity .15s; }
 .sphud .lbadge::after { content:''; position:absolute; inset:5px; border-radius:50%; background:#12181e; }
-.sphud .lbadge.p0 { border-color:#d97b2f; } .sphud .lbadge.p1 { border-color:#2f9bd9; }
+.sphud .lbadge.p0 { border-color:#3fae5a; } .sphud .lbadge.p1 { border-color:#e05245; }
 .sphud .lbadge.warn { border-color:#e8c34a; }
 .sphud .lbadge.crit { border-color:#ff5a5a; animation:limbcrit .5s steps(2,end) infinite; }
 .sphud .lbadge.free { opacity:.4; }
@@ -217,8 +217,20 @@ const CSS = `
   border:1px solid rgba(122,162,255,.45); border-radius:10px; padding:7px 10px;
   color:#f2f6fa; font:inherit; font-size:12px; outline:none; pointer-events:auto; }
 .sphud .chat-in:focus { border-color:#7aa2ff; }
-.sphud .chat-hint { font-size:10px; letter-spacing:.06em; color:rgba(232,238,245,.6); padding-left:2px; text-shadow:0 1px 2px rgba(0,0,0,.7); }
+.sphud .chat-hint { font-size:10.5px; letter-spacing:.06em; color:rgba(232,238,245,.75); padding:4px 8px; text-shadow:0 1px 2px rgba(0,0,0,.7);
+  background:rgba(10,14,18,.6); border:1px solid rgba(255,255,255,.12); border-radius:8px;
+  width:max-content; pointer-events:auto; cursor:pointer; user-select:none; }
+.sphud .chat-hint:hover { border-color:#7aa2ff; color:#fff; }
 .sphud .chat-hint.hidden { display:none; }
+/* T108e MICRÓFONO: botón al lado del aviso del chat (voz sincronizada en la
+ * sesión). Estados: off (gris), live (verde), muted (ámbar), denied (rojo). */
+.sphud .chat-foot { display:flex; gap:6px; align-items:center; }
+.sphud .chat-mic { width:30px; height:30px; border-radius:8px; font-size:14px; line-height:1;
+  border:1px solid rgba(255,255,255,.14); background:rgba(10,14,18,.6); color:#e8eef5;
+  pointer-events:auto; cursor:pointer; }
+.sphud .chat-mic.live { border-color:#3fae5a; box-shadow:0 0 0 1px rgba(63,174,90,.5); }
+.sphud .chat-mic.muted { border-color:#d9a53f; }
+.sphud .chat-mic.denied { border-color:#d94a3d; }
 
 /* T101 INVENTARIO DE MOCHILA: ventana con la forma del INTERIOR de la mochila
  * (tejido ocre, solapa en la boca y costura punteada). Abre al pulsar la
@@ -358,7 +370,10 @@ export class SherpaHud {
         <div class="chat-row hidden" data-e="chatRow">
           <input class="chat-in" data-e="chatIn" type="text" maxlength="140" autocomplete="off" spellcheck="false" />
         </div>
-        <div class="chat-hint hidden" data-e="chatHint"></div>
+        <div class="chat-foot">
+          <button class="chat-mic off" data-e="micBtn" type="button" title="Micrófono"></button>
+          <div class="chat-hint hidden" data-e="chatHint"></div>
+        </div>
       </div>
       <div data-e="bubbles" style="position:absolute;inset:0;overflow:hidden"></div>
       <!-- T101: ventana del INVENTARIO DE MOCHILA (abre al pulsar la mochila
@@ -420,6 +435,31 @@ export class SherpaHud {
         this.chatClose();
       }
     });
+    // T108d: el aviso del chat es TAMBIÉN un botón — si el Enter nunca llega
+    // (foco capturado por otra capa), el chat se abre por ratón igualmente.
+    this.el.chatHint!.addEventListener("click", () => { if (this.chatOn) this.chatToggle(); });
+    // T108e: el micrófono se silencia/reactiva con un clic (el arranque lo
+    // hace mount al abrirse la sesión; aquí solo conmutamos).
+    this.el.micBtn!.addEventListener("click", () => { if (this.chatOn) this.micToggleHandler?.(); });
+  }
+
+  /** T108e VOZ: pinta el estado del micrófono en el chip. */
+  micState(st: "off" | "live" | "muted" | "denied"): void {
+    const b = this.el.micBtn! as HTMLButtonElement;
+    b.className = `chat-mic ${st}`;
+    const labels: Record<string, string> = {
+      off: this.t("hud.micOff"), live: this.t("hud.micLive"),
+      muted: this.t("hud.micMuted"), denied: this.t("hud.micDenied"),
+    };
+    b.title = labels[st] ?? st;
+    b.textContent = st === "live" ? "🎙" : st === "muted" ? "🔇" : st === "denied" ? "🎙✕" : "🎙";
+  }
+
+  private micToggleHandler: (() => void) | null = null;
+
+  /** mount conecta el clic del chip con net.muteVoice. */
+  setMicToggle(fn: (() => void) | null): void {
+    this.micToggleHandler = fn;
   }
 
   t(path: string): string {
@@ -460,9 +500,10 @@ export class SherpaHud {
     // (setLimbBadges); el panel queda como etiqueta + indicador de superpoder.
     for (const key of ["p1", "p2"] as const) {
       const player = key === "p1" ? 0 : 1;
-      const color = player === 0 ? "#d97b2f" : "#2f9bd9";
+      const color = player === 0 ? "#3fae5a" : "#e05245";
+      const pname = player === 0 ? this.t("hud.player0") : this.t("hud.player1");
       this.el[key]!.innerHTML = `
-        <div class="p-title"><span><span class="p-dot" style="background:${color}"></span>${esc(this.fmt("hud.player", { n: player + 1 }))}</span><span style="opacity:.6">${esc(labels[key])}</span></div>
+        <div class="p-title"><span><span class="p-dot" style="background:${color}"></span>${esc(pname)}</span><span style="opacity:.6">${esc(labels[key])}</span></div>
         <div style="font-size:10.5px;opacity:.8;margin-top:3px"><span class="fart-ico" data-fart="${player}">💨 <b style="color:#7dff4a">${esc(this.t("hud.fartReadyShort"))}</b></span></div>`;
     }
     // insignias una por extremidad (8): creadas una sola vez, movidas cada frame.
@@ -636,8 +677,8 @@ export class SherpaHud {
       ctx.lineWidth = 3;
       ctx.beginPath(); ctx.arc(cx, cy, 9, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
     };
-    climber(m.fracA, m.xA ?? 0.5, "#d97b2f");
-    climber(m.fracB, m.xB ?? 0.5, "#2f9bd9");
+    climber(m.fracA, m.xA ?? 0.5, "#3fae5a");
+    climber(m.fracB, m.xB ?? 0.5, "#e05245");
     // borde del panel
     ctx.strokeStyle = "rgba(255,255,255,.14)";
     ctx.lineWidth = 2;
@@ -733,7 +774,7 @@ export class SherpaHud {
     const wasHidden = win.classList.contains("hidden") || this.bpkPlayer !== player;
     this.bpkPlayer = player;
     this.el.bpkTitle!.innerHTML =
-      `<span class="p-dot" style="background:${SHERPA_HEX[player]}"></span>${esc(this.fmt("hud.backpackTitle", { n: player + 1 }))}`;
+      `<span class="p-dot" style="background:${SHERPA_HEX[player]}"></span>${esc(this.fmt("hud.backpackTitle", { name: player === 0 ? this.t("net.hostName") : this.t("net.guestName") }))}`;
     this.el.bpkName!.textContent = this.t("hud.itemAnchor");
     this.el.bpkHint!.textContent = this.t("hud.backpackUse");
     this.backpackRefresh(count);
@@ -848,7 +889,7 @@ export class SherpaHud {
     row.className = "chat-msg" + (sender === this.chatMe ? " mine" : "");
     const who = document.createElement("b");
     who.style.color = SHERPA_HEX[sender];
-    who.textContent = (sender === 0 ? this.t("net.hostLabel") : this.t("net.guestLabel")) + ": ";
+    who.textContent = (sender === 0 ? this.t("net.hostName") : this.t("net.guestName")) + ": ";
     row.appendChild(who);
     row.appendChild(document.createTextNode(text));
     log.appendChild(row);
@@ -1234,4 +1275,6 @@ export class SherpaHud {
   }
 }
 
-const SHERPA_HEX = ["#d97b2f", "#2f9bd9"];
+// T108: identidad de los sherpas — P0 = VERDE (anfitrión, sherpa_verde.jpg),
+// P1 = ROJO (invitado, sherpa_rojo.jpg). Los dots/minimapa/chat los usan.
+const SHERPA_HEX = ["#3fae5a", "#e05245"];

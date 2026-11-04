@@ -49,6 +49,11 @@ const SHOO_COOLDOWN_S = 3;
 const REST_RECOVER_MULT = 3;
 const REGISTRATION_INTERVAL_TICKS = 30;
 
+/** T108 NOMBRES DE LOS SHERPAS (petición del jugador): P0 (anfitrión) = VERDE
+ *  — su ropa nueva sherpa_verde.jpg, escala por la izquierda; P1 (invitado) =
+ *  ROJO — sherpa_rojo.jpg. Los subtítulos y avisos los usan en vez de P1/P2. */
+export const sherpaName = (p: 0 | 1): string => (p === 0 ? "Verde" : "Rojo");
+
 /** T60 RED: lo que el match necesita del input. InputManager lo cumple al
  *  dedillo; en partida online lo cumple HostInputMixer (local + remoto). */
 export interface MatchInputSource {
@@ -516,7 +521,7 @@ export class SherpasMatch {
       return;
     }
     if (rig.ropeState !== "climbing") {
-      this.d.hud.subtitle(this.d.hud.fmt("hud.portableNeedClimb", { name: `P${p + 1}` }), 2.2);
+      this.d.hud.subtitle(this.d.hud.fmt("hud.portableNeedClimb", { name: sherpaName(p) }), 2.2);
       this.portableMsg(p, "hud.portableNeedClimb");
       return;
     }
@@ -586,7 +591,7 @@ export class SherpasMatch {
       return false;
     }
     if (rig.ropeState !== "climbing") {
-      this.d.hud.subtitle(this.d.hud.fmt("hud.portableNeedClimb", { name: `P${p + 1}` }), 2.2);
+      this.d.hud.subtitle(this.d.hud.fmt("hud.portableNeedClimb", { name: sherpaName(p) }), 2.2);
       this.portableMsg(p, "hud.portableNeedClimb");
       return false;
     }
@@ -642,16 +647,16 @@ export class SherpasMatch {
     if (rig.belaying) {
       rig.setBelayAnchor(false);
       this.d.audio.play("release");
-      this.d.hud.subtitle(this.d.hud.fmt("hud.coopAnchorOff", { name: `P${p + 1}` }), 2.2);
+      this.d.hud.subtitle(this.d.hud.fmt("hud.coopAnchorOff", { name: sherpaName(p) }), 2.2);
       return;
     }
     if (rig.anchorsCount() < (coop?.anchorMinGrips ?? 2) || rig.ropeState !== "climbing" || rig.dragging !== null) {
-      this.d.hud.subtitle(this.d.hud.fmt("hud.coopAnchorNeed", { name: `P${p + 1}` }), 2.2);
+      this.d.hud.subtitle(this.d.hud.fmt("hud.coopAnchorNeed", { name: sherpaName(p) }), 2.2);
       return;
     }
     rig.setBelayAnchor(true);
     this.d.audio.play("grab");
-    this.d.hud.subtitle(this.d.hud.fmt("hud.coopAnchorOn", { name: `P${p + 1}` }), 2.6);
+    this.d.hud.subtitle(this.d.hud.fmt("hud.coopAnchorOn", { name: sherpaName(p) }), 2.6);
   }
 
   /** IMPULSO: el ANCLA da un tirón al compañero — subida cinemática corta que
@@ -679,7 +684,7 @@ export class SherpasMatch {
       st.fatigue = Math.min(1, st.fatigue + cost);
     }
     this.d.audio.play("zip");
-    this.d.hud.subtitle(this.d.hud.fmt("hud.coopImpulse", { from: `P${p + 1}`, to: `P${2 - p}` }), 2.2);
+    this.d.hud.subtitle(this.d.hud.fmt("hud.coopImpulse", { from: sherpaName(p), to: sherpaName((2 - p) as 0 | 1) }), 2.2);
     return true;
   }
 
@@ -873,7 +878,7 @@ export class SherpasMatch {
       if (info.slippedByTwoHands) {
         // regla de dos manos: aviso legible + susto del ricachón (doc 6.2).
         this.d.audio.play("fall");
-        this.d.hud.subtitle(this.d.hud.fmt("hud.twoHandsFall", { name: `P${p + 1}` }), 2.8);
+        this.d.hud.subtitle(this.d.hud.fmt("hud.twoHandsFall", { name: sherpaName(p) }), 2.8);
         this.d.scene.shake(this.d.hud.wantsReduceShake ? 0.015 : 0.05);
         this.brain.panic();
         this.richScareVoice();
@@ -887,14 +892,14 @@ export class SherpasMatch {
         if (partner.belaying) {
           // CUERDA COOPERATIVA: el seguro CORTO del compañero anclado detuvo la
           // caída — el ancla TAMBIÉN paga el tirón (fatiga en sus manos).
-          this.d.hud.subtitle(this.d.hud.fmt("hud.belayCatch", { name: `P${2 - p}` }), 2.6);
+          this.d.hud.subtitle(this.d.hud.fmt("hud.belayCatch", { name: sherpaName((2 - p) as 0 | 1) }), 2.6);
           const bf = coopT?.belayCatchFatigue ?? 0.08;
           for (const h of ["hand_l", "hand_r"] as const) {
             const st = partner.states.get(h)!;
             st.fatigue = Math.min(1, st.fatigue + bf);
           }
         } else {
-          this.d.hud.subtitle(this.d.hud.fmt("hud.ropeCatch", { name: `P${p + 1}` }), 2.6);
+          this.d.hud.subtitle(this.d.hud.fmt("hud.ropeCatch", { name: sherpaName(p) }), 2.6);
         }
         this.d.scene.shake(this.d.hud.wantsReduceShake ? 0.02 : 0.055);
         // JUICE T38: chispas ámbar en la cintura — el chicote se VE agarrar.
@@ -908,13 +913,13 @@ export class SherpasMatch {
       }
       if (info.rope.haulStart) {
         // T58-E: la ventana A SACO abre — instrucciones legibles con las teclas.
-        this.d.hud.subtitle(this.d.hud.fmt("hud.ropeMash", { name: `P${p + 1}` }), 3.4);
+        this.d.hud.subtitle(this.d.hud.fmt("hud.ropeMash", { name: sherpaName(p) }), 3.4);
         this.d.bus.emit("RopeHaulStart", { playerId: p });
       }
       // T58-E: la cuerda se AGOTÓ deslizando — suelta y cae al abismo.
       if (info.rope.releasedNow) {
         this.d.audio.play("fall");
-        this.d.hud.subtitle(this.d.hud.fmt("hud.ropeReleased", { name: `P${p + 1}` }), 3.2);
+        this.d.hud.subtitle(this.d.hud.fmt("hud.ropeReleased", { name: sherpaName(p) }), 3.2);
         this.d.scene.shake(this.d.hud.wantsReduceShake ? 0.02 : 0.06);
         this.d.bus.emit("RopeReleased", { playerId: p });
         this.brain.panic();
@@ -940,7 +945,7 @@ export class SherpasMatch {
       // el ANCLA se cae sola: sin agarres o colgado no sostiene el seguro.
       if (this.sherpas[p].belaying && (this.sherpas[p].anchorsCount() === 0 || this.sherpas[p].ropeState !== "climbing")) {
         this.sherpas[p].setBelayAnchor(false);
-        this.d.hud.subtitle(this.d.hud.fmt("hud.coopAnchorLost", { name: `P${p + 1}` }), 2.2);
+        this.d.hud.subtitle(this.d.hud.fmt("hud.coopAnchorLost", { name: sherpaName(p) }), 2.2);
       }
       // PLACAS DE HIELO: aviso UNA vez por partida (luego lo aprende el cuerpo).
       if (!this.icePlateWarned) {

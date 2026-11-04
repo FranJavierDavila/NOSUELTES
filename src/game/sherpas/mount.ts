@@ -101,6 +101,43 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     if (state.guest) state.guest.requestPortablePlace(p);
     else state.match?.requestPortablePlace(p);
   });
+  // ---------- T108e CHAT DE VOZ ----------
+  // Sesión activa → micrófono ON automáticamente (ambos lados, el MISMO canal
+  // P2P que el resto). El chip del HUD silencia/reactiva; el audio remoto
+  // suena por elementos <audio> dedicados. Nada de esto toca la partida: si
+  // el permiso se rechaza, el juego sigue igual (chip en rojo, reintentable).
+  const voiceAudios: HTMLAudioElement[] = [];
+  const voiceNet = (): import("./net/netClient").NetEndpoint | null =>
+    state.hostNet ?? state.guestNet;
+  const voicePlayRemote = (stream: MediaStream): void => {
+    const a = document.createElement("audio");
+    a.srcObject = stream;
+    a.autoplay = true;
+    void a.play().catch(() => { /* autoplay bloqueado: sonará tras un gesto */ });
+    voiceAudios.push(a);
+  };
+  const startVoice = (): void => {
+    const net = voiceNet();
+    if (!net) return;
+    net.onVoiceStream = voicePlayRemote;
+    hud.micState(net.voiceState);
+    void net.enableVoice().then(() => hud.micState(net.voiceState));
+  };
+  const stopVoice = (): void => {
+    voiceNet()?.stopVoice();
+    hud.micState("off");
+    for (const a of voiceAudios.splice(0, voiceAudios.length)) {
+      a.srcObject = null;
+      a.remove();
+    }
+  };
+  hud.setMicToggle(() => {
+    const net = voiceNet();
+    if (!net) return;
+    if (net.voiceState === "live") net.muteVoice(true);
+    else void net.enableVoice().then(() => hud.micState(net.voiceState));
+    hud.micState(net.voiceState);
+  });
   // T107c CHAT ONLINE: el envío sale por el canal de la sesión activa y el
   // mensaje enviado se muestra en el log LOCAL (cada lado solo recibe los del
   // otro). Enter abre la entrada — el propio HUD la cierra al enviar (Esc).
@@ -207,6 +244,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     state.guest?.dispose(); state.guest = null;
     state.guestNet?.disconnect(); state.guestNet = null;
     hud.chatActive(false); // T107c: sesión terminada, chat fuera
+    stopVoice(); // T108e: y la voz
     // el guest montó una escena PROPIA (pared del host): volver a la local
     if (state.scene) { state.scene.dispose(); state.scene = null; }
     if (!state.disposed) {
@@ -283,6 +321,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
             state.hostNet.onGuestJoined = () => {
               hud.netStatus(hud.t("net.guestJoined"));
               hud.chatActive(true); // T107c: chat disponible en cuanto hay par
+              startVoice(); // T108e: voz sincronizada en cuanto hay par
               syncNetLocks();
               // T102: el guest puede entrar con la partida YA empezada
               publishNetSession();
@@ -290,6 +329,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
             state.hostNet.onGuestLeft = () => {
               hud.netStatus(hud.t("net.guestLeft"));
               hud.chatActive(false); // T107c: sin par, sin chat
+              stopVoice(); // T108e: sin par, sin voz
               syncNetLocks();
               state.match?.cancelRemoteDrag(); // T105: sin dueño, suelto SU drag
               stopSnapshots(); // nadie recibe ya; el host sigue con ambos (relevo)
@@ -312,6 +352,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
             state.guestNet.onSession = (p) => {
               if (!p) { void endGuestToMenu(); return; }
               hud.chatActive(true); // T107c: sesión aceptada → chat disponible
+              startVoice(); // T108e: voz sincronizada
               void beginGuest(p);
             };
             state.guestNet.onClosed = () => {
@@ -495,6 +536,11 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         if (!state.match) return false;
         state.match.remoteDrag(m as never);
         return true;
+      },
+      /** T108e VOZ: estado del canal P2P (chip + streams remotos recibidos). */
+      voiceNet: (): Record<string, unknown> | null => {
+        const net = state.hostNet ?? state.guestNet;
+        return net ? { st: net.voiceState, remote: net.remoteStreams.size, room: !!net } : null;
       },
       /** T47 SOL ORBITAL: dirección/posición del sol (E2E: el azimut sigue el
        *  yaw de la órbita y a yaw 0 restaura EXACTO). null si aún no hay luz. */

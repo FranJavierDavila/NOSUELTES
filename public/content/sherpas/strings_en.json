@@ -105,17 +105,24 @@
     "portableNoSpot": "No feasible spot for an anchor here",
     "portableNeedFree": "Release a limb to place the anchor",
     "portableNeedClimb": "{name} cannot place anchors while falling",
-    "backpackTitle": "Backpack · Player {n}",
+    "backpackTitle": "{name}'s backpack",
     "itemAnchor": "Anchor",
     "backpackUse": "Click: grab the anchor · release it with a hand on a free spot",
     "chatHint": "ENTER · CHAT (Esc closes)",
-    "chatPlaceholder": "Type and press Enter…"
+    "chatPlaceholder": "Type and press Enter…",
+    "micOff": "Microphone: starting… (click to toggle)",
+    "micLive": "Voice live — click to mute",
+    "micMuted": "Voice muted — click to unmute",
+    "micDenied": "No microphone permission — click to retry",
+    "player0": "Green Sherpa",
+    "player1": "Red Sherpa"
   },
   "limb": {
     "hand_l": "L.Hand",
     "hand_r": "R.Hand",
     "foot_l": "L.Foot",
-    "foot_r": "R.Foot"
+    "foot_r": "R.Foot",
+    "ropeMash": "{name} IS HANGING! MASH C (Green) AND N (Red) TO CLIMB THE ROPE"
   },
   "anchor": {
     "roca_firme": "firm rock",
@@ -216,8 +223,8 @@
     "connecting": "Connecting…",
     "waitingHost": "Connected. Waiting for the host to start the ascent…",
     "closed": "The session was closed (host left).",
-    "hostLabel": "HOST (orange)",
-    "guestLabel": "GUEST (blue)",
+    "hostLabel": "GREEN (host)",
+    "guestLabel": "RED (guest)",
     "hostNote": "You are the host: you play the ORANGE sherpa with the mouse. Your partner takes the BLUE one.",
     "guestNote": "You are the guest: you play the BLUE sherpa (arrows + I/O/K/L or gamepad).",
     "err": {
@@ -229,7 +236,9 @@
       "host-gone": "The host is gone.",
       "host-left": "The host is gone.",
       "host-recreated": "The host created another room."
-    }
+    },
+    "hostName": "Green",
+    "guestName": "Red"
   },
   "menu.weather": "Weather",
   "menu.weather.clear": "☀️ Clear",

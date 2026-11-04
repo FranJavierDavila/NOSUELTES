@@ -130,7 +130,7 @@ const TYPE_COLORS: Record<string, string> = {
   ice_plate: "#eaf9ff", surprise_fart: "#3fd46a",
 };
 
-const SHERPA_COLORS = [{ body: "#d97b2f", strap: "#e8542f" }, { body: "#2f9bd9", strap: "#1f6fb0" }];
+const SHERPA_COLORS = [{ body: "#3fae5a", strap: "#2f7d43" }, { body: "#e05245", strap: "#a33327" }];
 
 function mat(scene: Scene, name: string, hex: string, opts?: { alpha?: number }): StandardMaterial {
   const m = new StandardMaterial(name, scene);
@@ -1470,20 +1470,29 @@ export class SherpaScene {
   private buildSnowGroundTiles(): void {
     const S = 4.0;            // 1/10 de la escala T104, IGUAL en los 3 ejes
     const TOP_MEAN = 0.16;    // dorso medio: los valles rozan la nieve plana
-    // huella real (bbox de los GLB) × S, con solape para sellar juntas
+    // huella real (bbox de los GLB) × S. T108c — el usuario seguía viendo
+    // suelo desnudo: el solape de T106 (10-12 cm) no bastaba (el BORDE de la
+    // lámina baja por debajo de la nieve antes de llegar a su bbox) y el área
+    // 40×24 se quedaba corta hacia los laterales/fondo del pedriz. Ahora:
+    // solape generoso (35-45 cm, los bordes quedan ENTERRADOS bajo el vecino)
+    // y área 52×32 con margen; además las filas se ESCALONAN media celda
+    // (aparato de ladrillo) para que las juntas nunca queden alineadas.
     const FOOT_X = 0.7101 * S;  // 2.84 m (v1, la más ancha)
     const FOOT_Z = 1.0544 * S;  // 4.22 m (v2, la más corta en fondo)
-    const SX = FOOT_X - 0.10;
-    const SZ = FOOT_Z - 0.12;
-    const nCols = Math.ceil(40 / SX) + 1;
-    const nRows = Math.ceil(24 / SZ) + 1;
-    const x0 = -20 - ((nCols - 1) * SX - 40) / 2; // centrado: cubre de sobra ±20
-    const z0 = -12 - ((nRows - 1) * SZ - 24) / 2;
+    const SX = FOOT_X - 0.35;
+    const SZ = FOOT_Z - 0.45;
+    const AREA_X = 52;        // el suelo visible llega más allá del procedural
+    const AREA_Z = 32;
+    const nCols = Math.ceil(AREA_X / SX) + 2;
+    const nRows = Math.ceil(AREA_Z / SZ) + 2;
+    const x0 = -AREA_X / 2 - ((nCols - 1) * SX - AREA_X) / 2; // centrado, sobra margen
+    const z0 = -AREA_Z / 2 - ((nRows - 1) * SZ - AREA_Z) / 2;
     const cells: { x: number; z: number; v: 0 | 1; ry: number }[] = [];
     for (let r = 0; r < nRows; r++) {
+      const rowShift = (r % 2) * SX * 0.5; // T108c: escalonado (sin costuras alineadas)
       for (let c = 0; c < nCols; c++) {
         const alt = (r + c) % 2 === 1;
-        cells.push({ x: x0 + c * SX, z: z0 + r * SZ, v: alt ? 1 : 0, ry: alt ? Math.PI : 0 });
+        cells.push({ x: x0 + c * SX + rowShift, z: z0 + r * SZ, v: alt ? 1 : 0, ry: alt ? Math.PI : 0 });
       }
     }
     // dorso medio medido en T104 (y local): v1 +0.044, v2 −0.002 → los valles
@@ -3039,10 +3048,13 @@ export class SherpaScene {
         cfg.tint[player] ?? "#ffffff", // tinte de JUNTAS/CORREAS (el cuerpo conserva su arte)
         (m) => this.castShadow(m),
         (m) => { this.rockFill?.includedOnlyMeshes.push(m); }, // T44: relleno frío para el PBR
-        // T79 — el SEGUNDO sherpa (P1) lleva el mapa de ropa ROJO del jugador
-        // (upload → public/models/sherpas/sherpa_rojo.jpg): se distinguen de
-        // un vistazo; P0 conserva el arte original.
-        player === 1 ? { bodyTexture: assetUrl("/models/sherpas/sherpa_rojo.jpg") } : undefined,
+        // T79+T108 — MAPAS DE ROPA POR JUGADOR (assets del usuario en
+        // public/models/sherpas/): P1 = sherpa ROJO (el invitado) y P0 =
+        // sherpa VERDE (el anfitrión, el que escala por la IZQUIERDA; antes
+        // conservaba el arte original del GLB). Se distinguen de un vistazo.
+        player === 1
+          ? { bodyTexture: assetUrl("/models/sherpas/sherpa_rojo.jpg") }
+          : { bodyTexture: assetUrl("/models/sherpas/sherpa_verde.jpg") },
       );
     } catch (err) {
       this.climberState = "error";

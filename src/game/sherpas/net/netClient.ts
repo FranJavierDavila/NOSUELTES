@@ -60,7 +60,9 @@ export interface NetAck { ok: boolean; code?: string; error?: string }
  *  construía: el host lo reenvía). */
 type CtlMsg = { join?: boolean; ack?: boolean; bye?: string; ready?: boolean };
 
-abstract class NetEndpoint {
+/** Base común HOST/GUEST: sala, estado y — T108e — el canal de voz (micrófono
+ *  propio emitido por P2P + streams remotos). */
+export abstract class NetEndpoint {
   protected room: Room | null = null;
   status: NetStatus = "off";
   code = "";
@@ -75,15 +77,115 @@ abstract class NetEndpoint {
   }
 
   disconnect(): void {
+    this.stopVoice();
     if (this.room) void this.room.leave();
     this.room = null;
     this.status = "off";
     this.code = "";
   }
+
+  // ---------- T108e CHAT DE VOZ (bidireccional, mismo canal P2P) ----------
+
+  /** MediaStream del micrófono local (null = sin pedir / sin permiso). */
+  protected micStream: MediaStream | null = null;
+  /** estado para el chip del HUD: off = sin pedir, live = emitiendo,
+   *  muted = conectado pero silenciado, denied = permiso rechazado. */
+  voiceState: "off" | "live" | "muted" | "denied" = "off";
+  /** streams de audio REMOTOS recibidos (uno por peer). */
+  readonly remoteStreams = new Set<MediaStream>();
+  /** pares a los que YA emitimos el mic (dedupe: addTrack dos veces con el
+   *  mismo track lanza "sender already exists"). */
+  private voiceSentPeers = new Set<string>();
+
+  /** Instala los handlers de voz (se llama desde enableVoice: instalarlos en
+   *  create()/join() era innecesario y el handler-setter único de trystero
+   *  hizo peligrar el handshake del guest — revertido en el E2E T108d). */
+  protected installVoiceHandlers(): void {
+    if (!this.room) return;
+    this.room.onPeerJoin((peerId) => {
+      if (this.micStream && this.voiceState !== "off") this.sendMicTo(peerId);
+    });
+    this.room.onPeerStream((stream) => {
+      if (stream.getAudioTracks().length && !this.remoteStreams.has(stream)) {
+        this.remoteStreams.add(stream);
+        this.onVoiceStream(stream);
+      }
+    });
+  }
+
+  /** Emite el mic a UN par una sola vez (y reintenta si trystero lanzó). */
+  private sendMicTo(peerId: string): void {
+    if (!this.room || !this.micStream || this.voiceSentPeers.has(peerId)) return;
+    try {
+      void this.room.addStream(this.micStream, peerId);
+      this.voiceSentPeers.add(peerId);
+    } catch {
+      // canal aún negociando: al reintentar de onPeerJoin/enableVoice se limpia
+      this.voiceSentPeers.delete(peerId);
+    }
+  }
+
+  /** Pide el micrófono y lo emite a los peers actuales (y a los que entren
+   *  después, vía onPeerJoin). idempotente. true si quedó emitiendo. */
+  async enableVoice(): Promise<boolean> {
+    if (this.voiceState === "live") return true;
+    if (!this.micStream) {
+      try {
+        this.micStream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          video: false,
+        });
+      } catch {
+        this.voiceState = "denied";
+        return false;
+      }
+    }
+    this.micStream.getAudioTracks().forEach((t) => { t.enabled = true; });
+    this.voiceState = "live";
+    if (this.room) {
+      this.installVoiceHandlers();
+      const emit = (): void => {
+        if (this.micStream && this.voiceState !== "off" && this.room) {
+          for (const id of Object.keys(this.room.getPeers())) this.sendMicTo(id);
+        }
+      };
+      // T108e: retardo de emisión (host) — el guest registra sus handlers en
+      // SU onSession, un viaje DC después del onGuestJoined del host; sin
+      // margen, el stream del anfitrión llegaba antes de que el invitado
+      // escuchara (remote:0 del E2E).
+      if (this.emitDelayMs > 0) window.setTimeout(emit, this.emitDelayMs);
+      else emit();
+    }
+    return true;
+  }
+
+  /** retardo antes de emitir el mic (ms). El HOST lo fija a 3000. */
+  protected emitDelayMs = 0;
+
+  /** Silenciar/reactivar el micrófono SIN renegociar (track.enabled). */
+  muteVoice(muted: boolean): void {
+    if (this.micStream) {
+      this.micStream.getAudioTracks().forEach((t) => { t.enabled = !muted; });
+      this.voiceState = muted ? "muted" : "live";
+    }
+  }
+
+  /** Corta la voz y libera el micrófono (al salir de la sesión). */
+  stopVoice(): void {
+    this.micStream?.getTracks().forEach((t) => t.stop());
+    this.micStream = null;
+    this.remoteStreams.clear();
+    this.voiceSentPeers.clear();
+    this.voiceState = "off";
+  }
+
+  /** mount conecta aquí la reproducción del audio remoto. */
+  onVoiceStream: (stream: MediaStream) => void = () => { };
 }
 
 /** HOST: crea la sala, publica snapshots y recibe el input del guest. */
 export class HostNet extends NetEndpoint {
+  protected override emitDelayMs = 3000; // T108e: margen para los handlers del guest
   /** buffer que el mixer del match drena en cada poll (jugador 2 remoto). */
   readonly remote = new RemoteIntentBuffer();
   hasGuest = false;

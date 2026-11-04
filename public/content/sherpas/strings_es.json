@@ -105,17 +105,24 @@
     "portableNoSpot": "Aquí no hay sitio factible para un anclaje",
     "portableNeedFree": "Suelta una extremidad para colocar el anclaje",
     "portableNeedClimb": "{name} no puede colocar anclajes colgado en caída",
-    "backpackTitle": "Mochila · Jugador {n}",
+    "backpackTitle": "Mochila de {name}",
     "itemAnchor": "Anclaje",
     "backpackUse": "Clic: coges el anclaje · suéltalo con la mano en un hueco libre",
     "chatHint": "ENTER · CHAT (Esc cierra)",
-    "chatPlaceholder": "Escribe y pulsa Enter…"
+    "chatPlaceholder": "Escribe y pulsa Enter…",
+    "micOff": "Micrófono: activando… (clic para conmutar)",
+    "micLive": "Voz activa — clic para silenciar",
+    "micMuted": "Voz silenciada — clic para activar",
+    "micDenied": "Sin permiso de micrófono — clic para reintentar",
+    "player0": "Sherpa Verde",
+    "player1": "Sherpa Rojo"
   },
   "limb": {
     "hand_l": "M.Izq",
     "hand_r": "M.Der",
     "foot_l": "P.Izq",
-    "foot_r": "P.Der"
+    "foot_r": "P.Der",
+    "ropeMash": "¡{name} COLGADO! PULSAD C (Verde) Y N (Rojo) A SACO PARA TREPARLA"
   },
   "anchor": {
     "roca_firme": "roca firme",
@@ -216,8 +223,8 @@
     "connecting": "Conectando…",
     "waitingHost": "Conectado. Esperando a que el anfitrión empiece la ascensión…",
     "closed": "La sesión se ha cerrado (el anfitrión salió).",
-    "hostLabel": "ANFITRIÓN (naranja)",
-    "guestLabel": "INVITADO (azul)",
+    "hostLabel": "VERDE (anfitrión)",
+    "guestLabel": "ROJO (invitado)",
     "hostNote": "Eres el anfitrión: juegas al sherpa NARANJA con el ratón. Tu compañero lleva el AZUL.",
     "guestNote": "Eres el invitado: juegas el sherpa AZUL (flechas + I/O/K/L o mando).",
     "err": {
@@ -229,7 +236,9 @@
       "host-gone": "El anfitrión se ha ido.",
       "host-left": "El anfitrión se ha ido.",
       "host-recreated": "El anfitrión creó otra sala."
-    }
+    },
+    "hostName": "Verde",
+    "guestName": "Rojo"
   },
   "menu.weather": "Clima",
   "menu.weather.clear": "☀️ Despejado",

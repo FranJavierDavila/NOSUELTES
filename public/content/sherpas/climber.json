@@ -4,8 +4,8 @@
   "model": "/models/sherpa.glb",
   "turnDeg": 0,
   "tint": [
-    "#e8542f",
-    "#2f9bd9"
+    "#3f9e57",
+    "#d94a3d"
   ],
   "richModel": "/models/rico.glb"
 }
