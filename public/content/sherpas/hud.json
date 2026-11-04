@@ -33,8 +33,8 @@
     "showNarrativeHeight": true
   },
   "anchorTypeColors": {
-    "rock_firm": "#8d99ae",
-    "rock_loose": "#b08968",
+    "rock_firm": "#c48a6f",
+    "rock_loose": "#a86848",
     "ice": "#9ad1e8",
     "ice_thin": "#d0f4f7",
     "snow": "#f3f7f4",

@@ -739,7 +739,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
           rich?: { setGesture(kind: string, time: number): void; gesture: string; gesturePin: string | null };
           simTime?: number;
         } | null;
-        const VALIDAS = ["ninguno", "dormitando", "insultando", "comiendo", "tirando_basura", "aplaudiendo", "brindando", "mirando", "pataleando", "durmiendo", "bailando", "leyendo", "telefono", "exaltado"];
+        const VALIDAS = ["ninguno", "dormitando", "insultando", "comiendo", "tirando_basura", "aplaudiendo", "brindando", "mirando", "pataleando", "durmiendo", "bailando", "leyendo", "telefono", "exaltado", "contando", "senialando", "pose_poder", "selfie", "reloj", "risa"];
         if (!m?.rich || !VALIDAS.includes(g)) return false;
         m.rich.gesturePin = pin ? (g as typeof m.rich.gesturePin) : null;
         m.rich.setGesture(g, m.simTime ?? 0); // la MISMA base de tiempo del match

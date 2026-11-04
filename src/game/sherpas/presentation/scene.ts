@@ -112,9 +112,6 @@ import {
   cabinBoulderRing, computeGroundTint, resolveGroundTintCfg, scatterDrifts,
   type GroundTintCtx,
 } from "../world/groundTint"; // T98: suelo alpino integrado (nieve+hielo+piedra)
-import {
-  buildSideMassifGeometry, resolveSideMassifCfg, type SideMassifCfg,
-} from "../world/sideMassif"; // T62: macizos naturales (cortinas desplazadas)
 import { generateRopeColor, generateRopeNormalRGBA } from "../world/ropeTexture"; // T62: cuerda con bandas
 import { generateWoodColor, generateWoodNormalRGBA } from "../world/woodTexture"; // T62: madera del tablón
 import {
@@ -125,7 +122,9 @@ interface Bone { a: number; b: number; mesh: Mesh; rest: number; offY?: number }
 interface RigVisual { bones: Bone[]; head: Mesh; roots: Mesh[] }
 
 const TYPE_COLORS: Record<string, string> = {
-  rock_firm: "#8d99ae", rock_loose: "#b08968", ice: "#9ad1e8",
+  // T111 — roca FIRME y SUELTA en la familia TERRACOTA del muro (#bd7e6e):
+  // los agarres nacen de la misma piedra que se escala (antes destonaban).
+  rock_firm: "#c48a6f", rock_loose: "#a86848", ice: "#9ad1e8",
   ice_thin: "#d0f4f7", snow: "#f3f7f4", ice_urine: "#d9e8a3",
   ice_plate: "#eaf9ff", surprise_fart: "#3fd46a",
 };
@@ -837,6 +836,17 @@ export class SherpaScene {
   setWind(dir: number, level: number, dt = 1 / 60): void {
     this.plantWind?.setWindState(dir, level); // T55: las matas también lo sienten
     this.flagWind?.setWindState(dir, level); // T56: los banderines de la cabaña
+    // T111 — el HUMO de la chimenea lo empuja la MISMA racha: gravity.x es
+    // fuerza lateral viva sobre TODAS las partículas (la columna se dobla
+    // entera con la racha); entre rachas una brisa suave lo mece.
+    if (this.chimneySmoke) {
+      const t = Date.now() / 1000;
+      const breeze = 0.09 * Math.sin(t * 0.45) + 0.05 * Math.sin(t * 1.27);
+      const sgn = Math.sign(dir) || 1;
+      this.chimneySmoke.gravity.set(sgn * level * 1.8 + breeze, 0.07, 0.03 * Math.sin(t * 0.8));
+      this.chimneySmoke.direction1.x = -0.05 + sgn * level * 0.35 + breeze * 0.4;
+      this.chimneySmoke.direction2.x = 0.09 + sgn * level * 0.55 + breeze * 0.4;
+    }
     const cam = this.camera.position;
     // nieve ambiental: deriva lateral con la racha (ventisca)
     const on = level > 0.02;
@@ -969,7 +979,11 @@ export class SherpaScene {
     // respirando: el techo del relieve natural (zCeilM) manda ENTRE anclajes.
     const bodyBack = this.rockCtx ? this.rockCtx.style.bodyBackM : 0;
     // T61: cuerpo del muro en PBR (el albedo plano + HDRI sustituyen al lambert)
-    const rock = matPBR(this.scene, "rock", rc ? rc.backColor : "#3c4652", { rough: 0.95 });
+    // T111 — PARED DE RESPALDO: el cuerpo tras el muro paramétrico, si algún
+    // día se asoma (grietas profundas, canto, órbita), es NIEVE (petición:
+    // «blanquecino con tonalidades azuladas») — nunca el gris azulado oscuro
+    // de antes, que leía como cemento.
+    const rock = matPBR(this.scene, "rock", rc ? rc.backColor : "#e7edf6", { rough: 0.95 });
     // PERF (60 FPS): la roca estática se FUNDE en un mesh por material — 1 draw
     // call y 1 renderizador de aristas en vez de uno por bloque (con ~12
     // entrantes eran 50+ mallas × 2 pasadas). El merge hornea las matrices y
@@ -1170,129 +1184,47 @@ export class SherpaScene {
     // T61 — MACIZOS LATERALES: sella los huecos que quedaban A LOS LADOS de la
     // pared (al orbitar a ±75° se veía el vacío tras el canto de la pared: la
     // montaña continúa a ambos lados). Ver abajo; sonda E2E en getBaseCampInfo.
-    this.buildSideMassifs(wallW / 2, wallFaceZ, wallTop);
+    // T111 — FUERA los dos bloques en forma de columna (petición del jugador,
+    // marcados con X en la captura: «ahora que hemos extendido la pared no
+    // tiene mucho sentido»): los cortinas laterales desaparecen y queda solo
+    // la PARED DE RESPALDO nevada detrás (ver buildSideBackdrop).
+    this.buildSideBackdrop(wallW / 2, wallFaceZ, wallTop);
   }
 
-  /** T62 — MACIZOS LATERALES NATURALES (petición del jugador: las piezas T61
-   *  "parecen dos columnas, quitarlas" y "el relleno hacia los laterales que
-   *  tenga la misma textura… con un poco de desplazamiento"). FUERA cajas y
-   *  contrafuertes: ahora cada lado es UNA CORTINA DE ROCA continua (módulo
-   *  puro sideMassif.ts) que nace enterrada en el muro, con DESPLAZAMIENTO
-   *  real por vértice, cresta que decae hacia fuera y repliegue que envuelve
-   *  el canto hacia atrás. MISMO material que faldones/pedriz (pedriza +
-   *  estratos triplanar en espacio mundo) y MISMAS UVs de mundo: toda la
-   *  familia lateral se lee como UNA montaña. La tapa trasera se queda
-   *  (vista libre alta). Sonda E2E en getBaseCampInfo. */
-  private buildSideMassifs(halfW: number, faceZ: number, topY: number): void {
-    // T110 — MATERIAL PARAMÉTRICO DEL MURO (petición: «las paredes que
-    // flanquean a ambos lados el muro de escalada están muy feas o se mejoran
-    // o las metes también con el mismo material paramétrico del muro de
-    // escalada para homogenizar todo»): los laterales dejan la pedriza y pasan
-    // a hornearse con EL MISMO módulo rockwall que la pared (diaclasas +
-    // estratos + tinte rojizo). La pedriza se queda para pedriz/faldones,
-    // que sí deben parecer el suelo de grava.
+  /** T111 — PARED DE RESPALDO NEVADA (petición: «si en algún momento la pared
+   *  de respaldo que queda detrás del muro paramétrico se ve, que sea de
+   *  color blanquecino con tonalidades azuladas para simular nieve»). Sustituye
+   *  a los macizos laterales (T62, fuera por columna): una única lámina ancha
+   *  detrás del muro que cierra la vista por detrás/al orbitar — SIEMPRE
+   *  blanquecina azulada, con tinte por vértice suave (variación + AO al pie)
+   *  para que no lea como un plano linterna. La nevada T62 sigue aplicando
+   *  encima (massifSnow). Sonda E2E: massifTris = triángulos del respaldo. */
+  private buildSideBackdrop(halfW: number, faceZ: number, topY: number): void {
     const baseMat = this.ensureBaseRockMaterial();
-    const massifMat = this.ensureMassifRockMaterial();
-    const rawCfg = ((this.reliefRaw as { sideMassif?: unknown } | null)?.sideMassif
-      ?? (this.reliefRaw as { baseCamp?: unknown; sideMassif?: unknown } | null)?.sideMassif) as unknown;
-    const cfg: SideMassifCfg = resolveSideMassifCfg(rawCfg);
-    const curtains: Mesh[] = [];
-    for (const dir of [-1, 1] as const) {
-      const g = buildSideMassifGeometry(dir, {
-        ...cfg,
-        innerM: halfW - 0.35, // enterrado en el muro: sin rendija
-        outerM: halfW + 7.4,
-        faceZ,
-        yTop: topY + 8,
-      });
-      const curtain = this.geomToMesh(`sideMassifCurtain${dir}`, g);
-      this.applyMassifTileUvs(curtain); // UVs de mundo en metros de loseta
-      curtain.material = massifMat;
-      curtain.receiveShadows = true;
-      curtain.freezeWorldMatrix();
-      curtains.push(curtain);
-    }
-    const merged = Mesh.MergeMeshes(curtains, true, true, undefined, false, false)!;
-    merged.name = "sideMassifs";
-    merged.material = massifMat;
-    merged.receiveShadows = true;
-    merged.freezeWorldMatrix();
-    this.baseCampStats.massifTris = Math.round(merged.getTotalIndices() / 3);
-    // T62: la NEVADA blanquea también el macizo (base restaurable al despejar)
-    this.massifSnow = { mesh: merged, base: null };
-    // TAPA TRASERA: cierra la vista por detrás de la pared (vista libre alta).
-    // Se queda con la pedriza: solo se ve desde atrás, nunca en el encuadre.
+    const width = (halfW + 7.4) * 2;
     const height = topY + 8;
-    const back = MeshBuilder.CreateBox("massifBack", { width: (halfW + 7.4) * 2, height: height + 2, depth: 2.6 }, this.scene);
+    const back = MeshBuilder.CreateBox("massifBack", { width, height: height + 2, depth: 2.6 }, this.scene);
     back.position.set(0, (height + 2) / 2 - 2, 5.2);
-    back.setVerticesData(VertexBuffer.ColorKind, new Float32Array(back.getTotalVertices() * 4).fill(1));
+    // BLANCO AZULADO (nieve en sombra): base casi blanca con variación fría
+    // por vértice y AO suave al pie — nunca un plano plano.
+    const n = back.getTotalVertices();
+    const col = new Float32Array(n * 4);
+    const pos = back.getVerticesData(VertexBuffer.PositionKind) ?? [];
+    for (let v = 0; v < n; v++) {
+      const x = pos[v * 3]!, y = pos[v * 3 + 1]!;
+      const vary = 1 + 0.05 * Math.sin(x * 0.9 + y * 0.5) + 0.03 * Math.sin(y * 1.7 - x * 0.4);
+      const foot = 1 - 0.12 * Math.max(0, Math.min(1, (2.4 - y) / 2.4)); // AO al pie
+      col[v * 4] = 0.97 * vary * foot;      // R
+      col[v * 4 + 1] = 0.985 * vary * foot; // G (por encima de R: frío)
+      col[v * 4 + 2] = 1.04 * vary * foot;  // B (azulado: nieve)
+      col[v * 4 + 3] = 1;
+    }
+    back.setVerticesData(VertexBuffer.ColorKind, col);
     back.receiveShadows = true;
     back.material = baseMat;
     back.freezeWorldMatrix();
-  }
-
-  /** T110 — UVs de la loseta de roca sobre un macizo: u = x/tile, v =
-   *  (0,7y+0,7z)/tile (la misma proyección de mundo que traían, reescalada al
-   *  tamaño de loseta horneada — 6,4 m — para que la piedra caiga a escala). */
-  private applyMassifTileUvs(mesh: Mesh): void {
-    const TILE_M = 6.4;
-    const pos = mesh.getVerticesData(VertexBuffer.PositionKind);
-    if (!pos) return;
-    const uv = new Float32Array((pos.length / 3) * 2);
-    for (let i = 0, j = 0; i < pos.length; i += 3, j += 2) {
-      const x = pos[i]!, y = pos[i + 1]!, z = pos[i + 2]!;
-      uv[j] = x / TILE_M;
-      uv[j + 1] = (y * 0.7 + z * 0.7) / TILE_M;
-    }
-    mesh.setVerticesData(VertexBuffer.UVKind, uv);
-  }
-
-  /** T110 — HORNADO COMPARTIDO de loseta rockwall para los macizos: EL MISMO
-   *  módulo que la pared (sampleRegion con el estilo del pack, sin anclajes
-   *  ni salientes) sobre una región genérica de 6,4×6,4 m. Misma hornada que
-   *  los chunks → misma piedra, mismas diaclasas, mismo tinte. */
-  private massifRockMat: PBRMaterial | null = null;
-  private ensureMassifRockMaterial(): PBRMaterial {
-    if (this.massifRockMat) return this.massifRockMat;
-    const style = rockwallStyleFromData((this.reliefRaw as { rockwall?: Partial<RockwallStyle> } | null)?.rockwall ?? null);
-    const res = generateChunk({
-      seed: (ROCKWALL_SEED ^ 0x51a7) >>> 0,
-      cell: 6.4 / 512, // 512 px → 6,4 m (detalle ~1,25 cm/px, como los chunks)
-      W: 512, H: 512,
-      origin: { x: 40, y: 260 }, // región genérica: sin presas ni salientes
-      style,
-    });
-    const m = new PBRMaterial("massifRockM", this.scene);
-    const cm = RawTexture.CreateRGBATexture(res.colorMap, res.W, res.H, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
-    cm.wrapU = Texture.WRAP_ADDRESSMODE;
-    cm.wrapV = Texture.WRAP_ADDRESSMODE;
-    cm.anisotropicFilteringLevel = 4;
-    m.albedoTexture = cm;
-    const nmt = RawTexture.CreateRGBATexture(res.normalMap, res.W, res.H, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
-    nmt.wrapU = Texture.WRAP_ADDRESSMODE;
-    nmt.wrapV = Texture.WRAP_ADDRESSMODE;
-    nmt.anisotropicFilteringLevel = 4;
-    m.bumpTexture = nmt;
-    m.bumpTexture.level = 1.05;
-    m.albedoColor = new Color3(1.05, 0.85, 0.74); // EL MISMO tinte del muro
-    m.metallic = 0;
-    m.roughness = 0.93;
-    m.backFaceCulling = false; // los faldones/cortinas se ven por detrás al orbitar
-    const strata = this.ensureStrataTexture();
-    if (strata) {
-      const plugin = new TriPlanarStrataPlugin(m);
-      plugin.configure(strata, this.strataCfg?.scale ?? 0.6, this.strataCfg?.strength ?? 0.5, 0.24);
-      this.strataPlugins.push(plugin);
-    }
-    const clima = this.ensureClimateTextures();
-    if (clima) {
-      const plugin = new ClimateRockPlugin(m);
-      plugin.configure(clima.fields, clima.normal, clima.scale, clima.strength, clima.freezeY);
-      this.climaPlugins.push(plugin);
-    }
-    if (this.strataPlugins.length || this.climaPlugins.length) this.refreshMaterialUboLayout(m);
-    this.massifRockMat = m;
-    return m;
+    this.baseCampStats.massifTris = Math.round(back.getTotalIndices() / 3);
+    this.massifSnow = { mesh: back, base: null };
   }
 
   // ---------- T56 BASE CAMP: pedriz + faldones + cabaña sherpa ----------
@@ -1308,7 +1240,7 @@ export class SherpaScene {
   // fuera de la línea de caída (el ricachón aterriza en x≈0.8..1.7, z≈-1.2).
   // El pie derecho se apoya contra el faldón (abombadera x≥3.2): campamento
   // arrimado a la roca, sin huecos flotantes. Giro π: la cara del GLB a cámara.
-  private static readonly BASE_POS = { x: 4.8, z: -2.9, ry: Math.PI, scale: 5.2 }; // T90: campamento GLB · T93 pegado a la pared
+  private static readonly BASE_POS = { x: 4.8, z: -2.9, ry: Math.PI + Math.PI / 4, scale: 5.2 }; // T90: campamento GLB · T93 pegado a la pared · T111: giro HORARIO 45° (la puerta casi frontal a cámara; verificado con primer plano)
 
   /** VertexData de un GeomData puro (baseCamp.ts) → malla de Babylon. */
   private geomToMesh(name: string, g: GeomData): Mesh {
@@ -1497,6 +1429,26 @@ export class SherpaScene {
     return m;
   }
 
+  /** T111 — MATERIAL ROJIZO DE LAS PRESAS (petición: «los agarres de la pared
+   *  ahora desentonan un poco al no ser rojizos»): el mismo horno que la roca
+   *  base (pedriza + normales) pero con el TINTE TERRACOTA DEL MURO
+   *  (1,14/0,76/0,62 = la piedra #bd7e6e de los suelos nevados) — la presa
+   *  nace de la misma roca que escala, no de la grava del suelo. */
+  private holdRockMat: PBRMaterial | null = null;
+  private ensureHoldRockMaterial(): PBRMaterial {
+    if (this.holdRockMat) return this.holdRockMat;
+    const base = this.ensureBaseRockMaterial();
+    const m = new PBRMaterial("holdRockM", this.scene);
+    m.albedoTexture = base.albedoTexture ?? null;
+    m.albedoColor = new Color3(1.14, 0.76, 0.62); // EL MISMO tinte terracota del muro
+    m.metallic = 0;
+    m.roughness = 0.9;
+    m.bumpTexture = base.bumpTexture ?? null;
+    m.bumpTexture!.level = 0.9;
+    this.holdRockMat = m;
+    return m;
+  }
+
   /** T90 — BASE CAMP del jugador (public/models/base.glb): sustituye a la
    *  cabaña paramétrica de T56. El GLB (nodo único de Tripo con rotación X+90
    *  propia) apoya en su origen: y∈[0, 0.55] y huella ~1×1 m en unidades
@@ -1592,36 +1544,39 @@ export class SherpaScene {
       });
   }
 
-  /** T110 — HUMO DE LA CHIMENEA BIEN VISIBLE (petición: «prácticamente no se
-   *  aprecia»): columnita GRIS CLARA que nace DENTRO del tubo (así sale de la
-   *  boca, no flotando), sube creciendo y se disipa. Emisión generosa
-   *  (~20 part/s) con gradiente de tamaño y opacidad que se lee a distancia. */
+  /** T111 — HUMO LENTO, CONTINUO y EMPUJADO POR EL VIENTO (petición: «debe
+   *  salir de forma lenta pero continua más realista, y si tenemos rachas de
+   *  viento es empujada por el viento»; antes subía como un cohete por la
+   *  gravedad +y). Nace justo EN la boca del tubo, asciende despacio
+   *  (~0,35-0,6 m/s, el humo real), crece y se disipa. La RACHA lo dobla en
+   *  vivo: setWind escribe gravity.x (fuerza lateral sobre TODAS las
+   *  partículas vivas — la columna entera se curva) y la deriva de las
+   *  nuevas; entre rachas una brisa suave lo mece. */
   private startChimneySmoke(worldPos: Vector3): void {
     if (!this.scene || this.chimneySmoke) return;
-    const ps = new ParticleSystem("chimenea", 90, this.scene);
+    const ps = new ParticleSystem("chimenea", 170, this.scene);
     ps.particleTexture = this.fxTexture;
-    ps.emitter = worldPos.clone().subtract(new Vector3(0, 0.18, 0)); // dentro del tubo
-    ps.minEmitBox = new Vector3(-0.09, 0, -0.09);
-    ps.maxEmitBox = new Vector3(0.09, 0.14, 0.09);
-    ps.color1 = new Color4(0.93, 0.93, 0.95, 0.62);
-    ps.color2 = new Color4(0.82, 0.83, 0.87, 0.5);
-    ps.colorDead = new Color4(0.9, 0.91, 0.95, 0);
-    ps.minSize = 0.26; ps.maxSize = 0.5;
-    ps.minLifeTime = 3.0; ps.maxLifeTime = 5.2;
-    ps.emitRate = 20;
+    ps.emitter = worldPos.clone().subtract(new Vector3(0, 0.07, 0)); // EN la boca
+    ps.minEmitBox = new Vector3(-0.05, 0, -0.05);
+    ps.maxEmitBox = new Vector3(0.05, 0.07, 0.05);
+    ps.minSize = 0.16; ps.maxSize = 0.3;
+    ps.minLifeTime = 4.4; ps.maxLifeTime = 7.0;
+    ps.emitRate = 18; // hilo CONTINUO: siempre hay humo saliendo
     ps.blendMode = ParticleSystem.BLENDMODE_STANDARD;
-    // deriva de viento (+x) y ascensión; crece al subir (gradiente de tamaño)
-    ps.direction1 = new Vector3(0.08, 1.0, -0.05);
-    ps.direction2 = new Vector3(0.26, 1.55, 0.09);
-    ps.minEmitPower = 0.4; ps.maxEmitPower = 0.85;
-    ps.gravity = new Vector3(0, 0.35, 0);
-    ps.addSizeGradient(0, 0.2);
-    ps.addSizeGradient(0.4, 0.5);
-    ps.addSizeGradient(1, 1.05);
-    ps.addColorGradient(0, new Color4(0.88, 0.89, 0.93, 0.0));
-    ps.addColorGradient(0.14, new Color4(0.93, 0.93, 0.96, 0.6));
-    ps.addColorGradient(0.65, new Color4(0.85, 0.86, 0.9, 0.34));
-    ps.addColorGradient(1, new Color4(0.92, 0.93, 0.97, 0));
+    // ascenso LENTO y constante (~0,4-0,6 m/s: el humo real, nada de cohete)
+    ps.direction1 = new Vector3(-0.05, 0.62, -0.04);
+    ps.direction2 = new Vector3(0.09, 0.95, 0.07);
+    ps.minEmitPower = 0.6; ps.maxEmitPower = 1.0;
+    ps.gravity = new Vector3(0, 0.07, 0); // flotación leve: sigue subiendo sin acelerar
+    ps.updateSpeed = 0.011; // integración fina (el humo no va a saltos)
+    // gradiente: nace densa en la boca, crece al subir y muere transparente
+    ps.addSizeGradient(0, 0.18);
+    ps.addSizeGradient(0.35, 0.44);
+    ps.addSizeGradient(1, 1.2);
+    ps.addColorGradient(0, new Color4(0.9, 0.9, 0.93, 0));
+    ps.addColorGradient(0.08, new Color4(0.9, 0.9, 0.93, 0.52));
+    ps.addColorGradient(0.55, new Color4(0.85, 0.86, 0.9, 0.3));
+    ps.addColorGradient(1, new Color4(0.9, 0.92, 0.96, 0));
     ps.start();
     this.chimneySmoke = ps;
   }
@@ -3117,9 +3072,9 @@ export class SherpaScene {
     merged.isVisible = false;
     merged.receiveShadows = true;
     if (holdUsesWallRock(type)) {
-      // MISMA piedra que el muro (UV de mundo: continuidad total de textura);
-      // el tinte por vértice porta la identificación del tipo.
-      merged.material = this.ensureBaseRockMaterial();
+      // T111 — MISMA FAMILIA ROJIZA que el muro (tinte terracota); el tinte
+      // por vértice de la receta porta la identificación del tipo.
+      merged.material = this.ensureHoldRockMaterial();
     } else {
       const m = matPBR(this.scene, `holdM_${key}`, typeHex, { rough: rec.rough, alpha: rec.alpha < 1 ? rec.alpha : undefined });
       if (rec.emissive) m.emissiveColor = new Color3(rec.emissive[0], rec.emissive[1], rec.emissive[2]);

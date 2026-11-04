@@ -220,6 +220,19 @@ export function desiredRichMood(ctx: RichMoodCtx): RichMood {
     ctx.state === "aplaudiendo" || ctx.gesture === "aplaudiendo" ||
     ctx.state === "durmiendo" || ctx.state === "dormitando"
   ) return "alegre";
+  // 7b. T111 — LAS GRACIAS NUEVAS VISTEN CARA: soberbia contando fajos, la
+  //     pose de poder y la burla; alegría la carcajada y el selfie;
+  //     impaciencia (dudoso) al mirar el reloj de oro.
+  if (
+    ctx.gesture === "contando" || ctx.state === "contando" ||
+    ctx.gesture === "pose_poder" || ctx.state === "pose_poder" ||
+    ctx.gesture === "senialando" || ctx.state === "senialando"
+  ) return "soberbia";
+  if (
+    ctx.gesture === "risa" || ctx.state === "risa" ||
+    ctx.gesture === "selfie" || ctx.state === "selfie"
+  ) return "alegre";
+  if (ctx.gesture === "reloj" || ctx.state === "reloj") return "dudoso";
   // 8. DUDOSO: leyendo/teléfono/mirando y el reposo por defecto — este rico
   //    no se fía ni de su propia tabla.
   return "dudoso";

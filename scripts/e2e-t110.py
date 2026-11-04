@@ -150,15 +150,17 @@ try:
           return { name: ps.name, x: +e.x.toFixed(2), y: +e.y.toFixed(2), z: +e.z.toFixed(2) };
         })()""", tries=4)
         # boca de chimenea esperada (3.81, ~5.1, −2.43) ± tolerancia
-        ok_pos = bool(emitter and abs(emitter["x"] - 3.81) < 0.25 and abs(emitter["z"] + 2.43) < 0.3 and 4.5 < emitter["y"] < 5.6)
-        check("F2c) emisor del humo EN LA BOCA de la chimenea (3.81,~5.1,−2.43)", ok_pos, f"emitter={emitter}")
+        ok_pos = bool(emitter and abs(emitter["x"] - 4.43) < 0.3 and abs(emitter["z"] + 1.87) < 0.35 and 4.5 < emitter["y"] < 5.6)
+        check("F2c) emisor del humo EN LA BOCA de la chimenea girada (4.43,~5.1,−1.87)", ok_pos, f"emitter={emitter}")
         massif_mat = probe(host, """(() => {
           const sc = window.__SHERPAS_DEBUG && __SHERPAS_DEBUG.sceneObj && __SHERPAS_DEBUG.sceneObj();
           const m = sc && sc.scene && sc.scene.getMeshByName && sc.scene.getMeshByName('sideMassifs');
-          return m && m.material ? m.material.name : null;
+          const b = sc && sc.scene && sc.scene.getMeshByName && sc.scene.getMeshByName('massifBack');
+          return m ? (m.material ? m.material.name : 'sideMassifs') : (b ? 'backdrop' : null);
         })()""", tries=4)
-        check("F2d) macizos laterales con material paramétrico del MURO", massif_mat == "massifRockM", f"mat={massif_mat}")
-        check("F2e) triángulos de macizo generados", bool(bc and (bc.get("massifTris") or 0) > 500), f"tris={bc and bc.get('massifTris')}")
+        # T111: los DOS BLOQUES COLUMNA se quitan; queda el respaldo nevado
+        check("F2d) SIN columnas laterales (T111) — sideMassifs fuera", massif_mat != "sideMassifs", f"mat={massif_mat}")
+        check("F2e) pared de respaldo nevada generada", bool(bc and (bc.get("massifTris") or 0) > 0), f"tris={bc and bc.get('massifTris')}")
 
         # ---------- F3: sala + unión del invitado ANTES del GO ----------
         print("== F3) sala real + unión del invitado + GO ==", flush=True)

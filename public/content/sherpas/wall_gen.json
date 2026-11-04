@@ -183,7 +183,7 @@
     "textureSizePx": 512,
     "textureTileM": 1.0,
     "textureContrast": 0.95,
-    "backColor": "#2e353d",
+    "backColor": "#e7edf6",
     "naturalMaxM": 0.18,
     "bumpStrength": 1.0,
     "strataTones": [
