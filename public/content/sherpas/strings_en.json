@@ -107,7 +107,9 @@
     "portableNeedClimb": "{name} cannot place anchors while falling",
     "backpackTitle": "Backpack · Player {n}",
     "itemAnchor": "Anchor",
-    "backpackUse": "Click: grab the anchor · release it with a hand on a free spot"
+    "backpackUse": "Click: grab the anchor · release it with a hand on a free spot",
+    "chatHint": "ENTER · CHAT (Esc closes)",
+    "chatPlaceholder": "Type and press Enter…"
   },
   "limb": {
     "hand_l": "L.Hand",

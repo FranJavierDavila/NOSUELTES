@@ -107,7 +107,9 @@
     "portableNeedClimb": "{name} no puede colocar anclajes colgado en caída",
     "backpackTitle": "Mochila · Jugador {n}",
     "itemAnchor": "Anclaje",
-    "backpackUse": "Clic: coges el anclaje · suéltalo con la mano en un hueco libre"
+    "backpackUse": "Clic: coges el anclaje · suéltalo con la mano en un hueco libre",
+    "chatHint": "ENTER · CHAT (Esc cierra)",
+    "chatPlaceholder": "Escribe y pulsa Enter…"
   },
   "limb": {
     "hand_l": "M.Izq",

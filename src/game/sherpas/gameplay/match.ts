@@ -455,7 +455,11 @@ export class SherpasMatch {
       if (intent.impulse) this.doGiveImpulse(intent.playerId);
       // T92 ANCLAJES PORTÁTILES (petición del jugador): colocar uno en la pared.
       // T101: la ventana de la mochila también lo pide (clic en el Anclaje).
+      // T107d: el ARMADO de la mochila del INVITADO llega como flanco `arm` →
+      // mismo flujo que el anfitrión (queda en la mano y se clava al soltar
+      // una MANO por el drag remoto — match.remoteDrag, rama "e").
       if (intent.place) this.doPlacePortableAnchor(intent.playerId);
+      if (intent.arm) this.requestPortablePlace(intent.playerId);
       if (this.uiPlacePending[intent.playerId]) {
         this.uiPlacePending[intent.playerId] = false;
         this.doPlacePortableAnchor(intent.playerId);
@@ -464,6 +468,15 @@ export class SherpasMatch {
   }
 
   // ---------- T92 anclajes portátiles ----------
+
+  /** T107d AVISO DE ANCLAJE: los subtítulos de la mochila/anclajes solo se
+   *  pintan en el HUD del ANFITRIÓN — el invitado no se enteraba de por qué
+   *  su ancla no se colocaba. Cada aviso viaja como evento PortableMsg en el
+   *  snapshot (el guestRunner lo muestra si p === 1). left ≥ 0 → formato con
+   *  {left} (portablePlaced). */
+  private portableMsg(p: 0 | 1, key: string, left = -1): void {
+    this.d.bus.emit("PortableMsg", { p, key, left });
+  }
 
   /** T101 INVENTARIO DE MOCHILA: anclajes portátiles sin usar del escalador
    *  (la ventana del HUD lee aquí el contador del badge). */
@@ -479,11 +492,13 @@ export class SherpasMatch {
     if (this.portableInv.remaining(p) <= 0) {
       this.d.audio.play("release");
       this.d.hud.subtitle(this.d.hud.t("hud.portableEmpty"), 2.2);
+      this.portableMsg(p, "hud.portableEmpty");
       return;
     }
     this.portableArmed[p] = true;
     this.d.audio.play("grab");
     this.d.hud.subtitle(this.d.hud.t("hud.portableArmed"), 3.4);
+    this.portableMsg(p, "hud.portableArmed");
   }
 
   /** COLOCAR ANCLAJE PORTÁTIL: gasta 1 del inventario del escalador y nace una
@@ -497,10 +512,12 @@ export class SherpasMatch {
     if (this.portableInv.remaining(p) <= 0) {
       this.d.audio.play("release");
       this.d.hud.subtitle(this.d.hud.t("hud.portableEmpty"), 2.2);
+      this.portableMsg(p, "hud.portableEmpty");
       return;
     }
     if (rig.ropeState !== "climbing") {
       this.d.hud.subtitle(this.d.hud.fmt("hud.portableNeedClimb", { name: `P${p + 1}` }), 2.2);
+      this.portableMsg(p, "hud.portableNeedClimb");
       return;
     }
     // sondas de las extremidades LIBRES (las ancladas no pueden alcanzar nada)
@@ -512,6 +529,7 @@ export class SherpasMatch {
       });
     if (!probes.length) {
       this.d.hud.subtitle(this.d.hud.t("hud.portableNeedFree"), 2.4);
+      this.portableMsg(p, "hud.portableNeedFree");
       return;
     }
     const spot = choosePortableSpot({
@@ -528,6 +546,7 @@ export class SherpasMatch {
     });
     if (!spot) {
       this.d.hud.subtitle(this.d.hud.t("hud.portableNoSpot"), 2.4);
+      this.portableMsg(p, "hud.portableNoSpot");
       return;
     }
     this.portableInv.consume(p);
@@ -546,6 +565,7 @@ export class SherpasMatch {
     this.d.scene.addHolds([hold], this.holdColors());
     this.d.audio.play("grab");
     this.d.hud.subtitle(this.d.hud.fmt("hud.portablePlaced", { left: String(this.portableInv.remaining(p)) }), 2.6);
+    this.portableMsg(p, "hud.portablePlaced", this.portableInv.remaining(p));
     this.d.bus.emit("PortableAnchorPlaced", { id: hold.id, x: spot.x, y: spot.y, z: spot.z, p });
     this.portableArmed[p] = false; // si estaba armado, se acaba de usar
   }
@@ -562,10 +582,12 @@ export class SherpasMatch {
     const g = this.data.wallGen;
     if (this.portableInv.remaining(p) <= 0) {
       this.d.hud.subtitle(this.d.hud.t("hud.portableEmpty"), 2.2);
+      this.portableMsg(p, "hud.portableEmpty");
       return false;
     }
     if (rig.ropeState !== "climbing") {
       this.d.hud.subtitle(this.d.hud.fmt("hud.portableNeedClimb", { name: `P${p + 1}` }), 2.2);
+      this.portableMsg(p, "hud.portableNeedClimb");
       return false;
     }
     // validación PURA (testeable): límites de pared, altura mínima y separación
@@ -584,6 +606,7 @@ export class SherpasMatch {
       reachOk: rig.canReach(limb, v3(x, y, this.wallFrontZ)) || rig.dragging === limb,
     })) {
       this.d.hud.subtitle(this.d.hud.t("hud.portableNoSpot"), 2.4);
+      this.portableMsg(p, "hud.portableNoSpot");
       return false;
     }
     this.portableInv.consume(p);
@@ -602,6 +625,7 @@ export class SherpasMatch {
     this.d.scene.addHolds([hold], this.holdColors());
     this.d.audio.play("grab");
     this.d.hud.subtitle(this.d.hud.fmt("hud.portablePlaced", { left: String(this.portableInv.remaining(p)) }), 2.6);
+    this.portableMsg(p, "hud.portablePlaced", this.portableInv.remaining(p));
     this.d.bus.emit("PortableAnchorPlaced", { id: hold.id, x: hold.pos.x, y: hold.pos.y, z: hold.pos.z, p });
     this.portableArmed[p] = false;
     return true;
@@ -2166,9 +2190,10 @@ export class SherpasMatch {
   /** Info de mundo que el GUEST necesita ANTES del primer snapshot (construye
    *  la MISMA pared desde la semilla; los checkpoints van aparte). */
   /** Sonda E2E T92: inventario de anclajes portátiles y colocados. */
-  portableProbe(): { left: [number, number]; placed: { id: string; x: number; y: number }[] } {
+  portableProbe(): { left: [number, number]; armed: [boolean, boolean]; placed: { id: string; x: number; y: number }[] } {
     return {
       left: [this.portableInv.remaining(0), this.portableInv.remaining(1)],
+      armed: [this.portableArmed[0], this.portableArmed[1]],
       placed: this.placedPortables.map((h) => ({ id: h.id, x: h.pos.x, y: h.pos.y })),
     };
   }

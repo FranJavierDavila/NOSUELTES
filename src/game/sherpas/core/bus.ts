@@ -44,6 +44,11 @@ export interface SherpasEvents {
   FartLaunched: { playerId: 0 | 1; fromY: number };
   // T92 ANCLAJES PORTÁTILES: el guest replica la presa colocada por el host
   PortableAnchorPlaced: { id: string; x: number; y: number; z: number; p: 0 | 1 };
+  // T107d: aviso de mochila/anclaje dirigido a UN escalador — viaja en el
+  // snapshot para que el INVITADO vea los mismos avisos que el anfitrión
+  // (antes los rechazos solo salían en el HUD del host y el guest no sabía
+  // por qué su ancla no se colocaba). key = clave de strings (hud.*).
+  PortableMsg: { p: 0 | 1; key: string; left: number };
   // Progresión
   PlayerFell: { playerId: 0 | 1; cause?: "two_hands" | "no_grips" };
   TeamFell: { record: unknown };

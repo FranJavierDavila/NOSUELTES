@@ -200,6 +200,26 @@ const CSS = `
 .sphud .gear { position: absolute; top: 12px; right: 12px; width: 44px; height: 44px; padding: 0; font-size: 21px; line-height: 1; border-radius: 50%; background: rgba(10,14,18,.72); backdrop-filter: blur(4px); }
 .sphud .gear:hover { background: rgba(38,49,61,.9); }
 .sphud .net-status { font-size:13px; min-height:20px; text-align:center; opacity:.9; margin:8px 0; }
+/* T107c CHAT ONLINE: log de mensajes + entrada (Enter abre y envía, Esc
+ * cierra). Colgado abajo-izquierda, sobre la barra de consejo; cada mensaje
+ * es una burbuja con el nombre del escalador en SU color. */
+.sphud .chat { position:absolute; left:14px; bottom:52px; width:min(320px, 46vw); z-index:26; pointer-events:none; }
+.sphud .chat.hidden { display:none; }
+.sphud .chat-log { display:flex; flex-direction:column; gap:4px; margin-bottom:6px; }
+.sphud .chat-log.hidden { display:none; }
+.sphud .chat-msg { max-width:100%; background:rgba(10,14,18,.74); border:1px solid rgba(255,255,255,.09);
+  border-radius:10px; padding:5px 9px; font-size:11.5px; line-height:1.35; color:#e8eef5;
+  backdrop-filter:blur(4px); overflow-wrap:anywhere; }
+.sphud .chat-msg.mine { border-color:rgba(122,162,255,.4); }
+.sphud .chat-msg b { font-weight:700; }
+.sphud .chat-row.hidden { display:none; }
+.sphud .chat-in { width:100%; box-sizing:border-box; background:rgba(10,14,18,.85);
+  border:1px solid rgba(122,162,255,.45); border-radius:10px; padding:7px 10px;
+  color:#f2f6fa; font:inherit; font-size:12px; outline:none; pointer-events:auto; }
+.sphud .chat-in:focus { border-color:#7aa2ff; }
+.sphud .chat-hint { font-size:10px; letter-spacing:.06em; color:rgba(232,238,245,.6); padding-left:2px; text-shadow:0 1px 2px rgba(0,0,0,.7); }
+.sphud .chat-hint.hidden { display:none; }
+
 /* T101 INVENTARIO DE MOCHILA: ventana con la forma del INTERIOR de la mochila
  * (tejido ocre, solapa en la boca y costura punteada). Abre al pulsar la
  * mochila del escalador, se cierra cuando el puntero la abandona y el hueco
@@ -260,6 +280,14 @@ export class SherpaHud {
   private bpkCountVal = 0;
   private bpkUseHandler: ((p: 0 | 1) => void) | null = null;
   private bpkCloseTimer = 0;
+
+  // ---------- T107c CHAT ONLINE ----------
+  /** quién soy en esta sesión (estilo «mío» de las burbujas). */
+  private chatMe: 0 | 1 = 0;
+  private chatOn = false;       // sesión online activa (sala con par)
+  private chatOpenFlag = false; // entrada de texto visible
+  private chatFadeTimer = 0;
+  private chatSend: ((text: string) => void) | null = null;
 
   // T61 — AJUSTES PERSISTENTES de clima/hora (localStorage defensivo, patrón
   // onboarding: un storage roto NUNCA rompe el menú).
@@ -323,6 +351,15 @@ export class SherpaHud {
       <div class="banner" data-e="banner"><h2 data-e="bannerTitle"></h2><p data-e="bannerSub"></p></div>
       <div class="telegraph chip" data-e="telegraph"></div>
       <div class="subtitle-bar hidden" data-e="subtitle"></div>
+      <!-- T107c CHAT ONLINE: log + entrada (Enter abre y envía, Esc cierra).
+           Los mensajes viajan por el canal P2P de la sesión (acción msg). -->
+      <div class="chat hidden" data-e="chat">
+        <div class="chat-log hidden" data-e="chatLog"></div>
+        <div class="chat-row hidden" data-e="chatRow">
+          <input class="chat-in" data-e="chatIn" type="text" maxlength="140" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="chat-hint hidden" data-e="chatHint"></div>
+      </div>
       <div data-e="bubbles" style="position:absolute;inset:0;overflow:hidden"></div>
       <!-- T101: ventana del INVENTARIO DE MOCHILA (abre al pulsar la mochila
            del escalador; hueco del Anclaje con icono + contador encima). -->
@@ -370,6 +407,19 @@ export class SherpaHud {
       this.bpkUseHandler?.(this.bpkPlayer);
     });
     this.el.bpk!.addEventListener("pointerleave", () => this.backpackClose());
+
+    // T107c CHAT: Enter envía y cierra; Escape cierra. stopPropagation extra:
+    // NINGUNA tecla de escribir llega al juego aunque el foco entre tarde.
+    this.el.chatIn!.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.code === "Enter") {
+        const v = (this.el.chatIn! as HTMLInputElement).value.trim().slice(0, 140);
+        if (v) this.chatSend?.(v);
+        this.chatClose();
+      } else if (e.code === "Escape") {
+        this.chatClose();
+      }
+    });
   }
 
   t(path: string): string {
@@ -725,6 +775,91 @@ export class SherpaHud {
   /** ¿Ventana de mochila visible? (sonda E2E / ajustes) */
   backpackIsOpen(): boolean {
     return this.bpkPlayer !== null;
+  }
+
+  // ---------- T107c CHAT ONLINE ----------
+
+  /** Activa/desactiva el chat (sala con par conectada). Al desactivar cierra
+   *  la entrada y vacía el log (vuelta al menú / guest se fue). */
+  chatActive(on: boolean): void {
+    this.chatOn = on;
+    const root = this.el.chat!;
+    if (!on) {
+      this.chatClose();
+      this.chatOpenFlag = false;
+      this.el.chatLog!.innerHTML = "";
+      this.el.chatLog!.classList.add("hidden");
+      root.classList.add("hidden");
+      return;
+    }
+    this.el.chatHint!.textContent = this.t("hud.chatHint");
+    (this.el.chatIn! as HTMLInputElement).placeholder = this.t("hud.chatPlaceholder");
+    root.classList.remove("hidden");
+    this.el.chatHint!.classList.remove("hidden");
+  }
+
+  /** ¿Sesión con chat disponible? (guard del listener global de Enter) */
+  chatAvailable(): boolean {
+    return this.chatOn;
+  }
+
+  /** ¿Entrada de texto abierta? (sonda E2E / guard del propio Enter) */
+  chatInputOpen(): boolean {
+    return this.chatOpenFlag;
+  }
+
+  /** Identidad local para el estilo «mío» de las burbujas (0 = anfitrión). */
+  chatIdentity(me: 0 | 1): void {
+    this.chatMe = me;
+  }
+
+  /** Abre/cierra la entrada de texto (listener global de Enter en mount). */
+  chatToggle(): void {
+    if (!this.chatOn) return;
+    if (this.chatOpenFlag) { this.chatClose(); return; }
+    this.chatOpenFlag = true;
+    this.el.chatRow!.classList.remove("hidden");
+    const inp = this.el.chatIn! as HTMLInputElement;
+    inp.value = "";
+    requestAnimationFrame(() => { inp.focus(); }); // el foco tras el reflow
+    this.el.chatLog!.classList.remove("hidden");
+    if (this.chatFadeTimer) { clearTimeout(this.chatFadeTimer); this.chatFadeTimer = 0; }
+  }
+
+  /** Cierra la entrada (Envío, Escape o desactivación). */
+  chatClose(): void {
+    if (this.chatOpenFlag) {
+      this.chatOpenFlag = false;
+      (this.el.chatIn! as HTMLInputElement).blur();
+      this.el.chatRow!.classList.add("hidden");
+    }
+    if (this.chatFadeTimer) clearTimeout(this.chatFadeTimer);
+    this.chatFadeTimer = window.setTimeout(() => {
+      this.chatFadeTimer = 0;
+      if (!this.chatOpenFlag) this.el.chatLog!.classList.add("hidden");
+    }, 8000);
+  }
+
+  /** Muestra un mensaje (los ENVIADOS también: el emisor lo empuja aquí y
+   *  lo manda por red — cada lado solo recibe los del otro). */
+  chatPush(sender: 0 | 1, text: string): void {
+    const log = this.el.chatLog!;
+    const row = document.createElement("div");
+    row.className = "chat-msg" + (sender === this.chatMe ? " mine" : "");
+    const who = document.createElement("b");
+    who.style.color = SHERPA_HEX[sender];
+    who.textContent = (sender === 0 ? this.t("net.hostLabel") : this.t("net.guestLabel")) + ": ";
+    row.appendChild(who);
+    row.appendChild(document.createTextNode(text));
+    log.appendChild(row);
+    while (log.children.length > 6) log.removeChild(log.firstChild!);
+    log.classList.remove("hidden");
+    this.chatClose(); // (re)arma el autofade de 8 s
+  }
+
+  /** mount conecta el envío con el canal de la sesión activa. */
+  setChatSend(fn: ((text: string) => void) | null): void {
+    this.chatSend = fn;
   }
 
   // ---------- burbujas / subtítulos / banners ----------

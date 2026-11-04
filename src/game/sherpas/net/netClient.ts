@@ -37,7 +37,11 @@ const RELAYS = [
 ];
 
 /** Namespaces de acciones Trystero. */
-const NS = { ctl: "ctl", sess: "sess", snap: "snap", int: "int", drg: "drg" } as const;
+const NS = { ctl: "ctl", sess: "sess", snap: "snap", int: "int", drg: "drg", msg: "msg" } as const;
+
+/** T107c CHAT: saneado de un mensaje escrito (una línea, techo 140). */
+const cleanChatText = (t: unknown): string =>
+  String(t ?? "").replace(/\s+/g, " ").trim().slice(0, 140);
 
 export type NetStatus = "off" | "connecting" | "waiting-guest" | "waiting-session" | "playing" | "error";
 
@@ -92,11 +96,14 @@ export class HostNet extends NetEndpoint {
    *  escena lista (reenvío del listado de presas del minimapa). */
   onDrag: (m: NetRemoteDrag) => void = () => { };
   onGuestReady: () => void = () => { };
+  /** T107c CHAT: mensaje recibido del invitado (from = 1). */
+  onChat: (from: 0 | 1, text: string) => void = () => { };
   /** diagnóstico E2E: mensajes de arrastre recibidos. */
   dragCount = 0;
   private guestPeerId: string | null = null;
   private sendSess: ((p: NetSessionParams | null) => void) | null = null;
   private sendSnap: ((s: NetSnapshot) => void) | null = null;
+  private sendChatMsg: ((m: { t: string }) => void) | null = null;
 
   async create(): Promise<string> {
     const code = makeRoomCode();
@@ -111,8 +118,11 @@ export class HostNet extends NetEndpoint {
     const [sendSess] = room.makeAction<NetSessionParams | null>(NS.sess);
     const [sendSnap] = room.makeAction<NetSnapshot>(NS.snap);
     const [, getDrag] = room.makeAction<NetRemoteDrag>(NS.drg);
+    const [sendMsg, getMsg] = room.makeAction<{ t: string }>(NS.msg);
     this.sendSess = (p) => { void sendSess(p, this.guestPeerId ?? undefined); };
     this.sendSnap = (s) => { void sendSnap(s, this.guestPeerId ?? undefined); };
+    this.sendChatMsg = (m) => { void sendMsg(m, this.guestPeerId ?? undefined); };
+    getMsg((m) => { const t = cleanChatText(m?.t); if (t) this.onChat(1, t); });
 
     room.onPeerJoin((peerId) => {
       if (!this.guestPeerId) {
@@ -161,11 +171,18 @@ export class HostNet extends NetEndpoint {
     if (this.hasGuest && this.sendSnap) { this.snapshotCount++; this.sendSnap(s); }
   }
 
+  /** T107c CHAT: enviar un mensaje al invitado. */
+  sendChat(text: string): void {
+    const t = cleanChatText(text);
+    if (t && this.hasGuest && this.sendChatMsg) this.sendChatMsg({ t });
+  }
+
   override disconnect(): void {
     this.hasGuest = false;
     this.guestPeerId = null;
     this.sendSess = null;
     this.sendSnap = null;
+    this.sendChatMsg = null;
     super.disconnect();
   }
 }
@@ -175,6 +192,8 @@ export class GuestNet extends NetEndpoint {
   onSession: (p: NetSessionParams | null) => void = () => { };
   onSnapshot: (s: NetSnapshot) => void = () => { };
   onClosed: (reason: string) => void = () => { };
+  /** T107c CHAT: mensaje recibido del anfitrión (from = 0). */
+  onChat: (from: 0 | 1, text: string) => void = () => { };
   /** configurable para tests. 30 s en producción: la señalización por relays
    *  públicos tarda más que un servidor local (descubrimiento ~5-15 s, y
    *  puede ir peor si algún relay amanece lento). */
@@ -183,6 +202,7 @@ export class GuestNet extends NetEndpoint {
   private sendDragMsg: ((m: NetRemoteDrag) => void) | null = null;
   /** canal ctl vivo tras el join (T105: aviso de escena lista). */
   private sendCtlMsg: ((m: CtlMsg) => void) | null = null;
+  private sendChatMsg: ((m: { t: string }) => void) | null = null;
   private hostPeerId: string | null = null;
 
   async join(rawCode: string): Promise<string> {
@@ -196,9 +216,12 @@ export class GuestNet extends NetEndpoint {
     const [, getSnap] = room.makeAction<NetSnapshot>(NS.snap);
     const [sendInt] = room.makeAction<NetRemoteInput>(NS.int);
     const [sendDrag] = room.makeAction<NetRemoteDrag>(NS.drg);
+    const [sendMsg, getMsg] = room.makeAction<{ t: string }>(NS.msg);
     this.sendInt = (m) => { void sendInt(m, this.hostPeerId ?? undefined); };
     this.sendDragMsg = (m) => { void sendDrag(m, this.hostPeerId ?? undefined); };
     this.sendCtlMsg = (m) => { void sendCtl(m, this.hostPeerId ?? undefined); };
+    this.sendChatMsg = (m) => { void sendMsg(m, this.hostPeerId ?? undefined); };
+    getMsg((m) => { const t = cleanChatText(m?.t); if (t) this.onChat(0, t); });
 
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -258,10 +281,17 @@ export class GuestNet extends NetEndpoint {
     if (this.sendCtlMsg) this.sendCtlMsg({ ready: true });
   }
 
+  /** T107c CHAT: enviar un mensaje al anfitrión. */
+  sendChat(text: string): void {
+    const t = cleanChatText(text);
+    if (t && this.hostPeerId && this.sendChatMsg) this.sendChatMsg({ t });
+  }
+
   override disconnect(): void {
     this.sendInt = null;
     this.sendDragMsg = null;
     this.sendCtlMsg = null;
+    this.sendChatMsg = null;
     this.hostPeerId = null;
     super.disconnect();
   }

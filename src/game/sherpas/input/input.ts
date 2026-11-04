@@ -22,6 +22,11 @@ export interface InputIntent {
   impulse: boolean;
   /** T92 ANCLAJES PORTÁTILES: colocar uno en la pared (flanco). */
   place: boolean;
+  /** T107d ANCLAJES PORTÁTILES: ARMAR el anclaje de la mochila (flanco) —
+   *  queda en la mano y se clava al soltar una MANO en un hueco (T103). Es el
+   *  flanco que la ventana de mochila del INVITADO manda por red: el flujo
+   *  armado es el único que funciona con las 4 extremidades agarradas. */
+  arm: boolean;
   /** T58-E TREPAR A PULSO: pulsaciones A SACO recibidas desde el último poll
    *  (CONTADOR — a bajo fps varias teclas caen en el mismo tick y NINGUNA se
    *  pierde: cada pulsación cuenta para la fuerza). */
@@ -241,6 +246,7 @@ export class InputManager {
         anchor,
         impulse,
         place,
+        arm: false,
         mashCount,
       });
     }

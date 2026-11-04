@@ -101,6 +101,23 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     if (state.guest) state.guest.requestPortablePlace(p);
     else state.match?.requestPortablePlace(p);
   });
+  // T107c CHAT ONLINE: el envío sale por el canal de la sesión activa y el
+  // mensaje enviado se muestra en el log LOCAL (cada lado solo recibe los del
+  // otro). Enter abre la entrada — el propio HUD la cierra al enviar (Esc).
+  hud.setChatSend((text) => {
+    hud.chatPush(state.hostNet ? 0 : 1, text);
+    if (state.hostNet) state.hostNet.sendChat(text);
+    else state.guestNet?.sendChat(text);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.code !== "Enter") return;
+    if (!state.hostNet && !state.guestNet) return;
+    const t = e.target;
+    if (t instanceof HTMLElement && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    if (!hud.chatAvailable() || hud.chatInputOpen()) return;
+    hud.chatToggle();
+    e.preventDefault();
+  });
   // Clic sobre la mochila de un escalador → ventana-interior de la mochila.
   // Hit-test por proyección a coordenadas de pantalla (sin scene.pick, la
   // escena decide 500+ instancias con otro sistema). En menú (sin match) el
@@ -189,6 +206,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
   const endGuestToMenu = async (): Promise<void> => {
     state.guest?.dispose(); state.guest = null;
     state.guestNet?.disconnect(); state.guestNet = null;
+    hud.chatActive(false); // T107c: sesión terminada, chat fuera
     // el guest montó una escena PROPIA (pared del host): volver a la local
     if (state.scene) { state.scene.dispose(); state.scene = null; }
     if (!state.disposed) {
@@ -253,6 +271,8 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
           try {
             hud.netStatus(hud.t("net.connecting"));
             if (!state.hostNet) state.hostNet = new HostNet();
+            hud.chatIdentity(0); // T107c: yo soy el anfitrión en el chat
+            state.hostNet.onChat = (from, text) => hud.chatPush(from, text);
             // T105: el drag del invitado aplica SIEMPRE al match vivo (si lo
             // hay) y el aviso de escena lista fuerza el reenvío del minimapa.
             state.hostNet.onDrag = (m) => state.match?.remoteDrag(m);
@@ -262,12 +282,14 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
             hud.netStatus(hud.t("net.waitingGuest"));
             state.hostNet.onGuestJoined = () => {
               hud.netStatus(hud.t("net.guestJoined"));
+              hud.chatActive(true); // T107c: chat disponible en cuanto hay par
               syncNetLocks();
               // T102: el guest puede entrar con la partida YA empezada
               publishNetSession();
             };
             state.hostNet.onGuestLeft = () => {
               hud.netStatus(hud.t("net.guestLeft"));
+              hud.chatActive(false); // T107c: sin par, sin chat
               syncNetLocks();
               state.match?.cancelRemoteDrag(); // T105: sin dueño, suelto SU drag
               stopSnapshots(); // nadie recibe ya; el host sigue con ambos (relevo)
@@ -283,10 +305,13 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
             hud.netStatus(hud.t("net.connecting"));
             state.guestNet?.disconnect();
             state.guestNet = new GuestNet(); // conexión fresca por intento
+            hud.chatIdentity(1); // T107c: yo soy el invitado en el chat
+            state.guestNet.onChat = (from, text) => hud.chatPush(from, text);
             await state.guestNet.join(code);
             hud.netStatus(hud.t("net.waitingHost"));
             state.guestNet.onSession = (p) => {
               if (!p) { void endGuestToMenu(); return; }
+              hud.chatActive(true); // T107c: sesión aceptada → chat disponible
               void beginGuest(p);
             };
             state.guestNet.onClosed = () => {
@@ -304,6 +329,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         // el guest sí corta su conexión; el HOST conserva la sala abierta
         // (puede volver a entrar cuando quiera: GO arranca con quien haya)
         state.guestNet?.disconnect(); state.guestNet = null;
+        hud.chatActive(false); // T107c: sin conexión, sin chat
         void showMenu();
       },
     });
@@ -455,6 +481,21 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         state.hostNet ? { hasGuest: state.hostNet.hasGuest, dragCount: state.hostNet.dragCount, intents: state.hostNet.intentCount } : null,
       /** T105: drag remoto visto por el match (estado separado del local). */
       remoteDrag: () => state.match?.dragDebug() ?? null,
+      /** T107d ANCLAS DEL INVITADO: inyecta un intent remoto SIN red (el MISMO
+       *  camino que remote.push → drain → applyIntents) para reproducir el
+       *  flujo de colocación del invitado de forma determinista en el E2E. */
+      netInject: (m: Record<string, unknown>): boolean => {
+        if (!state.hostNet) return false;
+        (state.hostNet.remote as unknown as { push(m: unknown): void }).push(m);
+        return true;
+      },
+      /** T107d: drag remoto SINTÉTICO (el MISMO handler que un drag real del
+       *  invitado por Trystero) — armado + soltar mano = ancla clavada. */
+      rd: (m: Record<string, unknown>): boolean => {
+        if (!state.match) return false;
+        state.match.remoteDrag(m as never);
+        return true;
+      },
       /** T47 SOL ORBITAL: dirección/posición del sol (E2E: el azimut sigue el
        *  yaw de la órbita y a yaw 0 restaura EXACTO). null si aún no hay luz. */
       sun: (): { dx: number; dy: number; dz: number; px: number; py: number; pz: number } | null => {

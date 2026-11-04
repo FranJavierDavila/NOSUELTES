@@ -179,15 +179,18 @@ export class GuestRunner {
     return this.lastSnap?.hud?.portable?.[p] ?? 0;
   }
 
-  /** T102: «usar» del hueco ⚓ de SU mochila (solo el azul) → flanco de
-   *  colocación hacia el host, el MISMO mensaje que su tecla Y: la simulación
-   *  del host decide el punto y replica la presa por PortableAnchorPlaced. */
+  /** T102: «usar» del hueco ⚓ de SU mochila (solo el azul) → flanco de ARMADO
+   *  hacia el host (T107d): el anclaje queda en la mano en la simulación del
+   *  host y se clava cuando el invitado SUELTA una mano presa sobre un hueco
+   *  (su drag remoto, rama "e" de remoteDrag) — el MISMO flujo T103 del
+   *  anfitrión, que es el único que funciona con las 4 extremidades agarradas.
+   *  El host emite PortableMsg con cada aviso y aquí se muestra en SU HUD. */
   requestPortablePlace(p: 0 | 1): void {
     if (p !== 1 || this.disposed) return;
     this.d.net.sendIntent({
       ax: 0, ay: 0, speed: 0, toggles: [],
       shoo: false, fart: false, anchor: false, impulse: false,
-      place: true, mashCount: 0,
+      place: false, arm: true, mashCount: 0,
     });
   }
 
@@ -497,6 +500,17 @@ export class GuestRunner {
         const p = (e.p as { playerId?: number })?.playerId;
         const name = (e.p as { name?: string })?.name;
         if ((p === 0 || p === 1) && typeof name === "string") s.setEmote(p, name);
+      }
+      // T107d: avisos de mochila/anclaje del host → SU subtítulo (los
+      // rechazos ya no son invisibles: "suelta una mano", "no hay sitio"…)
+      if (e.n === "PortableMsg") {
+        const q = e.p as { p?: number; key?: string; left?: number };
+        if (q.p === 1 && typeof q.key === "string" && q.key.startsWith("hud.")) {
+          const msg = q.left !== undefined && q.left >= 0
+            ? this.d.hud.fmt(q.key, { left: String(q.left) })
+            : this.d.hud.t(q.key);
+          this.d.hud.subtitle(msg, 2.8);
+        }
       }
       // T92: anclaje portátil colocado por el host → el guest REPLICA la presa
       // (solo visual: el agarre/ocupación lo decide la simulación del host).

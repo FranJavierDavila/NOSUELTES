@@ -37,6 +37,7 @@ export type NetRemoteInput = {
   anchor: boolean;
   impulse: boolean;
   place: boolean;                // T92: colocar anclaje portátil (flanco)
+  arm?: boolean;                 // T107d: ARMAR el anclaje de la mochila (flanco)
   mashCount: number;             // pulsaciones acumuladas desde el último envío
 }
 

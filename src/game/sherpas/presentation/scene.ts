@@ -105,12 +105,12 @@ import { SkinnedClimberFactory, type ClimberInstance } from "./skinnedClimber"; 
 import { SherpaPuppetFactory, type SherpaPuppetInstance } from "./sherpaPuppetFactory"; // T57: Sherpa.glb POR PIEZAS (marioneta)
 import { PartsSmoother } from "./poseSmoothing"; // T85-SMOOTH: interpolación entre movimientos (adiós marioneta)
 import {
-  buildScreeGeometry, buildSpurGeometry, resolveBaseCampCfg, scatterRocks,
+  buildScreeGeometry, buildSpurGeometry, resolveBaseCampCfg,
   type BaseCampCfg, type GeomData,
 } from "../world/baseCamp"; // T56: faldones de continuidad + pedriz
 import {
   cabinBoulderRing, computeGroundTint, resolveGroundTintCfg, scatterDrifts,
-  scatterFieldBoulders, type GroundTintCtx,
+  type GroundTintCtx,
 } from "../world/groundTint"; // T98: suelo alpino integrado (nieve+hielo+piedra)
 import {
   buildSideMassifGeometry, resolveSideMassifCfg, type SideMassifCfg,
@@ -444,6 +444,14 @@ export class SherpaScene {
   private perfFrames = 0;
   private perfWarm = 0;
   private lastRenderNow = 0;
+  /** T107a ANTI-OSCILACIÓN: el gobernador solo actúa con DOS ventanas seguidas
+   *  votando lo mismo y respetando un cooldown desde el último cambio. Cada
+   *  setHardwareScalingLevel realoca el buffer del canvas y Chromium presenta
+   *  un frame NEGRO un instante (el "parpadeo cada ~2 s" del invitado: su GPU
+   *  vive justo en el umbral y la escala ping-pongeaba 1.0↔1.1 en cada
+   *  ventana de checkSeconds). */
+  private perfStreak: 0 | 1 | -1 = 0; // 1 = pide render más barato, -1 = más fino
+  private lastScaleChangeMs = -1e9;
   private dtSmoothed = 16.7; // ms/frame suavizado (medición PROPIA: el engine
   // no actualiza _fps/_deltaTime sin beginFrame, y scene.render() no lo llama)
   private lastDrawTotal = 0;
@@ -1278,41 +1286,13 @@ export class SherpaScene {
     spurMesh.freezeWorldMatrix();
     this.baseCampStats.spurTris = spurs.reduce((s, g) => s + g.tris, 0);
 
-    // ROCAS SUELTAS: 3 masters low-poly deformados + instancias sembradas
-    // (fuera de la franja de caída y de la cabaña): 3 draw calls.
-    // T98: tono #7b766e — más cercano a la piedra gris de la Base.glb.
-    // T101: #6e7078 — gris AZULADO (familia de la textura del GLB).
-    const rockMat = matPBR(this.scene, "screeRockM", "#6e7078", { rough: 0.95 });
-    const masters: Mesh[] = [];
-    const rngR = makeRng((cfg.seed ^ 0x0770) >>> 0);
-    for (let k = 0; k < 3; k++) {
-      const m = MeshBuilder.CreateIcoSphere(`screeRockM${k}`, { radius: 1, subdivisions: 1 }, this.scene);
-      const p = m.getVerticesData(VertexBuffer.PositionKind);
-      if (p) {
-        const out = new Array<number>(p.length);
-        for (let i = 0; i < p.length; i += 3) {
-          const f = 0.72 + rngR.next() * 0.55;
-          out[i] = p[i]! * f;
-          out[i + 1] = p[i + 1]! * (0.5 + rngR.next() * 0.5);
-          out[i + 2] = p[i + 2]! * f;
-        }
-        m.updateVerticesData(VertexBuffer.PositionKind, out);
-      }
-      m.material = rockMat;
-      m.isVisible = false; // solo es semilla (las instancias siguen visibles)
-      m.isPickable = false;
-      masters.push(m);
-    }
-    const rocks = scatterRocks(cfg, SherpaScene.BASE_POS.x, SherpaScene.BASE_POS.z, 4.4); // T90
-    for (const [rx, , rz, s] of rocks) {
-      const inst = masters[Math.floor(rngR.next() * masters.length) % masters.length]!.createInstance(`screeRock${this.baseCampStats.rocks}`);
-      inst.position.set(rx, s * 0.28, rz);
-      inst.scaling.set(s * (0.8 + rngR.next() * 0.7), s * (0.55 + rngR.next() * 0.5), s * (0.8 + rngR.next() * 0.7));
-      inst.rotation.y = rngR.next() * Math.PI * 2;
-      inst.freezeWorldMatrix();
-      this.castShadow(inst); // sombritas cortas sobre el pedriz
-      this.baseCampStats.rocks++;
-    }
+    // T107b — ROCAS SUELTAS PROCEDURALES ELIMINADAS (petición del jugador:
+    // «eliminar las piedras sueltas que has metido tú, que no tienen textura
+    // y desentonan»): las icoSpheres de color plano #6e7078 (screeRockM/R)
+    // y los tarrones de campo (fieldBoulder) desentonaban con las LOSAS GLB
+    // del jugador que desde T106 cubren TODO el suelo con su piedra real.
+    // El anillo de bloques de la cabaña y los tarrones de nieve (texturizados
+    // con la pedriza de la montaña) se quedan: integran la Base.glb.
 
     // T98 — EL CAMPO DE BLOQUES DEL CAMPAMENTO: la Base.glb vive rodeada de
     // rocas grises y nieve; en el pedriz liso «flotaba» (petición: «parece un
@@ -1325,6 +1305,7 @@ export class SherpaScene {
     snowCapMaster.isVisible = false;
     snowCapMaster.isPickable = false;
     const gTint = resolveGroundTintCfg((this.reliefRaw as { groundTint?: unknown } | null)?.groundTint);
+    const rngR = makeRng((cfg.seed ^ 0x0770) >>> 0); // variación determinista del anillo
     // T98 — master de BLOQUES con el material del pedriz: textura de clastos +
     // estratos triplanar en ESPACIO MUNDO (el patrón continúa por roca y
     // terreno: la piedra del campamento es la MISMA piedra que la montaña, no
@@ -1380,29 +1361,9 @@ export class SherpaScene {
         merged.name = "snowDrifts";
         merged.freezeWorldMatrix();
       }
-      // T101 — TARRONES DE CAMPO: la familia de roca de la Base.glb SOBRESALE
-      // por TODO el suelo visible (petición: «trozos sobresalientes de rocas
-      // como muestra la base sherpa… haciéndolo extensible a todo el suelo»).
-      // Mismo master+material que el anillo del campamento (continuidad de
-      // piedra) + gorro de nieve en los grandes: el lenguaje material del GLB
-      // extendido a la montaña entera. Fuera de franja/pedriz/explanada
-      // (scatterFieldBoulders) y sin colisión: composición, no obstáculos.
-      for (const [fx, fz, fs] of scatterFieldBoulders(gTint, this.groundTintCtx)) {
-        const inst = boulderMaster.createInstance(`fieldBoulder${this.baseCampStats.rocks}`);
-        inst.position.set(fx, fs * 0.34, fz);
-        inst.scaling.set(fs * (0.9 + rngR.next() * 0.5), fs * (0.6 + rngR.next() * 0.45), fs * (0.9 + rngR.next() * 0.5));
-        inst.rotation.y = rngR.next() * Math.PI * 2;
-        inst.freezeWorldMatrix();
-        this.castShadow(inst);
-        this.baseCampStats.rocks++;
-        if (fs >= 0.36) {
-          const cap = snowCapMaster.createInstance(`fieldCap${this.baseCampStats.rocks}`);
-          cap.position.set(fx, fs * 0.72, fz);
-          cap.scaling.set(fs * 0.62, fs * 0.22, fs * 0.58);
-          cap.rotation.y = rngR.next() * Math.PI;
-          cap.freezeWorldMatrix();
-        }
-      }
+      // T107b: los TARRONES DE CAMPO (T101) desaparecen — con las losas GLB
+      // del jugador cubriendo todo el suelo sobraban (piedra procedural sobre
+      // piedra real, medio enterrados en las losas).
     }
 
     // CABAÑA SHERPA (relleno temporal; luego modelos propios del jugador)
@@ -5158,10 +5119,14 @@ export class SherpaScene {
     return this.perfStats;
   }
 
-  /** PERF: resolución adaptativa con histéresis — si el fps medio queda por
-   *  debajo del objetivo−10 se renderiza más barato (escala +step); si sobra
-   *  margen (objetivo+3) se recupera hacia 1. Nunca sobremuestrea (min 1).
-   *  Se llama DESPUÉS de scene.render() para leer el estado de ESTE frame. */
+  /** PERF: resolución adaptativa — T107a: la histéresis anterior bastaba para
+   *  la nitidez pero permitía el PING-PONG 1.0↔1.1 (ventanas de checkSeconds
+   *  alternando "sobran fps" y "falta fps"): cada cambio realoca el buffer del
+   *  canvas y Chromium presenta un frame negro → parpadeo periódico (~2 s) en
+   *  el invitado. Ahora: zona muerta amplia (solo baja si fps < objetivo−10,
+   *  solo sube si el coste < 45% del presupuesto Y el vsync sobra), RACHA de
+   *  2 ventanas seguidas con el mismo voto y COOLDOWN de 3 ventanas desde el
+   *  último cambio — el resize pasa de "cada 2 s" a "excepcional". */
   private updatePerf(): void {
     const now = performance.now();
     if (this.lastRenderNow > 0) {
@@ -5176,17 +5141,33 @@ export class SherpaScene {
     this.perfAcc = 0;
     const fps = 1000 / this.dtSmoothed;
     const p = this.perfTuning;
-    // DECISIÓN: subir escala si el fps de vsync cae; BAJAR si el COSTE de
-    // render deja margen (el vsync disimula el sobrante — no basta con fps).
     const budgetMs = 1000 / Math.max(30, p.targetFps);
     if (this.perfWarm < 2) {
       this.perfWarm++; // ignora el arranque (compilación de shaders, jank inicial)
-    } else if (fps < p.targetFps - 10 && this.scaleLevel < p.maxScale) {
-      this.scaleLevel = Math.min(p.maxScale, Math.round((this.scaleLevel + p.step) * 100) / 100);
-      this.engine.setHardwareScalingLevel(hardwareScaleFor(this.scaleLevel, this.dpr, this.perfTuning.dprCap ?? 2));
-    } else if (this.renderCostSmoothed > 0 && this.renderCostSmoothed < budgetMs * 0.55 && this.scaleLevel > p.minScale) {
-      this.scaleLevel = Math.max(p.minScale, Math.round((this.scaleLevel - p.step) * 100) / 100);
-      this.engine.setHardwareScalingLevel(hardwareScaleFor(this.scaleLevel, this.dpr, this.perfTuning.dprCap ?? 2));
+      this.perfStreak = 0;
+    } else {
+      const wantsCheaper = fps < p.targetFps - 10 && this.scaleLevel < p.maxScale;
+      const wantsNicer = this.scaleLevel > p.minScale && this.renderCostSmoothed > 0
+        && this.renderCostSmoothed < budgetMs * 0.45 && fps >= p.targetFps;
+      this.perfStreak = wantsCheaper ? 1 : wantsNicer ? -1 : 0;
+      const cooldownMs = Math.max(6000, windowS * 3000);
+      const streakReady = Math.abs(this.perfStreak) >= 2;
+      if (streakReady && now - this.lastScaleChangeMs >= cooldownMs) {
+        const prev = this.scaleLevel;
+        if (this.perfStreak === 1) {
+          this.scaleLevel = Math.min(p.maxScale, Math.round((this.scaleLevel + p.step) * 100) / 100);
+        } else {
+          this.scaleLevel = Math.max(p.minScale, Math.round((this.scaleLevel - p.step) * 100) / 100);
+        }
+        if (this.scaleLevel !== prev) {
+          this.lastScaleChangeMs = now;
+          this.perfStreak = 0;
+          this.engine.setHardwareScalingLevel(hardwareScaleFor(this.scaleLevel, this.dpr, this.perfTuning.dprCap ?? 2));
+          // repinta YA el buffer realocado: sin esto Chromium puede presentar
+          // el backbuffer vacío (frame negro) hasta el siguiente rAF
+          this.scene.render();
+        }
+      }
     }
     // draw calls del frame = delta del contador del engine / nº de frames
     // (addCount acumula en .current sin fetchNewFrame: crece monótono)
