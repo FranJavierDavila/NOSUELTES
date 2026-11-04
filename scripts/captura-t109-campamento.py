@@ -29,7 +29,7 @@ try:
             "--disable-dev-shm-usage", "--force-device-scale-factor=1",
             "--js-flags=--max-old-space-size=300",
         ])
-        page = browser.new_context(viewport={"width": 960, "height": 560}).new_page()
+        page = browser.new_context(viewport={"width": 300, "height": 200}).new_page()
         page.goto(BASE, wait_until="domcontentloaded")
         for _ in range(240):
             try:
@@ -47,6 +47,7 @@ try:
                 pass
             page.wait_for_timeout(700)
         page.wait_for_timeout(6000)  # la cabaña (GLB) + textura + humo acumulándose
+        page.wait_for_timeout(4000)  # margen extra de render bajo SwiftShader
         info = page.evaluate("window.__SHERPAS_DEBUG && __SHERPAS_DEBUG.baseCamp ? __SHERPAS_DEBUG.baseCamp() : (window.__NS_DEBUG && window.__NS_DEBUG.baseCamp ? __NS_DEBUG.baseCamp() : null)")
         print("baseCamp:", info, flush=True)
         page.wait_for_timeout(3500)  # más humo acumulado
