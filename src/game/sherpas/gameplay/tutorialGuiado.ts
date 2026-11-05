@@ -111,6 +111,7 @@ class ScriptRunner {
         ));
         if (f < 1) return false;
         d.match.devDragUp(TEACHER, a.limb, a.x, a.y);
+        d.compensateDrag(a.limb, a.x, a.y); // T115: el OTRO sherpa compensa
         this.from = null; this.moveT = 0; this.stallT = 0; this.idx++; continue;
       }
       if (a.k === "grip") {
@@ -446,6 +447,10 @@ export class TutorialDirector {
     readonly match: SherpasMatch,
     private readonly deps: TutorialDeps,
   ) {
+    // T115: mientras dura el tutorial el Ricachón SE AGARRA a la tabla (cling
+    // del plank): las demos/turnos escoran y antes lo despachaban — la demo no
+    // se podía terminar porque el rico caía a mitad del guion.
+    this.match.tutorialCling = true;
     this.ui = new TutorialGuiadoUI(deps.hudRoot, {
       onSkip: () => this.skip(),
       onCta: () => this.advance(),
@@ -462,6 +467,33 @@ export class TutorialDirector {
   }
   flash(): void { this.ui.flash(this.t("guiado.flash"), this.time); }
   setMash(p: 0 | 1, on: boolean): void { this.mash[p] = on; }
+
+  /** T115 (petición del jugador): «compensa los movimientos con el otro
+   *  sherpa» — tras CADA arrastre del profesor, el AZUL repite el gesto a una
+   *  presa cercana (misma zona de pared): la pareja se mantiene nivelada y la
+   *  tabla no se escora. Best-effort: sin presa libre cerca se queda como está
+   *  (el cling del ricachón evita el desliz) y NUNCA rompe el guion. */
+  compensateDrag(limb: Limb, x: number, y: number): void {
+    if (this.detached) return;
+    const go = (cx: number, cy: number): boolean => {
+      const hold = this.match.devHoldNear(cx, cy, { maxDist: 1.3, minDy: -0.7, maxDy: 0.7 });
+      if (!hold) return false;
+      const rig = this.match.devRig(STUDENT);
+      if (!rig.beginDrag(limb)) return false;
+      rig.moveDrag(v3(hold.x, hold.y, this.wallFrontZ()));
+      this.match.devDragUp(STUDENT, limb, hold.x, hold.y);
+      return true;
+    };
+    try {
+      const mine = this.match.devRig(TEACHER).gripHoldId(limb);
+      // evita LA MISMA presa que acaba de agarrar el profesor (primer intento
+      // centrado en ella; si coincide, segundo intento desplazado)
+      const h0 = this.match.devHoldNear(x, y, { maxDist: 1.3, minDy: -0.7, maxDy: 0.7 });
+      if (!h0) return;
+      if (mine && h0.id === mine) { if (!go(x + 0.75, y + 0.3)) go(x - 0.75, y + 0.2); }
+      else go(x, y);
+    } catch { /* compensación opcional */ }
+  }
   richPos(): V3 {
     return (this.match as unknown as { rich?: { pelvis(): V3 } }).rich?.pelvis() ?? v3(0, 1, 0);
   }
@@ -504,6 +536,15 @@ export class TutorialDirector {
   }
 
   private updateUi(step: StepDef): void {
+    // T115: la tarjeta ESQUIVA la acción — se pone en el lado contrario al
+    // punto de foco proyectado (el texto nunca tapa lo que hay que hacer).
+    try {
+      const f = step.focus(this, this.st);
+      const p = f ? this.deps.project(f.p.x, f.p.y, f.p.z) : null;
+      if (p && Number.isFinite(p.x)) {
+        this.ui.setCardSide(p.x > window.innerWidth / 2 ? "left" : "right");
+      }
+    } catch { /* sin foco: la tarjeta se queda donde está */ }
     const body = step.bodyFn ? step.bodyFn(this) : step.bodyKey ? tutRich(this.t(step.bodyKey)) : "";
     this.ui.setStep({
       index: this.idx,
@@ -578,6 +619,7 @@ export class TutorialDirector {
     this.detached = true;
     this.setMash(TEACHER, false); this.setMash(STUDENT, false);
     this.match.tutLock = false;
+    this.match.tutorialCling = false; // T115: la tabla vuelve a ser exigente
     this.deps.dragLock.player = null;
     this.deps.camPin(null);
     this.ui.hide();

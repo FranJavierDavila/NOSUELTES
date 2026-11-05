@@ -1299,7 +1299,7 @@ export class SherpaScene {
     {
       const wingField = this.rockField
         ?? makeRockField(rockFromData(null), this.reliefWallW, this.reliefFaceZ);
-      const wingAngle = 0.49; // ~28°: abiertas hacia adelante sin comerse el plano
+      const wingAngle = -0.49; // T115: inclinadas HACIA ATRÁS (antes +0.49, a cámara)
       const wingLen = Math.max(2.6, this.reliefWallW * 0.32);
       const wingY1 = Math.max(6, this.reliefTopY);
       const wingMat = this.ensureMassifRockMaterial();
@@ -1308,11 +1308,15 @@ export class SherpaScene {
       for (const side of [-1, 1] as const) {
         // paso 18 cm: el relieve de la silueta no necesita la retícula fina del
         // muro jugable (1,2 cm) — 7× menos triángulos estáticos por ala.
-        // T113 — overlapM 0,7: el ala nace 0,7 m ANTES del canto, enterrada en
-        // el grosor del muro → la junta ala-muro NUNCA se abre (las rayas
-        // verdes del jugador). thicknessM 0,55: losa con volumen 3D como el
-        // muro (cara trasera + tapas), no un papel plano.
-        const g = buildRockWing(wingField, side, wingAngle, wingLen, -0.5, wingY1, 0.18, 0.22, 0.7, 0.55,
+        // T115 (petición del jugador con captura): las alas se INCLINAN HACIA
+        // ATRÁS (wingAngle negativo: u=(side·cosA, 0, +|sinA|) se aleja de la
+        // cámara) — como están ahora (V abierta adelante) la derecha se ve de
+        // canto desde el campamento como una LOSA VERTICAL A PLOMO detrás de
+        // la cabaña. Inclinadas hacia atrás leen como valle y la cara interior
+        // mira a los jugadores. T115 — overlapM 1,2 (la junta ala-muro nace
+        // MÁS enterrada: la costura nunca se ve ni con la nueva inclinación) y
+        // thicknessM 0,9 (más volumen 3D, «que dé la sensación de pared»).
+        const g = buildRockWing(wingField, side, wingAngle, wingLen, -0.5, wingY1, 0.18, 0.22, 1.2, 0.9,
           this.rockTintCfg?.enabled ? this.rockTintCfg : undefined, side === 1 ? 901 : 902);
         for (let k = 0; k < g.uvs.length; k++) g.uvs[k]! /= TILE_M;
         const wm = new Mesh(`sideWall${side < 0 ? "L" : "R"}`, this.scene);
@@ -1533,14 +1537,15 @@ export class SherpaScene {
           this.baseCampStats.cabinTex = painted > 0;
         } catch (err) { console.warn("[basecamp] textura base_cabana.jpg no aplicada:", err); }
         // T110 — HUMO DE LA CHIMENEA en SU SITIO (petición: «el humo debe salir
-        // perfectamente de la chimenea de la caseta»): el GLB de Tripo es UNA
-        // malla horneada, así que la boca se fija por GEOMETRÍA. T114 — ya no
-        // por un punto local horneado + correcciones mágicas (la transformada
-        // del GLB quedó 0,26 m ALTA y 1,26 m a la IZQUIERDA del tubo real,
-        // captura del jugador): la boca se MIDE del propio GLB en caliente.
-        // El tubo es lo que sobresale del techo: clúster de vértices del
-        // MUNDO por encima de (máxY − 0,25) — el borde del tubo (diámetro
-        // ~0,2 m; verificado en cortes 0.12/0.2/0.3, convergencia ±2 cm).
+        // perfectamente de la chimenea de la caseta»). El GLB de Tripo es UNA
+        // malla horneada con DOS mástiles: el TUBO de la chimenea (grueso, con
+        // tapa) y el POSTE de banderines (fino y más alto). T114 medía el
+        // clúster del techo por encima de maxY−0,25 y PILLÓ EL POSTE (captura
+        // del jugador con X roja: el humo salía de las banderillas). T115 — la
+        // boca es lo GRUESO que sobresale: franjas de 8 cm por debajo del pico,
+        // clúster xz conectado por franja; el tubo es el que en su franja más
+        // alta tiene una huella REDONDA y ANCHA (min span ≥ 0,18 m — la tapa
+        // mide ~0,3; el poste ≤ 0,17) y persiste ≥ 2 franjas con centro fijo.
         try {
           root.computeWorldMatrix(true);
           // la hornada buena es la de MÁS VÉRTICES (la cabaña horneada;
@@ -1555,29 +1560,85 @@ export class SherpaScene {
             const pos = mesh0.getVerticesData("position");
             if (pos && pos.length >= 30) {
               const M = mesh0.getWorldMatrix().m; // fila-mayor; v' = M·v
+              const wv: { x: number; y: number; z: number }[] = [];
               let maxY = -1e9;
-              const top: { x: number; z: number }[] = [];
               for (let i = 0; i < pos.length; i += 3) {
                 const x = pos[i]!, y = pos[i + 1]!, z = pos[i + 2]!;
-                const wy = M[1] * x + M[5] * y + M[9] * z + M[13];
-                if (wy > maxY) maxY = wy;
+                const v = {
+                  x: M[0] * x + M[4] * y + M[8] * z + M[12],
+                  y: M[1] * x + M[5] * y + M[9] * z + M[13],
+                  z: M[2] * x + M[6] * y + M[10] * z + M[14],
+                };
+                wv.push(v);
+                if (v.y > maxY) maxY = v.y;
               }
-              const CORTE = 0.25;
-              let sx = 0, sz = 0, n = 0, minX = 1e9, maxX = -1e9, minZ = 1e9, maxZ = -1e9;
-              for (let i = 0; i < pos.length; i += 3) {
-                const x = pos[i]!, y = pos[i + 1]!, z = pos[i + 2]!;
-                const wx = M[0] * x + M[4] * y + M[8] * z + M[12];
-                const wy = M[1] * x + M[5] * y + M[9] * z + M[13];
-                if (wy <= maxY - CORTE) continue;
-                const wz = M[2] * x + M[6] * y + M[10] * z + M[14];
-                top.push({ x: wx, z: wz });
-                sx += wx; sz += wz; n++;
-                if (wx < minX) minX = wx; if (wx > maxX) maxX = wx;
-                if (wz < minZ) minZ = wz; if (wz > maxZ) maxZ = wz;
+              // clústeres conectados de una franja (celdas de 7 cm, 8-vecinos)
+              const CELL = 0.07, FRANJA = 0.08;
+              const clustersOf = (lo: number, hi: number): { cx: number; cz: number; top: number; minSpan: number; ratio: number; n: number }[] => {
+                const pts = wv.filter((v) => v.y > lo && v.y <= hi);
+                if (pts.length < 4) return [];
+                const grid = new Map<string, { x: number; z: number }[]>();
+                for (const p of pts) {
+                  const k = `${Math.round(p.x / CELL)}:${Math.round(p.z / CELL)}`;
+                  (grid.get(k) ?? grid.set(k, []).get(k)!).push({ x: p.x, z: p.z });
+                }
+                const seen = new Set<string>();
+                const out: { cx: number; cz: number; top: number; minSpan: number; ratio: number; n: number }[] = [];
+                for (const k of grid.keys()) {
+                  if (seen.has(k)) continue;
+                  const stack = [k]; seen.add(k);
+                  let sx = 0, sz = 0, n = 0, mnx = 1e9, mxx = -1e9, mnz = 1e9, mxz = -1e9;
+                  while (stack.length) {
+                    const ck = stack.pop()!;
+                    for (const p of grid.get(ck)!) {
+                      sx += p.x; sz += p.z; n++;
+                      if (p.x < mnx) mnx = p.x; if (p.x > mxx) mxx = p.x;
+                      if (p.z < mnz) mnz = p.z; if (p.z > mxz) mxz = p.z;
+                    }
+                    const [cx, cz] = ck.split(":").map(Number);
+                    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+                      const nk = `${cx + dx}:${cz + dz}`;
+                      if (grid.has(nk) && !seen.has(nk)) { seen.add(nk); stack.push(nk); }
+                    }
+                  }
+                  if (n >= 4) {
+                    const spx = mxx - mnx, spz = mxz - mnz;
+                    out.push({ cx: sx / n, cz: sz / n, top: hi, minSpan: Math.min(spx, spz), ratio: Math.max(spx, spz) / Math.max(0.01, Math.min(spx, spz)), n });
+                  }
+                }
+                return out.sort((a, b) => b.n - a.n).slice(0, 4);
+              };
+              // el TUBO: en su franja más alta su huella es una TAPA redonda
+              // (ratio ≤ 1,6 — una bandera cuelga alargada, ratio ~2) y ancha
+              // (0,18–0,5 m); persiste ≥ 2 franjas (es un tubo, no un encaje).
+              // Los candidatos se emparejan por PROXIMIDAD (≤ 12 cm): por
+              // retícula, dos franjas del mismo tubo caen en celdas distintas
+              // y el tubo muere con hits=1 (bug T115 detectado en la E2E).
+              type Cand = { x: number; z: number; top: number; topMinSpan: number; hits: number };
+              const cands: Cand[] = [];
+              for (let top = maxY; top > maxY - 0.9; top -= FRANJA) {
+                for (const c of clustersOf(top - FRANJA, top)) {
+                  const cur = cands.find(
+                    (q) => Math.hypot(q.x - c.cx, q.z - c.cz) < 0.12);
+                  if (!cur) {
+                    cands.push({ x: c.cx, z: c.cz, top: c.top, topMinSpan: c.minSpan, hits: 1 });
+                    continue;
+                  }
+                  if (c.top > cur.top) { cur.top = c.top; cur.topMinSpan = c.minSpan; cur.x = c.cx; cur.z = c.cz; }
+                  cur.hits++;
+                }
               }
-              // válido si es un aro compacto (no la cresta entera del techo)
-              if (n >= 8 && maxX - minX < 0.6 && maxZ - minZ < 0.6 && maxY > 0.5) {
-                mouth = new Vector3(sx / n, maxY - 0.03, sz / n);
+              let best: Cand | null = null;
+              for (const c of cands) {
+                if (c.hits < 2 || c.topMinSpan < 0.18 || c.topMinSpan > 0.5) continue;
+                const fr = clustersOf(c.top - FRANJA, c.top).find(
+                  (q) => Math.hypot(q.cx - c.x, q.cz - c.z) < 0.12);
+                if (!fr || fr.ratio > 1.6) continue;
+                if (!best || c.topMinSpan > best.topMinSpan) best = c;
+              }
+              if (best && maxY > 0.5) {
+                // la boca queda EN la tapa: un pelín por encima del borde alto
+                mouth = new Vector3(best.x, best.top + 0.05, best.z);
               }
             }
           }

@@ -96,8 +96,8 @@ export class TutorialGuiadoUI {
         <div class="text-[13px] font-semibold text-green-200/90" id="tg-now-sub"></div>
       </div>
       <div id="tg-flash" class="absolute left-1/2 top-1/2 hidden text-[52px] font-black text-green-300" style="transform: translate(-50%,-50%); paint-order: stroke; stroke: #052e12; stroke-width: 10px; stroke-linejoin: round;"></div>
-      <div id="tg-card" class="absolute left-1/2 top-3 w-[min(30rem,calc(100vw-1.5rem))] -translate-x-1/2 opacity-0" style="will-change: opacity">
-        <div id="tg-panel" class="rounded-2xl border border-amber-500/30 bg-zinc-950/95 p-4 shadow-[0_10px_44px_rgba(0,0,0,0.65)] backdrop-blur-md">
+      <div id="tg-card" class="absolute top-3 w-[min(21rem,44vw)] opacity-0" style="will-change: opacity; left: 0.75rem">
+        <div id="tg-panel" class="rounded-2xl border border-amber-500/30 bg-zinc-950/80 p-3.5 shadow-[0_10px_44px_rgba(0,0,0,0.65)] backdrop-blur-md">
           <div class="flex items-center justify-between gap-2">
             <span class="rounded-full bg-amber-500/15 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.18em] text-amber-300" id="tg-badge">Paso 1</span>
             <div class="flex items-center gap-1">
@@ -150,6 +150,17 @@ export class TutorialGuiadoUI {
   dispose(): void {
     this.wrap.remove();
   }
+
+  /** T115 (petición: «los paneles no deben ocultar las acciones»): la tarjeta
+   *  se COLOCA EN EL LADO OPUESTO al punto de acción de cada paso — el director
+   *  la mueve según dónde está el objetivo proyectado en pantalla. */
+  setCardSide(side: "left" | "right"): void {
+    if (this.cardSide === side) return;
+    this.cardSide = side;
+    this.card.style.left = side === "left" ? "0.75rem" : "auto";
+    this.card.style.right = side === "right" ? "0.75rem" : "auto";
+  }
+  private cardSide: "left" | "right" = "left";
 
   /** Pinta el paso (solo si cambió) y el estado de fase (banner AHORA TÚ). */
   setStep(v: TutStepView, nowSub: string, time: number): void {

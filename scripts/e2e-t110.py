@@ -157,6 +157,13 @@ try:
                       and abs(emitter["y"] - boca["y"]) < 0.35
                       and abs(emitter["z"] - boca["z"]) < 0.35)
         check("F2c) emisor del humo EN LA BOCA MEDIDA del tubo", ok_pos, f"emitter={emitter} boca={boca}")
+        # T115: la boca es el TUBO (4.88,-1.71, tapa ~0.3 m medida por franjas),
+        # NO el poste de banderillas (5.96,-3.62) que T114 pillaba por error
+        ok_tubo = bool(emitter
+                       and abs(emitter["x"] - 4.88) < 0.5
+                       and abs(emitter["z"] - (-1.71)) < 0.5
+                       and 2.3 < emitter["y"] < 3.1)
+        check("F2c2) emisor en el TUBO de la chimenea (no en el poste)", ok_tubo, f"emitter={emitter}")
         massif_mat = probe(host, """(() => {
           const sc = window.__SHERPAS_DEBUG && __SHERPAS_DEBUG.sceneObj && __SHERPAS_DEBUG.sceneObj();
           const m = sc && sc.scene && sc.scene.getMeshByName && sc.scene.getMeshByName('sideMassifs');

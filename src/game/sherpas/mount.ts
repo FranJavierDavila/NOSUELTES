@@ -158,41 +158,62 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
   });
   // ---------- T108e CHAT DE VOZ (T109a: ruta de audio ROBUSTA) ----------
   // Sesión activa → micrófono ON automáticamente (ambos lados, el MISMO canal
-  // P2P que el resto). El audio REMOTO se reproduce por un AudioContext
-  // compartido: los navegadores bloquean <audio autoplay> sin gesto reciente
-  // (el síntoma era «no se oye nada en ninguno»), así que el contexto se
-  // DESBLOQUEA en el primer toque/tecla y en cada gesto si seguía suspendido.
-  // Si el permiso se rechaza, el juego sigue igual (chip en rojo, reintentable).
-  let voiceCtx: AudioContext | null = null;
-  let voiceCtxTried = false;
-  const unlockVoiceAudio = (): void => {
-    try {
-      if (!voiceCtx) {
-        const Ctor: typeof AudioContext | undefined =
-          window.AudioContext ??
-          (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-        if (!Ctor) return;
-        voiceCtx = new Ctor();
-        voiceCtxTried = true;
-      }
-      if (voiceCtx.state !== "running") void voiceCtx.resume();
-    } catch { /* sin WebAudio: queda la vía de siempre */ }
-  };
-  document.addEventListener("pointerdown", unlockVoiceAudio, true);
-  document.addEventListener("keydown", unlockVoiceAudio, true);
-  unlockVoiceAudio(); // en cuanto haya gesto alguno el contexto queda vivo
+  // P2P que el resto). T115 — reproducción ROBUSTA del audio remoto: un
+  // <audio> oculto por stream. El camino anterior (solo WebAudio) se quedaba
+  // MUDO en producción: el AudioContext nacía suspendido (aún sin gesto) y un
+  // MediaStreamSource creado mientras el contexto NO corre pierde el stream
+  // para siempre (Chrome con streams WebRTC remotos). El <audio srcObject> es
+  // la vía que todos los navegadores reproducen; como exige gesto para sonar,
+  // cada toque/tecla vuelve a pedir .play() mientras siga pausado.
+  const remoteAudios = new Map<MediaStream, HTMLAudioElement>();
+  let webaudioRescue = false; // el rescate WebAudio solo se intenta una vez
   const voiceNet = (): import("./net/netClient").NetEndpoint | null =>
     state.hostNet ?? state.guestNet;
   const voicePlayRemote = (stream: MediaStream): void => {
     try {
-      if (!voiceCtx) unlockVoiceAudio();
-      if (!voiceCtx) return;
-      const src = voiceCtx.createMediaStreamSource(stream);
-      const gain = voiceCtx.createGain();
-      gain.gain.value = 1.5; // el mic del portátil llega flojo
-      src.connect(gain);
-      gain.connect(voiceCtx.destination);
-    } catch { /* stream ya cerrado o sin WebAudio */ }
+      if (remoteAudios.has(stream)) return;
+      const el = document.createElement("audio");
+      el.srcObject = stream;
+      el.autoplay = true;
+      el.muted = false;
+      el.volume = 1;
+      el.setAttribute("playsinline", "");
+      el.style.cssText = "position:fixed;left:-2px;top:-2px;width:1px;height:1px;opacity:0;pointer-events:none;";
+      document.body.appendChild(el);
+      remoteAudios.set(stream, el);
+      // rescate: si el navegador NUNCA deja arrancar el elemento, el mismo
+      // gesto que intenta .play() monta la cadena WebAudio (a estas alturas
+      // el gesto ya ha resumido cualquier contexto).
+      const rescue = (): void => {
+        if (webaudioRescue) return;
+        webaudioRescue = true;
+        try {
+          const Ctor: typeof AudioContext | undefined =
+            window.AudioContext ??
+            (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+          if (!Ctor) return;
+          const ctx = new Ctor();
+          const src = ctx.createMediaStreamSource(stream);
+          const gain = ctx.createGain();
+          gain.gain.value = 1.5; // el mic del portátil llega flojo
+          src.connect(gain);
+          gain.connect(ctx.destination);
+          if (ctx.state !== "running") void ctx.resume();
+        } catch { /* sin WebAudio */ }
+      };
+      const kick = (): void => {
+        if (el.paused && !el.ended) el.play().catch(() => rescue());
+      };
+      kick();
+      document.addEventListener("pointerdown", kick, true);
+      document.addEventListener("keydown", kick, true);
+      stream.getAudioTracks()[0]?.addEventListener("ended", () => {
+        document.removeEventListener("pointerdown", kick, true);
+        document.removeEventListener("keydown", kick, true);
+        el.remove();
+        remoteAudios.delete(stream);
+      });
+    } catch { /* stream ya cerrado o sin DOM */ }
   };
   const startVoice = (): void => {
     const net = voiceNet();
@@ -710,6 +731,12 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         for (const s of net.remoteStreams) return s;
         return null;
       },
+      /** T115 E2E: estado de los <audio> remotos (deben estar playing con el
+       *  tiempo avanzando — no basta con que el stream llegue). */
+      voiceDiag: (): { paused: boolean; t: number; ready: number }[] =>
+        [...remoteAudios.values()].map((el) => ({
+          paused: el.paused, t: +el.currentTime.toFixed(2), ready: el.readyState,
+        })),
       /** T47 SOL ORBITAL: dirección/posición del sol (E2E: el azimut sigue el
        *  yaw de la órbita y a yaw 0 restaura EXACTO). null si aún no hay luz. */
       sun: (): { dx: number; dy: number; dz: number; px: number; py: number; pz: number } | null => {

@@ -1182,7 +1182,9 @@ export class SherpasMatch {
       wobble,
       ropeWindX,
       windShake,
-      ropeHeld: [heldA, heldB],
+      // T115 tutorial: el ricachón se agarra a la tabla (no resbala nunca;
+      // recentrado fuerte — el mecanismo ya existente del seguro de cuerda).
+      ropeHeld: [heldA || this.tutorialCling, heldB || this.tutorialCling],
       moveSherpa: (p, delta) => {
         const w = this.sherpas[p].rig.particles[P.pelvisC];
         w.pos = vAdd(w.pos, delta);
@@ -2791,6 +2793,13 @@ export class SherpasMatch {
   /** T114: bloquea la entrada del JUGADOR (fases cinemática/demo del tutorial):
    *  el ratón no arranca drags y el mixer del tutorial filtra el teclado. */
   tutLock = false;
+
+  /** T115 TUTORIAL: el Ricachón SE AGARRA a la tabla mientras dura el tutorial
+   *  (el mismo mecanismo «cling» del seguro de cuerda, Task 36): las demos y
+   *  los turnos escoran la tabla y antes el rico resbalaba y se caía a mitad
+   *  del guion — la demo era imposible de terminar. El director lo activa al
+   *  crearse y lo apaga al terminar/saltar. */
+  tutorialCling = false;
 
   /** T114 DEV: re-cuelga el equipo en un tramo concreto (panel de supervisión).
    *  camp/cp/cumbre usan el MISMO doRespawn que caídas y guardados (tabla
