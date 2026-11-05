@@ -536,15 +536,12 @@ export class TutorialDirector {
   }
 
   private updateUi(step: StepDef): void {
-    // T115: la tarjeta ESQUIVA la acción — se pone en el lado contrario al
-    // punto de foco proyectado (el texto nunca tapa lo que hay que hacer).
-    try {
-      const f = step.focus(this, this.st);
-      const p = f ? this.deps.project(f.p.x, f.p.y, f.p.z) : null;
-      if (p && Number.isFinite(p.x)) {
-        this.ui.setCardSide(p.x > window.innerWidth / 2 ? "left" : "right");
-      }
-    } catch { /* sin foco: la tarjeta se queda donde está */ }
+    // T116 — TARJETA SIEMPRE EN EL MISMO SITIO (petición del jugador: «el
+    // texto explicativo anda saltando de forma continua entre los dos lados
+    // de la pantalla»): el esquivado por pasos del T115 la hacía bailar de un
+    // lado a otro cada vez que cambiaba el foco. Fija a la IZQUIERDA durante
+    // todo el tutorial: cero saltos, siempre donde se espera.
+    this.ui.setCardSide("left");
     const body = step.bodyFn ? step.bodyFn(this) : step.bodyKey ? tutRich(this.t(step.bodyKey)) : "";
     this.ui.setStep({
       index: this.idx,

@@ -1202,7 +1202,13 @@ export class SherpaScene {
    *  encima (massifSnow). Sonda E2E: massifTris = triángulos del respaldo. */
   private buildSideBackdrop(halfW: number, faceZ: number, topY: number): void {
     const baseMat = this.ensureBaseRockMaterial();
-    const width = (halfW + 7.4) * 2;
+    // T116 — SIN PANELES DE FONDO (petición del jugador con captura: «las
+    // paredes del fondo que dijimos de suprimir siguen ahí»): el respaldo
+    // medía (halfW+7,4)·2 — 7,4 m de pared rayada asomando por CADA lado del
+    // muro (7,8 m) más allá de las alas. Ahora solo 1,6 m de margen: queda
+    // OCULTO tras el muro y las alas (cierra los nichos igual) y a los lados
+    // se ve el cielo, no más paneles.
+    const width = (halfW + 1.6) * 2;
     const height = topY + 8;
     const back = MeshBuilder.CreateBox("massifBack", { width, height: height + 2, depth: 2.6 }, this.scene);
     back.position.set(0, (height + 2) / 2 - 2, 5.2);
@@ -1302,7 +1308,13 @@ export class SherpaScene {
       const wingAngle = -0.49; // T115: inclinadas HACIA ATRÁS (antes +0.49, a cámara)
       const wingLen = Math.max(2.6, this.reliefWallW * 0.32);
       const wingY1 = Math.max(6, this.reliefTopY);
-      const wingMat = this.ensureMassifRockMaterial();
+      // T116 — MUROS DE CIERRE LISOS (petición del jugador con captura: «las
+      // paredes laterales que cierran el muro NO generan desplazamiento como
+      // el muro escalable»): la loseta generateChunk lleva las FISURAS blancas
+      // de vía pintadas — en las alas leían como rayas de escalada. Material
+      // propio sin albedo horneado: tinte del muro + tinte por vértice
+      // (AO/macizo/líquenes) y un grano débil de bump.
+      const wingMat = this.ensureWingPlainMaterial();
       const TILE_M = 6.4; // loseta horneada del material: UVs en metros → losetas
       let wingTris = 0;
       for (const side of [-1, 1] as const) {
@@ -1316,7 +1328,10 @@ export class SherpaScene {
         // mira a los jugadores. T115 — overlapM 1,2 (la junta ala-muro nace
         // MÁS enterrada: la costura nunca se ve ni con la nueva inclinación) y
         // thicknessM 0,9 (más volumen 3D, «que dé la sensación de pared»).
-        const g = buildRockWing(wingField, side, wingAngle, wingLen, -0.5, wingY1, 0.18, 0.22, 1.2, 0.9,
+        // T116 — dScale 0: SIN desplazamiento geométrico (muro liso de cierre;
+        // antes 0,22 copiaba el relieve del campo escalable). Overlap 1,2 y
+        // thickness 0,9 se quedan (junta sellada + volumen 3D del T115).
+        const g = buildRockWing(wingField, side, wingAngle, wingLen, -0.5, wingY1, 0.18, 0, 1.2, 0.9,
           this.rockTintCfg?.enabled ? this.rockTintCfg : undefined, side === 1 ? 901 : 902);
         for (let k = 0; k < g.uvs.length; k++) g.uvs[k]! /= TILE_M;
         const wm = new Mesh(`sideWall${side < 0 ? "L" : "R"}`, this.scene);
@@ -1685,27 +1700,35 @@ export class SherpaScene {
    *  que decaen con la altura hasta desaparecer, pero por lo menos deben subir
    *  3 o 4 metros, y reaccionar con las rachas de viento»; antes: puffs que
    *  flotaban lineales y un pegote blanco nacido en el aire). Física de pluma
-   *  boyante (Morton, Taylor & Turner 1956, J. Fluid Mech. 10:201 — el modelo
-   *  clásico de chimeneas): (1) nace estrecha y rápida en la boca; (2) se FRENA
-   *  al entrainar aire frío — v ≈ v0 − k·t con piso ~0,24 m/s → integra 3-4 m;
-   *  (3) se ENSANCHA como cono de ~14°: r ≈ r0·(0,62+0,24·Δz); (4) la opacidad
-   *  DECAE EXPONENCIALMENTE con la ALTURA (α ∝ e^(−Δz/1,35)), no con la edad:
-   *  el humo se disipa al subir; (5) turbulencia: remolino sinusoidal por
+ *  boyante (Morton, Taylor & Turner 1956, J. Fluid Mech. 10:201 — el modelo
+ *  clásico de chimeneas): (1) nace estrecha y rápida en la boca; (2) se FRENA
+ *  al entrainar aire frío — v ≈ v0 − k·t con piso ~0,24 m/s; (3) se ENSANCHA
+ *  como cono de ~14°: r ≈ r0·(0,62+0,24·Δz); (4) la opacidad DECAE
+ *  EXPONENCIALMENTE con la ALTURA (T116: α ∝ e^(−Δz/5,2) — disipación lenta:
+ *  la columna sube ~8 m sin cortarse; antes moría a 4,2 m y a 3 m ya era
+ *  invisible); (5) turbulencia: remolino sinusoidal por
    *  partícula que crece con Δz; (6) la RACHA (setWind → gravity.x en vivo)
    *  dobla la pluma MÁS arriba que abajo (el humo viejo es liviano) y entre
    *  rachas la mece la brisa. updater propio: el de Babylon no sabe frenar,
    *  ensanchar ni disipar por cota. */
   private startChimneySmoke(worldPos: Vector3): void {
     if (!this.scene || this.chimneySmoke) return;
-    const ps = new ParticleSystem("chimenea", 170, this.scene);
+    // T116 — COLUMNA CONTINUA (petición del jugador: «el humo empieza bien
+    // pero desaparece»): antes moría por cota 4,2 m y la opacidad caía con
+    // e^(−Δz/1,35) — a 3 m ya era invisible. Ahora la pluma sube ~8 m en una
+    // columna que NO se corta: vida 13-17 s (capacidad 22/s·17 s ≈ 400),
+    // disipación lenta e^(−Δz/5,2) y muerte por cota 13 m (mucho más arriba
+    // de lo que alcanza a verse desde el campamento). El frenado por
+    // entrainment y el cono se quedan (T113).
+    const ps = new ParticleSystem("chimenea", 460, this.scene);
     ps.particleTexture = this.fxTexture;
     const y0 = worldPos.y - 0.05;
     ps.emitter = new Vector3(worldPos.x, y0, worldPos.z); // EN la boca del tubo
     ps.minEmitBox = new Vector3(-0.04, 0, -0.04);
     ps.maxEmitBox = new Vector3(0.04, 0.05, 0.04);
     ps.minSize = 0.22; ps.maxSize = 0.4; // nace ESTRECHA: el cono hace el resto
-    ps.minLifeTime = 5; ps.maxLifeTime = 7.5;
-    ps.emitRate = 26; // hilo CONTINUO: siempre hay humo saliendo
+    ps.minLifeTime = 13; ps.maxLifeTime = 17;
+    ps.emitRate = 22; // hilo CONTINUO: siempre hay humo saliendo
     ps.blendMode = ParticleSystem.BLENDMODE_STANDARD;
     ps.direction1 = new Vector3(-0.04, 0.92, -0.03);
     ps.direction2 = new Vector3(0.07, 1.18, 0.05);
@@ -1737,21 +1760,22 @@ export class SherpaScene {
         p.position.y += p.direction.y * dt;
         p.position.z += p.direction.z * dt;
         // (3) cono de ensanchamiento + giro perezoso del billboard
-        p.size = Math.min(1.9, m.base * (0.62 + 0.24 * Math.max(0, dz)));
+        p.size = Math.min(2.9, m.base * (0.62 + 0.24 * Math.max(0, dz)));
         p.angle += dt * 0.5;
-        // (4) opacidad por COTA: entrada 0,25 s → e^(−Δz/1,35) → cierre final
+        // (4) opacidad por COTA: entrada 0,25 s → e^(−Δz/5,2) (T116: disipación
+        // LENTA — la columna sigue visible a 6-8 m) → cierre final
         const fadeIn = Math.min(1, p.age / 0.25);
         const endFade = Math.max(0, Math.min(1, (p.lifeTime - p.age) / 0.6));
-        const a = 0.82 * fadeIn * Math.exp(-Math.max(0, dz) / 1.35) * endFade;
+        const a = 0.82 * fadeIn * Math.exp(-Math.max(0, dz) / 5.2) * endFade;
         const cool = Math.min(1, Math.max(0, dz) / 4); // se enfría: azul tenue arriba
         p.color.r = 0.84 - 0.04 * cool;
         p.color.g = 0.85 - 0.02 * cool;
         p.color.b = 0.88 + 0.05 * cool;
         p.color.a = a;
         p.age += dt;
-        // muerte por COTA (3-4 m) o por vida → reciclar (idioma del updater por
-        // defecto: swap con la última + respawn)
-        if (p.age >= p.lifeTime || dz > 4.2) {
+        // muerte por COTA (13 m, T116) o por vida → reciclar (idioma del
+        // updater por defecto: swap con la última + respawn)
+        if (p.age >= p.lifeTime || dz > 13) {
           p.age = p.lifeTime;
           inner.recycleParticle(p);
           index--;
@@ -1958,6 +1982,33 @@ export class SherpaScene {
     // pedriza: geometría perfecta, vetas solo con este material). La loseta
     // horneada del muro + su bump ya llevan el tratamiento de piedra.
     this.massifRockMat = m;
+    return m;
+  }
+
+  /** T112 — MATERIAL DE LA ROCA DEL MURO (antes inline en reliefBuildChunk):
+   *  extraído para que las ALAS LATERALES (buildRockWing) compartan la MISMA
+  /** T116 — MATERIAL LISO de los MUROS DE CIERRE laterales: sin la loseta
+   *  horneada (sus fisuras blancas de vía leían como «desplazamiento de muro
+   *  escalable» en las alas) — tinte del muro + color por vértice y un bump
+   *  de grano procedural débil (roca lisa, sin vías). */
+  private wingPlainMat: PBRMaterial | null = null;
+  private ensureWingPlainMaterial(): PBRMaterial {
+    if (this.wingPlainMat) return this.wingPlainMat;
+    const m = new PBRMaterial("wingPlainM", this.scene);
+    const nrm = rockNormalRGBA(256, ROCK_SEED ^ 0x2b91, 0.4);
+    const nTex = RawTexture.CreateRGBATexture(nrm, 256, 256, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
+    nTex.wrapU = Texture.WRAP_ADDRESSMODE;
+    nTex.wrapV = Texture.WRAP_ADDRESSMODE;
+    nTex.uScale = 5.3; // uv en losetas de 6,4 m → veta cada ~1,2 m
+    nTex.vScale = 5.3;
+    nTex.anisotropicFilteringLevel = 4;
+    m.bumpTexture = nTex;
+    m.bumpTexture.level = 0.55;
+    m.albedoColor = new Color3(1.14, 0.76, 0.62); // EL MISMO tinte del muro (T110)
+    m.metallic = 0;
+    m.roughness = 0.95;
+    m.backFaceCulling = false; // las alas se ven por detrás al orbitar
+    this.wingPlainMat = m;
     return m;
   }
 

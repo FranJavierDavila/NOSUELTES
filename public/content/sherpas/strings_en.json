@@ -280,50 +280,50 @@
    "cima": "TO THE SUMMIT!"
   },
   "hint": {
-   "mover": "Press and DRAG a RED limb to a green-ring hold… or use arrows + I O K L",
-   "mochila": "Press Y (arms the anchor) and release a RED HAND on the wall",
+   "mover": "Press and drag a RED limb to a green ring on the wall",
+   "mochila": "Press Y and release a RED HAND on the wall",
    "seguro": "Press J with the RED sherpa",
-   "asaco": "MASH N non-stop until the meter passes the line!"
+   "asaco": "Mash N non-stop until the meter passes the line"
   },
   "s1": {
    "title": "The goal",
-   "body": "**Carry the Rich Man to the TOP of the wall without dropping him.** Two sherpas climb at the same height carrying his plank. Camps and checkpoints keep your progress."
+   "body": "**Carry the plank with the Rich Man on it to the top.** If the plank tips too far, he falls and the run ends. The GREEN sherpa shows you every move first; then you repeat it with the RED one."
   },
   "s2": {
-   "title": "Moving: drag",
-   "body": "Watch the GREEN sherpa: **press a limb, drag it** to a nearby free hold (green ring) and **release**: it sticks. Keyboard works too: aim with `W A S D`, grip/release with `1 2 3 4`."
+   "title": "Moving: drag a hold",
+   "body": "Watch the GREEN sherpa: **press one of his limbs and, without releasing, drag it** to another hold on the wall. Let go there. That is all it takes to climb."
   },
   "s3": {
-   "title": "Your turn: move",
-   "body": "Move **one limb of the RED sherpa** to a nearby hold: with the **mouse** (press, drag, release) or **arrows + `I O K L`**."
+   "title": "Your turn: move the RED one",
+   "body": "With the mouse: **press a limb of the RED sherpa, drag it to a green-ring hold and release.** Keyboard also works (arrows + I O K L)."
   },
   "s4": {
-   "title": "The backpack: 10 anchors",
-   "body": "No holds nearby? Each sherpa carries **up to 10 portable anchors**. Watch the GREEN sherpa: press `T` (the anchor stays in hand) and **hammer it** by releasing the hand on the wall."
+   "title": "The backpack: portable anchors",
+   "body": "No holds nearby? Each sherpa carries **10 anchors in his backpack**. The GREEN sherpa presses **Y**: the anchor is armed in his hand; then he **releases the hand on the wall** and it sticks right there."
   },
   "s5": {
-   "title": "Your turn: place one",
-   "body": "With the RED sherpa: press `Y` — the anchor is ARMED in the hand — then **release a hand on the wall** to hammer it."
+   "title": "Your turn: place an anchor",
+   "body": "With the RED sherpa: press **Y** (the anchor arms in the hand) and **release one of his hands on the wall**, wherever you want it."
   },
   "s6": {
    "title": "The safety anchor",
-   "body": "If your partner **falls**, anchor yourself: with the **safety anchor** on, the rope catches the fall better and you pull with more support. Watch the GREEN sherpa: press `Q`."
+   "body": "Before your partner takes risks, anchor YOURSELF: press **J** and the safety anchor will catch you if you fall. The GREEN sherpa does it now."
   },
   "s7": {
-   "title": "Your turn: anchor",
-   "body": "Press `J` with the RED sherpa to set YOUR safety anchor."
+   "title": "Your turn: anchor up",
+   "body": "Press **J** with the RED sherpa: your safety anchor is on. Now you can take risks without fearing the fall."
   },
   "s8": {
    "title": "MASH IT! (rescue)",
-   "body": "If someone hangs from the rope, **BOTH of you mash** the effort key at the same time: the meter must pass the line to climb. Watch: the GREEN sherpa fell and both are mashing."
+   "body": "The GREEN sherpa fell and hangs from the rope. To climb back you must **BOTH mash the effort key AT THE SAME TIME**: the meter has to pass the line. Watch them do it!"
   },
   "s9": {
-   "title": "MASH IT! your turn",
-   "body": "The GREEN sherpa fell again. **MASH `N` NON-STOP** (he is mashing his) until he recovers the wall. Without force he slides… don't let him touch the ground!"
+   "title": "Your turn: mash it!",
+   "body": "The GREEN sherpa hangs again. **MASH N non-stop** (he is already mashing his) until he recovers the wall. If you stop, he slides toward the ground…"
   },
   "s10": {
    "title": "Surprises ahead",
-   "body": "And **watch out for the surprises you'll find on the way**: wind gusts, birds, falling rocks… **and things you can't imagine yet.** If someone falls: anchor, impulse and mash!"
+   "body": "Wind gusts, birds, falling rocks… **the mountain sets traps.** If anyone falls, you already know the drill: safety anchor, effort and mash!"
   },
   "s11": {
    "title": "It's all yours!",

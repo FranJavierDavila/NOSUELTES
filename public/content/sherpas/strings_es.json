@@ -280,50 +280,50 @@
    "cima": "¡HASTA LA CIMA!"
   },
   "hint": {
-   "mover": "Pulsa y ARRASTRA una extremidad del ROJO hasta un anclaje con aro verde… o usa flechas + I O K L",
-   "mochila": "Pulsa Y (arma el anclaje) y suelta una MANO del ROJO sobre la pared",
+   "mover": "Pulsa y arrastra una extremidad del ROJO hasta un aro verde de la pared",
+   "mochila": "Pulsa Y y suelta una MANO del ROJO sobre la pared",
    "seguro": "Pulsa J con el sherpa ROJO",
-   "asaco": "¡Machaca N SIN PARAR hasta pasar la raya del medidor!"
+   "asaco": "Machaca N sin parar hasta pasar la raya del medidor"
   },
   "s1": {
    "title": "El objetivo",
-   "body": "**Llevar al Ricachón a LO ALTO de la pared sin que se caiga.** Dos sherpas suben a la misma altura portando su tabla con el ricachón sentado. Hay campamentos y cotas que guardan vuestro progreso."
+   "body": "**Lleváis a lo más alto la tabla con el Ricachón sentado.** Si la tabla se tuerce mucho, cae y se acaba la partida. Cada movimiento te lo enseña primero el sherpa VERDE; después lo repites tú con el ROJO."
   },
   "s2": {
-   "title": "Moverse: arrastra",
-   "body": "Mira al sherpa VERDE: **pulsa una extremidad, arrástrala** hasta un anclaje cercano disponible (aro verde) y **suéltala**: se fija. También con teclado: apunta con `W A S D` y fija/suelta con `1 2 3 4`."
+   "title": "Moverse: arrastra una presa",
+   "body": "Mira al VERDE: **pulsa una de sus extremidades y, sin soltar, arrástrala** hasta otra presa de la pared. Suelta ahí. Eso es todo: así se sube."
   },
   "s3": {
-   "title": "Ahora tú: muévete",
-   "body": "Mueve **una extremidad del sherpa ROJO** a un anclaje cercano: con el **ratón** (pulsa, arrastra, suelta) o con **flechas + `I O K L`**."
+   "title": "Tu turno: mueve al ROJO",
+   "body": "Con el ratón: **pulsa una extremidad del sherpa ROJO, arrástrala hasta una presa con aro verde y suelta.** También puedes usar el teclado (flechas + I O K L)."
   },
   "s4": {
-   "title": "La mochila: 10 anclajes",
-   "body": "¿Sin anclajes cerca? Cada sherpa lleva **hasta 10 anclajes portátiles** en la mochila. Mira al VERDE: pulsa `T` (el anclaje queda en la mano) y **clávalo** soltando la mano sobre la pared."
+   "title": "La mochila: anclajes portátiles",
+   "body": "¿No hay presas cerca? Cada sherpa lleva **10 anclajes en la mochila**. El VERDE pulsa **Y**: el anclaje queda armado en su mano; luego **suelta la mano sobre la pared** y queda clavado ahí mismo."
   },
   "s5": {
-   "title": "Ahora tú: clava uno",
-   "body": "Con el sherpa ROJO: pulsa `Y` — el anclaje queda ARMADO en la mano — y **suelta una mano sobre la pared** para clavarlo."
+   "title": "Tu turno: clava un anclaje",
+   "body": "Con el sherpa ROJO: pulsa **Y** (el anclaje se arma en la mano) y **suelta una de sus manos sobre la pared**, donde quieras dejarlo."
   },
   "s6": {
    "title": "El ancla de seguro",
-   "body": "Si tu compañero **cae**, fíjate tú a la pared: con el **ancla de seguro** activa, la cuerda frena mejor la caída y tiras con más apoyo. Mira al VERDE: pulsa `Q`."
+   "body": "Antes de que tu compañero arriesgue, fíjate TÚ a la pared: pulsa **J** y el ancla de seguro te sujetará si caes. El VERDE lo hace ahora."
   },
   "s7": {
-   "title": "Ahora tú: fíjate",
-   "body": "Pulsa `J` con el sherpa ROJO para activar TU ancla de seguro."
+   "title": "Tu turno: fíjate",
+   "body": "Pulsa **J** con el sherpa ROJO: tu ancla de seguro queda activa. Ya puedes arriesgarte sin miedo a la caída."
   },
   "s8": {
-   "title": "¡A SACO! (rescate)",
-   "body": "Si alguien queda **COLGADO** de la cuerda, machacad **LOS DOS** la tecla de esfuerzo a la vez: el medidor debe superar la raya para trepar. Mira: el VERDE se ha caído y los dos pulsan."
+   "title": "¡A SACO!: el rescate",
+   "body": "El VERDE se ha caído y cuelga de la cuerda. Para trepar de nuevo hay que **machacar la tecla de esfuerzo LOS DOS A LA VEZ**: el medidor debe pasar la raya. ¡Mira cómo lo hacen!"
   },
   "s9": {
-   "title": "¡A SACO! contigo",
-   "body": "El VERDE se ha vuelto a colgar. **Machaca `N` SIN PARAR** (él ya pulsa la suya) hasta que recupere la pared. Si no llega a fuerza, se desliza… ¡no dejes que toque el suelo!"
+   "title": "Tu turno: ¡a saco!",
+   "body": "El VERDE vuelve a colgar. **Machaca N sin parar** (él ya pulsa la suya) hasta que recupere la pared. Si os detenéis, se desliza hacia el suelo…"
   },
   "s10": {
    "title": "Sorpresas del camino",
-   "body": "Y **cuidado con las sorpresas que te encontrarás por el camino**: rachas de viento, pájaros, pedrizas que caen… **y cosas que aún no te imaginas.** Si alguien cae: seguro, impulso y ¡a saco!"
+   "body": "Rachas de viento, pájaros, pedrizas que caen… **la montaña pone trampas.** Si alguien cae, ya lo sabes hacer: ancla de seguro, impulso y ¡a saco!"
   },
   "s11": {
    "title": "¡Todo tuyo!",

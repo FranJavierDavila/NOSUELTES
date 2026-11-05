@@ -88,6 +88,14 @@ export class RichManSim {
   private gestureKind: RichGesture = "ninguno";
   private gestureStart = 0;
   private walkPhase = 0;
+  /** T116 — MODO SERENO (tutorial): la pose FILTRA su entrada (slide/ángulo
+   *  con paso lento de ~0,9 s) y suprime gestos. Con el cling activo la tabla
+   *  recentraba el deslizamiento a saco y las demos la sacudían: el ragdoll
+   *  latigaba (manos retorcidas, articulaciones rotas). El filtro hace que el
+   *  cuerpo solo vea movimiento perezoso — sentado tranquilo, respirando. */
+  calm = false;
+  private calmSlide = 0;
+  private calmAngle = 0;
   /** 0 = sentado, 1 = de pie (fundido suave entre poses — ahora en OBJETIVOS:
    *  los huesos miden lo mismo durante todo el fundido). */
   private blend = 0;
@@ -215,6 +223,8 @@ export class RichManSim {
     this.standing = false;
     this.walkDir = 0;
     this.blend = 0;
+    this.calmSlide = slide; // T116: reset del filtro (sin arrastre del pasado)
+    this.calmAngle = angle;
     this.setGesture("ninguno", time);
     this.rig.snap(this.baseTargets(slide, angle, time, 0));
     this.pose(center, angle, slide, time);
@@ -231,10 +241,21 @@ export class RichManSim {
     let dt = time - this.lastPoseTime;
     if (!(dt > 0) || dt > 0.25) dt = 1 / 60;
     this.lastPoseTime = time;
+    if (this.calm) {
+      // T116 — filtro de entrada: el cuerpo NUNCA ve el tirón seco de la
+      // tabla (recentre del cling, sacudidas de demo), solo su media lenta.
+      const k = 1 - Math.exp(-dt / 0.9);
+      this.calmSlide += (slide - this.calmSlide) * k;
+      this.calmAngle += (angle - this.calmAngle) * k;
+      slide = this.calmSlide;
+      angle = this.calmAngle;
+    }
     this.blend += ((this.standing ? 1 : 0) - this.blend) * Math.min(1, dt * 3.4);
     this.walkPhase += dt * (this.walkDir !== 0 ? 7.5 : 1.2);
     const g = this.gestureKind;
-    const kind: RichGesture = time < this.ostentateUntil ? "exaltado" : g;
+    const kind: RichGesture = this.calm
+      ? "ninguno" // sereno: sin gestos que retuerzan manos/brazos
+      : (time < this.ostentateUntil ? "exaltado" : g);
     const target = this.baseTargets(slide, angle, time, this.blend, this.walkPhase, this.walkDir);
     this.applyGesture(target, kind, time - this.gestureStart, time);
     this.rig.step(dt, target);

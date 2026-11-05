@@ -1327,7 +1327,11 @@ export class SherpasMatch {
       // la tabla se sacudía con el viento y el rico iba con el ángulo SECO —
       // vibrieren uno contra otro (el «temblequeo raro»). Un solo ángulo:
       // tabla + ricachón + cajas se mueven como UN cuerpo sólido.
-      this.rich.pose(ps.center, ps.angle + ps.angleShake, ps.slide, this.simTime);
+      // T116 — SERENO en el tutorial: sin sacudida visual y con el filtro de
+      // calm activo — las demos recentraban la tabla a saco (cling) y el
+      // ragdoll latigaba (manos retorcidas, articulaciones rotas).
+      this.rich.calm = this.tutorialCling;
+      this.rich.pose(ps.center, this.tutorialCling ? ps.angle : ps.angle + ps.angleShake, ps.slide, this.simTime);
     }
     const rmInfo = this.rich.step(dt);
     if (rmInfo.bumpWall > 1) {
