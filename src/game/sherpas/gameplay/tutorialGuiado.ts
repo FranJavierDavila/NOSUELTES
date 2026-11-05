@@ -44,6 +44,9 @@ export interface TutorialDeps {
   project(x: number, y: number, z: number): { x: number; y: number } | null;
   /** cámara: scene.setCamPin (null libera). */
   camPin(p: { x: number; y: number; z: number } | null, dist?: number): void;
+  /** T117: órbita al FRENTE de la pared (el menú la deja de canto y el
+   *  primer plano del tutorial amanecía como una losa gris ilegible). */
+  resetOrbit(): void;
   /** objeto COMPARTIDO del mount (el mismo que lee el match). */
   dragLock: { player: 0 | 1 | null };
   /** al terminar o saltar (el mount marca el onboarding como visto). */
@@ -165,28 +168,41 @@ function gripBaseline(rig: SherpaRig): Record<string, string | null> {
   return out;
 }
 
-/** script listo → "ok" (los pasos de demo terminan cuando su guion acaba). */
-function scriptDone(d: TutorialDirector, s: StepState, dt: number): "wait" | "ok" {
-  return s.script?.tick(d, dt) ?? true ? "ok" : "wait";
+/** T117 — BUCLE DE DEMO (petición del jugador: «el sherpa verde debe repetir
+ *  cada paso hasta que queramos nosotros intentarlo»): cuando el guion acaba,
+ *  una pausa corta y RE-ENSAYA (rearmDemo re-ejecuta el enter del paso, con
+ *  objetivos frescos y consumibles repuestos). El paso SOLO avanza cuando el
+ *  jugador pulsa el CTA «Intentar yo» — nunca por tiempo. */
+function demoLoop(d: TutorialDirector, s: StepState, dt: number): "wait" | "ok" {
+  const done = s.script ? s.script.tick(d, dt) : true;
+  if (done) {
+    s.data.loopPause = ((s.data.loopPause as number) ?? 0) + dt;
+    if ((s.data.loopPause as number) > 1.2) {
+      s.data.loopPause = 0;
+      d.rearmDemo();
+    }
+  }
+  return "wait";
 }
 
 const STEPS: StepDef[] = [
   {
     id: "objetivo", phase: "cine", titleKey: "guiado.s1.title", bodyKey: "guiado.s1.body",
     ctaKey: "guiado.cta.ok",
-    enter: () => { /* cámara por fases en focus() */ },
+    enter: (d) => { d.orbitFront(); }, // T117: la cámara amanece SIEMPRE al frente
     tick: () => "wait", // manual: CTA «Entendido»
     arrows: (d, s) => {
-      if (s.t < 3.0) return [];
-      const r = d.richPos();
-      return [{ from: r, to: v3(r.x, r.y + 2.4, r.z), label: d.t("guiado.arrow.cima"), color: AMBER }];
+      if (s.t < 3.2) return []; // en el plano del Ricachón: sin flechas
+      const r = d.summit();
+      return [{ from: v3(r.x, r.y - 7, r.z), to: r, label: d.t("guiado.arrow.cima"), color: AMBER }];
     },
-    focus: (d, s) => s.t < 3.0
-      ? { p: d.summit(), dist: 46 }   // primero LA CIMA: a donde hay que llegar
-      : { p: d.richPos(), dist: 6 },  // luego el Ricachón: a quien llevamos
+    focus: (d, s) => s.t < 3.2
+      ? { p: d.richPos(), dist: 7 }   // primero A QUIÉN llevamos: el Ricachón en su tabla (legible de cerca)
+      : { p: d.summit(), dist: 26 },  // luego HASTA DÓNDE: la cima con la pared de fondo (26 m, no una mancha gris)
   },
   {
     id: "mover_demo", phase: "demo", titleKey: "guiado.s2.title", bodyKey: "guiado.s2.body",
+    ctaKey: "guiado.cta.intentar", // T117: en bucle hasta que el jugador quiera probar
     enter: (d, s) => {
       const rig = d.match.devRig(TEACHER);
       const hand = rig.limbPos("hand_r");
@@ -199,7 +215,7 @@ const STEPS: StepDef[] = [
         { k: "wait", s: 0.9 },
       ]);
     },
-    tick: scriptDone,
+    tick: demoLoop,
     arrows: (d, s) => {
       const tg = s.data.target as { x: number; y: number } | undefined;
       if (!tg) return [];
@@ -240,6 +256,7 @@ const STEPS: StepDef[] = [
   },
   {
     id: "mochila_demo", phase: "demo", titleKey: "guiado.s4.title", bodyKey: "guiado.s4.body",
+    ctaKey: "guiado.cta.intentar", // T117: en bucle hasta que el jugador quiera probar
     enter: (d, s) => {
       const rig = d.match.devRig(TEACHER);
       const hand = rig.limbPos("hand_r");
@@ -257,7 +274,7 @@ const STEPS: StepDef[] = [
         { k: "wait", s: 1.0 },
       ]);
     },
-    tick: scriptDone,
+    tick: demoLoop,
     arrows: (d, s) => {
       const spot = s.data.spot as { x: number; y: number } | undefined;
       if (!spot) return [];
@@ -293,14 +310,22 @@ const STEPS: StepDef[] = [
   },
   {
     id: "seguro_demo", phase: "demo", titleKey: "guiado.s6.title", bodyKey: "guiado.s6.body",
-    enter: (_d, s) => {
-      s.script = new ScriptRunner([
-        { k: "wait", s: 0.7 },
-        { k: "call", fn: (dd) => dd.match.debugForce("ancla", TEACHER) }, // pipeline REAL (validaciones incluidas)
-        { k: "wait", s: 1.4 },
-      ]);
+    ctaKey: "guiado.cta.intentar", // T117: en bucle hasta que el jugador quiera probar
+    enter: (d, s) => {
+      // T117 bucle: debugForce("ancla") ALTERNA — si el profesor ya está fijo,
+      // primero lo suelta (para volver a enseñar el gesto en cada repetición).
+      const acts: ScriptAction[] = d.match.devRig(TEACHER).belaying
+        ? [
+          { k: "call", fn: (dd) => dd.match.debugForce("ancla", TEACHER) }, // lo suelta
+          { k: "wait", s: 0.5 },
+        ]
+        : [];
+      acts.push({ k: "wait", s: 0.7 });
+      acts.push({ k: "call", fn: (dd) => dd.match.debugForce("ancla", TEACHER) }); // pipeline REAL (validaciones incluidas)
+      acts.push({ k: "wait", s: 1.4 });
+      s.script = new ScriptRunner(acts);
     },
-    tick: scriptDone,
+    tick: demoLoop,
     arrows: (d) => {
       const w = d.match.devRig(TEACHER).waist();
       return [{ from: v3(w.x, w.y + 1.7, w.z), to: w, label: d.t("guiado.arrow.ancla"), color: AMBER }];
@@ -328,23 +353,40 @@ const STEPS: StepDef[] = [
   },
   {
     id: "asaco_demo", phase: "demo", titleKey: "guiado.s8.title", bodyKey: "guiado.s8.body",
-    enter: (_d, s) => {
+    ctaKey: "guiado.cta.intentar", // T117: en bucle hasta que el jugador quiera probar
+    enter: (d, s) => {
       s.data.sawHang = false;
-      s.script = new ScriptRunner([
-        { k: "call", fn: (dd) => { try { dd.match.debugForce("ancla", TEACHER); } catch { /* no estaba */ } } },
-        { k: "wait", s: 0.5 },
-        { k: "call", fn: (dd) => dd.match.debugForce("caida", TEACHER) }, // caída REAL → cuelga de la cuerda
-        { k: "wait", s: 1.4 }, // gracia de la ventana de a saco
-        { k: "mash", on: true, p: TEACHER }, { k: "mash", on: true, p: STUDENT }, // LOS DOS
-      ]);
+      s.data.rescued = false;
+      // T117 bucle: el ancla SOLO se fuerza si no está ya puesta (alternaría);
+      // tras el rescate de la repetición anterior sigue puesta — no se toca.
+      const acts: ScriptAction[] = d.match.devRig(TEACHER).belaying
+        ? []
+        : [
+          { k: "call", fn: (dd) => { try { dd.match.debugForce("ancla", TEACHER); } catch { /* no estaba */ } } },
+          { k: "wait", s: 0.5 },
+        ];
+      acts.push({ k: "call", fn: (dd) => dd.match.debugForce("caida", TEACHER) }); // caída REAL → cuelga de la cuerda
+      acts.push({ k: "wait", s: 1.4 }); // gracia de la ventana de a saco
+      acts.push({ k: "mash", on: true, p: TEACHER });
+      acts.push({ k: "mash", on: true, p: STUDENT }); // LOS DOS
+      s.script = new ScriptRunner(acts);
     },
     tick: (d, s, dt) => {
       const st = d.match.devRig(TEACHER).ropeState;
       if (st !== "climbing") s.data.sawHang = true;
       s.script?.tick(d, dt);
-      if (s.data.sawHang && st === "climbing") {
+      if ((s.data.sawHang as boolean) && st === "climbing") {
         d.setMash(TEACHER, false); d.setMash(STUDENT, false);
-        return "ok";
+        s.data.sawHang = false; // rescatado: listo para el SIGUIENTE bucle
+        s.data.rescued = true;
+      }
+      if (s.data.rescued && s.script?.done) {
+        // T117 bucle: pausa y OTRA caída — repite el rescate hasta «Intentar yo»
+        s.data.loopPause = ((s.data.loopPause as number) ?? 0) + dt;
+        if ((s.data.loopPause as number) > 1.4) {
+          s.data.loopPause = 0;
+          d.rearmDemo();
+        }
       }
       return "wait";
     },
@@ -451,6 +493,8 @@ export class TutorialDirector {
     // del plank): las demos/turnos escoran y antes lo despachaban — la demo no
     // se podía terminar porque el rico caía a mitad del guion.
     this.match.tutorialCling = true;
+    // T117: la cámara amanece DE FRENTE (el menú la deja de canto → «losa gris»)
+    try { this.deps.resetOrbit(); } catch { /* sin escena: nada */ }
     this.ui = new TutorialGuiadoUI(deps.hudRoot, {
       onSkip: () => this.skip(),
       onCta: () => this.advance(),
@@ -499,6 +543,24 @@ export class TutorialDirector {
   }
   summit(): V3 { return v3(0, this.match.tutorialTotalHeightM(), this.match.tutorialWallFrontZ()); }
   wallFrontZ(): number { return this.match.tutorialWallFrontZ(); }
+
+  /** T117: órbita al frente (los pasos de cine la re-fuerzan al entrar). */
+  orbitFront(): void {
+    try { this.deps.resetOrbit(); } catch { /* sin escena: nada */ }
+  }
+
+  /** T117 — RE-ENSAYA la demo del paso ACTUAL (bucle «hasta que queramos
+   *  intentarlo»): re-ejecuta el enter() del paso demo — guion nuevo con
+   *  objetivos frescos (la mano ya está donde dejó la repetición anterior) —
+   *  y repone los consumibles (mochila) para que el bucle nunca se quede seco.
+   *  NUNCA avanza el paso: eso solo lo decide el jugador con «Intentar yo». */
+  rearmDemo(): void {
+    if (this.detached) return;
+    const step = STEPS[this.idx];
+    if (!step || step.phase !== "demo") return;
+    try { this.match.devRefillPortables(); } catch { /* sin mochila: seguir */ }
+    try { step.enter(this, this.st); } catch { /* sin guion: esperar */ }
+  }
 
   /** EL mixer llama aquí cada frame (poll del match). Devuelve los intents
    *  que el match aplica: en demo/cine NADA del jugador (solo los sintéticos
@@ -551,6 +613,8 @@ export class TutorialDirector {
       phase: step.phase,
       cta: step.ctaKey ? this.t(step.ctaKey) : null,
       repeatable: !!step.demoId,
+      // T117: en demo, aviso de que el verde REPITE el paso en bucle
+      loopHint: step.phase === "demo" ? this.t("guiado.loop") : null,
     }, this.t("guiado.nowSub"), this.time);
     const arrows: ArrowPx[] = [];
     let list: { from: V3; to: V3; label: string; color: string }[] = [];

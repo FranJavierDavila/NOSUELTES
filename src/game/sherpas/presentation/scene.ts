@@ -204,6 +204,21 @@ export class SherpaScene {
     this.camPin = p ? new Vector3(p.x, p.y, p.z) : null;
     this.camPinDist = (p && Number.isFinite(dist)) ? dist! : null;
   }
+
+  /** T117 — ÓRBITA AL FRENTE (petición del jugador: «cuando le das a tutorial
+   *  te aparece una losa gris que no sé qué es»): el menú deja la órbita donde
+   *  la dejara el jugador (o su deriva) y el primer plano del tutorial
+   *  amanecía DE CANTO o tras la pared — una losa ilegible. Yaw 0 = cámara
+   *  delante de la cara de escalada (convención del updateCamera). */
+  resetOrbitFront(): void {
+    this.orbitYaw = 0;
+    this.orbitYawGoal = 0;
+    this.orbitPitch = 0;
+    this.orbitPitchGoal = 0;
+    this.orbitIdle = 0;
+    this.freeViewOn = false;
+    this.fvReturn = false;
+  }
   private camDist = 7;
   private shakeAmp = 0;
   /** ÓRBITA LATERAL (T45) + VERTICAL y AUTO-RETORNO (T46): yaw/pitch actual y
@@ -1308,13 +1323,13 @@ export class SherpaScene {
       const wingAngle = -0.49; // T115: inclinadas HACIA ATRÁS (antes +0.49, a cámara)
       const wingLen = Math.max(2.6, this.reliefWallW * 0.32);
       const wingY1 = Math.max(6, this.reliefTopY);
-      // T116 — MUROS DE CIERRE LISOS (petición del jugador con captura: «las
-      // paredes laterales que cierran el muro NO generan desplazamiento como
-      // el muro escalable»): la loseta generateChunk lleva las FISURAS blancas
-      // de vía pintadas — en las alas leían como rayas de escalada. Material
-      // propio sin albedo horneado: tinte del muro + tinte por vértice
-      // (AO/macizo/líquenes) y un grano débil de bump.
-      const wingMat = this.ensureWingPlainMaterial();
+      // T117 — LA MISMA PIEDRA QUE EL MURO (petición EXPLÍCITA del jugador:
+      // «nunca dije laterales lisos, todo lo contrario: mismo material que la
+      // pared escalable»): la loseta horneada generateChunk (la del muro) con
+      // su relieve por píxel + tinte por vértice (AO/macizo/líquenes). Las
+      // alas NO son escalables (sin presas ni registro de chunks) pero la
+      // piedra se ve IGUAL que la pared jugable.
+      const wingMat = this.ensureMassifRockMaterial();
       const TILE_M = 6.4; // loseta horneada del material: UVs en metros → losetas
       let wingTris = 0;
       for (const side of [-1, 1] as const) {
@@ -1328,10 +1343,11 @@ export class SherpaScene {
         // mira a los jugadores. T115 — overlapM 1,2 (la junta ala-muro nace
         // MÁS enterrada: la costura nunca se ve ni con la nueva inclinación) y
         // thicknessM 0,9 (más volumen 3D, «que dé la sensación de pared»).
-        // T116 — dScale 0: SIN desplazamiento geométrico (muro liso de cierre;
-        // antes 0,22 copiaba el relieve del campo escalable). Overlap 1,2 y
-        // thickness 0,9 se quedan (junta sellada + volumen 3D del T115).
-        const g = buildRockWing(wingField, side, wingAngle, wingLen, -0.5, wingY1, 0.18, 0, 1.2, 0.9,
+        // T117 — dScale 0,22 (como T113/T115): desplazamiento GEOMÉTRICO del
+        // campo — la cara de las alas abomba y se hunde como la del muro
+        // escalable (petición explícita: «mismo material», y el desplazamiento
+        // era la queja original). Overlap 1,2 y thickness 0,9 se quedan.
+        const g = buildRockWing(wingField, side, wingAngle, wingLen, -0.5, wingY1, 0.18, 0.22, 1.2, 0.9,
           this.rockTintCfg?.enabled ? this.rockTintCfg : undefined, side === 1 ? 901 : 902);
         for (let k = 0; k < g.uvs.length; k++) g.uvs[k]! /= TILE_M;
         const wm = new Mesh(`sideWall${side < 0 ? "L" : "R"}`, this.scene);
@@ -1944,12 +1960,12 @@ export class SherpaScene {
     }
   }
 
-  /** T112 — MATERIAL «QUESO DEL MURO» para las ALAS LATERALES: loseta de roca
-   *  horneada con el MISMO generateChunk del muro diaclasado (512² → 6,4 m,
-   *  detalle ~1,25 cm/px), tinte IGUAL al de los chunks (1.14/0.76/0.62, T110)
-   *  + estratos triplanar + capa climática. Las alas son literalmente «más
-   *  muro» — mismo tratamiento que la zona escalable (petición del jugador).
-   *  (Receta T110 de los macizos, recuperada para las alas T112.) */
+  /** T117 — MATERIAL DE LAS ALAS LATERALES: LA MISMA LOSETA HORNEADA DEL MURO
+   *  (petición explícita del jugador: «mismo material que la pared escalable»,
+   *  revoca el liso del T116). generateChunk con la MISMA semilla/celda que
+   *  usaba el ala en T113–T115: colorMap + normalMap de la piedra del muro,
+   *  tinte idéntico y roughness de roca. Sin plugins triplanar (en la
+   *  superficie casi vertical proyectaban bandas — T112 A/B). */
   private massifRockMat: PBRMaterial | null = null;
   private ensureMassifRockMaterial(): PBRMaterial {
     if (this.massifRockMat) return this.massifRockMat;
@@ -1977,38 +1993,7 @@ export class SherpaScene {
     m.metallic = 0;
     m.roughness = 0.93;
     m.backFaceCulling = false; // las alas se ven por detrás al orbitar
-    // T112 — SIN plugins (estratos triplanar / clima): en la superficie casi
-    // vertical del ala proyectaban BANDAS VERTICALES (diagnóstico A/B con la
-    // pedriza: geometría perfecta, vetas solo con este material). La loseta
-    // horneada del muro + su bump ya llevan el tratamiento de piedra.
     this.massifRockMat = m;
-    return m;
-  }
-
-  /** T112 — MATERIAL DE LA ROCA DEL MURO (antes inline en reliefBuildChunk):
-   *  extraído para que las ALAS LATERALES (buildRockWing) compartan la MISMA
-  /** T116 — MATERIAL LISO de los MUROS DE CIERRE laterales: sin la loseta
-   *  horneada (sus fisuras blancas de vía leían como «desplazamiento de muro
-   *  escalable» en las alas) — tinte del muro + color por vértice y un bump
-   *  de grano procedural débil (roca lisa, sin vías). */
-  private wingPlainMat: PBRMaterial | null = null;
-  private ensureWingPlainMaterial(): PBRMaterial {
-    if (this.wingPlainMat) return this.wingPlainMat;
-    const m = new PBRMaterial("wingPlainM", this.scene);
-    const nrm = rockNormalRGBA(256, ROCK_SEED ^ 0x2b91, 0.4);
-    const nTex = RawTexture.CreateRGBATexture(nrm, 256, 256, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
-    nTex.wrapU = Texture.WRAP_ADDRESSMODE;
-    nTex.wrapV = Texture.WRAP_ADDRESSMODE;
-    nTex.uScale = 5.3; // uv en losetas de 6,4 m → veta cada ~1,2 m
-    nTex.vScale = 5.3;
-    nTex.anisotropicFilteringLevel = 4;
-    m.bumpTexture = nTex;
-    m.bumpTexture.level = 0.55;
-    m.albedoColor = new Color3(1.14, 0.76, 0.62); // EL MISMO tinte del muro (T110)
-    m.metallic = 0;
-    m.roughness = 0.95;
-    m.backFaceCulling = false; // las alas se ven por detrás al orbitar
-    this.wingPlainMat = m;
     return m;
   }
 

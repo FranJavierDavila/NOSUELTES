@@ -602,6 +602,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         hudRoot: opts.hudRoot,
         project: projectWorld,
         camPin: (p, dist) => { try { scene.setCamPin(p, dist); } catch { /* escena fuera */ } },
+        resetOrbit: () => { try { scene.resetOrbitFront(); } catch { /* escena fuera */ } }, // T117
         dragLock: state.dragLock,
         onDone: () => markOnboardingSeen(browserStore()),
       });

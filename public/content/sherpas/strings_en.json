@@ -269,7 +269,8 @@
   "cta": {
    "ok": "Got it",
    "vamos": "Let's go!",
-   "escalar": "GO CLIMB!"
+   "escalar": "GO CLIMB!",
+   "intentar": "I'll try it"
   },
   "arrow": {
    "arrastra": "DRAG",
@@ -287,48 +288,49 @@
   },
   "s1": {
    "title": "The goal",
-   "body": "**Carry the plank with the Rich Man on it to the top.** If the plank tips too far, he falls and the run ends. The GREEN sherpa shows you every move first; then you repeat it with the RED one."
+   "body": "**Carry the Rich Man, seated on his plank, to the top of the wall.**\nIf the plank tips too far, he falls and the run ends.\nThe GREEN sherpa shows you every move — on repeat — until you say when; then you do it with the RED one."
   },
   "s2": {
-   "title": "Moving: drag a hold",
-   "body": "Watch the GREEN sherpa: **press one of his limbs and, without releasing, drag it** to another hold on the wall. Let go there. That is all it takes to climb."
+   "title": "How you climb: drag a hold",
+   "body": "Watch the GREEN sherpa:\n**1.** Press one of his limbs and hold the click.\n**2.** Drag it to another hold.\n**3.** Release: he grips there.\nThat is the whole game: repeat this over and over."
   },
   "s3": {
    "title": "Your turn: move the RED one",
-   "body": "With the mouse: **press a limb of the RED sherpa, drag it to a green-ring hold and release.** Keyboard also works (arrows + I O K L)."
+   "body": "Do the same with the RED sherpa:\n**press a limb, drag it to a hold with a green ring and release.**"
   },
   "s4": {
-   "title": "The backpack: portable anchors",
-   "body": "No holds nearby? Each sherpa carries **10 anchors in his backpack**. The GREEN sherpa presses **Y**: the anchor is armed in his hand; then he **releases the hand on the wall** and it sticks right there."
+   "title": "The backpack: placing anchors",
+   "body": "No holds nearby? Each sherpa carries **10 anchors in his backpack**.\nThe GREEN one presses **Y**: the anchor arms in his hand.\nThen he **releases the hand on the wall** and the anchor stays hammered there."
   },
   "s5": {
    "title": "Your turn: place an anchor",
-   "body": "With the RED sherpa: press **Y** (the anchor arms in the hand) and **release one of his hands on the wall**, wherever you want it."
+   "body": "With the RED one:\n**1.** Press **Y** (the anchor arms in the hand).\n**2.** Release one of his hands on the wall, wherever you want it."
   },
   "s6": {
    "title": "The safety anchor",
-   "body": "Before your partner takes risks, anchor YOURSELF: press **J** and the safety anchor will catch you if you fall. The GREEN sherpa does it now."
+   "body": "The safety anchor HOLDS you to the wall: if you fall, you never reach the ground.\nThe GREEN one presses **J** and stays put."
   },
   "s7": {
    "title": "Your turn: anchor up",
-   "body": "Press **J** with the RED sherpa: your safety anchor is on. Now you can take risks without fearing the fall."
+   "body": "Press **J** with the RED sherpa:\n**your safety anchor is ON.** Now you can take risks without fear."
   },
   "s8": {
    "title": "MASH IT! (rescue)",
-   "body": "The GREEN sherpa fell and hangs from the rope. To climb back you must **BOTH mash the effort key AT THE SAME TIME**: the meter has to pass the line. Watch them do it!"
+   "body": "If anyone falls, he hangs from the rope and must be rescued:\n**BOTH of you mash the effort key AT THE SAME TIME** (`C` for RED and `N` for GREEN) until the meter passes the line.\nWatch how the GREEN one does it."
   },
   "s9": {
    "title": "Your turn: mash it!",
-   "body": "The GREEN sherpa hangs again. **MASH N non-stop** (he is already mashing his) until he recovers the wall. If you stop, he slides toward the ground…"
+   "body": "The GREEN one hangs from the rope (he is already mashing his key):\n**MASH `N` non-stop** until he grips the wall again.\nIf you stop, he slides toward the ground."
   },
   "s10": {
    "title": "Surprises ahead",
-   "body": "Wind gusts, birds, falling rocks… **the mountain sets traps.** If anyone falls, you already know the drill: safety anchor, effort and mash!"
+   "body": "The mountain sets traps: wind gusts, birds, falling rocks.\nIf anyone falls, you already know the drill: safety anchor and mash!"
   },
   "s11": {
    "title": "It's all yours!",
    "body": ""
-  }
+  },
+  "loop": "🔁 The GREEN sherpa repeats the step. Press «I'll try it» whenever you want a go."
  },
  "dev": {
   "title": "🛠 DEV MODE · wall sections",

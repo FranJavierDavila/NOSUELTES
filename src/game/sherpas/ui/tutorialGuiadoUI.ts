@@ -25,6 +25,8 @@ export interface TutStepView {
   phase: "demo" | "turno" | "cine";
   cta: string | null;
   repeatable: boolean;
+  /** T117: aviso de demo EN BUCLE (solo fase demo). */
+  loopHint?: string | null;
 }
 
 export interface TutGuiadoCallbacks {
@@ -36,11 +38,12 @@ export interface TutGuiadoCallbacks {
 const AMBER = "#fbbf24";
 const GREEN = "#5ad46a";
 
-/** escape + markup rico: **negrita** y `tecla` → chip kbd. */
+/** escape + markup rico: **negrita**, `tecla` → chip kbd y salto de línea. */
 export function tutRich(text: string): string {
   let s = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   s = s.replace(/\*\*(.+?)\*\*/g, '<b class="font-semibold text-amber-200">$1</b>');
   s = s.replace(/`([^`]+?)`/g, '<kbd class="tg-kbd">$1</kbd>');
+  s = s.replace(/\n/g, "<br>"); // T117: párrafos cortos, una idea por línea
   return s;
 }
 
@@ -51,6 +54,7 @@ export class TutorialGuiadoUI {
   private badgeEl: HTMLElement;
   private titleEl: HTMLElement;
   private bodyEl: HTMLElement;
+  private loopEl: HTMLElement;
   private dotsEl: HTMLElement;
   private ctaBtn: HTMLButtonElement;
   private repeatBtn: HTMLButtonElement;
@@ -107,6 +111,7 @@ export class TutorialGuiadoUI {
           </div>
           <div id="tg-title" class="mt-1.5 text-[17px] font-extrabold leading-snug text-zinc-100"></div>
           <div id="tg-body" class="mt-1 text-[14px] leading-relaxed text-zinc-300"></div>
+          <div id="tg-loop" class="mt-2 hidden rounded-lg border border-amber-500/25 bg-amber-500/10 px-2.5 py-1.5 text-[12px] font-semibold text-amber-200"></div>
           <div class="mt-3 flex items-center justify-between gap-3">
             <div id="tg-dots" class="flex gap-1"></div>
             <button id="tg-cta" class="pointer-events-auto hidden rounded-lg bg-amber-500 px-4 py-2 text-[12px] font-bold text-zinc-950 shadow-lg shadow-amber-500/20 transition hover:bg-amber-400"></button>
@@ -121,6 +126,7 @@ export class TutorialGuiadoUI {
     this.badgeEl = this.wrap.querySelector("#tg-badge")!;
     this.titleEl = this.wrap.querySelector("#tg-title")!;
     this.bodyEl = this.wrap.querySelector("#tg-body")!;
+    this.loopEl = this.wrap.querySelector("#tg-loop")!;
     this.dotsEl = this.wrap.querySelector("#tg-dots")!;
     this.ctaBtn = this.wrap.querySelector("#tg-cta")!;
     this.repeatBtn = this.wrap.querySelector("#tg-repeat")!;
@@ -175,6 +181,12 @@ export class TutorialGuiadoUI {
         this.ctaBtn.classList.remove("hidden");
       } else this.ctaBtn.classList.add("hidden");
       this.repeatBtn.classList.toggle("hidden", !v.repeatable);
+      // T117 — chip de DEMO EN BUCLE: el verde repite el paso hasta que el
+      // jugador pulse «Intentar yo» (nada avanza solo).
+      if (v.phase === "demo" && v.loopHint) {
+        this.loopEl.textContent = v.loopHint;
+        this.loopEl.classList.remove("hidden");
+      } else this.loopEl.classList.add("hidden");
       this.card.classList.remove("tg-in");
       void this.card.offsetWidth;
       this.card.classList.add("tg-in");
