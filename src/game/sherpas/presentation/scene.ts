@@ -83,7 +83,7 @@ import {
   type ReliefCell, type ReliefData, type ReliefResolved, type Rect,
 } from "../world/wallRelief";
 import {
-  buildRockChunk, makeRockField, rockFromData, rockNormalRGBA, rockTextureRGBA, rockZAt, ROCK_SEED,
+  buildRockChunk, buildRockWing, makeRockField, rockFromData, rockNormalRGBA, rockTextureRGBA, rockZAt, ROCK_SEED,
   type RockData, type RockField, type RockResolved,
 } from "../world/wallRock";
 import {
@@ -105,7 +105,7 @@ import { SkinnedClimberFactory, type ClimberInstance } from "./skinnedClimber"; 
 import { SherpaPuppetFactory, type SherpaPuppetInstance } from "./sherpaPuppetFactory"; // T57: Sherpa.glb POR PIEZAS (marioneta)
 import { PartsSmoother } from "./poseSmoothing"; // T85-SMOOTH: interpolación entre movimientos (adiós marioneta)
 import {
-  buildScreeGeometry, buildSpurGeometry, resolveBaseCampCfg,
+  buildScreeGeometry, resolveBaseCampCfg,
   type BaseCampCfg, type GeomData,
 } from "../world/baseCamp"; // T56: faldones de continuidad + pedriz
 import {
@@ -518,7 +518,7 @@ export class SherpaScene {
   whenReady: Promise<void> = Promise.resolve();
   private baseCampReadyResolve: (() => void) | null = null;
   private flagWind: PlantWindPlugin | null = null; // viento propio de los banderines
-  private baseCampStats = { enabled: false, screeTris: 0, spurTris: 0, rocks: 0, cabinPieces: 0, flags: 0, smoke: false, pedrizaTex: false, massifTris: 0, snowTiles: 0, cabinTex: false };
+  private baseCampStats = { enabled: false, screeTris: 0, wingTris: 0, rocks: 0, cabinPieces: 0, flags: 0, smoke: false, pedrizaTex: false, massifTris: 0, snowTiles: 0, cabinTex: false };
   private groundTintCtx: GroundTintCtx | null = null; // T98: contexto del suelo alpino (franja de caída + campamento)
   /** T55 SONDA E2E: nº de chunks de roca con tinte por vértice aplicado. */
   rockTintChunks = 0;
@@ -843,7 +843,7 @@ export class SherpaScene {
       const t = Date.now() / 1000;
       const breeze = 0.09 * Math.sin(t * 0.45) + 0.05 * Math.sin(t * 1.27);
       const sgn = Math.sign(dir) || 1;
-      this.chimneySmoke.gravity.set(sgn * level * 1.8 + breeze, 0.07, 0.03 * Math.sin(t * 0.8));
+      this.chimneySmoke.gravity.set(sgn * level * 1.8 + breeze, 0.08, 0.03 * Math.sin(t * 0.8));
       this.chimneySmoke.direction1.x = -0.05 + sgn * level * 0.35 + breeze * 0.4;
       this.chimneySmoke.direction2.x = 0.09 + sgn * level * 0.55 + breeze * 0.4;
     }
@@ -1283,19 +1283,62 @@ export class SherpaScene {
     screeMesh.freezeWorldMatrix();
     this.baseCampStats.screeTris = scree.tris;
 
-    // FALDONES: espolón por lado que nace del borde del muro y muere en el
-    // pedriz. La costura arranca SOLAPADA 0.18 m dentro del muro (enterrada,
-    // invisible) y el material es el mismo → continuidad de color/estratos.
-    const spurs: GeomData[] = [
-      buildSpurGeometry({ dir: -1, xEdge: this.reliefWallW / 2, zFace: faceZ, topY: Math.max(6, this.reliefTopY), cfg }),
-      buildSpurGeometry({ dir: 1, xEdge: this.reliefWallW / 2, zFace: faceZ, topY: Math.max(6, this.reliefTopY), cfg }),
-    ];
-    const spurMesh = this.geomToMesh("spurs", mergeGeoms(spurs));
-    spurMesh.material = baseMat;
-    spurMesh.receiveShadows = true;
-    this.castShadow(spurMesh); // el espolón proyecta sombra sobre el pedriz
-    spurMesh.freezeWorldMatrix();
-    this.baseCampStats.spurTris = spurs.reduce((s, g) => s + g.tris, 0);
+    // T112 — DOS PAREDES LATERALES NO ESCALABLES (peticiones T111+T112 del
+    // jugador: los faldones-espolón eran «bloques de relleno» — «deben
+    // desaparecer de una vez y ser sustituidos por dos paredes verticales que
+    // salen en ángulo abierto hacia adelante con el mismo tratamiento del muro
+    // escalable»). buildRockWing: una superficie de roca CONTINUA más allá de
+    // cada canto y se dobla ~28° hacia la cámara (V abierta a los jugadores),
+    // con el MISMO material paramétrico del muro (loseta generateChunk 6,4 m +
+    // tinte de los chunks + estratos + clima) — la pared «sigue» visualmente
+    // hacia los lados. Sin presas ni registro de chunks: no se puede escalar
+    // por construcción. (El juego real usa el muro DIACLASADO por worker:
+    // this.rockField es del modo estratificado y suele ser null — el ala lleva
+    // su propio campo determinista solo para el relieve de la silueta.)
+    {
+      const wingField = this.rockField
+        ?? makeRockField(rockFromData(null), this.reliefWallW, this.reliefFaceZ);
+      const wingAngle = 0.49; // ~28°: abiertas hacia adelante sin comerse el plano
+      const wingLen = Math.max(2.6, this.reliefWallW * 0.32);
+      const wingY1 = Math.max(6, this.reliefTopY);
+      const wingMat = this.ensureMassifRockMaterial();
+      const TILE_M = 6.4; // loseta horneada del material: UVs en metros → losetas
+      let wingTris = 0;
+      for (const side of [-1, 1] as const) {
+        // paso 18 cm: el relieve de la silueta no necesita la retícula fina del
+        // muro jugable (1,2 cm) — 7× menos triángulos estáticos por ala
+        const g = buildRockWing(wingField, side, wingAngle, wingLen, -0.5, wingY1, 0.18, 0.22);
+        for (let k = 0; k < g.uvs.length; k++) g.uvs[k]! /= TILE_M;
+        const wm = new Mesh(`sideWall${side < 0 ? "L" : "R"}`, this.scene);
+        const wv = new VertexData();
+        wv.positions = new Float32Array(g.positions);
+        wv.normals = new Float32Array(g.normals);
+        // T112 — EL MISMO TRATAMIENTO que el muro: tinte por vértice
+        // (computeRockTint: AO de concavidad + variación de macizo + líquenes)
+        // multiplicado sobre la loseta horneada — rompe la planicie igual que
+        // en los chunks del muro.
+        if (this.rockTintCfg?.enabled && g.heights) {
+          wv.colors = computeRockTint({
+            positions: new Float32Array(g.positions),
+            normals: new Float32Array(g.normals),
+            h: new Float32Array(g.heights),
+            vw: Math.round(wingLen / 0.18) + 1,
+            vh: Math.round((wingY1 + 0.5) / 0.18) + 1,
+            cfg: this.rockTintCfg,
+            chunkIndex: side === 1 ? 901 : 902, // semillas propias por ala
+          });
+        }
+        wv.uvs = new Float32Array(g.uvs);
+        wv.indices = g.indices;
+        wv.applyToMesh(wm);
+        wm.material = wingMat;
+        wm.receiveShadows = true;
+        wm.isPickable = false;
+        wm.freezeWorldMatrix();
+        wingTris += g.tris;
+      }
+      this.baseCampStats.wingTris = wingTris;
+    }
 
     // T107b — ROCAS SUELTAS PROCEDURALES ELIMINADAS (petición del jugador:
     // «eliminar las piedras sueltas que has metido tú, que no tienen textura
@@ -1559,24 +1602,27 @@ export class SherpaScene {
     ps.emitter = worldPos.clone().subtract(new Vector3(0, 0.07, 0)); // EN la boca
     ps.minEmitBox = new Vector3(-0.05, 0, -0.05);
     ps.maxEmitBox = new Vector3(0.05, 0.07, 0.05);
-    ps.minSize = 0.16; ps.maxSize = 0.3;
-    ps.minLifeTime = 4.4; ps.maxLifeTime = 7.0;
-    ps.emitRate = 18; // hilo CONTINUO: siempre hay humo saliendo
+    ps.minSize = 0.28; ps.maxSize = 0.5;
+    ps.minLifeTime = 4.5; ps.maxLifeTime = 7.5;
+    ps.emitRate = 26; // hilo CONTINUO: siempre hay humo saliendo
     ps.blendMode = ParticleSystem.BLENDMODE_STANDARD;
-    // ascenso LENTO y constante (~0,4-0,6 m/s: el humo real, nada de cohete)
-    ps.direction1 = new Vector3(-0.05, 0.62, -0.04);
-    ps.direction2 = new Vector3(0.09, 0.95, 0.07);
-    ps.minEmitPower = 0.6; ps.maxEmitPower = 1.0;
-    ps.gravity = new Vector3(0, 0.07, 0); // flotación leve: sigue subiendo sin acelerar
+    // ascenso LENTO y constante (~0,5-0,75 m/s: el humo real, nada de cohete)
+    ps.direction1 = new Vector3(-0.05, 0.75, -0.04);
+    ps.direction2 = new Vector3(0.09, 1.15, 0.07);
+    ps.minEmitPower = 0.7; ps.maxEmitPower = 1.0;
+    ps.gravity = new Vector3(0, 0.08, 0); // flotación leve: sigue subiendo sin acelerar
     ps.updateSpeed = 0.011; // integración fina (el humo no va a saltos)
-    // gradiente: nace densa en la boca, crece al subir y muere transparente
-    ps.addSizeGradient(0, 0.18);
-    ps.addSizeGradient(0.35, 0.44);
-    ps.addSizeGradient(1, 1.2);
-    ps.addColorGradient(0, new Color4(0.9, 0.9, 0.93, 0));
-    ps.addColorGradient(0.08, new Color4(0.9, 0.9, 0.93, 0.52));
-    ps.addColorGradient(0.55, new Color4(0.85, 0.86, 0.9, 0.3));
-    ps.addColorGradient(1, new Color4(0.9, 0.92, 0.96, 0));
+    // gradiente: nace densa en la boca, crece al subir y muere transparente.
+    // T112 — VISIBLE SEGURO (el jugador no la veía): puffs GRANDES (hasta 1,7 m
+    // de diámetro al morir) y opacidad ALTA (0,68 al nacer) — se lee a la
+    // distancia de cámara del juego contra el cielo Y contra la roca.
+    ps.addSizeGradient(0, 0.35);
+    ps.addSizeGradient(0.4, 0.75);
+    ps.addSizeGradient(1, 1.7);
+    ps.addColorGradient(0, new Color4(0.82, 0.83, 0.86, 0));
+    ps.addColorGradient(0.06, new Color4(0.82, 0.83, 0.86, 0.68));
+    ps.addColorGradient(0.5, new Color4(0.8, 0.81, 0.85, 0.42));
+    ps.addColorGradient(1, new Color4(0.86, 0.88, 0.92, 0));
     ps.start();
     this.chimneySmoke = ps;
   }
@@ -1665,7 +1711,7 @@ export class SherpaScene {
 
   /** T56 SONDA E2E: estado del base camp (pedriz/faldones/cabaña/banderines).
    *  T61: añade el sellado lateral (massifTris). */
-  getBaseCampInfo(): { enabled: boolean; screeTris: number; spurTris: number; rocks: number; cabinPieces: number; flags: number; smoke: boolean; pedrizaTex: boolean; flagWindActive: boolean; massifTris: number; snowTiles: number; cabinTex: boolean } {
+  getBaseCampInfo(): { enabled: boolean; screeTris: number; wingTris: number; rocks: number; cabinPieces: number; flags: number; smoke: boolean; pedrizaTex: boolean; flagWindActive: boolean; massifTris: number; snowTiles: number; cabinTex: boolean } {
     return { ...this.baseCampStats, flagWindActive: this.flagWind?.debugInfo().active ?? false };
   }
 
@@ -1739,6 +1785,79 @@ export class SherpaScene {
     }
   }
 
+  /** T112 — MATERIAL «QUESO DEL MURO» para las ALAS LATERALES: loseta de roca
+   *  horneada con el MISMO generateChunk del muro diaclasado (512² → 6,4 m,
+   *  detalle ~1,25 cm/px), tinte IGUAL al de los chunks (1.14/0.76/0.62, T110)
+   *  + estratos triplanar + capa climática. Las alas son literalmente «más
+   *  muro» — mismo tratamiento que la zona escalable (petición del jugador).
+   *  (Receta T110 de los macizos, recuperada para las alas T112.) */
+  private massifRockMat: PBRMaterial | null = null;
+  private ensureMassifRockMaterial(): PBRMaterial {
+    if (this.massifRockMat) return this.massifRockMat;
+    const style = rockwallStyleFromData((this.reliefRaw as { rockwall?: Partial<RockwallStyle> } | null)?.rockwall ?? null);
+    const res = generateChunk({
+      seed: (ROCKWALL_SEED ^ 0x51a7) >>> 0,
+      cell: 6.4 / 512, // 512 px → 6,4 m (detalle ~1,25 cm/px, como los chunks)
+      W: 512, H: 512,
+      origin: { x: 40, y: 260 }, // región genérica: sin presas ni salientes
+      style,
+    });
+    const m = new PBRMaterial("massifRockM", this.scene);
+    const cm = RawTexture.CreateRGBATexture(res.colorMap, res.W, res.H, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
+    cm.wrapU = Texture.WRAP_ADDRESSMODE;
+    cm.wrapV = Texture.WRAP_ADDRESSMODE;
+    cm.anisotropicFilteringLevel = 4;
+    m.albedoTexture = cm;
+    const nmt = RawTexture.CreateRGBATexture(res.normalMap, res.W, res.H, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
+    nmt.wrapU = Texture.WRAP_ADDRESSMODE;
+    nmt.wrapV = Texture.WRAP_ADDRESSMODE;
+    nmt.anisotropicFilteringLevel = 4;
+    m.bumpTexture = nmt;
+    m.bumpTexture.level = 1.05;
+    m.albedoColor = new Color3(1.14, 0.76, 0.62); // EL MISMO tinte del muro (T110)
+    m.metallic = 0;
+    m.roughness = 0.93;
+    m.backFaceCulling = false; // las alas se ven por detrás al orbitar
+    // T112 — SIN plugins (estratos triplanar / clima): en la superficie casi
+    // vertical del ala proyectaban BANDAS VERTICALES (diagnóstico A/B con la
+    // pedriza: geometría perfecta, vetas solo con este material). La loseta
+    // horneada del muro + su bump ya llevan el tratamiento de piedra.
+    this.massifRockMat = m;
+    return m;
+  }
+
+  /** T112 — MATERIAL DE LA ROCA DEL MURO (antes inline en reliefBuildChunk):
+   *  extraído para que las ALAS LATERALES (buildRockWing) compartan la MISMA
+   *  instancia aunque se construyan antes que el primer chunk de roca. */
+  private ensureRockMaterial(): void {
+    if (this.rockMat || !this.rockField) return;
+    const m = new StandardMaterial("rockM", this.scene);
+    const size = this.rockField.cfg.textureSizePx;
+    const grain = this.rockField.cfg.grainVar;
+    const data = rockTextureRGBA(size, ROCK_SEED ^ 0x7a3f11, this.rockField.cfg.textureContrast, grain);
+    const tex = RawTexture.CreateRGBATexture(data, size, size, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
+    tex.wrapU = Texture.WRAP_ADDRESSMODE;
+    tex.wrapV = Texture.WRAP_ADDRESSMODE;
+    m.diffuseTexture = tex; // mapa de roca (grano + manchas + vetas + poros)
+    // MAPA NORMAL (T41, "más definición"): relieve POR PÍXEL — cantos,
+    // estratos finos, vetas y grano captan la luz direccional sin un solo
+    // triángulo más. Con anisotropía la piedrina se ve nítida en ángulo.
+    const nrm = rockNormalRGBA(size, ROCK_SEED ^ 0x2c9f5e, this.rockField.cfg.bumpStrength);
+    const nTex = RawTexture.CreateRGBATexture(nrm, size, size, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
+    nTex.wrapU = Texture.WRAP_ADDRESSMODE;
+    nTex.wrapV = Texture.WRAP_ADDRESSMODE;
+    m.bumpTexture = nTex;
+    m.bumpTexture.level = 1.35; // intensidad del relieve por píxel
+    // T58-A DEFINICIÓN: anisotropía en AMBOS mapas — la piedra se ve
+    // nítida en ángulo raso (la cámara vive casi siempre en ángulo).
+    tex.anisotropicFilteringLevel = 8;
+    nTex.anisotropicFilteringLevel = 8;
+    m.diffuseColor = new Color3(1, 1, 1); // el tono final = textura × vertex colors
+    m.specularColor = new Color3(0.035, 0.034, 0.03); // micro-brillo en cantos (rugosidad viva)
+    m.backFaceCulling = true; // cara frontal con winding consistente
+    this.rockMat = m;
+  }
+
   /** Construye la losa de relieve del chunk c. ROCA ESTRATIFICADA (T40):
    *  retícula de campo de altura fractal con UVs y textura de roca. MODO
    *  CLÁSICO: semillas (anclajes + relleno), teselación (Voronoi o tectónica),
@@ -1756,33 +1875,7 @@ export class SherpaScene {
     if (this.rockField) {
       const geom = buildRockChunk(this.rockField, yMin, yMax);
       if (!geom.positions.length) { mesh.dispose(); return false; }
-      if (!this.rockMat) {
-        const m = new StandardMaterial("rockM", this.scene);
-        const size = this.rockField.cfg.textureSizePx;
-        const grain = this.rockField.cfg.grainVar;
-        const data = rockTextureRGBA(size, ROCK_SEED ^ 0x7a3f11, this.rockField.cfg.textureContrast, grain);
-        const tex = RawTexture.CreateRGBATexture(data, size, size, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
-        tex.wrapU = Texture.WRAP_ADDRESSMODE;
-        tex.wrapV = Texture.WRAP_ADDRESSMODE;
-        m.diffuseTexture = tex; // mapa de roca (grano + manchas + vetas + poros)
-        // MAPA NORMAL (T41, "más definición"): relieve POR PÍXEL — cantos,
-        // estratos finos, vetas y grano captan la luz direccional sin un solo
-        // triángulo más. Con anisotropía la piedrina se ve nítida en ángulo.
-        const nrm = rockNormalRGBA(size, ROCK_SEED ^ 0x2c9f5e, this.rockField.cfg.bumpStrength);
-        const nTex = RawTexture.CreateRGBATexture(nrm, size, size, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
-        nTex.wrapU = Texture.WRAP_ADDRESSMODE;
-        nTex.wrapV = Texture.WRAP_ADDRESSMODE;
-        m.bumpTexture = nTex;
-        m.bumpTexture.level = 1.35; // intensidad del relieve por píxel
-        // T58-A DEFINICIÓN: anisotropía en AMBOS mapas — la piedra se ve
-        // nítida en ángulo raso (la cámara vive casi siempre en ángulo).
-        tex.anisotropicFilteringLevel = 8;
-        nTex.anisotropicFilteringLevel = 8;
-        m.diffuseColor = new Color3(1, 1, 1); // el tono final = textura × vertex colors
-        m.specularColor = new Color3(0.035, 0.034, 0.03); // micro-brillo en cantos (rugosidad viva)
-        m.backFaceCulling = true; // cara frontal con winding consistente
-        this.rockMat = m;
-      }
+      this.ensureRockMaterial();
       const vd = new VertexData();
       vd.positions = new Float32Array(geom.positions);
       vd.normals = new Float32Array(geom.normals);
