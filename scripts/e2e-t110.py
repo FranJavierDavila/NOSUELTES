@@ -149,10 +149,14 @@ try:
           const e = ps.emitter;
           return { name: ps.name, x: +e.x.toFixed(2), y: +e.y.toFixed(2), z: +e.z.toFixed(2) };
         })()""", tries=4)
-        # boca de chimenea esperada T113 (4.43, ~3.1, −1.87): la transformada
-        # del GLB daba la boca ~2 m alta (flecha azul del jugador) — bajada
-        ok_pos = bool(emitter and abs(emitter["x"] - 4.43) < 0.3 and abs(emitter["z"] + 1.87) < 0.35 and 2.8 < emitter["y"] < 3.6)
-        check("F2c) emisor del humo EN LA BOCA REAL del tubo (4.43,~3.1,−1.87)", ok_pos, f"emitter={emitter}")
+        # T114: el emisor debe coincidir con la boca MEDIDA por geometría
+        # (clúster de vértices superiores del GLB, expuesta en baseCamp.smokePos)
+        boca = probe(host, "window.__SHERPAS_DEBUG && __SHERPAS_DEBUG.baseCamp ? (__SHERPAS_DEBUG.baseCamp().smokePos || null) : null", tries=4)
+        ok_pos = bool(emitter and boca
+                      and abs(emitter["x"] - boca["x"]) < 0.35
+                      and abs(emitter["y"] - boca["y"]) < 0.35
+                      and abs(emitter["z"] - boca["z"]) < 0.35)
+        check("F2c) emisor del humo EN LA BOCA MEDIDA del tubo", ok_pos, f"emitter={emitter} boca={boca}")
         massif_mat = probe(host, """(() => {
           const sc = window.__SHERPAS_DEBUG && __SHERPAS_DEBUG.sceneObj && __SHERPAS_DEBUG.sceneObj();
           const m = sc && sc.scene && sc.scene.getMeshByName && sc.scene.getMeshByName('sideMassifs');

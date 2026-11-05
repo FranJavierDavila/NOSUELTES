@@ -419,7 +419,10 @@ export class SherpasMatch {
     });
     if (canvas) this.pointerDrag.attach(canvas);
     // mini-tutorial al empezar (doc 9: legibilidad): cómo se sube, en 1 línea.
-    this.d.hud.banner(this.d.hud.t("hud.howToTitle"), this.d.hud.t("hud.howToSub"), 10);
+    // T114: en el TUTORIAL GUIADO sobra (enseña lo mismo, paso a paso).
+    if (!deps.choice.guiado) {
+      this.d.hud.banner(this.d.hud.t("hud.howToTitle"), this.d.hud.t("hud.howToSub"), 10);
+    }
 
     // continuar guardado: reaparece en el campamento y restaura estadísticas.
     if (deps.choice.resume && deps.resumeSave) {
@@ -742,7 +745,7 @@ export class SherpasMatch {
   }
 
   private onDragDown(xCss: number, yCss: number): void {
-    if (this.frozen || this.paused) return;
+    if (this.frozen || this.paused || this.tutLock) return;
     const p = this.wallPointFromPointer(xCss, yCss);
     if (!p) return;
     // candidatas: extremidad más cercana al clic en el plano de pared
@@ -2782,6 +2785,107 @@ export class SherpasMatch {
   }
 
   toggleHelp(): boolean { return this.d.hud.showHelp(); }
+
+  // ---------- T114 MODO DEV (supervisión) + TUTORIAL GUIADO ----------
+
+  /** T114: bloquea la entrada del JUGADOR (fases cinemática/demo del tutorial):
+   *  el ratón no arranca drags y el mixer del tutorial filtra el teclado. */
+  tutLock = false;
+
+  /** T114 DEV: re-cuelga el equipo en un tramo concreto (panel de supervisión).
+   *  camp/cp/cumbre usan el MISMO doRespawn que caídas y guardados (tabla
+   *  nivelada, ricachón sentado, cámara re-centrada); «inicio» vuelve al pie.
+   *  En cotas y cumbre marca antes las inferiores como alcanzadas. */
+  devRespawn(kind: "camp" | "cp" | "cumbre" | "inicio", index: number): boolean {
+    let target: CampZone | Checkpoint | null = null;
+    if (kind === "camp") {
+      target = this.gen.layout.campZones[index] ?? null;
+      if (!target) return false;
+    } else if (kind === "cp") {
+      const cp = this.cps.list[index];
+      if (!cp) return false;
+      this.cps.markUpTo(cp.y);
+      target = cp;
+    } else if (kind === "cumbre") {
+      const top = this.gen.layout.totalHeightM;
+      this.cps.markUpTo(top);
+      target = { index: 9999, y: Math.max(2, top - 2.5), reached: true };
+    }
+    try {
+      this.doRespawn(target);
+      return true;
+    } catch {
+      return false; // sin presas para ese tramo (no debería pasar: ventana creciente)
+    }
+  }
+
+  /** T114 DEV/TUTORIAL: vuelve a colgar UN solo escalador en las presas de
+   *  arranque (rescate del guion del tutorial si el colgado toca el suelo). */
+  devRecallRig(p: 0 | 1): void {
+    const hs = this.gen.startHolds();
+    this.sherpas[p].respawnAt(hs);
+    this.d.scene.spawnSherpa(p, this.sherpas[p].rig);
+  }
+
+  /** T114 TUTORIAL: la presa firme más cercana a un punto (para elegir la
+   *  presa objetivo de la demo y para las flechas). Filtra por franja de
+   *  altura relativa al punto (minDy/maxDy). */
+  devHoldNear(
+    x: number, y: number,
+    opts: { maxDist?: number; minDy?: number; maxDy?: number } = {},
+  ): { id: string; x: number; y: number; z: number } | null {
+    const maxDist = opts.maxDist ?? 2.2;
+    let best: HoldInstance | null = null;
+    let bd = maxDist;
+    for (const h of this.anchors.holds.values()) {
+      const dy = h.pos.y - y;
+      if (opts.minDy !== undefined && dy < opts.minDy) continue;
+      if (opts.maxDy !== undefined && dy > opts.maxDy) continue;
+      const d = Math.hypot(h.pos.x - x, h.pos.y - y);
+      if (d < bd) { bd = d; best = h; }
+    }
+    return best ? { id: best.id, x: best.pos.x, y: best.pos.y, z: best.pos.z } : null;
+  }
+
+  /** T114 TUTORIAL: el anclaje portátil YA CLAVADO más cercano a un punto
+   *  (el colocado por la demo — para apuntarle con la flecha). */
+  devPortableNear(x: number, y: number, maxDist = 3): { x: number; y: number; z: number } | null {
+    let best: V3 | null = null;
+    let bd = maxDist;
+    for (const h of this.placedPortables) {
+      const d = Math.hypot(h.pos.x - x, h.pos.y - y);
+      if (d < bd) { bd = d; best = h.pos; }
+    }
+    return best ? { x: best.x, y: best.y, z: best.z } : null;
+  }
+
+  /** T114 TUTORIAL: rellena las mochilas (repetir el tutorial con equipo completo). */
+  devRefillPortables(): void {
+    this.portableInv.refill(this.data.tuning.coop?.portableAnchorsPerClimber ?? PORTABLE_PER_CLIMBER_DEFAULT);
+  }
+
+  /** T114 TUTORIAL: acceso al rig para la DEMO del profesor (mover aim, drag,
+   *  toggles: las mismas primitivas que el ratón y el teclado). */
+  devRig(p: 0 | 1): SherpaRig {
+    return this.sherpas[p];
+  }
+
+  /** T114 TUTORIAL: métricas de pared para el guion (cámara de la cumbre, z
+   *  del plano de pared para los drags guionizados). */
+  tutorialTotalHeightM(): number { return this.gen.layout.totalHeightM; }
+  tutorialWallFrontZ(): number { return this.wallFrontZ; }
+
+  /** T114 TUTORIAL: suelta un drag GUIONIZADO por la MISMA vía que el ratón
+   *  (incluida la colocación directa T103: anclaje armado + mano = clavado). */
+  devDragUp(p: 0 | 1, limb: Limb, x: number, y: number): void {
+    const cur = v3(x, y, this.wallFrontZ);
+    if (this.portableArmed[p] && (limb === "hand_l" || limb === "hand_r")
+      && this.doPlacePortableAnchorAt(p, cur.x, cur.y, limb)) {
+      this.sherpas[p].moveDrag(cur); // el imán ya ve la presa recién nacida
+    }
+    this.sherpas[p].endDrag();
+  }
+
 
   recenterCamera(): void {
     const pts = this.plankState

@@ -9,6 +9,7 @@ import {
   type OnboardingState,
 } from "../gameplay/onboarding";
 import { DAYTIME_IDS } from "../gameplay/daycycle"; // T61: selector de hora del día
+import type { DevTramo } from "../gameplay/devMode"; // T114: panel de supervisión dev
 import { assetUrl } from "../../assetPath"; // T100: portada bajo subruta (GitHub Pages)
 
 export type Lang = "es" | "en";
@@ -24,7 +25,7 @@ export const BUBBLES_PREF_KEY = "ns.bubbles.v1";
  *  cambia en el engranaje y persiste entre sesiones. */
 export const LANG_PREF_KEY = "ns.lang.v1";
 
-export interface HudStartChoice { difficulty: string; seed: number; lang: Lang; resume: boolean; mute: boolean; daltonism: boolean; reduceShake: boolean; disablePee: boolean; /** T76: bocadillos del ricachón visibles (cara y frases en el globo). */ bubbles: boolean; /** T61: clima (clear/snow/snow_low) y hora del día (dia/atardecer/noche). */ weather: string; daytime: string }
+export interface HudStartChoice { difficulty: string; seed: number; lang: Lang; resume: boolean; mute: boolean; daltonism: boolean; reduceShake: boolean; disablePee: boolean; /** T76: bocadillos del ricachón visibles (cara y frases en el globo). */ bubbles: boolean; /** T61: clima (clear/snow/snow_low) y hora del día (dia/atardecer/noche). */ weather: string; daytime: string; /** T114: la partida es el TUTORIAL GUIADO (sin banner de «cómo se sube»). */ guiado?: boolean }
 
 export type HudLimbsState = { tension: number; fatigue: number; anchored: boolean }
 
@@ -300,7 +301,7 @@ export class SherpaHud {
   private reduceShake = false;
   private mute = false;
   private disablePee = false;
-  private opts?: { onGo: (c: HudStartChoice) => void; onHowToDone?: () => void; onNet?: () => void; onWeather?: (id: string) => void; onDaytime?: (id: string) => void };
+  private opts?: { onGo: (c: HudStartChoice) => void; onHowToDone?: () => void; onNet?: () => void; onWeather?: (id: string) => void; onDaytime?: (id: string) => void; /** T114: el 🎓 abre el TUTORIAL GUIADO (partida guiada real). */ onTutorial?: () => void };
   private choice: Partial<HudStartChoice> = { lang: "en" };
   /** T100: datos del menú que el re-render necesita (cambio de idioma). */
   private startOpts: { difficulties: string[]; saveCampLabel: string | null } | null = null;
@@ -1104,9 +1105,65 @@ export class SherpaHud {
     if (box) { box.textContent = code; box.classList.remove("hidden"); }
   }
 
-  showStart(opts: { difficulties: string[]; defaultPreset: string; seed: number; saveCampLabel: string | null; onGo: (c: HudStartChoice) => void; onHowToDone?: () => void; onNet?: () => void; onWeather?: (id: string) => void; onDaytime?: (id: string) => void; defaultWeather?: string; defaultDaytime?: string }): void {
+  // ---------- T114 MODO DEV: panel de SUPERVISIÓN de tramos ----------
+  // Se abre escribiendo la palabra secreta (gameplay/devMode.ts). Lista todos
+  // los tramos (campamentos, cotas de seguro y cumbre) y salta a cualquiera.
+
+  private devPanel: HTMLElement | null = null;
+
+  showDevPanel(tramos: DevTramo[], opts: { onJump(t: DevTramo): void; onClose(): void }): void {
+    this.hideDevPanel();
+    const wrap = document.createElement("div");
+    wrap.id = "ns-dev-panel";
+    wrap.style.cssText = "position:fixed;top:0;right:0;bottom:0;width:min(310px,86vw);z-index:9400;"
+      + "display:flex;flex-direction:column;background:rgba(9,11,16,.95);"
+      + "border-left:1px solid rgba(251,191,36,.4);box-shadow:-14px 0 44px rgba(0,0,0,.55);"
+      + "color:#e8eef4;font:13px/1.45 ui-sans-serif,system-ui,sans-serif;backdrop-filter:blur(6px)";
+    const row = (t: DevTramo, i: number): string => {
+      const icon = t.kind === "camp" ? "🏕" : t.kind === "cumbre" ? "🚩" : "✚";
+      return `<button data-i="${i}" style="display:flex;justify-content:space-between;align-items:center;gap:8px;"
+        class="ns-dev-row"><span>${icon} ${esc(t.label)}</span><span style="color:#9aa7b4;font-variant-numeric:tabular-nums">${t.y} m</span></button>`;
+    };
+    wrap.innerHTML = `
+      <header style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.08)">
+        <b style="color:#fbbf24;font-size:14px">${esc(this.t("dev.title"))}</b>
+        <button data-a="devClose" style="pointer-events:auto;background:#1c232c;border:1px solid rgba(255,255,255,.14);color:#cfd8e0;border-radius:8px;padding:4px 10px;cursor:pointer;font:inherit">✕</button>
+      </header>
+      <p style="margin:10px 14px 4px;color:#9aa7b4;font-size:12px">${esc(this.t("dev.note"))}</p>
+      <div style="margin:6px 14px;color:#cfd8e0;font-weight:600;font-size:12px">${esc(this.t("dev.solo"))}</div>
+      <div data-a="devList" style="flex:1;overflow:auto;padding:4px 10px 12px;display:flex;flex-direction:column;gap:4px">
+        ${tramos.map(row).join("")}
+      </div>`;
+    this.root.appendChild(wrap);
+    this.devPanel = wrap;
+    const st = document.createElement("style");
+    st.textContent = `.ns-dev-row{pointer-events:auto;background:#141b22;border:1px solid rgba(255,255,255,.1);color:#e8eef4;border-radius:10px;padding:8px 10px;cursor:pointer;font:inherit;text-align:left;transition:background .15s}
+      .ns-dev-row:hover{background:#1f2a36;border-color:rgba(251,191,36,.45)}`;
+    wrap.appendChild(st);
+    wrap.querySelector("[data-a=devClose]")!.addEventListener("click", () => {
+      this.hideDevPanel();
+      opts.onClose();
+    });
+    for (const b of Array.from(wrap.querySelectorAll("[data-i]")) as HTMLElement[]) {
+      b.addEventListener("click", () => {
+        const t = tramos[Number(b.dataset.i)];
+        if (t) opts.onJump(t);
+      });
+    }
+  }
+
+  hideDevPanel(): void {
+    this.devPanel?.remove();
+    this.devPanel = null;
+  }
+
+  devPanelOpen(): boolean {
+    return !!this.devPanel;
+  }
+
+  showStart(opts: { difficulties: string[]; defaultPreset: string; seed: number; saveCampLabel: string | null; onGo: (c: HudStartChoice) => void; onHowToDone?: () => void; onNet?: () => void; onWeather?: (id: string) => void; onDaytime?: (id: string) => void; defaultWeather?: string; defaultDaytime?: string; /** T114: 🎓 = tutorial guiado (el mount arranca la partida guiada). */ onTutorial?: () => void }): void {
     this.backpackClose(); // T101: al volver al menú no queda ninguna mochila abierta
-    this.opts = { onGo: opts.onGo, onHowToDone: opts.onHowToDone, onNet: opts.onNet, onWeather: opts.onWeather, onDaytime: opts.onDaytime };
+    this.opts = { onGo: opts.onGo, onHowToDone: opts.onHowToDone, onNet: opts.onNet, onWeather: opts.onWeather, onDaytime: opts.onDaytime, onTutorial: opts.onTutorial };
     // T61: clima y hora PERSISTEN entre sesiones (localStorage defensivo); la
     // URL (?clima= / ?hora=) manda si el mount la trae — E2E determinista.
     const weather0 = opts.defaultWeather ?? this.loadPref(WEATHER_PREF_KEY, WEATHER_IDS, "clear");
@@ -1137,12 +1194,13 @@ export class SherpaHud {
         ${o.saveCampLabel ? `<button class="hero-resume" data-a="resume">⏩ ${esc(this.fmt("menu.resume", { camp: o.saveCampLabel }))}</button>` : ""}
         <button class="go hero-go" data-a="go">${esc(this.t("menu.start"))}</button>
         <div class="hero-row">
-          <button data-a="howto">🎓 ${esc(this.t("onboarding.menuButton"))}</button>
+          <button data-a="howto">🎓 ${esc(this.t("menu.tutorial"))}</button>
           <button data-a="net">🌐 ${esc(this.t("net.menu"))}</button>
         </div>
       </div>`;
     el.querySelector<HTMLElement>("[data-a=settings]")!.onclick = () => this.toggleSettings(true);
     el.querySelector<HTMLElement>("[data-a=howto]")!.onclick = () => {
+      if (this.opts?.onTutorial) { this.hideStart(); this.opts.onTutorial(); return; }
       this.showOnboarding({ onDone: () => this.opts?.onHowToDone?.() });
     };
     el.querySelector<HTMLElement>("[data-a=net]")!.onclick = () => {

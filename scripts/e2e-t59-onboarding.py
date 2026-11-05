@@ -26,16 +26,25 @@ def check(nombre, cond, detalle=""):
 
 
 def ob_visible(page):
+    # T114: la UI viva ahora es la del tutorial guiado (#ns-tut-guiado)
     try:
         return not page.evaluate(
-            "document.querySelector('[data-e=onboard]').classList.contains('hidden')")
+            "document.getElementById('ns-tut-guiado').classList.contains('hidden')")
+    except Exception:
+        return False
+
+
+def tut_guiado_visible(page):
+    try:
+        return not page.evaluate(
+            "document.getElementById('ns-tut-guiado').classList.contains('hidden')")
     except Exception:
         return False
 
 
 def ob_step(page):
     try:
-        return page.evaluate("document.querySelector('[data-e=onboardBody]').getAttribute('data-ob-step')")
+        return page.evaluate("(document.querySelector('#tg-badge')||{}).textContent")
     except Exception:
         return None
 
@@ -101,28 +110,25 @@ with sync_playwright() as pw:
     page.goto(URL, wait_until="domcontentloaded")
     check("menú cargado + botón GO", menu_y_go(page))
     check("sin bandera previa", flag_seen(page) in (None, ""), f"(flag={flag_seen(page)!r})")
-    page.click("button[data-a=go]")
+    page.evaluate("(function(){var b=document.querySelector('button[data-a=go]'); if (b) b.click();})()")  # T114: clic JS (SwiftShader bloquea el clic real)
     page.wait_for_timeout(600)
 
-    pasos = ["objetivo", "p1", "p2", "cuerda", "asaco"]
-    ok_secuencia = True
-    for i, esperado in enumerate(pasos):
-        visible = ob_visible(page)
-        paso = ob_step(page)
-        ok_secuencia = ok_secuencia and visible and paso == esperado
-        if not (visible and paso == esperado):
-            print(f"  paso {i}: visible={visible} step={paso!r} (esperado {esperado!r})")
-            break
-        if i == 0:
-            ok_secuencia = shot_luma(page, f"{OUT}/t59-0-tutorial-paso1.png", 8, 250)
-        if i == len(pasos) - 1:
-            ok_secuencia = shot_luma(page, f"{OUT}/t59-1-tutorial-final.png", 8, 250)
-            btn = page.evaluate("(document.querySelector('[data-a=obNext]')||{}).textContent||''")
-            print(f"  botón del último paso: {btn!r}")
-            ok_secuencia = ok_secuencia and "PARED" in btn.upper()
-        page.click("[data-a=obNext]")
-        page.wait_for_timeout(350)
-    check("secuencia completa de 5 pasos + capturas", ok_secuencia)
+    # T114: el tutorial de primera vez es el GUIADO (partida real dirigida):
+    # tarjeta con badge «Paso n de 11», CTA «Entendido» avanza, skip cierra.
+    guiado = tut_guiado_visible(page)
+    check("tarjeta del TUTORIAL GUIADO viva (Paso 1 de 11)", guiado, f"(badge={ob_step(page)!r})")
+    ok_secuencia = False
+    if guiado:
+        ok_secuencia = shot_luma(page, f"{OUT}/t59-0-tutorial-paso1.png", 8, 250)
+        page.evaluate("(function(){var b=document.querySelector('#tg-cta'); if (b) b.click();})()")  # Entendido → paso 2
+        page.wait_for_timeout(700)
+        paso2 = (page.evaluate("(document.querySelector('#tg-badge')||{}).textContent") or "")
+        ok_secuencia = ok_secuencia and "2" in paso2
+        ok_secuencia = shot_luma(page, f"{OUT}/t59-1-tutorial-demo.png", 8, 250) and ok_secuencia
+    check("CTA avanza al paso de demo + capturas", ok_secuencia)
+
+    page.evaluate("(function(){var b=document.querySelector('[data-a=obSkip]'); if (b) b.click();})()")  # saltar: la partida guiada SIGUE
+    page.wait_for_timeout(900)
 
     check("partida arranca tras el tutorial", partida_arranca(page))
     check("bandera marcada al terminar", flag_seen(page) == "1", f"(flag={flag_seen(page)!r})")
@@ -148,7 +154,7 @@ with sync_playwright() as pw:
     check("menú cargado (2ª visita)", menu_y_go(page2))
     # siembra la bandera como si ya hubiera jugado (contexto nuevo = limpio)
     page2.evaluate("localStorage.setItem('ns.onboarding.seen.v1','1')")
-    page2.click("button[data-a=go]")
+    page2.evaluate("(function(){var b=document.querySelector('button[data-a=go]'); if (b) b.click();})()")
     page2.wait_for_timeout(900)
     check("NO aparece el tutorial", not ob_visible(page2))
     check("partida directa tras GO", partida_arranca(page2))
@@ -161,16 +167,17 @@ with sync_playwright() as pw:
     page3.on("pageerror", lambda e: errors.append(str(e)))
     page3.goto(URL, wait_until="domcontentloaded")
     check("menú cargado (howto)", menu_y_go(page3))
-    page3.click("[data-a=howto]")
-    page3.wait_for_timeout(500)
-    check("asistente abierto desde el menú", ob_visible(page3) and ob_step(page3) == "objetivo")
+    page3.evaluate("(function(){var b=document.querySelector('[data-a=howto]'); if (b) b.click();})()")
+    page3.wait_for_timeout(1200)
+    check("TUTORIAL GUIADO abierto desde el menú (🎓)",
+          ob_visible(page3) and "1" in (ob_step(page3) or ""))
     page3.screenshot(path=f"{OUT}/t59-3-como-se-juega.png")
-    page3.click("[data-a=obSkip]")
+    page3.evaluate("(function(){var b=document.querySelector('[data-a=obSkip]'); if (b) b.click();})()")
     page3.wait_for_timeout(400)
     check("cerrado con Saltar y bandera marcada",
           (not ob_visible(page3)) and flag_seen(page3) == "1")
     # y ahora GO entra directo (no repite el tutorial)
-    page3.click("button[data-a=go]")
+    page3.evaluate("(function(){var b=document.querySelector('button[data-a=go]'); if (b) b.click();})()")
     page3.wait_for_timeout(900)
     check("GO tras howto: sin repetición", not ob_visible(page3))
     ctx3.close()

@@ -415,6 +415,11 @@ export class SherpaRig {
   }
   com(): V3 { return this.solver.centerOfMass(); }
   limbPos(limb: Limb): V3 { return vClone(this.limbPt[limb]); }
+
+  /** T114 TUTORIAL/sondas: id de la presa que AGARRA una extremidad (null si libre). */
+  gripHoldId(limb: Limb): string | null {
+    return this.states.get(limb)?.holdId ?? null;
+  }
   holdIdOf(limb: Limb): string | null { return this.states.get(limb)?.holdId ?? null; }
   anchorsCount(): number { return LIMBS.reduce((n, l) => n + (this.states.get(l)!.anchored ? 1 : 0), 0); }
   maxTension(): number { return Math.max(...LIMBS.map((l) => this.states.get(l)!.tension)); }

@@ -519,7 +519,7 @@ export class SherpaScene {
   whenReady: Promise<void> = Promise.resolve();
   private baseCampReadyResolve: (() => void) | null = null;
   private flagWind: PlantWindPlugin | null = null; // viento propio de los banderines
-  private baseCampStats = { enabled: false, screeTris: 0, wingTris: 0, rocks: 0, cabinPieces: 0, flags: 0, smoke: false, pedrizaTex: false, massifTris: 0, snowTiles: 0, cabinTex: false };
+  private baseCampStats = { enabled: false, screeTris: 0, wingTris: 0, rocks: 0, cabinPieces: 0, flags: 0, smoke: false, pedrizaTex: false, massifTris: 0, snowTiles: 0, cabinTex: false, smokePos: null as { x: number; y: number; z: number } | null };
   private groundTintCtx: GroundTintCtx | null = null; // T98: contexto del suelo alpino (franja de caída + campamento)
   /** T55 SONDA E2E: nº de chunks de roca con tinte por vértice aplicado. */
   rockTintChunks = 0;
@@ -1534,35 +1534,67 @@ export class SherpaScene {
         } catch (err) { console.warn("[basecamp] textura base_cabana.jpg no aplicada:", err); }
         // T110 — HUMO DE LA CHIMENEA en SU SITIO (petición: «el humo debe salir
         // perfectamente de la chimenea de la caseta»): el GLB de Tripo es UNA
-        // malla horneada, así que la boca se fija por GEOMETRÍA offline
-        // (scripts/t110_chimenea_mundo.py + verificación cenital renderizada):
-        // punto LOCAL del glTF (0.190, −0.090, −0.994) = la boca del tubo
-        // (el GLB viene normalizado a [−1,1] y el nodo Tripo rota X+90°).
-        // Se transforma con la matriz MUNDIAL del root (pos/ry/escala de
-        // BASE_POS) — si el campamento se mueve, el humo lo sigue.
+        // malla horneada, así que la boca se fija por GEOMETRÍA. T114 — ya no
+        // por un punto local horneado + correcciones mágicas (la transformada
+        // del GLB quedó 0,26 m ALTA y 1,26 m a la IZQUIERDA del tubo real,
+        // captura del jugador): la boca se MIDE del propio GLB en caliente.
+        // El tubo es lo que sobresale del techo: clúster de vértices del
+        // MUNDO por encima de (máxY − 0,25) — el borde del tubo (diámetro
+        // ~0,2 m; verificado en cortes 0.12/0.2/0.3, convergencia ±2 cm).
         try {
           root.computeWorldMatrix(true);
-          const CHIMNEY_LOCAL = new Vector3(-0.19, -0.09, -0.994);
-          // la matriz MUNDIAL DEL MESH (no la del root): el mesh cuelga del
-          // nodo Tripo que trae SU rotación X+90° propia — sin ella el punto
-          // cae fuera de la cabaña y el humo vuelve al pico medio (T109). El
-          // GLB trae VARIAS mallas: la hornada buena es la de MÁS VÉRTICES
-          // (la cabaña horneada; meshes[0] puede ser una pieza auxiliar).
+          // la hornada buena es la de MÁS VÉRTICES (la cabaña horneada;
+          // meshes[0] puede ser una pieza auxiliar).
           const mesh0 = res.meshes.reduce(
             (a, b) => (b.getTotalVertices() > a.getTotalVertices() ? b : a),
             res.meshes[0]!,
           );
           mesh0?.computeWorldMatrix(true);
-          const mouth = mesh0
-            ? Vector3.TransformCoordinates(CHIMNEY_LOCAL, mesh0.getWorldMatrix())
-            : new Vector3(0, -1, 0);
+          let mouth: Vector3 | null = null;
+          if (mesh0) {
+            const pos = mesh0.getVerticesData("position");
+            if (pos && pos.length >= 30) {
+              const M = mesh0.getWorldMatrix().m; // fila-mayor; v' = M·v
+              let maxY = -1e9;
+              const top: { x: number; z: number }[] = [];
+              for (let i = 0; i < pos.length; i += 3) {
+                const x = pos[i]!, y = pos[i + 1]!, z = pos[i + 2]!;
+                const wy = M[1] * x + M[5] * y + M[9] * z + M[13];
+                if (wy > maxY) maxY = wy;
+              }
+              const CORTE = 0.25;
+              let sx = 0, sz = 0, n = 0, minX = 1e9, maxX = -1e9, minZ = 1e9, maxZ = -1e9;
+              for (let i = 0; i < pos.length; i += 3) {
+                const x = pos[i]!, y = pos[i + 1]!, z = pos[i + 2]!;
+                const wx = M[0] * x + M[4] * y + M[8] * z + M[12];
+                const wy = M[1] * x + M[5] * y + M[9] * z + M[13];
+                if (wy <= maxY - CORTE) continue;
+                const wz = M[2] * x + M[6] * y + M[10] * z + M[14];
+                top.push({ x: wx, z: wz });
+                sx += wx; sz += wz; n++;
+                if (wx < minX) minX = wx; if (wx > maxX) maxX = wx;
+                if (wz < minZ) minZ = wz; if (wz > maxZ) maxZ = wz;
+              }
+              // válido si es un aro compacto (no la cresta entera del techo)
+              if (n >= 8 && maxX - minX < 0.6 && maxZ - minZ < 0.6 && maxY > 0.5) {
+                mouth = new Vector3(sx / n, maxY - 0.03, sz / n);
+              }
+            }
+          }
+          if (!mouth) {
+            // red de seguridad (GLB distinto): punto local horneado de T110
+            // (0.190, −0.090, −0.994) con la matriz MUNDIAL DEL MESH (el mesh
+            // cuelga del nodo Tripo con SU rotación X+90° propia — sin ella el
+            // punto cae fuera de la cabaña, T109), corregida −2.0 m (T113).
+            const CHIMNEY_LOCAL = new Vector3(-0.19, -0.09, -0.994);
+            mouth = mesh0
+              ? Vector3.TransformCoordinates(CHIMNEY_LOCAL, mesh0.getWorldMatrix()).subtract(new Vector3(0, 2.0, 0))
+              : new Vector3(0, -1, 0);
+          }
           if (Number.isFinite(mouth.y) && mouth.y > 0.5) {
-            // T113 — la transformada del GLB sitúa la boca ~2 m más alta que el
-            // tubo real (medición del jugador con flecha azul: «nace un pegote
-            // blanco en medio de la nada… debe estar ~2 m para abajo»). Bajada
-            // a la boca verdadera; el pluma nace EN el tubo.
-            this.startChimneySmoke(mouth.subtract(new Vector3(0, 2.0, 0)));
+            this.startChimneySmoke(mouth);
             this.baseCampStats.smoke = true;
+            this.baseCampStats.smokePos = { x: +mouth.x.toFixed(3), y: +mouth.y.toFixed(3), z: +mouth.z.toFixed(3) };
           } else {
             // red de seguridad: pico del GLB (heurística antigua)
             let topY = -1e9, cx = 0, cz = 0, n = 0;
@@ -1753,7 +1785,7 @@ export class SherpaScene {
 
   /** T56 SONDA E2E: estado del base camp (pedriz/faldones/cabaña/banderines).
    *  T61: añade el sellado lateral (massifTris). */
-  getBaseCampInfo(): { enabled: boolean; screeTris: number; wingTris: number; rocks: number; cabinPieces: number; flags: number; smoke: boolean; pedrizaTex: boolean; flagWindActive: boolean; massifTris: number; snowTiles: number; cabinTex: boolean } {
+  getBaseCampInfo(): { enabled: boolean; screeTris: number; wingTris: number; rocks: number; cabinPieces: number; flags: number; smoke: boolean; pedrizaTex: boolean; flagWindActive: boolean; massifTris: number; snowTiles: number; cabinTex: boolean; smokePos: { x: number; y: number; z: number } | null } {
     return { ...this.baseCampStats, flagWindActive: this.flagWind?.debugInfo().active ?? false };
   }
 

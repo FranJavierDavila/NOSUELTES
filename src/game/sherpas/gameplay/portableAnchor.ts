@@ -181,6 +181,12 @@ export class PortableInventory {
 
   remaining(p: 0 | 1): number { return this.left[p] ?? 0; }
 
+  /** T114: rellena las dos mochilas (repetir el tutorial con equipo completo). */
+  refill(n: number): void {
+    const c = Number.isFinite(n) ? Math.max(0, Math.min(40, Math.floor(n))) : PORTABLE_PER_CLIMBER_DEFAULT;
+    this.left = [c, c];
+  }
+
   /** Coloca uno: false si el escalador ya no lleva más (no consume). */
   consume(p: 0 | 1): boolean {
     if ((this.left[p] ?? 0) <= 0) return false;

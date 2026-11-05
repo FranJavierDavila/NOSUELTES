@@ -23,6 +23,8 @@ import { v3, type V3 } from "../physics/pbd/math";
 import { Vector3, Matrix } from "@babylonjs/core/Maths/math.vector";
 import { assetUrl } from "../assetPath";
 import { showLoading } from "./ui/loading"; // T110: pantalla de carga con pico + barra + mensajes
+import { buildDevTramos, feedDevKey, isTypingTarget, type DevTramo, type DevLayoutInfo } from "./gameplay/devMode"; // T114
+import { TutorialDirector, TutorialMixer } from "./gameplay/tutorialGuiado"; // T114
 
 export interface SherpasMountOptions {
   canvas: HTMLCanvasElement;
@@ -94,7 +96,17 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
      *  que entre a MITAD de partida (después del GO del anfitrión). */
     netChoice: HudStartChoice | null;
     netResumeSeed: number | null;
-  } = { match: null, scene: null, disposed: false, menuRaf: 0, previewSeed: 0, hostNet: null, guestNet: null, guest: null, snapTimer: 0, unSubNet: null, guestBuilding: false, dragLock: { player: null }, netChoice: null, netResumeSeed: null };
+    /** T114 TUTORIAL GUIADO: director+mixer vivos (null fuera del tutorial). */
+    tutorial: { director: TutorialDirector; mixer: TutorialMixer } | null;
+    tutorialOn: boolean;
+    tutMixer: TutorialMixer | null;
+    /** T114 MODO DEV: tramo pendiente al arrancar desde el menú + buffer de la
+     *  palabra secreta + layout de la pared del menú (para listar tramos). */
+    devJump: DevTramo | null;
+    devBuf: string;
+    previewLayout: DevLayoutInfo | null;
+    devKeyHandler: ((e: KeyboardEvent) => void) | null;
+  } = { match: null, scene: null, disposed: false, menuRaf: 0, previewSeed: 0, hostNet: null, guestNet: null, guest: null, snapTimer: 0, unSubNet: null, guestBuilding: false, dragLock: { player: null }, netChoice: null, netResumeSeed: null, tutorial: null, tutorialOn: false, tutMixer: null, devJump: null, devBuf: "", previewLayout: null, devKeyHandler: null };
 
   const input = new InputManager(data.inputMaps, {
     onPause: () => { if (state.guest) state.guest.togglePause(); else state.match?.togglePause(); },
@@ -102,6 +114,40 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     onRecenter: () => { if (state.guest) state.guest.recenter(); else state.match?.recenterCamera(); },
   });
   input.attach(window);
+
+  // ---------- T114 MODO DEV (secreto): escribir la palabra → panel de tramos ----------
+  const toggleDevPanel = (): void => {
+    if (hud.devPanelOpen()) { hud.hideDevPanel(); return; }
+    if (!state.previewLayout) return;
+    const stepM = data.tuning.checkpoint?.stepM ?? 10;
+    hud.showDevPanel(buildDevTramos(state.previewLayout, stepM), {
+      onJump: (t) => {
+        if (state.guest) { hud.subtitle(hud.t("dev.guestWarn"), 3.2); return; }
+        hud.hideDevPanel();
+        if (state.match) {
+          if (state.match.devRespawn(t.kind, t.index)) hud.subtitle(hud.t("dev.jumped"), 2.6);
+          return;
+        }
+        // en el MENÚ: arranca una partida local de supervisión en ese tramo
+        state.devJump = t;
+        startAscent({
+          lang: hud.lang, resume: false, mute: false, daltonism: false, reduceShake: false,
+          disablePee: false, bubbles: true, difficulty: data.difficulty.defaultPreset,
+          seed: state.previewSeed, weather: "clear", daytime: "dia",
+        });
+      },
+      onClose: () => { /* solo cerrar */ },
+    });
+  };
+  const devKeyHandler = (e: KeyboardEvent): void => {
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+    if (isTypingTarget(e.target)) return; // escribiendo en chat/semilla: NO cuenta
+    const r = feedDevKey(state.devBuf, e.key);
+    state.devBuf = r.buf;
+    if (r.matched) toggleDevPanel();
+  };
+  document.addEventListener("keydown", devKeyHandler, true);
+  state.devKeyHandler = devKeyHandler;
 
   // T101 INVENTARIO DE MOCHILA: el «usar» del hueco coloca el anclaje por la
   // misma vía que la tecla. T102: en el invitado el «usar» VIAJA POR RED
@@ -213,6 +259,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     );
     loading.phase("Levantando la pared del Everest…", 72);
     scene.buildWorld(gen.layout);
+    state.previewLayout = gen.layout; // T114: tramos del panel dev
     // T110: la pantalla de carga aguanta hasta que la cabaña GLB del campamento
     // termina de cargar (con red de seguridad de 15 s por si un asset cuelga).
     loading.phase("Montando el campamento base…", 86);
@@ -426,7 +473,33 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     });
   };
 
+  /** T114: arranque de ascensión compartido (menú, GO y panel dev). */
+  const startAscent = (choice: HudStartChoice): void => {
+    void begin(choice).catch((err) => {
+      console.error("fallo al iniciar la ascensión:", err instanceof Error ? err.stack : err);
+      hud.subtitle(`Error: ${String(err instanceof Error ? err.message : err)}`, 8);
+    });
+  };
+
+  /** T114 TUTORIAL GUIADO: partida real tranquila con el director montado.
+   *  La primera vez que se va a jugar Y el botón 🎓 del menú entran aquí. */
+  const startTutorial = (): void => {
+    hud.hideStart();
+    hud.hideNet();
+    state.tutorialOn = true;
+    startAscent({
+      lang: hud.lang, resume: false, mute: false, daltonism: false, reduceShake: false,
+      disablePee: false, bubbles: true, difficulty: "tranquilo",
+      seed: state.previewSeed, weather: "clear", daytime: "dia", guiado: true,
+    });
+  };
+
   const backToMenu = async (): Promise<void> => {
+    // T114: fuera director/mixer del tutorial y salto dev pendiente
+    if (state.tutorial) { state.tutorial.director.dispose(); state.tutorial = null; }
+    state.tutMixer = null;
+    state.tutorialOn = false;
+    state.devJump = null;
     if (state.match) { state.match.dispose(); state.match = null; }
     stopSnapshots();
     // T60: si había guest, avisarle del fin de sesión (volverá a esperar)
@@ -478,12 +551,48 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     const netMixer = state.hostNet
       ? new HostInputMixer(input, state.hostNet.remote, () => state.hostNet?.hasGuest ?? false)
       : null;
+    // T114: en tutorial el input del match pasa por el MIXER del director
+    // (en demo bloquea al jugador y guioniza al profesor; en turno deja pasar
+    // solo el sherpa azul). La órbita/vista libre siguen con el input real.
+    const tutMixer = state.tutorialOn ? new TutorialMixer(netMixer ?? input) : null;
+    state.tutMixer = tutMixer;
     state.match = new SherpasMatch({
-      data, scene, audio, hud, bus, input: netMixer ?? input, character, profile, choice, resumeSave,
+      data, scene, audio, hud, bus, input: tutMixer ?? netMixer ?? input, character, profile, choice, resumeSave,
       onRestart: () => { void backToMenu(); },
       dragLock: state.dragLock, // T102: en red el ratón del host solo mueve al naranja
     });
     state.netChoice = choice;
+    // T114: director del tutorial sobre la partida recién nacida
+    if (tutMixer) {
+      state.tutorialOn = false;
+      const m = state.match;
+      const projectWorld = (x: number, y: number, z: number): { x: number; y: number } | null => {
+        try {
+          const vp = scene.camera.viewport.toGlobal(scene.engine.getRenderWidth(), scene.engine.getRenderHeight());
+          const pr = Vector3.Project(new Vector3(x, y, z), Matrix.Identity(), scene.scene.getTransformMatrix(), vp);
+          const canvas = scene.engine.getRenderingCanvas();
+          if (!canvas) return null;
+          return { x: pr.x * (canvas.clientWidth / scene.engine.getRenderWidth()), y: pr.y * (canvas.clientHeight / scene.engine.getRenderHeight()) };
+        } catch { return null; }
+      };
+      const director = new TutorialDirector(m, {
+        match: m,
+        hud,
+        hudRoot: opts.hudRoot,
+        project: projectWorld,
+        camPin: (p, dist) => { try { scene.setCamPin(p, dist); } catch { /* escena fuera */ } },
+        dragLock: state.dragLock,
+        onDone: () => markOnboardingSeen(browserStore()),
+      });
+      tutMixer.attach(director);
+      state.tutorial = { director, mixer: tutMixer };
+    }
+    // T114 MODO DEV: salto a tramo pendiente (panel usado desde el menú)
+    if (state.devJump && state.match) {
+      const t = state.devJump;
+      state.devJump = null;
+      if (state.match.devRespawn(t.kind, t.index)) hud.subtitle(hud.t("dev.jumped"), 2.6);
+    }
     state.netResumeSeed = resumeSave?.seed ?? null;
     syncNetLocks();
     if (state.hostNet?.hasGuest) publishNetSession();
@@ -972,12 +1081,6 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     const qp = new URLSearchParams(window.location.search);
     const qpWeather = qp.get("clima") ?? qp.get("weather") ?? undefined;
     const qpDaytime = qp.get("hora") ?? qp.get("daytime") ?? undefined;
-    const startAscent = (choice: HudStartChoice): void => {
-      void begin(choice).catch((err) => {
-        console.error("fallo al iniciar la ascensión:", err instanceof Error ? err.stack : err);
-        hud.subtitle(`Error: ${String(err instanceof Error ? err.message : err)}`, 8);
-      });
-    };
     hud.showStart({
       difficulties: Object.keys(data.difficulty.presets),
       defaultPreset: data.difficulty.defaultPreset,
@@ -985,6 +1088,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
       saveCampLabel,
       onHowToDone: () => markOnboardingSeen(store),
       onNet: showNetPanel,
+      onTutorial: () => startTutorial(), // T114: 🎓 = tutorial guiado (partida real)
       // T61 — VISTA PREVIA EN VIVO: cambiar clima/hora en el menú se VE en la
       // pared de fondo (la nevada cae y el sol se mueve al instante).
       onWeather: (id) => {
@@ -995,10 +1099,10 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
       defaultWeather: qpWeather ?? undefined,
       defaultDaytime: qpDaytime ?? undefined,
       onGo: (choice) => {
+        // T114: la PRIMERA vez abre el TUTORIAL GUIADO (partida guiada real);
+        // el botón 🎓 lo reabre siempre. Al terminar/saltar queda «visto».
         if (shouldShowOnboarding(store)) {
-          hud.showOnboarding({
-            onDone: () => { markOnboardingSeen(store); startAscent(choice); },
-          });
+          startTutorial();
           return;
         }
         startAscent(choice);
@@ -1013,6 +1117,9 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
   return {
     dispose(): void {
       state.disposed = true;
+      if (state.devKeyHandler) { document.removeEventListener("keydown", state.devKeyHandler, true); state.devKeyHandler = null; }
+      if (state.tutorial) { state.tutorial.director.dispose(); state.tutorial = null; }
+      state.tutMixer = null;
       cancelAnimationFrame(state.menuRaf);
       stopSnapshots();
       if (state.guest) { state.guest.dispose(); state.guest = null; }

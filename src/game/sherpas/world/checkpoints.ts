@@ -5,6 +5,7 @@
 // en sus extremos. Si el equipo cae, reaparece en la ÚLTIMA cota fijada — se
 // pierde altura, no la ascensión (coherente con la filosofía anti-reset).
 import type { CampZone } from "./wallGenerator";
+import { computeCheckpointYs } from "../gameplay/devMode"; // T114: misma regla para el panel dev
 
 export interface Checkpoint {
   /** orden ascendente (0 = la más baja). */
@@ -19,16 +20,24 @@ export class CheckpointSystem {
   private reachedCount_ = 0;
 
   constructor(stepM: number, totalHeightM: number, campZones: CampZone[]) {
-    const step = Math.max(2, stepM);
-    for (let y = step; y <= totalHeightM - 2; y += step) {
-      // las cotas DENTRO de una zona de campamento se saltan: el campamento ya
-      // es punto de respawn con visuales, descanso y guardado propios.
-      if (campZones.some((c) => y >= c.yBase - 0.5 && y <= c.yTop + 0.5)) continue;
+    // T114: la regla de cotas vive en devMode.ts (la comparte el panel dev)
+    for (const y of computeCheckpointYs(stepM, totalHeightM, campZones)) {
       this.list.push({ index: this.list.length, y, reached: false });
     }
   }
 
   reachedCount(): number { return this.reachedCount_; }
+
+  /** T114 MODO DEV: fija como alcanzadas TODAS las cotas hasta y (coherencia
+   *  al saltar a un tramo: el respawn y el HUD ven el ascenso «hecho»). */
+  markUpTo(y: number): void {
+    for (const cp of this.list) {
+      if (!cp.reached && cp.y <= y) {
+        cp.reached = true;
+        this.reachedCount_++;
+      }
+    }
+  }
 
   /** Marca cotas alcanzadas (basta que UN escalador cruce la línea: son de
    *  equipo). Devuelve las recién fijadas este tick. */
