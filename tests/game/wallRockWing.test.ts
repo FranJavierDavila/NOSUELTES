@@ -67,5 +67,44 @@ for (const side of [-1, 1] as const) {
       expect(maxY).toBeGreaterThanOrEqual(12 - 1e-6);
       expect(g.indices.length).toBe(g.tris * 3);
     });
+
+    // T113 — SOLAPE: con overlapM el ala nace ANTES del canto (|x| < half en
+    // las primeras columnas): la junta ala-muro queda enterrada en el muro y
+    // NUNCA se abre (las rayas verdes de la captura del jugador).
+    it("con overlapM nace enterrada en el muro (junta sellada)", () => {
+      const half = f.wallW / 2;
+      const go = buildRockWing(f, 1, 0.49, 2.6, -0.5, 12, 0.3, 1, 0.7);
+      let inside = 0;
+      for (let v = 0; v < go.verts; v++) {
+        const x = go.positions[v * 3]!;
+        if (Math.abs(x) < half - 0.2) inside++;
+      }
+      expect(inside).toBeGreaterThan(0);
+      // y sigue alcanzando el canto: hay vértices más allá del muro
+      let outside = 0;
+      for (let v = 0; v < go.verts; v++) {
+        if (go.positions[v * 3]! > half + 0.5) outside++;
+      }
+      expect(outside).toBeGreaterThan(0);
+    });
+
+    // T113 — VOLUMEN 3D: con thicknessM hay cara trasera (misma retícula a t
+    // por detrás) y tapas: el ala deja de ser un papel plano.
+    it("con thicknessM tiene cara trasera y tapas (volumen)", () => {
+      const t = 0.55;
+      const gt = buildRockWing(f, 1, 0.49, 2.6, -0.5, 12, 0.3, 1, 0, t);
+      const gFlat = buildRockWing(f, 1, 0.49, 2.6, -0.5, 12, 0.3, 1);
+      expect(gt.verts).toBeGreaterThan(gFlat.verts); // frente + dorso + tapas
+      const nFlat = gFlat.verts;
+      // el dorso replica la retícula frontal desplazada t·(−n̂): mismas Y
+      for (const v of [0, Math.floor(nFlat / 2)]) {
+        expect(gt.positions[(nFlat + v) * 3 + 1]!).toBeCloseTo(gt.positions[v * 3 + 1]!, 4);
+        const dz = gt.positions[(nFlat + v) * 3 + 2]! - gt.positions[v * 3 + 2]!;
+        expect(dz).toBeCloseTo(t * Math.cos(0.49), 2); // −n̂·t: hacia +z
+      }
+      expect(gt.tris).toBeGreaterThan(gFlat.tris * 2); // dorso + tapas
+      expect(gt.indices.length).toBe(gt.tris * 3);
+      expect(gt.colors.length).toBe(gt.verts * 4);
+    });
   });
 }

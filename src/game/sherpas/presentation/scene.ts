@@ -48,6 +48,7 @@ import { HDRCubeTexture } from "@babylonjs/core/Materials/Textures/hdrCubeTextur
 import "@babylonjs/core/Materials/Textures/Loaders/hdrTextureLoader"; // T61: plugin .hdr (panorama RGBE)
 import { PointLight } from "@babylonjs/core/Lights/pointLight"; // T61: frontal nocturno (escaladas de noche)
 import { ParticleSystem } from "@babylonjs/core/Particles/particleSystem";
+import type { Particle } from "@babylonjs/core/Particles/particle"; // T113: updater propio de la pluma
 import { generateSkyHdrBytes } from "./hdrSky"; // T61: HDRI procedural (puro)
 import { resolveDayPreset, DAY_PRESETS, type DayPreset, type DaytimeId } from "../gameplay/daycycle"; // T61: hora del día
 import type { FallingKind } from "../events/falling"; // T61: objetos que caen (dibujo)
@@ -1306,28 +1307,23 @@ export class SherpaScene {
       let wingTris = 0;
       for (const side of [-1, 1] as const) {
         // paso 18 cm: el relieve de la silueta no necesita la retícula fina del
-        // muro jugable (1,2 cm) — 7× menos triángulos estáticos por ala
-        const g = buildRockWing(wingField, side, wingAngle, wingLen, -0.5, wingY1, 0.18, 0.22);
+        // muro jugable (1,2 cm) — 7× menos triángulos estáticos por ala.
+        // T113 — overlapM 0,7: el ala nace 0,7 m ANTES del canto, enterrada en
+        // el grosor del muro → la junta ala-muro NUNCA se abre (las rayas
+        // verdes del jugador). thicknessM 0,55: losa con volumen 3D como el
+        // muro (cara trasera + tapas), no un papel plano.
+        const g = buildRockWing(wingField, side, wingAngle, wingLen, -0.5, wingY1, 0.18, 0.22, 0.7, 0.55,
+          this.rockTintCfg?.enabled ? this.rockTintCfg : undefined, side === 1 ? 901 : 902);
         for (let k = 0; k < g.uvs.length; k++) g.uvs[k]! /= TILE_M;
         const wm = new Mesh(`sideWall${side < 0 ? "L" : "R"}`, this.scene);
         const wv = new VertexData();
         wv.positions = new Float32Array(g.positions);
         wv.normals = new Float32Array(g.normals);
-        // T112 — EL MISMO TRATAMIENTO que el muro: tinte por vértice
+        // EL MISMO TRATAMIENTO que el muro: el tinte por vértice
         // (computeRockTint: AO de concavidad + variación de macizo + líquenes)
-        // multiplicado sobre la loseta horneada — rompe la planicie igual que
-        // en los chunks del muro.
-        if (this.rockTintCfg?.enabled && g.heights) {
-          wv.colors = computeRockTint({
-            positions: new Float32Array(g.positions),
-            normals: new Float32Array(g.normals),
-            h: new Float32Array(g.heights),
-            vw: Math.round(wingLen / 0.18) + 1,
-            vh: Math.round((wingY1 + 0.5) / 0.18) + 1,
-            cfg: this.rockTintCfg,
-            chunkIndex: side === 1 ? 901 : 902, // semillas propias por ala
-          });
-        }
+        // lo aplica buildRockWing DENTRO (así también colorea trasera y tapas
+        // del volumen 3D) sobre la loseta horneada del muro.
+        wv.colors = new Float32Array(g.colors);
         wv.uvs = new Float32Array(g.uvs);
         wv.indices = g.indices;
         wv.applyToMesh(wm);
@@ -1561,7 +1557,11 @@ export class SherpaScene {
             ? Vector3.TransformCoordinates(CHIMNEY_LOCAL, mesh0.getWorldMatrix())
             : new Vector3(0, -1, 0);
           if (Number.isFinite(mouth.y) && mouth.y > 0.5) {
-            this.startChimneySmoke(mouth);
+            // T113 — la transformada del GLB sitúa la boca ~2 m más alta que el
+            // tubo real (medición del jugador con flecha azul: «nace un pegote
+            // blanco en medio de la nada… debe estar ~2 m para abajo»). Bajada
+            // a la boca verdadera; el pluma nace EN el tubo.
+            this.startChimneySmoke(mouth.subtract(new Vector3(0, 2.0, 0)));
             this.baseCampStats.smoke = true;
           } else {
             // red de seguridad: pico del GLB (heurística antigua)
@@ -1587,42 +1587,84 @@ export class SherpaScene {
       });
   }
 
-  /** T111 — HUMO LENTO, CONTINUO y EMPUJADO POR EL VIENTO (petición: «debe
-   *  salir de forma lenta pero continua más realista, y si tenemos rachas de
-   *  viento es empujada por el viento»; antes subía como un cohete por la
-   *  gravedad +y). Nace justo EN la boca del tubo, asciende despacio
-   *  (~0,35-0,6 m/s, el humo real), crece y se disipa. La RACHA lo dobla en
-   *  vivo: setWind escribe gravity.x (fuerza lateral sobre TODAS las
-   *  partículas vivas — la columna entera se curva) y la deriva de las
-   *  nuevas; entre rachas una brisa suave lo mece. */
+  /** T113 — PLUMA BOYANTE REALISTA (petición: «quiero un sistema de partículas
+   *  más realista que parezca humos de verdad… debe evolucionar como partículas
+   *  que decaen con la altura hasta desaparecer, pero por lo menos deben subir
+   *  3 o 4 metros, y reaccionar con las rachas de viento»; antes: puffs que
+   *  flotaban lineales y un pegote blanco nacido en el aire). Física de pluma
+   *  boyante (Morton, Taylor & Turner 1956, J. Fluid Mech. 10:201 — el modelo
+   *  clásico de chimeneas): (1) nace estrecha y rápida en la boca; (2) se FRENA
+   *  al entrainar aire frío — v ≈ v0 − k·t con piso ~0,24 m/s → integra 3-4 m;
+   *  (3) se ENSANCHA como cono de ~14°: r ≈ r0·(0,62+0,24·Δz); (4) la opacidad
+   *  DECAE EXPONENCIALMENTE con la ALTURA (α ∝ e^(−Δz/1,35)), no con la edad:
+   *  el humo se disipa al subir; (5) turbulencia: remolino sinusoidal por
+   *  partícula que crece con Δz; (6) la RACHA (setWind → gravity.x en vivo)
+   *  dobla la pluma MÁS arriba que abajo (el humo viejo es liviano) y entre
+   *  rachas la mece la brisa. updater propio: el de Babylon no sabe frenar,
+   *  ensanchar ni disipar por cota. */
   private startChimneySmoke(worldPos: Vector3): void {
     if (!this.scene || this.chimneySmoke) return;
     const ps = new ParticleSystem("chimenea", 170, this.scene);
     ps.particleTexture = this.fxTexture;
-    ps.emitter = worldPos.clone().subtract(new Vector3(0, 0.07, 0)); // EN la boca
-    ps.minEmitBox = new Vector3(-0.05, 0, -0.05);
-    ps.maxEmitBox = new Vector3(0.05, 0.07, 0.05);
-    ps.minSize = 0.28; ps.maxSize = 0.5;
-    ps.minLifeTime = 4.5; ps.maxLifeTime = 7.5;
+    const y0 = worldPos.y - 0.05;
+    ps.emitter = new Vector3(worldPos.x, y0, worldPos.z); // EN la boca del tubo
+    ps.minEmitBox = new Vector3(-0.04, 0, -0.04);
+    ps.maxEmitBox = new Vector3(0.04, 0.05, 0.04);
+    ps.minSize = 0.22; ps.maxSize = 0.4; // nace ESTRECHA: el cono hace el resto
+    ps.minLifeTime = 5; ps.maxLifeTime = 7.5;
     ps.emitRate = 26; // hilo CONTINUO: siempre hay humo saliendo
     ps.blendMode = ParticleSystem.BLENDMODE_STANDARD;
-    // ascenso LENTO y constante (~0,5-0,75 m/s: el humo real, nada de cohete)
-    ps.direction1 = new Vector3(-0.05, 0.75, -0.04);
-    ps.direction2 = new Vector3(0.09, 1.15, 0.07);
-    ps.minEmitPower = 0.7; ps.maxEmitPower = 1.0;
-    ps.gravity = new Vector3(0, 0.08, 0); // flotación leve: sigue subiendo sin acelerar
-    ps.updateSpeed = 0.011; // integración fina (el humo no va a saltos)
-    // gradiente: nace densa en la boca, crece al subir y muere transparente.
-    // T112 — VISIBLE SEGURO (el jugador no la veía): puffs GRANDES (hasta 1,7 m
-    // de diámetro al morir) y opacidad ALTA (0,68 al nacer) — se lee a la
-    // distancia de cámara del juego contra el cielo Y contra la roca.
-    ps.addSizeGradient(0, 0.35);
-    ps.addSizeGradient(0.4, 0.75);
-    ps.addSizeGradient(1, 1.7);
-    ps.addColorGradient(0, new Color4(0.82, 0.83, 0.86, 0));
-    ps.addColorGradient(0.06, new Color4(0.82, 0.83, 0.86, 0.68));
-    ps.addColorGradient(0.5, new Color4(0.8, 0.81, 0.85, 0.42));
-    ps.addColorGradient(1, new Color4(0.86, 0.88, 0.92, 0));
+    ps.direction1 = new Vector3(-0.04, 0.92, -0.03);
+    ps.direction2 = new Vector3(0.07, 1.18, 0.05);
+    ps.minEmitPower = 0.85; ps.maxEmitPower = 1.05; // v0 ≈ 0,9-1,2 m/s
+    ps.gravity = new Vector3(0, 0, 0); // la RACHA entra por gravity.x (setWind)
+    ps.updateSpeed = 0.01;
+    type Meta = { base: number; phase: number };
+    const meta = new WeakMap<object, Meta>();
+    const inner = ps as unknown as {
+      _scaledUpdateSpeed: number;
+      recycleParticle: (p: Particle) => void;
+    };
+    ps.updateFunction = (particles: Particle[]): void => {
+      const dt = inner._scaledUpdateSpeed || ps.updateSpeed * 1.67;
+      const gx = ps.gravity.x; // racha EN VIVO (setWind lo escribe)
+      for (let index = 0; index < particles.length; index++) {
+        const p = particles[index]!;
+        let m = meta.get(p);
+        if (!m) { m = { base: p.size, phase: Math.random() * 6.283 }; meta.set(p, m); }
+        const dz = p.position.y - y0;
+        // (2) frenado por entrainment con piso (nunca se para del todo)
+        p.direction.y = Math.max(0.24, p.direction.y - dt * 0.115);
+        // (5)+(6) remolino + viento amplificado por altura (pluma liviana arriba)
+        const turb = Math.sin(m.phase + dz * 1.9 + p.age * 1.4);
+        const gustK = gx * (0.45 + Math.min(1.1, Math.max(0, dz) * 0.28));
+        p.direction.x += (gustK + turb * 0.09 * Math.min(1.2, 0.25 + Math.max(0, dz))) * dt;
+        p.direction.z += Math.cos(m.phase * 1.7 + p.age * 1.1) * 0.05 * dt;
+        p.position.x += p.direction.x * dt;
+        p.position.y += p.direction.y * dt;
+        p.position.z += p.direction.z * dt;
+        // (3) cono de ensanchamiento + giro perezoso del billboard
+        p.size = Math.min(1.9, m.base * (0.62 + 0.24 * Math.max(0, dz)));
+        p.angle += dt * 0.5;
+        // (4) opacidad por COTA: entrada 0,25 s → e^(−Δz/1,35) → cierre final
+        const fadeIn = Math.min(1, p.age / 0.25);
+        const endFade = Math.max(0, Math.min(1, (p.lifeTime - p.age) / 0.6));
+        const a = 0.82 * fadeIn * Math.exp(-Math.max(0, dz) / 1.35) * endFade;
+        const cool = Math.min(1, Math.max(0, dz) / 4); // se enfría: azul tenue arriba
+        p.color.r = 0.84 - 0.04 * cool;
+        p.color.g = 0.85 - 0.02 * cool;
+        p.color.b = 0.88 + 0.05 * cool;
+        p.color.a = a;
+        p.age += dt;
+        // muerte por COTA (3-4 m) o por vida → reciclar (idioma del updater por
+        // defecto: swap con la última + respawn)
+        if (p.age >= p.lifeTime || dz > 4.2) {
+          p.age = p.lifeTime;
+          inner.recycleParticle(p);
+          index--;
+        }
+      }
+    };
     ps.start();
     this.chimneySmoke = ps;
   }

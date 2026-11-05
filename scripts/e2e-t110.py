@@ -149,9 +149,10 @@ try:
           const e = ps.emitter;
           return { name: ps.name, x: +e.x.toFixed(2), y: +e.y.toFixed(2), z: +e.z.toFixed(2) };
         })()""", tries=4)
-        # boca de chimenea esperada (3.81, ~5.1, −2.43) ± tolerancia
-        ok_pos = bool(emitter and abs(emitter["x"] - 4.43) < 0.3 and abs(emitter["z"] + 1.87) < 0.35 and 4.5 < emitter["y"] < 5.6)
-        check("F2c) emisor del humo EN LA BOCA de la chimenea girada (4.43,~5.1,−1.87)", ok_pos, f"emitter={emitter}")
+        # boca de chimenea esperada T113 (4.43, ~3.1, −1.87): la transformada
+        # del GLB daba la boca ~2 m alta (flecha azul del jugador) — bajada
+        ok_pos = bool(emitter and abs(emitter["x"] - 4.43) < 0.3 and abs(emitter["z"] + 1.87) < 0.35 and 2.8 < emitter["y"] < 3.6)
+        check("F2c) emisor del humo EN LA BOCA REAL del tubo (4.43,~3.1,−1.87)", ok_pos, f"emitter={emitter}")
         massif_mat = probe(host, """(() => {
           const sc = window.__SHERPAS_DEBUG && __SHERPAS_DEBUG.sceneObj && __SHERPAS_DEBUG.sceneObj();
           const m = sc && sc.scene && sc.scene.getMeshByName && sc.scene.getMeshByName('sideMassifs');
