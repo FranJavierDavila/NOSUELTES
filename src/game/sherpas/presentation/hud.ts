@@ -208,6 +208,9 @@ const CSS = `
 .sphud .hero-resume { font-size: 12.5px; padding: 6px 14px; opacity: .95; border-radius: 9px; background: rgba(16,22,28,.82); }
 .sphud .hero-row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
 .sphud .hero-row button { font-size: 13.5px; padding: 9px 16px; border-radius: 10px; background: rgba(16,22,28,.82); }
+/* T118: botón provisional del nivel «Prueba del Campamento» */
+.sphud .pared-beta { display: block; margin: 10px auto 0; font-size: 13.5px; padding: 9px 16px; border-radius: 10px; background: rgba(46,125,79,.32); border: 1px dashed #57b17e; color: #cfe9d6; cursor: pointer; }
+.sphud .pared-beta:hover { background: rgba(46,125,79,.5); }
 .sphud .gear { position: absolute; top: 12px; right: 12px; width: 44px; height: 44px; padding: 0; font-size: 21px; line-height: 1; border-radius: 50%; background: rgba(10,14,18,.72); backdrop-filter: blur(4px); }
 .sphud .gear:hover { background: rgba(38,49,61,.9); }
 .sphud .net-status { font-size:13px; min-height:20px; text-align:center; opacity:.9; margin:8px 0; }
@@ -301,7 +304,7 @@ export class SherpaHud {
   private reduceShake = false;
   private mute = false;
   private disablePee = false;
-  private opts?: { onGo: (c: HudStartChoice) => void; onHowToDone?: () => void; onNet?: () => void; onWeather?: (id: string) => void; onDaytime?: (id: string) => void; /** T114: el 🎓 abre el TUTORIAL GUIADO (partida guiada real). */ onTutorial?: () => void };
+  private opts?: { onGo: (c: HudStartChoice) => void; onHowToDone?: () => void; onNet?: () => void; onWeather?: (id: string) => void; onDaytime?: (id: string) => void; /** T114: el 🎓 abre el TUTORIAL GUIADO (partida guiada real). */ onTutorial?: () => void; /** T118: nivel provisional «Prueba del Campamento». */ onPared?: () => void };
   private choice: Partial<HudStartChoice> = { lang: "en" };
   /** T100: datos del menú que el re-render necesita (cambio de idioma). */
   private startOpts: { difficulties: string[]; saveCampLabel: string | null } | null = null;
@@ -1161,9 +1164,9 @@ export class SherpaHud {
     return !!this.devPanel;
   }
 
-  showStart(opts: { difficulties: string[]; defaultPreset: string; seed: number; saveCampLabel: string | null; onGo: (c: HudStartChoice) => void; onHowToDone?: () => void; onNet?: () => void; onWeather?: (id: string) => void; onDaytime?: (id: string) => void; defaultWeather?: string; defaultDaytime?: string; /** T114: 🎓 = tutorial guiado (el mount arranca la partida guiada). */ onTutorial?: () => void }): void {
+  showStart(opts: { difficulties: string[]; defaultPreset: string; seed: number; saveCampLabel: string | null; onGo: (c: HudStartChoice) => void; onHowToDone?: () => void; onNet?: () => void; onWeather?: (id: string) => void; onDaytime?: (id: string) => void; defaultWeather?: string; defaultDaytime?: string; /** T114: 🎓 = tutorial guiado (el mount arranca la partida guiada). */ onTutorial?: () => void; /** T118: nivel provisional «Prueba del Campamento» (pared de bloques flotantes). */ onPared?: () => void }): void {
     this.backpackClose(); // T101: al volver al menú no queda ninguna mochila abierta
-    this.opts = { onGo: opts.onGo, onHowToDone: opts.onHowToDone, onNet: opts.onNet, onWeather: opts.onWeather, onDaytime: opts.onDaytime, onTutorial: opts.onTutorial };
+    this.opts = { onGo: opts.onGo, onHowToDone: opts.onHowToDone, onNet: opts.onNet, onWeather: opts.onWeather, onDaytime: opts.onDaytime, onTutorial: opts.onTutorial, onPared: opts.onPared };
     // T61: clima y hora PERSISTEN entre sesiones (localStorage defensivo); la
     // URL (?clima= / ?hora=) manda si el mount la trae — E2E determinista.
     const weather0 = opts.defaultWeather ?? this.loadPref(WEATHER_PREF_KEY, WEATHER_IDS, "clear");
@@ -1197,6 +1200,7 @@ export class SherpaHud {
           <button data-a="howto">🎓 ${esc(this.t("menu.tutorial"))}</button>
           <button data-a="net">🌐 ${esc(this.t("net.menu"))}</button>
         </div>
+        ${this.opts?.onPared ? `<button class="pared-beta" data-a="pared">🧗 ${esc(this.t("pared.menu"))}</button>` : ""}
       </div>`;
     el.querySelector<HTMLElement>("[data-a=settings]")!.onclick = () => this.toggleSettings(true);
     el.querySelector<HTMLElement>("[data-a=howto]")!.onclick = () => {
@@ -1210,6 +1214,9 @@ export class SherpaHud {
     el.querySelectorAll<HTMLElement>("[data-a=resume]").forEach((b) => { b.onclick = () => { this.choice.resume = true; this.hideStart(); this.opts?.onGo?.(this.choice as HudStartChoice); }; });
     const go = el.querySelector<HTMLElement>("[data-a=go]")!;
     go.onclick = () => { this.choice.resume = false; this.hideStart(); this.opts?.onGo?.(this.choice as HudStartChoice); };
+    // T118: nivel provisional «Prueba del Campamento» (pared de bloques flotantes)
+    const pared = el.querySelector<HTMLElement>("[data-a=pared]");
+    if (pared) pared.onclick = () => { this.hideStart(); this.opts?.onPared?.(); };
   }
 
   /** T100 — panel del engranaje: TODAS las opciones que antes llenaban la

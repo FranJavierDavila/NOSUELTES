@@ -15,6 +15,8 @@ import { HostNet, GuestNet, debugRelays } from "./net/netClient";
 import { HostInputMixer } from "./net/remoteInput";
 import { GuestRunner } from "./net/guestRunner";
 import { TEST_MODE } from "./gameplay/testMode"; // T89: modo test oculto (?test=escalada)
+import { NIVEL_MODE } from "./gameplay/nivelMode"; // T118: nivel provisional (?nivel=pared)
+import { ParedNivel } from "./gameplay/paredNivel"; // T118: nivel «Prueba del Campamento»
 import type { NetJson, NetSessionParams } from "./net/protocol";
 import type { Limb } from "./core/bus";
 import { WallGenerator } from "./world/wallGenerator";
@@ -106,7 +108,9 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     devBuf: string;
     previewLayout: DevLayoutInfo | null;
     devKeyHandler: ((e: KeyboardEvent) => void) | null;
-  } = { match: null, scene: null, disposed: false, menuRaf: 0, previewSeed: 0, hostNet: null, guestNet: null, guest: null, snapTimer: 0, unSubNet: null, guestBuilding: false, dragLock: { player: null }, netChoice: null, netResumeSeed: null, tutorial: null, tutorialOn: false, tutMixer: null, devJump: null, devBuf: "", previewLayout: null, devKeyHandler: null };
+    /** T118 NIVEL «PRUEBA DEL CAMPAMENTO»: instancia viva (null fuera del nivel). */
+    pared: ParedNivel | null;
+  } = { match: null, scene: null, disposed: false, menuRaf: 0, previewSeed: 0, hostNet: null, guestNet: null, guest: null, snapTimer: 0, unSubNet: null, guestBuilding: false, dragLock: { player: null }, netChoice: null, netResumeSeed: null, tutorial: null, tutorialOn: false, tutMixer: null, devJump: null, devBuf: "", previewLayout: null, devKeyHandler: null, pared: null };
 
   const input = new InputManager(data.inputMaps, {
     onPause: () => { if (state.guest) state.guest.togglePause(); else state.match?.togglePause(); },
@@ -297,7 +301,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
   state.scene = await makePreviewScene(state.previewSeed);
   const menuFrame = (): void => {
     state.menuRaf = requestAnimationFrame(menuFrame);
-    if (state.match || state.guest || !state.scene) return; // la partida/guest llevan su propio bucle
+    if (state.match || state.guest || state.pared || !state.scene) return; // la partida/guest/nivel llevan su propio bucle
     state.scene.render();
   };
   menuFrame();
@@ -529,6 +533,48 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     if (!state.scene) state.scene = await makePreviewScene();
     await showMenu();
     await showLoading().hide(); // T110: si se rehizo la escena, ya está lista
+  };
+
+  // T118 — NIVEL PROVISIONAL «PRUEBA DEL CAMPAMENTO» (pared de bloques flotantes).
+  // El juego principal NO se toca: el nivel crea SU PROPIA escena (patrón
+  // endGuestToMenu: un canvas = un motor) y al salir se rehace la del menú.
+  const startPared = async (): Promise<void> => {
+    if (state.disposed || state.pared || state.match || state.guest) return;
+    hud.hideStart();
+    hud.hideNet();
+    const gLoad = showLoading();
+    gLoad.set(30, "Atando los bloques que levitan…");
+    try {
+      if (state.scene) { state.scene.dispose(); state.scene = null; }
+      gLoad.set(55, "Levantando la prueba del campamento…");
+      const scene = await SherpaScene.create(opts.canvas, data.camera, data.hud, data.tuning.perf, data.vfx, data.wallGen.relief ?? null, data.climber);
+      state.scene = scene;
+      state.pared = new ParedNivel({
+        data, scene, hud, input, canvas: opts.canvas, hudRoot: opts.hudRoot,
+        character, profile,
+        rockwallStyle: (data.wallGen.relief as unknown as { rockwall?: Partial<import("./world/rockwall").RockwallStyle> } | null)?.rockwall ?? null,
+        onExit: () => { void exitPared(); },
+      });
+      state.pared.start();
+      gLoad.set(90, "Cuerda lista…");
+    } catch (err) {
+      console.error("fallo al iniciar la prueba del campamento:", err instanceof Error ? err.stack : err);
+      hud.subtitle(`Error: ${String(err instanceof Error ? err.message : err)}`, 8);
+      state.pared?.dispose();
+      state.pared = null;
+    } finally {
+      await gLoad.hide();
+    }
+  };
+
+  const exitPared = async (): Promise<void> => {
+    if (state.pared) { state.pared.dispose(); state.pared = null; }
+    if (state.scene) { state.scene.dispose(); state.scene = null; }
+    if (!state.disposed) {
+      state.scene = await makePreviewScene();
+      await showMenu();
+      await showLoading().hide();
+    }
   };
 
   const begin = async (choice: HudStartChoice): Promise<void> => {
@@ -1135,12 +1181,17 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         }
         startAscent(choice);
       },
+      // T118: nivel provisional «Prueba del Campamento» (pared de bloques flotantes)
+      onPared: () => { void startPared(); },
     });
   };
 
   installDebug(); // T61: sonda disponible también en el MENÚ (graphics/baseCamp/sun)
   await showMenu();
   await loading.hide(); // T110: mundo montado y menú pintado → se descubre la pantalla
+
+  // T118: ?nivel=pared → el nivel se abre DIRECTO (selección provisional por URL)
+  if (NIVEL_MODE.id === "pared") { hud.hideStart(); void startPared(); }
 
   return {
     dispose(): void {
@@ -1153,6 +1204,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
       if (state.guest) { state.guest.dispose(); state.guest = null; }
       state.hostNet?.disconnect(); state.hostNet = null;
       state.guestNet?.disconnect(); state.guestNet = null;
+      if (state.pared) { state.pared.dispose(); state.pared = null; }
       if (state.match) { state.match.dispose(); state.match = null; }
       if (state.scene) { state.scene.dispose(); state.scene = null; }
       input.dispose();
