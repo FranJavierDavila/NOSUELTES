@@ -352,6 +352,26 @@
     "exit": "Menu",
     "soloMano": "⚠ One hand only! Secure yourself fast or you will fall from fatigue",
     "finaleTime": "Time",
-    "finaleFalls": "Falls"
+    "finaleFalls": "Falls",
+    "panel": {
+      "titulo": "Tuning panel",
+      "velocidad": "Block speed",
+      "amplitud": "Amplitude",
+      "fase": "Phase",
+      "pasoFilas": "Row spacing",
+      "fatiga": "Fatigue",
+      "fatigaMano": "Fatigue ×1 hand",
+      "fatigaSinApoyo": "Fatigue no feet",
+      "cambioMano": "Hand-change limit",
+      "cuerda": "Rope",
+      "telemetria": "Telemetry",
+      "reiniciar": "Restart",
+      "cima": "↑ Summit",
+      "irFila": "Go to row",
+      "defecto": "Defaults",
+      "copiar": "Copy values",
+      "copiado": "Copied! (also in console)",
+      "nota": "⟳ applies on Restart · F3 closes"
+    }
   }
 }

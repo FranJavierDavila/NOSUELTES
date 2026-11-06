@@ -352,6 +352,26 @@
     "exit": "Menú",
     "soloMano": "⚠ ¡Sólo una mano! Afírmate rápido o caerás por fatiga",
     "finaleTime": "Tiempo",
-    "finaleFalls": "Caídas"
+    "finaleFalls": "Caídas",
+    "panel": {
+      "titulo": "Panel de ajuste",
+      "velocidad": "Velocidad bloques",
+      "amplitud": "Amplitud",
+      "fase": "Fase",
+      "pasoFilas": "Separación filas",
+      "fatiga": "Fatiga",
+      "fatigaMano": "Fatiga ×1 mano",
+      "fatigaSinApoyo": "Fatiga sin pies",
+      "cambioMano": "Límite cambio mano",
+      "cuerda": "Cuerda",
+      "telemetria": "Telemetría",
+      "reiniciar": "Reiniciar",
+      "cima": "↑ Cima",
+      "irFila": "Ir a fila",
+      "defecto": "Por defecto",
+      "copiar": "Copiar valores",
+      "copiado": "¡Copiado! (también en consola)",
+      "nota": "⟳ se aplica al Reiniciar · F3 cierra"
+    }
   }
 }

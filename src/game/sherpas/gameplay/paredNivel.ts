@@ -40,6 +40,12 @@ import type { InputManager } from "../input/input";
 import type { SherpaHud } from "../presentation/hud";
 import type { SherpaScene } from "../presentation/scene";
 import { mulberry32 } from "../core/rng";
+import {
+  PARED_AJUSTE_LIMITES, filaDeAltura, fpsEma, isDevToggleKey, loadAjuste,
+  parseDevURL, resetAjuste, saveAjuste, serializeAjuste,
+  type MiniStorage, type ParedAjusteParams,
+} from "./paredAjuste"; // T119: panel de ajuste (modo dev)
+import { isTypingTarget } from "./devMode"; // T114: guard de campos de texto
 
 // ---------- geometría del nivel (calibrada con los huesos del rig) ----------
 // Alcances reales (sherpaRig.ts): brazo 0,88×1,08 ≈ 0,95 m; pierna 0,97×1,08 ≈ 1,05 m;
@@ -54,6 +60,10 @@ export const WIN_Y = 20.4;        // ambos sherpas por encima → prueba superad
 export const FAIL_Y = -1.4;       // caída al vacío → prueba fallada
 export const CUERDA_LEN = 5.0;    // separación máxima entre los dos sherpas (m)
 const Z_PRESA = 0.3;              // plano de presas / arrastre
+
+// T119 — PANEL DE AJUSTE (modo dev): todos los knobs de dificultad del nivel
+// viven en paredAjuste.ts (persistencia + clamp + serialización puros). En el
+// juego normal el panel NO existe: se abre solo con ?dev=1 o la tecla F3.
 
 // ---------- patrones de movimiento (puro, testeable) ----------
 
@@ -108,16 +118,24 @@ const PATRONES_FILA: [Patron, Patron][] = [
   ["estatico", "giro"],
 ];
 
+/** Modulador del layout (panel de ajuste): el paso de filas fija las ALTURAS
+ *  (requiere reconstruir bloques); velocidad/amplitud/fase se aplican EN VIVO
+ *  en actualizaTransformaciones sin reconstruir nada. */
+export interface ParedModLayout {
+  filaPaso?: number;
+}
+
 /** Toda la pared: 2 bloques de salida + 9 filas móviles (una por columna) +
  *  fila de cima de 3 bloques horizontales estáticos. ~20 m de subida. */
-export function layoutPared(seed: number): BloqueSpec[] {
+export function layoutPared(seed: number, mod?: ParedModLayout): BloqueSpec[] {
+  const paso = mod?.filaPaso && mod.filaPaso > 0 ? mod.filaPaso : FILA_PASO;
   const rng = mulberry32(seed >>> 0);
   const out: BloqueSpec[] = [];
   for (const [i, x] of [-1.3, 1.3].entries()) {
     out.push({ id: `salida_${i}`, x, y: Y_SALIDA, z: 0, w: 1.8, h: 1.8, d: 0.5, patron: "estatico", amp: 0, periodS: 1, phase: 0, salida: true });
   }
   for (let r = 1; r <= 9; r++) {
-    const y = Y_SALIDA + FILA_PASO + (r - 1) * FILA_PASO;
+    const y = Y_SALIDA + paso + (r - 1) * paso;
     const [pl, pr] = PATRONES_FILA[(r - 1) % PATRONES_FILA.length];
     // las amplitudes se sortean SIEMPRE en el mismo orden → layout determinista
     const ampL = 0.3 + rng() * 0.18, perL = 3.4 + rng() * 2.2, phL = rng() * Math.PI * 2;
@@ -134,7 +152,7 @@ export function layoutPared(seed: number): BloqueSpec[] {
     });
   }
   for (const [i, x] of [-1.35, 0, 1.35].entries()) {
-    out.push({ id: `cima_${i}`, x, y: Y_CIMA, z: 0, w: 1.25, h: 1.25, d: 0.5, patron: "estatico", amp: 0, periodS: 1, phase: 0, cima: true });
+    out.push({ id: `cima_${i}`, x, y: Y_SALIDA + paso * 10, z: 0, w: 1.25, h: 1.25, d: 0.5, patron: "estatico", amp: 0, periodS: 1, phase: 0, cima: true });
   }
   return out;
 }
@@ -159,6 +177,9 @@ interface Presa {
   mesh: Mesh;         // visual, hijo del nodo del bloque
   bloque: Bloque;
 }
+
+/** Presas iniciales por sherpa (manos 0/1, pies 4/5 del bloque elegido). */
+type AnclajesIniciales = { hand_l: HoldInstance; hand_r: HoldInstance; foot_l: HoldInstance; foot_r: HoldInstance };
 
 interface Bloque {
   spec: BloqueSpec;
@@ -195,7 +216,7 @@ export class ParedNivel {
   private anchors!: AnchorSystem;
   private sherpas: SherpaRig[] = [];
   private bloques: Bloque[] = [];
-  private salidaHolds: { hand_l: HoldInstance; hand_r: HoldInstance; foot_l: HoldInstance; foot_r: HoldInstance }[] = [];
+  private salidaHolds: AnclajesIniciales[] = [];
   private matBloque: PBRMaterial | null = null;
   private matPresa: PBRMaterial | null = null;
   private masterPresa: Mesh | null = null;
@@ -217,9 +238,33 @@ export class ParedNivel {
   private elAlt: HTMLElement | null = null;
   private elFat: HTMLElement | null = null;
   private elFin: HTMLElement | null = null;
+  // T119 panel de ajuste (modo dev): estado + elementos
+  private ajuste!: ParedAjusteParams;
+  private store: MiniStorage | null = null;
+  private paso = FILA_PASO;      // paso de filas EFECTIVO (panel)
+  private yCima = Y_CIMA;        // altura de la fila de cima efectiva
+  private winY = WIN_Y;          // cota de victoria efectiva
+  private fps = 60;
+  private teleAcc = 0;
+  private panelAbierto = false;
+  private elPanel: HTMLElement | null = null;
+  private elTele: HTMLElement | null = null;
+  private elCopiado: HTMLElement | null = null;
+  private panelRefs: { key: keyof ParedAjusteParams; inp: HTMLInputElement; val: HTMLElement }[] = [];
   private disposed = false;
 
-  constructor(private d: ParedDeps) {}
+  constructor(private d: ParedDeps) {
+    this.store = typeof localStorage === "undefined" ? null : localStorage;
+    this.ajuste = loadAjuste(this.store);
+    this.aplicaAlturas();
+  }
+
+  /** Alturas dependientes del paso del panel (se recalculan al Reiniciar). */
+  private aplicaAlturas(): void {
+    this.paso = this.ajuste.filaPaso;
+    this.yCima = Y_SALIDA + this.paso * 10;
+    this.winY = this.yCima - 0.8; // el mismo margen del original (21,2 → 20,4)
+  }
 
   // ---------- construcción ----------
 
@@ -234,6 +279,9 @@ export class ParedNivel {
       txt(this.d.data.strings, this.d.hud.lang, "pared.controls", "Arrastra manos y pies a las presas · los DOS deben llegar arriba"),
       8,
     );
+    // T119: el panel SOLO se abre por URL ?dev=1 o F3 (nunca en juego normal)
+    document.addEventListener("keydown", this.onKey);
+    if (parseDevURL(typeof location === "undefined" ? undefined : location.search)) this.abrePanel();
     this.lastMs = performance.now();
     this.raf = requestAnimationFrame(this.frame);
     (window as unknown as { __PARED?: unknown }).__PARED = this;
@@ -306,7 +354,7 @@ export class ParedNivel {
     this.masterPresa.scaling.z = 0.62;
     this.masterPresa.isVisible = false;
 
-    const specs = layoutPared(20261106);
+    const specs = layoutPared(20261106, { filaPaso: this.paso });
     const todas: HoldInstance[] = [];
     for (const spec of specs) {
       const node = new TransformNode(`blk_${spec.id}`, scene);
@@ -352,9 +400,16 @@ export class ParedNivel {
     const t = this.d.data.tuning;
     const preset = this.d.data.difficulty.presets[this.d.data.difficulty.defaultPreset] ?? {};
     return {
-      limb: t.limb,
+      // T119 panel de ajuste: knobs de fatiga por ENCIMA del pack (clonados,
+      // nunca mutamos data.tuning — el juego principal no se toca)
+      limb: {
+        ...t.limb,
+        stallGraceSeconds: this.ajuste.cambioManoSegundos,
+        stallFatigueSoloHandMult: this.ajuste.fatigaManoUnica,
+        handFatigueTwoFeetFree: this.ajuste.fatigaSinApoyo,
+      },
       attachSeconds: t.anchors.attachSeconds,
-      fatigueRateMultiplier: preset.fatigueRateMultiplier ?? 1,
+      fatigueRateMultiplier: (preset.fatigueRateMultiplier ?? 1) * this.ajuste.fatigaMult,
       reachMarginM: 0.05,
       fall: {
         twoHandsGraceSeconds: t.fall.twoHandsGraceSeconds ?? 0.5,
@@ -369,7 +424,7 @@ export class ParedNivel {
     };
   }
 
-  private construirSherpas(): void {
+  private construirSherpas(anclajes?: AnclajesIniciales[]): void {
     const t = this.d.data.tuning;
     const mkDeps = (player: 0 | 1): SherpaDeps => ({
       player,
@@ -377,14 +432,15 @@ export class ParedNivel {
       character: this.d.character,
       tuning: this.rigTuning(),
       anchorSystem: this.anchors,
-      bounds: { minX: -3.4, maxX: 3.4, minY: -6, maxY: 26, minZ: Z_PRESA - 2.5, maxZ: Z_PRESA + 2.5 },
+      // el techo sigue a la cima efectiva (el panel puede subir el paso)
+      bounds: { minX: -3.4, maxX: 3.4, minY: -6, maxY: this.yCima + 6, minZ: Z_PRESA - 2.5, maxZ: Z_PRESA + 2.5 },
       floorY: -6,
       wallFrontZ: Z_PRESA,
       rope: t.rope,
     });
     this.sherpas = [
-      new SherpaRig(mkDeps(0), this.salidaHolds[0]),
-      new SherpaRig(mkDeps(1), this.salidaHolds[1]),
+      new SherpaRig(mkDeps(0), anclajes?.[0] ?? this.salidaHolds[0]),
+      new SherpaRig(mkDeps(1), anclajes?.[1] ?? this.salidaHolds[1]),
     ];
     for (const pi of [0, 1] as const) this.d.scene.spawnSherpa(pi, this.sherpas[pi].rig);
     const a = this.sherpas[0].waist();
@@ -506,7 +562,7 @@ export class ParedNivel {
     const a = this.sherpas[0].waist();
     const b = this.sherpas[1].waist();
     if (this.state === "jugando") {
-      if (a.y >= WIN_Y && b.y >= WIN_Y) {
+      if (a.y >= this.winY && b.y >= this.winY) {
         this.winT += dt;
         if (this.winT >= 1.2) this.fin(true);
       } else this.winT = 0;
@@ -529,7 +585,7 @@ export class ParedNivel {
   private aplicaCuerda(): void {
     const A = this.sherpas[0].rig.particles[P.pelvisC];
     const B = this.sherpas[1].rig.particles[P.pelvisC];
-    const ex = excesoCuerda(A.pos, B.pos, CUERDA_LEN);
+    const ex = excesoCuerda(A.pos, B.pos, this.ajuste.cuerdaMetros);
     if (ex <= 0) return;
     const corr = Math.min(ex, 0.35);
     const dir = vScale(vSub(B.pos, A.pos), 1 / Math.max(1e-4, vLen(vSub(B.pos, A.pos))));
@@ -546,8 +602,13 @@ export class ParedNivel {
   private actualizaTransformaciones(_dt: number): void {
     for (const b of this.bloques) {
       const s = b.spec;
-      const off = offsetPatron(s.patron, s.amp, s.periodS, s.phase, this.simTime);
-      const yaw = yawPatron(s.patron, s.amp, s.periodS, s.phase, this.simTime);
+      // T119 panel de ajuste: velocidad/amplitud/fase se aplican EN VIVO
+      const vel = Math.max(0.05, this.ajuste.velocidadBloques);
+      const amp = s.amp * this.ajuste.amplitudMult;
+      const per = s.periodS / vel;
+      const fase = s.phase + this.ajuste.faseOffset;
+      const off = offsetPatron(s.patron, amp, per, fase, this.simTime);
+      const yaw = yawPatron(s.patron, amp, per, fase, this.simTime);
       b.dx = off.dx;
       b.dy = off.dy + b.sag;
       b.yaw = yaw;
@@ -591,7 +652,7 @@ export class ParedNivel {
     if (n < 3) return;
     const g = this.d.data.tuning.rope.slackGravity ?? 9.81;
     const damp = this.d.data.tuning.rope.nodeDamping ?? 0.975;
-    const totalLen = CUERDA_LEN + 0.5;
+    const totalLen = this.ajuste.cuerdaMetros + 0.5;
     const segLen = totalLen / (n - 1);
     // integrar (extremos fijos)
     for (let i = 1; i < n - 1; i++) {
@@ -658,6 +719,7 @@ export class ParedNivel {
     const wa = this.sherpas[0].waist();
     const wb = this.sherpas[1].waist();
     s.updateCamera(frameDt, [wa, wb], vLen(vSub(wa, wb)), this.d.input.orbitAxis(), this.d.input.freeViewHeld());
+    this.fps = fpsEma(this.fps, frameDt);
     this.hudTick(wa, wb);
     s.render();
     this.debug(wa, wb);
@@ -682,7 +744,7 @@ export class ParedNivel {
     if (this.elAlt) {
       const alt = Math.max(0, Math.max(wa.y, wb.y) - Y_SALIDA);
       const ambos = Math.min(wa.y, wb.y) - Y_SALIDA;
-      this.elAlt.textContent = `↑ ${alt.toFixed(1)} m / ~20 m   ·   ambos: ${ambos.toFixed(1)} m`;
+      this.elAlt.textContent = `↑ ${alt.toFixed(1)} m / ~${(this.yCima - Y_SALIDA).toFixed(0)} m   ·   ambos: ${ambos.toFixed(1)} m`;
     }
     if (this.elFat) {
       // aviso de UNA MANO (peso entero sobre esa mano: fatiga ×2 — petición del jugador)
@@ -698,6 +760,32 @@ export class ParedNivel {
       this.elFat.style.display = warn ? "block" : "none";
       if (warn) this.elFat.textContent = txt(this.d.data.strings, this.d.hud.lang, "pared.soloMano", "⚠ ¡Sólo una mano! Afírmate rápido");
     }
+    if (this.panelAbierto) this.teleTick(wa, wb);
+  }
+
+  /** Telemetría del panel a ~4 Hz (el DOM no aguanta 60 reescrituras/s). */
+  private teleTick(wa: V3, wb: V3): void {
+    this.teleAcc++;
+    if (!this.elTele || this.teleAcc % 15 !== 0) return;
+    const linea = (nombre: string, rig: SherpaRig, w: V3): string => {
+      let manos = 0, pies = 0, fat = 0;
+      for (const limb of LIMBS) {
+        const st = rig.states.get(limb)!;
+        if (st.anchored) (limb.startsWith("hand") ? manos++ : pies++);
+        fat = Math.max(fat, st.fatigue);
+      }
+      const fila = filaDeAltura(w.y, Y_SALIDA, this.paso);
+      const agarres = LIMBS.filter((l) => rig.states.get(l)!.anchored && rig.states.get(l)!.holdId)
+        .map((l) => `${l}→${(rig.states.get(l)!.holdId as string).replace(/_h\d+$/, "")}`).join(" ");
+      return `${nombre} fila ${fila} · fat ${(fat * 100).toFixed(0)}% · M${manos}/P${pies}${agarres ? ` · ${agarres}` : " · al aire"}`;
+    };
+    const drag = this.dragPlayer !== null && this.dragLimb !== null
+      ? `\narrastre: S${this.dragPlayer + 1} ${this.dragLimb}`
+      : "";
+    const cuerdaTxt = this.ajuste.cuerdaMetros.toFixed(2).replace(/\.?0+$/, "");
+    this.elTele.textContent =
+      `FPS ${this.fps.toFixed(0)} · cuerda ${cuerdaTxt} m · paso ${this.paso.toFixed(2)} m\n` +
+      `${linea("S1", this.sherpas[0], wa)}\n${linea("S2", this.sherpas[1], wb)}${drag}`;
   }
 
   private fin(won: boolean): void {
@@ -722,20 +810,249 @@ export class ParedNivel {
   }
 
   /** Reintentar: rigs NUEVOS (la cuerda agotada del rescate no puede quedarse
-   *  pegada) + bloques en reposo + cronómetro a cero. La escena sobrevive. */
+   *  pegada) + bloques RECONSTRUIDOS (aplican paso del panel) + cronómetro a
+   *  cero. La escena sobrevive. */
   restart(): void {
-    this.elFin?.remove();
-    this.elFin = null;
+    this.quitaFin();
     this.state = "jugando";
     this.winT = 0;
     this.falls = 0;
     this.simTime = 0;
     this.acc = 0;
     this.onDragUp();
-    for (const b of this.bloques) { b.sag = 0; b.sagVel = 0; b.carga = 0; }
+    this.aplicaAlturas();
+    this.limpiaBloques();
+    this.construirBloques();
+    this.construirSherpas();
+  }
+
+  private quitaFin(): void {
+    this.elFin?.remove();
+    this.elFin = null;
+  }
+
+  /** Disposición de bloques/presas SIN tocar materiales ni master compartido. */
+  private limpiaBloques(): void {
+    for (const b of this.bloques) {
+      b.mesh.dispose();
+      for (const p of b.presas) p.mesh.dispose();
+      b.node.dispose();
+    }
+    this.bloques = [];
+    this.masterPresa?.dispose();
+    this.masterPresa = null;
+    this.salidaHolds = [];
+  }
+
+  // ---------- panel de ajuste (modo dev: ?dev=1 / F3 — T119) ----------
+
+  private onKey = (e: KeyboardEvent): void => {
+    if (isTypingTarget(e.target)) return;
+    if (isDevToggleKey(e.key)) {
+      e.preventDefault();
+      if (this.panelAbierto) this.cierraPanel();
+      else this.abrePanel();
+    }
+  };
+
+  abrePanel(): void {
+    if (!this.elPanel) this.crearPanelAjuste();
+    this.panelAbierto = true;
+    if (this.elPanel) this.elPanel.style.display = "block";
+    this.sincronizaPanel();
+  }
+
+  cierraPanel(forzar = false): void {
+    this.panelAbierto = false;
+    if (this.elPanel) this.elPanel.style.display = "none";
+    if (forzar) {
+      this.elPanel?.remove();
+      this.elPanel = null;
+      this.elTele = null;
+      this.elCopiado = null;
+      this.panelRefs = [];
+    }
+  }
+
+  private etiquetaValor(key: keyof ParedAjusteParams): string {
+    const v = this.ajuste[key];
+    if (key === "faseOffset") return `${v.toFixed(2)} rad`;
+    if (key === "cambioManoSegundos") return `${v.toFixed(1)} s`;
+    if (key === "filaPaso" || key === "cuerdaMetros") return `${v.toFixed(2)} m`;
+    return `×${v.toFixed(2)}`;
+  }
+
+  private sincronizaPanel(): void {
+    for (const r of this.panelRefs) {
+      r.inp.value = String(this.ajuste[r.key]);
+      r.val.textContent = this.etiquetaValor(r.key);
+    }
+  }
+
+  /** «Copiar valores»: el objeto de parámetros como JSON a consola Y
+   *  portapapeles, listo para pegar en paredNivel.ts. */
+  private copiarValores(): void {
+    const json = serializeAjuste(this.ajuste);
+    console.log(`[paredAjuste]\n${json}`);
+    const ok = (): void => {
+      if (this.elCopiado) {
+        this.elCopiado.textContent = txt(this.d.data.strings, this.d.hud.lang, "pared.panel.copiado", "¡Copiado! (también en consola)");
+        window.setTimeout(() => { if (this.elCopiado) this.elCopiado.textContent = ""; }, 1800);
+      }
+    };
+    try {
+      void navigator.clipboard?.writeText(json).then(ok, ok);
+    } catch {
+      ok();
+    }
+  }
+
+  private crearPanelAjuste(): void {
+    const t = (p: string, f: string): string => txt(this.d.data.strings, this.d.hud.lang, `pared.panel.${p}`, f);
+    const panel = document.createElement("div");
+    panel.id = "pared-panel";
+    panel.setAttribute("style",
+      "position:absolute;top:10px;right:10px;width:290px;max-height:calc(100% - 20px);overflow-y:auto;" +
+      "background:rgba(8,14,11,.93);color:#dfeee4;border:1px solid #57b17e;border-radius:12px;" +
+      "padding:12px 14px;font:12px/1.5 system-ui,sans-serif;pointer-events:auto;z-index:40;");
+    const titulo = document.createElement("div");
+    titulo.setAttribute("style", "font:700 14px system-ui,sans-serif;color:#9fe0b9;margin:0 0 4px");
+    titulo.textContent = `⚙ ${t("titulo", "Panel de ajuste")}`;
+    panel.appendChild(titulo);
+    const nota = document.createElement("div");
+    nota.setAttribute("style", "opacity:.65;font-size:11px;margin:2px 0 8px");
+    nota.textContent = t("nota", "⟳ se aplica al Reiniciar · F3 cierra");
+    panel.appendChild(nota);
+
+    this.panelRefs = [];
+    const slider = (label: string, key: keyof ParedAjusteParams): void => {
+      const lim = PARED_AJUSTE_LIMITES[key];
+      const filaEl = document.createElement("div");
+      filaEl.setAttribute("style", "margin:6px 0 2px;display:flex;justify-content:space-between;gap:8px");
+      const lab = document.createElement("span");
+      lab.textContent = label;
+      const val = document.createElement("b");
+      val.setAttribute("style", "color:#9fe0b9;font-weight:700");
+      val.textContent = this.etiquetaValor(key);
+      filaEl.append(lab, val);
+      const inp = document.createElement("input");
+      inp.type = "range";
+      inp.min = String(lim.min);
+      inp.max = String(lim.max);
+      inp.step = String(lim.step);
+      inp.value = String(this.ajuste[key]);
+      inp.setAttribute("style", "width:100%;accent-color:#57b17e;cursor:pointer");
+      inp.addEventListener("input", () => {
+        this.ajuste[key] = Number(inp.value);
+        val.textContent = this.etiquetaValor(key);
+        saveAjuste(this.store, this.ajuste);
+      });
+      panel.append(filaEl, inp);
+      this.panelRefs.push({ key, inp, val });
+    };
+    slider(t("velocidad", "Velocidad bloques"), "velocidadBloques");
+    slider(t("amplitud", "Amplitud"), "amplitudMult");
+    slider(t("fase", "Fase"), "faseOffset");
+    slider(`${t("pasoFilas", "Separación filas")} ⟳`, "filaPaso");
+    slider(`${t("fatiga", "Fatiga")} ⟳`, "fatigaMult");
+    slider(`${t("fatigaMano", "Fatiga ×1 mano")} ⟳`, "fatigaManoUnica");
+    slider(`${t("fatigaSinApoyo", "Fatiga sin pies")} ⟳`, "fatigaSinApoyo");
+    slider(`${t("cambioMano", "Límite cambio mano")} ⟳`, "cambioManoSegundos");
+    slider(t("cuerda", "Cuerda"), "cuerdaMetros");
+
+    const teleTit = document.createElement("div");
+    teleTit.setAttribute("style", "margin:10px 0 4px;font:700 11px system-ui,sans-serif;color:#9fe0b9;letter-spacing:.06em;text-transform:uppercase");
+    teleTit.textContent = t("telemetria", "Telemetría");
+    panel.appendChild(teleTit);
+    this.elTele = document.createElement("div");
+    this.elTele.id = "pared-tele";
+    this.elTele.setAttribute("style",
+      "padding:8px;background:rgba(0,0,0,.35);border:1px solid rgba(87,177,126,.4);border-radius:8px;" +
+      "font:11px/1.55 ui-monospace,SFMono-Regular,monospace;white-space:pre-wrap;color:#cfe8d8");
+    panel.appendChild(this.elTele);
+
+    const btns = document.createElement("div");
+    btns.setAttribute("style", "display:flex;flex-wrap:wrap;gap:6px;margin-top:8px");
+    const btn = (label: string, fn: () => void, principal = false): void => {
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.setAttribute("style", `flex:1 1 auto;border-radius:8px;padding:6px 10px;font:600 12px system-ui,sans-serif;cursor:pointer;${
+        principal ? "background:#2f7d52;border:1px solid #57b17e;color:#eaf4ec" : "background:rgba(255,255,255,.08);border:1px solid #57b17e;color:#dfeee4"}`);
+      b.onclick = fn;
+      btns.appendChild(b);
+    };
+    btn(t("reiniciar", "Reiniciar"), () => this.restart(), true);
+    btn(t("cima", "↑ Cima"), () => this.saltarAFila(10));
+    btn(t("defecto", "Por defecto"), () => {
+      this.ajuste = resetAjuste();
+      saveAjuste(this.store, this.ajuste);
+      this.aplicaAlturas();
+      this.sincronizaPanel();
+    });
+    btn(t("copiar", "Copiar valores"), () => this.copiarValores());
+    panel.appendChild(btns);
+
+    const filaRow = document.createElement("div");
+    filaRow.setAttribute("style", "display:flex;gap:6px;align-items:center;margin-top:8px");
+    const labFila = document.createElement("span");
+    labFila.textContent = t("irFila", "Ir a fila");
+    const numFila = document.createElement("input");
+    numFila.type = "number";
+    numFila.min = "1";
+    numFila.max = "10";
+    numFila.value = "1";
+    numFila.setAttribute("style", "width:56px;background:rgba(0,0,0,.4);color:#dfeee4;border:1px solid #57b17e;border-radius:6px;padding:4px 6px;font:12px system-ui,sans-serif");
+    const btnIr = document.createElement("button");
+    btnIr.textContent = "→";
+    btnIr.setAttribute("style", "border-radius:8px;padding:6px 12px;font:600 12px system-ui,sans-serif;cursor:pointer;background:rgba(255,255,255,.08);border:1px solid #57b17e;color:#dfeee4");
+    btnIr.onclick = () => this.saltarAFila(Number(numFila.value) || 1);
+    filaRow.append(labFila, numFila, btnIr);
+    panel.appendChild(filaRow);
+
+    this.elCopiado = document.createElement("div");
+    this.elCopiado.setAttribute("style", "color:#9fe0b9;font-size:11px;min-height:14px;margin-top:4px");
+    panel.appendChild(this.elCopiado);
+
+    this.d.hudRoot.appendChild(panel);
+    this.elPanel = panel;
+  }
+
+  /** Presas iniciales (manos 0/1, pies 4/5) del bloque dado. */
+  private anclajesDe(bloqueId: string): AnclajesIniciales | null {
+    const b = this.bloques.find((bb) => bb.spec.id === bloqueId);
+    if (!b) return null;
+    const byId = new Map(b.presas.map((p, i) => [`${i}`, p.inst]));
+    return { hand_l: byId.get("0")!, hand_r: byId.get("1")!, foot_l: byId.get("4")!, foot_r: byId.get("5")! };
+  }
+
+  /** Panel: recoloca a los DOS sherpas con rigs NUEVOS anclados a la fila dada
+   *  (1-9) o a la cima (≥10, desde donde la prueba se gana sola) — el mismo
+   *  camino de construcción que el inicio, sin tocar partículas a mano. */
+  saltarAFila(r: number): void {
+    const fila = Math.max(1, Math.min(10, Math.round(r)));
+    let idA: string | undefined, idB: string | undefined;
+    if (fila >= 10) {
+      idA = "cima_1";
+      idB = "cima_0";
+    } else {
+      const bf = this.bloques.filter((bb) => bb.spec.id.startsWith(`f${fila}_`));
+      const est = bf.find((bb) => bb.spec.patron === "estatico") ?? bf[0];
+      idA = est?.spec.id;
+      idB = (bf.find((bb) => bb !== est) ?? est)?.spec.id;
+    }
+    if (!idA || !idB) return;
+    const aA = this.anclajesDe(idA);
+    const aB = this.anclajesDe(idB);
+    if (!aA || !aB) return;
+    if (this.state !== "jugando") {
+      this.quitaFin();
+      this.state = "jugando";
+      this.winT = 0;
+    }
+    this.onDragUp();
     for (const pi of [0, 1] as const) this.d.scene.despawnSherpa(pi);
     this.sherpas = [];
-    this.construirSherpas();
+    this.construirSherpas([aA, aB]);
   }
 
   // ---------- sondas E2E ----------
@@ -749,7 +1066,9 @@ export class ParedNivel {
         alt0: wa.y - Y_SALIDA,
         alt1: wb.y - Y_SALIDA,
         bloques: this.bloques.length,
-        cuerda: CUERDA_LEN,
+        cuerda: this.ajuste.cuerdaMetros,
+        paso: this.paso,
+        ajuste: this.ajuste,
       });
     }
   }
@@ -760,6 +1079,8 @@ export class ParedNivel {
     if (this.disposed) return;
     this.disposed = true;
     cancelAnimationFrame(this.raf);
+    document.removeEventListener("keydown", this.onKey);
+    this.cierraPanel(true);
     this.pointerDrag?.dispose();
     this.pointerDrag = null;
     this.elAlt?.remove();
@@ -770,14 +1091,7 @@ export class ParedNivel {
     const scene = this.d.scene;
     scene.despawnSherpa(0);
     scene.despawnSherpa(1);
-    for (const b of this.bloques) {
-      b.mesh.dispose();
-      for (const p of b.presas) p.mesh.dispose();
-      b.node.dispose();
-    }
-    this.bloques = [];
-    this.masterPresa?.dispose();
-    this.masterPresa = null;
+    this.limpiaBloques();
     this.matBloque?.dispose();
     this.matPresa?.dispose();
     this.matBloque = this.matPresa = null;
