@@ -3,10 +3,12 @@
 // cuerda, layout alcanzable y condiciones de fin.
 import { describe, expect, it } from "vitest";
 import {
-  CUERDA_LEN, FAIL_Y, FILA_PASO, WIN_Y, Y_CIMA, Y_SALIDA,
-  excesoCuerda, layoutPared, offsetPatron, pasoMuelle, yawPatron,
+  CAP_AMP, CUERDA_LEN, FAIL_Y, FILA_PASO, H_MOVIL, SAG_IMPULSO, SAG_MAX, SAG_POR_CARGA,
+  WIN_Y, Y_CIMA, Y_SALIDA, Z_PRESA,
+  ampEfectiva, excesoCuerda, haySolape, layoutPared, offsetPatron, pasoCuerdaVerlet, pasoMuelle, yawPatron,
+  type BloqueSpec, type NodoCuerda,
 } from "../../src/game/sherpas/gameplay/paredNivel";
-import { v3 } from "../../src/game/physics/pbd/math";
+import { v3, vLen } from "../../src/game/physics/pbd/math";
 
 const TAU = Math.PI * 2;
 
@@ -75,9 +77,23 @@ describe("T118 basculación al agarrar (muelle amortiguado)", () => {
 
   it("con carga constante el bloque queda hundido en el equilibrio del muelle", () => {
     let sag = 0, sagVel = 0;
-    const target = -0.075 * 2; // dos extremidades
+    const target = -SAG_POR_CARGA * 2; // dos extremidades
     for (let i = 0; i < 600; i++) [sag, sagVel] = pasoMuelle(sag, sagVel, 1 / 60, target);
     expect(sag).toBeCloseTo(target, 2);
+  });
+
+  it("T120: con carga MÁXIMA y con el impulso de agarre el sag nunca pasa de SAG_MAX", () => {
+    // camino exacto de simTick: muelle + clamp por bloque
+    const simula = (target: number, sagVel0: number): number => {
+      let sag = 0, sagVel = sagVel0;
+      for (let i = 0; i < 600; i++) {
+        [sag, sagVel] = pasoMuelle(sag, sagVel, 1 / 60, target);
+        sag = Math.max(-SAG_MAX, sag);
+      }
+      return sag;
+    };
+    expect(simula(-SAG_POR_CARGA * 6, 0)).toBeGreaterThanOrEqual(-SAG_MAX - 1e-9);             // 6 extremidades
+    expect(simula(-SAG_POR_CARGA * 4, -SAG_IMPULSO)).toBeGreaterThanOrEqual(-SAG_MAX - 1e-9);  // agarre a saco
   });
 
   it("nunca explota (estable con paso de juego 1/60)", () => {
@@ -100,6 +116,33 @@ describe("T118 cuerda entre los dos sherpas", () => {
     const b2 = v3(0, 3 + CUERDA_LEN + 0.6, 0);
     expect(excesoCuerda(a, b2, CUERDA_LEN)).toBeCloseTo(0.6, 9);
   });
+
+  it("T120: el verlet NO explota (antes el signo invertido de la relajación lo lanzaba a millones)", () => {
+    // init idéntico a ropeReset: catenaria A→medio→B con las cinturas de salida
+    const a = v3(-1.3, 2.18, 0.01), b = v3(1.3, 2.18, 0.01);
+    const nSeg = 7;
+    const nodes: NodoCuerda[] = [];
+    const mid = v3(0, (a.y + b.y) / 2 - 0.35, (a.z + b.z) / 2 - 0.04);
+    for (let i = 0; i <= nSeg; i++) {
+      const t = i / nSeg;
+      const src = t < 0.5 ? a : mid, dst = t < 0.5 ? mid : b;
+      const u = t < 0.5 ? t * 2 : (t - 0.5) * 2;
+      const pos = v3(
+        src.x + (dst.x - src.x) * u,
+        src.y + (dst.y - src.y) * u - Math.sin(u * Math.PI) * 0.22,
+        src.z + (dst.z - src.z) * u - 0.04,
+      );
+      nodes.push({ pos, prev: { ...pos } });
+    }
+    // 15 s de juego: cuerda de 5,5 m para un vano de 2,6 (MUY combada)
+    for (let f = 0; f < 900; f++) pasoCuerdaVerlet(nodes, a, b, 1 / 60, 5.5 / nSeg, 9.81, 0.975);
+    for (const nd of nodes) {
+      expect(Number.isFinite(nd.pos.x) && Number.isFinite(nd.pos.y) && Number.isFinite(nd.pos.z)).toBe(true);
+      expect(vLen(nd.pos)).toBeLessThan(6); // acotada (antes: 764 759, −28 430 390…)
+    }
+    expect(vLen(nodes[0].pos)).toBeCloseTo(vLen(a), 6);  // extremos clavados
+    expect(vLen(nodes[nodes.length - 1].pos)).toBeCloseTo(vLen(b), 6);
+  });
 });
 
 describe("T118 layout de la pared de bloques", () => {
@@ -118,30 +161,96 @@ describe("T118 layout de la pared de bloques", () => {
     expect(top - base).toBeLessThan(22);
   });
 
-  it("los bloques están físicamente separados en todo momento (con sus amplitudes)", () => {
-    // separación XY mínima entre centros de bloques de la MISMA fila
-    for (let r = 1; r <= 9; r++) {
-      const fila = specs.filter((s) => s.id.startsWith(`f${r}_`));
-      expect(fila.length).toBe(2);
-      const dx = Math.abs(fila[0].x - fila[1].x);
-      const wMedio = (fila[0].w + fila[1].w) / 2;
-      // el patrón horizontal como mucho acerca 0,5 m (amp ≤ 0,5)
-      expect(dx - wMedio - 0.5).toBeGreaterThan(-0.05); // nunca se tocan (margen 0,3 m real)
-      expect(dx - wMedio).toBeGreaterThan(0.3);
-    }
-    // filas consecutivas: distancia vertical = paso, sin solape (PASO > altura)
-    expect(FILA_PASO).toBeGreaterThan(1.8);
+  it("T120: la cara de escalada de TODOS los bloques está en Z_PRESA (cuerpo del bloque detrás)", () => {
+    // el cuerpo cuelga en z < wallFrontZ (convención del juego principal):
+    // la cara de los cubos debe estar EXACTAMENTE en el plano de presas
+    for (const s of specs) expect(s.z - s.d / 2).toBeCloseTo(Z_PRESA, 9);
   });
 
-  it("cada fila móvil deja al menos un bloque ESTÁTICO como opción de anclaje", () => {
-    const estaticosPorFila: Record<number, number> = {};
-    for (const s of specs) {
-      const m = /^f(\d+)_/.exec(s.id);
-      if (!m) continue;
-      const r = Number(m[1]);
-      estaticosPorFila[r] = (estaticosPorFila[r] ?? 0) + (s.patron === "estatico" ? 1 : 0);
+  it("T120: NUNCA se solapan — barrido de 80 s a 20 Hz con el sag peor caso", () => {
+    for (let t = 0; t < 80; t += 0.05) {
+      expect(haySolape(specs, t, SAG_MAX)).toBe(false);
     }
-    for (let r = 1; r <= 9; r++) expect(estaticosPorFila[r]).toBeGreaterThanOrEqual(1);
+  });
+
+  it("T120: varios seeds también quedan limpios (colBaila a izquierda y derecha)", () => {
+    for (const seed of [1, 7, 424242, 987654321, 20261107]) {
+      const sp = layoutPared(seed);
+      for (let t = 0; t < 40; t += 0.1) expect(haySolape(sp, t, SAG_MAX)).toBe(false);
+    }
+  });
+
+  it("T120: el checker detecta solapes reales (control negativo)", () => {
+    const caja = (x: number): BloqueSpec => ({
+      id: `x${x}`, x, y: 5, z: Z_PRESA + 0.25, w: 1.8, h: 1.5, d: 0.5,
+      patron: "estatico", amp: 0, periodS: 1, phase: 0,
+    });
+    expect(haySolape([caja(0), caja(0.5)], 0)).toBe(true);
+    expect(haySolape([caja(0), caja(2.7)], 0)).toBe(false);
+  });
+
+  it("T120: las amplitudes sorteadas respetan los CAPS del panel", () => {
+    for (const s of specs) expect(s.amp).toBeLessThanOrEqual(CAP_AMP[s.patron] + 1e-9);
+  });
+
+  it("T120: ampEfectiva acota al CAP para cualquier multiplicador del panel", () => {
+    for (const p of ["vertical", "horizontal", "giro"] as const) {
+      for (const mult of [0, 0.5, 1, 1.7, 2.5, 10]) {
+        expect(ampEfectiva(p, 0.4, mult)).toBeLessThanOrEqual(CAP_AMP[p] + 1e-9);
+      }
+    }
+    expect(ampEfectiva("vertical", 0.2, 1)).toBeCloseTo(0.2, 12); // bajo el CAP: intacta
+  });
+
+  it("T120: la columna baila está SINCRONIZADA y amortigua las filas 1 y 9", () => {
+    const ver = specs.filter((s) => s.patron === "vertical");
+    expect(ver.length).toBe(9); // una columna entera
+    expect(new Set(ver.map((s) => s.periodS)).size).toBe(1);
+    expect(new Set(ver.map((s) => s.phase)).size).toBe(1);
+    const ampBase = Math.max(...ver.map((s) => s.amp));
+    const primera = ver.find((s) => s.id.startsWith("f1_"))!;
+    const novena = ver.find((s) => s.id.startsWith("f9_"))!;
+    expect(primera.amp).toBeCloseTo(ampBase * 0.3, 9);
+    expect(novena.amp).toBeCloseTo(ampBase * 0.3, 9);
+    for (const s of ver) {
+      if (s !== primera && s !== novena) expect(s.amp).toBeCloseTo(ampBase, 9);
+    }
+  });
+
+  it("T120: la columna mixta deja filas estáticas y nunca arranca con giro", () => {
+    const mixta = specs.filter((s) => !s.salida && !s.cima && s.patron !== "vertical");
+    expect(mixta.length).toBe(9);
+    expect(mixta.filter((s) => s.patron === "estatico").length).toBeGreaterThanOrEqual(2);
+    expect(mixta.find((s) => s.id.startsWith("f1_"))!.patron).not.toBe("giro");
+    // los cubos de giro son más pequeños: la esquina barrida cabe en el hueco
+    for (const s of mixta) if (s.patron === "giro") expect(s.w).toBeCloseTo(1.5, 9);
+  });
+
+  it("T120: los bloques móviles miden H_MOVIL de alto (hueco 0,4 m entre filas)", () => {
+    for (const s of specs.filter((x) => !x.salida && !x.cima)) expect(s.h).toBe(H_MOVIL);
+    expect(FILA_PASO - H_MOVIL).toBeGreaterThan(0.35); // hueco vertical real
+  });
+
+  it("T120: el salto entre filas sigue siendo alcanzable (presa baja del superior ≤ 1,3 m sobre las manos)", () => {
+    // manos en la presa alta de la fila r (ly +0,55); objetivo: presa baja de
+    // r+1 (ly −0,5). Desfase vertical relativo peor caso: |amp_a − amp_b| entre
+    // verticales (MISMA fase por columna) o suma de dy si hay fase libre.
+    const dyAmp = (s: BloqueSpec): number => (s.patron === "vertical" ? s.amp : 0);
+    let maxRel = 0;
+    const fila = (r: number): BloqueSpec[] => specs.filter((s) => s.id.startsWith(`f${r}_`));
+    for (let r = 1; r < 9; r++) {
+      for (const a of fila(r)) {
+        for (const b of fila(r + 1)) {
+          maxRel = Math.max(maxRel,
+            a.patron === "vertical" && b.patron === "vertical"
+              ? Math.abs(a.amp - b.amp)
+              : dyAmp(a) + dyAmp(b));
+        }
+      }
+    }
+    const alcance = FILA_PASO - 0.5 - 0.55 + maxRel;
+    expect(alcance).toBeLessThan(1.3);
+    expect(alcance).toBeGreaterThan(0.3); // y sigue siendo un salto, no un pegado
   });
 
   it("los patrones de las filas son VARIADOS (sube/baja, izquierda-derecha y giro presentes)", () => {

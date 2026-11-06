@@ -51,7 +51,9 @@ export const PARED_AJUSTE_LIMITES: Record<keyof ParedAjusteParams, { min: number
   velocidadBloques: { min: 0.25, max: 3, step: 0.05 },
   amplitudMult: { min: 0, max: 2.5, step: 0.05 },
   faseOffset: { min: 0, max: 6.28, step: 0.1 },
-  filaPaso: { min: 1.4, max: 3, step: 0.05 },
+  // T120: min 1,9 — los bloques móviles miden 1,5 de alto (H_MOVIL) y el sag
+  // de agarre necesita margen; con 1,4 dos filas solapaban ESTÁTICAMENTE.
+  filaPaso: { min: 1.9, max: 3, step: 0.05 },
   fatigaMult: { min: 0.25, max: 4, step: 0.05 },
   fatigaManoUnica: { min: 1, max: 5, step: 0.1 },
   fatigaSinApoyo: { min: 1, max: 5, step: 0.05 },

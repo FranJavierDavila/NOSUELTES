@@ -1,4 +1,18 @@
 // T118 — NIVEL PROVISIONAL "PRUEBA DEL CAMPAMENTO": pared de bloques flotantes.
+// T120 — ARREGLOS DEL PLAYTEST (petición del jugador: «es imposible jugar así»):
+//  · CÁMARA/CUERPO: la cámara compartida (updateCamera) se coloca en z MÁS
+//    NEGATIVO (convención del juego principal: el cuerpo cuelga en z <
+//    wallFrontZ). Los bloques ocupaban z ±0,25 — el escalador quedaba DENTRO
+//    del cubo y la cámara DETRÁS de la pared. Ahora el cuerpo del bloque está
+//    detrás de la cara (z > Z_PRESA): escalador al aire, presas y cuerda de
+//    cara a cámara.
+//  · SOLAPES: las fases aleatorias por bloque dejaban acercarse a dos vecinos
+//    hasta 0,96 m con huecos de 0,8 m (horizontal) y 0,1 m (vertical), y el
+//    sag de agarre (−0,3 m) cruzaba el hueco de fila. Layout nuevo (columna
+//    «baila» sincronizada + columna «mixta» sin dy, CAPS de amplitud, sag
+//    ≤ SAG_MAX) + haySolape(), checker puro barrido en el tiempo por los tests.
+//  · MINIMAPA: el HUD ya dibuja la réplica de pared en la partida — el nivel
+//    ahora la alimenta (presas, ocupación S1/S2, progresión, cima).
 // Petición del jugador (dictado completo):
 //  · Pared de bloques cuadrados que levitan en el aire, físicamente separados
 //    en todo momento, con patrones de movimiento distintos por bloque: unos
@@ -37,7 +51,7 @@ import {
 } from "../world/rockwall";
 import { PointerDrag } from "../input/drag";
 import type { InputManager } from "../input/input";
-import type { SherpaHud } from "../presentation/hud";
+import type { SherpaHud, MinimapHold } from "../presentation/hud";
 import type { SherpaScene } from "../presentation/scene";
 import { mulberry32 } from "../core/rng";
 import {
@@ -54,12 +68,17 @@ import { isTypingTarget } from "./devMode"; // T114: guard de campos de texto
 // (a +1,4 m desde la fila de abajo, alcanzable de pie) → pie alto → de pie → mano arriba.
 
 export const Y_SALIDA = 2.2;      // centro de los bloques de salida
-export const FILA_PASO = 1.9;     // distancia vertical entre filas (hueco 0,1 m)
+export const FILA_PASO = 1.9;     // distancia vertical entre filas (bloques móviles H_MOVIL → hueco 0,4 m)
 export const Y_CIMA = Y_SALIDA + FILA_PASO * 10; // 21.2 — fila de cima
 export const WIN_Y = 20.4;        // ambos sherpas por encima → prueba superada
 export const FAIL_Y = -1.4;       // caída al vacío → prueba fallada
 export const CUERDA_LEN = 5.0;    // separación máxima entre los dos sherpas (m)
-const Z_PRESA = 0.3;              // plano de presas / arrastre
+/** PLANO DE LA CARA de escalada: presas, arrastre y wallFrontZ del rig. El
+ *  CUERPO del bloque ocupa z > Z_PRESA (detrás de la cara) — el escalador
+ *  cuelga en z < wallFrontZ (convención del juego principal) sin quedar
+ *  dentro del cubo, y la cámara compartida (z más negativo) lo ve de frente. */
+export const Z_PRESA = 0.3;
+export const H_MOVIL = 1.5;       // alto de los bloques móviles: hueco vertical 0,4 m entre filas
 
 // T119 — PANEL DE AJUSTE (modo dev): todos los knobs de dificultad del nivel
 // viven en paredAjuste.ts (persistencia + clamp + serialización puros). En el
@@ -93,6 +112,30 @@ export function excesoCuerda(a: V3, b: V3, len: number): number {
   return Math.max(0, vLen(vSub(b, a)) - len);
 }
 
+// ---------- basculación acotada (T120: el sag no puede comerse el hueco) ----------
+
+/** Hundimiento MÁXIMO del muelle (m). Con hueco vertical de 0,4 m entre filas
+ *  (0,25 m en el arranque), cualquier bloque puede ser el agarrado mientras el
+ *  vecino no bascula: lo que solapa es el RELATIVO, así que el clamp va por
+ *  bloque y haySolape() verifica el peor caso. */
+export const SAG_MAX = 0.095;
+/** Hundimiento de equilibrio por extremidad anclada (m) — 6 extremidades: 0,108 → clamp a SAG_MAX. */
+export const SAG_POR_CARGA = 0.018;
+/** Impulso inicial al agarrar (m/s): la lectura de «peso que hunde». */
+export const SAG_IMPULSO = 0.22;
+
+/** CAP de amplitud por patrón: el multiplicador del panel da VIDA hasta el
+ *  máximo seguro — el valor EFECTIVO nunca lo supera (haySolape se verifica
+ *  con estos peores casos). */
+export const CAP_AMP: Record<Patron, number> = {
+  estatico: 0, vertical: 0.25, horizontal: 0.5, giro: 0.25,
+};
+
+/** Amplitud efectiva: amp·mult acotada al CAP del patrón. */
+export function ampEfectiva(patron: Patron, amp: number, mult: number): number {
+  return Math.min(CAP_AMP[patron], Math.max(0, amp) * Math.max(0, mult));
+}
+
 // ---------- layout de la pared (puro, testeable) ----------
 
 export interface BloqueSpec {
@@ -105,18 +148,9 @@ export interface BloqueSpec {
   cima?: boolean;
 }
 
-const PATRONES_FILA: [Patron, Patron][] = [
-  // cada fila SIEMPRE deja un bloque estático como opción de anclaje garantizada
-  ["vertical", "estatico"],
-  ["estatico", "giro"],
-  ["horizontal", "estatico"],
-  ["giro", "estatico"],
-  ["estatico", "horizontal"],
-  ["vertical", "estatico"],
-  ["estatico", "giro"],
-  ["horizontal", "estatico"],
-  ["estatico", "giro"],
-];
+/** Ciclo de la columna «mixta»: estáticos intercalados (opción de anclaje
+ *  tranquila) y nunca dos giros seguidos. */
+const CICLO_MIXTA: Patron[] = ["horizontal", "estatico", "giro", "estatico"];
 
 /** Modulador del layout (panel de ajuste): el paso de filas fija las ALTURAS
  *  (requiere reconstruir bloques); velocidad/amplitud/fase se aplican EN VIVO
@@ -126,35 +160,129 @@ export interface ParedModLayout {
 }
 
 /** Toda la pared: 2 bloques de salida + 9 filas móviles (una por columna) +
- *  fila de cima de 3 bloques horizontales estáticos. ~20 m de subida. */
+ *  fila de cima de 3 bloques horizontales estáticos. ~20 m de subida.
+ *
+ *  T120 — SIN SOLAPES POR CONSTRUCCIÓN (antes: fase/amp aleatorias por BLOQUE
+ *  y dos vecinos podían acercarse 2·amp con huecos de 0,8/0,1 m):
+ *  · Una columna BAILA: vertical SINCRONIZADA — todos sus bloques comparten
+ *    amplitud/periodo/fase, así que la distancia entre filas de esa columna
+ *    es constante. Las filas 1 y 9 amortiguan ×0,3 frente a salida y cima.
+ *  · La otra columna es MIXTA: horizontal (solo dx), estático y giro (solo
+ *    yaw, cubo de 1,5 m) — sin dy de patrón, los huecos verticales quedan
+ *    intactos. Giro nunca en la fila 1 (la esquina barrería la salida). */
 export function layoutPared(seed: number, mod?: ParedModLayout): BloqueSpec[] {
   const paso = mod?.filaPaso && mod.filaPaso > 0 ? mod.filaPaso : FILA_PASO;
   const rng = mulberry32(seed >>> 0);
   const out: BloqueSpec[] = [];
+  const zCara = (d: number): number => Z_PRESA + d / 2; // cara en Z_PRESA, cuerpo detrás
   for (const [i, x] of [-1.3, 1.3].entries()) {
-    out.push({ id: `salida_${i}`, x, y: Y_SALIDA, z: 0, w: 1.8, h: 1.8, d: 0.5, patron: "estatico", amp: 0, periodS: 1, phase: 0, salida: true });
+    out.push({ id: `salida_${i}`, x, y: Y_SALIDA, z: zCara(0.5), w: 1.8, h: 1.8, d: 0.5, patron: "estatico", amp: 0, periodS: 1, phase: 0, salida: true });
   }
+  const colBaila = rng() < 0.5 ? 0 : 1;   // qué columna sube y baja (la otra es mixta)
+  const ampCol = 0.18 + rng() * 0.07;     // ≤ 0,25 = CAP vertical
+  const perCol = 3.4 + rng() * 2.2;
+  const phCol = rng() * Math.PI * 2;
+  const ciclo = Math.floor(rng() * CICLO_MIXTA.length);
+  // las amplitudes se sortean SIEMPRE en el mismo orden → layout determinista
   for (let r = 1; r <= 9; r++) {
     const y = Y_SALIDA + paso + (r - 1) * paso;
-    const [pl, pr] = PATRONES_FILA[(r - 1) % PATRONES_FILA.length];
-    // las amplitudes se sortean SIEMPRE en el mismo orden → layout determinista
-    const ampL = 0.3 + rng() * 0.18, perL = 3.4 + rng() * 2.2, phL = rng() * Math.PI * 2;
-    const ampR = 0.3 + rng() * 0.18, perR = 3.4 + rng() * 2.2, phR = rng() * Math.PI * 2;
-    const giroAmpL = 0.28 + rng() * 0.17, giroPerL = 5.5 + rng() * 2.5;
-    const giroAmpR = 0.28 + rng() * 0.17, giroPerR = 5.5 + rng() * 2.5;
-    out.push({
-      id: `f${r}_i`, x: -1.3, y, z: 0, w: 1.8, h: 1.8, d: 0.5, patron: pl,
-      amp: pl === "giro" ? giroAmpL : ampL, periodS: pl === "giro" ? giroPerL : perL, phase: phL,
-    });
-    out.push({
-      id: `f${r}_d`, x: 1.3, y, z: 0, w: 1.8, h: 1.8, d: 0.5, patron: pr,
-      amp: pr === "giro" ? giroAmpR : ampR, periodS: pr === "giro" ? giroPerR : perR, phase: phR,
-    });
+    const fade = r === 1 || r === 9 ? 0.3 : 1;
+    let patronMixto = CICLO_MIXTA[(r - 1 + ciclo) % CICLO_MIXTA.length];
+    if (r === 1 && patronMixto === "giro") patronMixto = "horizontal";
+    const esGiro = patronMixto === "giro";
+    const ampMix = esGiro ? 0.18 + rng() * 0.07 : 0.3 + rng() * 0.18;
+    const perMix = esGiro ? 5.5 + rng() * 2.5 : 3.4 + rng() * 2.2;
+    const phMix = rng() * Math.PI * 2;
+    for (let c = 0; c < 2; c++) {
+      const x = c === 0 ? -1.3 : 1.3;
+      const suf = c === 0 ? "i" : "d";
+      if (c === colBaila) {
+        out.push({ id: `f${r}_${suf}`, x, y, z: zCara(0.5), w: 1.8, h: H_MOVIL, d: 0.5, patron: "vertical", amp: ampCol * fade, periodS: perCol, phase: phCol });
+      } else {
+        // estático: amp 0 (el sorteo de ampMix queda en el orden fijo aunque no se use)
+        out.push({ id: `f${r}_${suf}`, x, y, z: zCara(0.5), w: esGiro ? 1.5 : 1.8, h: H_MOVIL, d: 0.5, patron: patronMixto, amp: patronMixto === "estatico" ? 0 : ampMix, periodS: perMix, phase: phMix });
+      }
+    }
   }
   for (const [i, x] of [-1.35, 0, 1.35].entries()) {
-    out.push({ id: `cima_${i}`, x, y: Y_SALIDA + paso * 10, z: 0, w: 1.25, h: 1.25, d: 0.5, patron: "estatico", amp: 0, periodS: 1, phase: 0, cima: true });
+    out.push({ id: `cima_${i}`, x, y: Y_SALIDA + paso * 10, z: zCara(0.5), w: 1.25, h: 1.25, d: 0.5, patron: "estatico", amp: 0, periodS: 1, phase: 0, cima: true });
   }
   return out;
+}
+
+// ---------- checker de solapes (puro: los tests lo barren en el tiempo) ----------
+
+export interface CajaSolape { x: number; y: number; w: number; h: number; yaw: number; }
+
+/** Semi-extientes del AABB de la caja rotada (exacto en los ejes para yaw 0,
+ *  conservador para el giro — sobredimensiona ≤ 2 cm con yaw ≤ 0,25 rad). */
+function extAABB(c: CajaSolape): { ex: number; ey: number } {
+  const cy = Math.abs(Math.cos(c.yaw)), sy = Math.abs(Math.sin(c.yaw));
+  return { ex: (c.w / 2) * cy + (c.h / 2) * sy, ey: (c.w / 2) * sy + (c.h / 2) * cy };
+}
+
+/** ¿Se tocan dos cajas? `sagM` extiende ambas hacia ABAJO: acota el peor caso
+ *  real de basculación (un bloque cuelga hundido y el vecino no). */
+function solapan(a: CajaSolape, b: CajaSolape, sagM: number): boolean {
+  const ea = extAABB(a), eb = extAABB(b);
+  return Math.abs(a.x - b.x) < ea.ex + eb.ex - 1e-9
+    && Math.abs(a.y - b.y) < ea.ey + eb.ey + sagM - 1e-9;
+}
+
+/** ¿Algún par de bloques se toca en el instante t (s)? Con el barrido temporal
+ *  de los tests esto certifica «físicamente separados en todo momento». */
+export function haySolape(specs: BloqueSpec[], t: number, sagM = 0): boolean {
+  const cajas: CajaSolape[] = specs.map((s) => {
+    const off = offsetPatron(s.patron, s.amp, s.periodS, s.phase, t);
+    return { x: s.x + off.dx, y: s.y + off.dy, w: s.w, h: s.h, yaw: yawPatron(s.patron, s.amp, s.periodS, s.phase, t) };
+  });
+  for (let i = 0; i < cajas.length; i++) {
+    for (let j = i + 1; j < cajas.length; j++) {
+      if (solapan(cajas[i], cajas[j], sagM)) return true;
+    }
+  }
+  return false;
+}
+
+// ---------- cuerda visual (pura, testeable) ----------
+
+export interface NodoCuerda { pos: V3; prev: V3; }
+
+/** Un paso de cuerda verlet (integración + relajación PBD con extremos fijos).
+ *  T120: el signo de la relajación estaba INVERTIDO (p1 −= fix, p2 += fix
+ *  acorta los tramos cortos en vez de estirarlos) y la cadena EXPLOTABA —
+ *  coordenadas de millones, cuerda invisible desde el T118. */
+export function pasoCuerdaVerlet(
+  nodes: NodoCuerda[], a: V3, b: V3, dt: number, segLen: number,
+  g: number, damp: number, passes = 2,
+): void {
+  const n = nodes.length;
+  if (n < 3) return;
+  for (let i = 1; i < n - 1; i++) {
+    const nd = nodes[i];
+    const vx = (nd.pos.x - nd.prev.x) * damp;
+    const vy = (nd.pos.y - nd.prev.y) * damp;
+    const vz = (nd.pos.z - nd.prev.z) * damp;
+    nd.prev = vClone(nd.pos);
+    nd.pos = v3(nd.pos.x + vx, nd.pos.y + vy - g * dt * dt, nd.pos.z + vz);
+  }
+  nodes[0].pos = vClone(a);
+  nodes[n - 1].pos = vClone(b);
+  // relajar: cada tramo hacia su largo de reposo (p1 += fix, p2 −= fix)
+  for (let pass = 0; pass < passes; pass++) {
+    for (let i = 0; i < n - 1; i++) {
+      const p1 = nodes[i].pos;
+      const p2 = nodes[i + 1].pos;
+      const dist = vLen(vSub(p2, p1));
+      if (dist < 1e-6) continue;
+      const diff = (dist - segLen) / dist;
+      const fix = vScale(vSub(p2, p1), diff * 0.5);
+      if (i !== 0) nodes[i].pos = vAdd(p1, fix);
+      if (i + 1 !== n - 1) nodes[i + 1].pos = vSub(p2, fix);
+    }
+    nodes[0].pos = vClone(a);
+    nodes[n - 1].pos = vClone(b);
+  }
 }
 
 // ---------- localización (resolver anidado con fallback) ----------
@@ -208,6 +336,10 @@ export interface ParedDeps {
 const HOLD_LOCALS_W18: [number, number][] = [
   [-0.5, 0.55], [0.5, 0.55], [-0.45, 0.05], [0.45, 0.05], [-0.4, -0.5], [0.4, -0.5],
 ];
+/** Cubo de GIRO (1,5 m de cara): mismas alturas, X escalada a la cara más estrecha. */
+const HOLD_LOCALS_W15: [number, number][] = [
+  [-0.417, 0.55], [0.417, 0.55], [-0.375, 0.05], [0.375, 0.05], [-0.333, -0.5], [0.333, -0.5],
+];
 const HOLD_LOCALS_CIMA: [number, number][] = [
   [-0.42, 0.5], [0.42, 0.5], [-0.38, 0], [0.38, 0], [-0.32, -0.45], [0.32, -0.45],
 ];
@@ -234,6 +366,10 @@ export class ParedNivel {
   private dragCursor: V3 | null = null;
   // cuerda visual: cadena verlet A→B
   private ropeNodes: { pos: V3; prev: V3 }[] = [];
+  // T120 minimapa: réplica estática de las presas + índice por id de presa
+  private mmHolds: MinimapHold[] = [];
+  private mmIdx = new Map<string, number>();
+  private mmAcc = 0;
   // HUD propio del nivel
   private elAlt: HTMLElement | null = null;
   private elFat: HTMLElement | null = null;
@@ -349,7 +485,7 @@ export class ParedNivel {
       { cracked: () => {}, broken: () => {} },
     );
     // master de presa (esfera achatada) + instancias por presa
-    this.masterPresa = MeshBuilder.CreateSphere("paredPresaMaster", { diameter: 0.17, segments: 6 }, scene);
+    this.masterPresa = MeshBuilder.CreateSphere("paredPresaMaster", { diameter: 0.2, segments: 6 }, scene);
     this.masterPresa.material = mats.presa;
     this.masterPresa.scaling.z = 0.62;
     this.masterPresa.isVisible = false;
@@ -362,26 +498,47 @@ export class ParedNivel {
       const mesh = MeshBuilder.CreateBox(`blkM_${spec.id}`, { width: spec.w, height: spec.h, depth: spec.d }, scene);
       mesh.material = mats.bloque;
       mesh.parent = node;
-      const locals = spec.cima ? HOLD_LOCALS_CIMA : HOLD_LOCALS_W18;
+      const locals = spec.cima ? HOLD_LOCALS_CIMA : spec.w < 1.6 ? HOLD_LOCALS_W15 : HOLD_LOCALS_W18;
       const bloque: Bloque = { spec, node, mesh, presas: [], sag: 0, sagVel: 0, carga: 0, dx: 0, dy: 0, yaw: 0 };
       for (const [k, [lx, ly]] of locals.entries()) {
+        // presas EN LA CARA (z −d/2 hacia el escalador): la física coincide con
+        // el bulto visible y ambos quedan de cara a la cámara
+        const zCaraLocal = -spec.d / 2 + 0.03;
         const inst: HoldInstance = {
           id: `${spec.id}_h${k}`,
-          pos: v3(spec.x + lx, spec.y + ly, Z_PRESA),
+          pos: v3(spec.x + lx, spec.y + ly, spec.z + zCaraLocal),
           radius: 0.16,
           type: "rock_firm",
           bandIndex: 0,
         };
         const pm = this.masterPresa.createInstance(`${spec.id}_m${k}`);
         pm.parent = node;
-        pm.position.set(lx, ly, spec.d / 2 + 0.03);
+        pm.position.set(lx, ly, zCaraLocal);
         pm.isVisible = true;
-        bloque.presas.push({ inst, local: v3(lx, ly, spec.d / 2 + 0.03), mesh: pm as unknown as Mesh, bloque });
+        bloque.presas.push({ inst, local: v3(lx, ly, zCaraLocal), mesh: pm as unknown as Mesh, bloque });
         todas.push(inst);
       }
       this.bloques.push(bloque);
     }
     this.anchors.registerHolds(todas);
+    // T120 minimapa: réplica ESTÁTICA en posiciones base (la capa dinámica
+    // —ocupación y escaladores— la alimenta minimapaTick a ~10 Hz)
+    const X_HALF = 2.3;
+    const Y0 = Y_SALIDA - 1.1;
+    const Y1 = this.yCima + 0.75;
+    this.mmHolds = [];
+    this.mmIdx = new Map();
+    for (const b of this.bloques) {
+      for (const p of b.presas) {
+        this.mmIdx.set(p.inst.id, this.mmHolds.length);
+        this.mmHolds.push({
+          x: Math.min(1, Math.max(0, (b.spec.x + p.local.x + X_HALF) / (X_HALF * 2))),
+          y: Math.min(1, Math.max(0, (b.spec.y + p.local.y - Y0) / (Y1 - Y0))),
+          kind: b.spec.cima ? "camp" : "normal",
+          occupied: 0,
+        });
+      }
+    }
     // índices de presas de salida por sherpa (0 = izquierda, 1 = derecha)
     for (const pi of [0, 1] as const) {
       const spec = specs.find((s) => s.salida && s.id.endsWith(pi === 0 ? "0" : "1"));
@@ -523,11 +680,12 @@ export class ParedNivel {
     const mash: [number, number] = [0, 0];
     for (const it of intents) if (it.mashCount > 0) mash[it.playerId] += Math.min(4, it.mashCount);
 
-    // bloques: muelle amortiguado hacia la carga actual (basculación al agarrar)
+    // bloques: muelle amortiguado hacia la carga actual (basculación al agarrar);
+    // clamp por bloque: el RELATIVO entre vecinos no puede comerse el hueco
     for (const b of this.bloques) {
-      const target = -0.075 * b.carga;
+      const target = -SAG_POR_CARGA * b.carga;
       const [s2, v2] = pasoMuelle(b.sag, b.sagVel, dt, target);
-      b.sag = s2;
+      b.sag = Math.max(-SAG_MAX, s2);
       b.sagVel = v2;
     }
 
@@ -577,8 +735,8 @@ export class ParedNivel {
     const bid = bloqueDe(holdId);
     const b = this.bloques.find((bb) => bb.spec.id === bid);
     if (!b) return;
-    b.sagVel -= 0.5;   // el peso recién ganado hunde el bloque
-    b.sag -= 0.05;
+    b.sagVel -= SAG_IMPULSO;   // el peso recién ganado hunde el bloque
+    b.sag -= 0.02;
   }
 
   /** Cuerda: corrige el exceso de separación — el anclado aguanta, el libre cae. */
@@ -602,9 +760,10 @@ export class ParedNivel {
   private actualizaTransformaciones(_dt: number): void {
     for (const b of this.bloques) {
       const s = b.spec;
-      // T119 panel de ajuste: velocidad/amplitud/fase se aplican EN VIVO
+      // T119 panel de ajuste: velocidad/fase EN VIVO; la amplitud pasa por el
+      // CAP del patrón (T120: el multiplicador del panel nunca genera solapes)
       const vel = Math.max(0.05, this.ajuste.velocidadBloques);
-      const amp = s.amp * this.ajuste.amplitudMult;
+      const amp = ampEfectiva(s.patron, s.amp, this.ajuste.amplitudMult);
       const per = s.periodS / vel;
       const fase = s.phase + this.ajuste.faseOffset;
       const off = offsetPatron(s.patron, amp, per, fase, this.simTime);
@@ -645,44 +804,17 @@ export class ParedNivel {
     }
   }
 
+  /** Cuerda visual: UN paso del verlet puro con los parámetros del pack y la
+   *  cuerda del panel (total = cuerdaMetros + 0,5 de holgura de dibujo). */
   private ropeStep(dt: number): void {
     const a = this.sherpas[0].waist();
     const b = this.sherpas[1].waist();
-    const n = this.ropeNodes.length;
-    if (n < 3) return;
+    if (this.ropeNodes.length < 3) return;
     const g = this.d.data.tuning.rope.slackGravity ?? 9.81;
     const damp = this.d.data.tuning.rope.nodeDamping ?? 0.975;
-    const totalLen = this.ajuste.cuerdaMetros + 0.5;
-    const segLen = totalLen / (n - 1);
-    // integrar (extremos fijos)
-    for (let i = 1; i < n - 1; i++) {
-      const nd = this.ropeNodes[i];
-      const vx = (nd.pos.x - nd.prev.x) * damp;
-      const vy = (nd.pos.y - nd.prev.y) * damp;
-      const vz = (nd.pos.z - nd.prev.z) * damp;
-      nd.prev = vClone(nd.pos);
-      nd.pos = v3(nd.pos.x + vx, nd.pos.y + vy - g * dt * dt, nd.pos.z + vz);
-    }
-    this.ropeNodes[0].pos = vClone(a);
-    this.ropeNodes[n - 1].pos = vClone(b);
-    // relajar 2 pasadas
-    for (let pass = 0; pass < 2; pass++) {
-      for (let i = 0; i < n - 1; i++) {
-        const p1 = this.ropeNodes[i].pos;
-        const p2 = this.ropeNodes[i + 1].pos;
-        const dist = vLen(vSub(p2, p1));
-        if (dist < 1e-6) continue;
-        const diff = (dist - segLen) / dist;
-        const fix = vScale(vSub(p2, p1), diff * 0.5);
-        if (i !== 0) this.ropeNodes[i].pos = vSub(p1, fix);
-        if (i + 1 !== n - 1) this.ropeNodes[i + 1].pos = vAdd(p2, fix);
-      }
-      this.ropeNodes[0].pos = vClone(a);
-      this.ropeNodes[n - 1].pos = vClone(b);
-    }
+    const segLen = (this.ajuste.cuerdaMetros + 0.5) / (this.ropeNodes.length - 1);
+    pasoCuerdaVerlet(this.ropeNodes, a, b, dt, segLen, g, damp);
   }
-
-  // ---------- bucle ----------
 
   private frame = (ms: number): void => {
     if (this.disposed) return;
@@ -761,6 +893,42 @@ export class ParedNivel {
       if (warn) this.elFat.textContent = txt(this.d.data.strings, this.d.hud.lang, "pared.soloMano", "⚠ ¡Sólo una mano! Afírmate rápido");
     }
     if (this.panelAbierto) this.teleTick(wa, wb);
+    // T120 minimapa: ~10 Hz (el HUD cachea la capa estática; esto solo estampa)
+    this.mmAcc++;
+    if (this.mmAcc % 6 === 0) this.minimapaTick(wa, wb);
+  }
+
+  /** MINIMAPA: alimenta la réplica de pared que el HUD ya dibuja en la partida
+   *  — presas del nivel (camp = fila de cima), presas ocupadas por S1/S2 y
+   *  progresión de ambos escaladores hacia la cima. */
+  private minimapaTick(wa: V3, wb: V3): void {
+    if (!this.mmHolds.length) return;
+    for (const h of this.mmHolds) if (h.occupied) h.occupied = 0;
+    for (const pi of [0, 1] as const) {
+      for (const limb of LIMBS) {
+        const st = this.sherpas[pi].states.get(limb)!;
+        const hid = st.holdId as string | null;
+        if (st.anchored && hid) {
+          const i = this.mmIdx.get(hid);
+          if (i !== undefined) this.mmHolds[i].occupied = (pi + 1) as 1 | 2;
+        }
+      }
+    }
+    const X_HALF = 2.3;
+    const Y0 = Y_SALIDA - 1.1;
+    const Y1 = this.yCima + 0.75;
+    const frac = (y: number): number => Math.min(1, Math.max(0, (y - Y0) / (Y1 - Y0)));
+    const nx = (x: number): number => Math.min(1, Math.max(0, (x + X_HALF) / (X_HALF * 2)));
+    this.d.hud.updateMinimap({
+      fracA: frac(wa.y),
+      fracB: frac(wb.y),
+      campFrac: (Y1 - (this.yCima - 0.625)) / (Y1 - Y0),
+      metersLeft: Math.max(0, this.yCima - Math.max(wa.y, wb.y)),
+      campId: this.d.hud.lang === "en" ? "top" : "cima",
+      holds: this.mmHolds,
+      xA: nx(wa.x),
+      xB: nx(wb.x),
+    });
   }
 
   /** Telemetría del panel a ~4 Hz (el DOM no aguanta 60 reescrituras/s). */
@@ -842,6 +1010,8 @@ export class ParedNivel {
     this.masterPresa?.dispose();
     this.masterPresa = null;
     this.salidaHolds = [];
+    this.mmHolds = [];
+    this.mmIdx = new Map();
   }
 
   // ---------- panel de ajuste (modo dev: ?dev=1 / F3 — T119) ----------
