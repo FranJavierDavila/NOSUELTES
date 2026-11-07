@@ -28,6 +28,32 @@
 //  · Subida corta de ~20 m; coordinación: los DOS deben subir; cima = fila de
 //    bloques horizontales ESTÁTICOS que marca la llegada.
 //
+// T121 — LOS 5 DETALLES NUEVOS (dictado del jugador):
+//  B1 · PRESAS SALIENTES: las presas nacen FUERA de la cara del cubo
+//       (PRESA_SALIENTE m) — brazos y piernas se agarran al bulto y ya no se
+//       meten dentro de las cajas.
+//  B2 · MOVIMIENTO MÁS AMPLIO: amplitudes base y CAPS suben (vertical 0,35,
+//       horizontal 0,62) y una caja de la columna mixta (fila 5) es «giro180»:
+//       oscila ±~1,4 rad (~160° de barrido total, «cerca de 180 grados»),
+//       lenta (9-12 s) y con cubo de 1,4 m para que el barrido no toque a
+//       nadie (haySolape lo verifica en el tiempo).
+//  B3 · CAJAS DESTRUCTIBLES: las filas PARES 2-8 son rojizas y al primer
+//       agarre arrancan cuenta atrás (segundosRotura, default 10 s): avisan
+//       temblando, se hacen AÑICOS y el escalador cae a un bloque inferior
+//       intacto donde se ANCLA SOLO (rescate). Nunca dos destructibles
+//       seguidos (esFilaDestructible, filas alternas).
+//  B4 · CUERDA DENSA: la cadena verlet pasa de 7 a CUERDA_SEG=22 tramos
+//       (encaja en el pool de la escena: 24 por mitad) — parece una cuerda
+//       real y no 6 eslabones rígidos.
+//  B5 · MOCHILA-CHICLE: clic en la mochila (backpackAt de la escena, T101)
+//       muestra un badge de MUELLE con los lanzamientos restantes; arrastrar
+//       hacia ABAJO con las DOS manos ancladas suelta los pies y hunde el
+//       cuerpo hasta el DOBLE de colgao (goma, GOMA_EXTRA_M): al soltar sale
+//       disparado en la dirección mochila→puntero invertida (velLanzamiento),
+//       con alcance ~3 cuerpos (LANZ_V_MAX); en el vuelo balístico se pulsa
+//       una presa para agarrarse (asistencia magnética MAGNET_VUELO_M).
+//       Lanzamientos limitados (lanzamientosMax, default 3).
+//
 // Aislamiento: el juego principal no se toca. Este módulo crea SU PROPIA
 // SherpaScene (patrón endGuestToMenu de mount.ts: un canvas = un motor) y
 // reutiliza los sistemas reales: SherpaRig, AnchorSystem, PointerDrag,
@@ -80,13 +106,109 @@ export const CUERDA_LEN = 5.0;    // separación máxima entre los dos sherpas (
 export const Z_PRESA = 0.3;
 export const H_MOVIL = 1.5;       // alto de los bloques móviles: hueco vertical 0,4 m entre filas
 
+// T121 — constantes de los 5 detalles nuevos
+/** B1: la presa nace FUERA de la cara del cubo (m hacia el escalador). */
+export const PRESA_SALIENTE = 0.07;
+/** B1: diámetro del bulto de presa (antes 0,20 — más bulto = mejor lectura). */
+export const PRESA_DIAMETRO = 0.26;
+/** B4: tramos de la cuerda visual A→B (22 = 11 por mitad, pool 24 ✓). */
+export const CUERDA_SEG = 22;
+/** B5: hundimiento MÁXIMO extra del cuerpo tirando de la mochila (m):
+ *  colgado normal ~0,9 m → el doble de brazo ≈ +0,9 m (efecto chicle). */
+export const GOMA_EXTRA_M = 0.9;
+/** B5: velocidad máxima de lanzamiento (m/s) → subida balística v²/2g ≈ 3,6 m
+ *  ≈ 3 veces el cuerpo del sherpa (petición: «alcance ~3 veces su cuerpo»). */
+export const LANZ_V_MAX = 8.4;
+/** B5: velocidad mínima al soltar con estiramiento perceptible (m/s). */
+export const LANZ_V_MIN = 2.2;
+/** B5: radio de ASISTENCIA MAGNÉTICA del agarre durante el vuelo (m). */
+export const MAGNET_VUELO_M = 1.15;
+/** B3: ventana de aviso (temblor) antes de la rotura (s). */
+export const ROTURA_AVISO_S = 2.5;
+/** B5: umbral de píxeles que separa un CLIC (badge) de un ARRASTRE (tiro). */
+export const GOMA_UMBRAL_PX = 14;
+
+/** B1: offset local z de la presa respecto al CENTRO del cubo (cara = −d/2):
+ *  negativo de sobra → el bulto SOBRESALE de la cara hacia el escalador. */
+export function zLocalPresa(d: number): number {
+  return -d / 2 - PRESA_SALIENTE;
+}
+
+/** B3: filas destructibles (PARES 2-8): alternas por construcción — NUNCA dos
+ *  bloques destructibles seguidos (petición literal del jugador). */
+export function esFilaDestructible(r: number): boolean {
+  return r >= 2 && r <= 8 && r % 2 === 0;
+}
+
+/** B5: velocidad de lanzamiento (m/s en el plano de pared) desde el arrastre:
+ *  dirección = mochila−puntero INVERTIDA (tirar abajo → salir arriba) y
+ *  magnitud proporcional al estiramiento m (0 → no hay tiro). */
+export function velLanzamiento(
+  origen: { x: number; y: number }, puntero: { x: number; y: number }, m: number,
+): { vx: number; vy: number } {
+  if (m <= 0.02) return { vx: 0, vy: 0 };
+  const dx = origen.x - puntero.x;
+  const dy = origen.y - puntero.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-4) return { vx: 0, vy: 0 };
+  const v = Math.min(LANZ_V_MAX, Math.max(LANZ_V_MIN, LANZ_V_MAX * (m / GOMA_EXTRA_M)));
+  return { vx: (dx / len) * v, vy: (dy / len) * v };
+}
+
+/** B3 rescate: el bloque INTACTO más cercano POR DEBAJO del escalador y en su
+ *  columna (±1,7 m) — donde se ancla solo al romperse el suyo. */
+export function bloqueReceptorId(
+  bs: { id: string; x: number; y: number; destruido?: boolean }[],
+  pos: { x: number; y: number },
+): string | null {
+  let best: string | null = null;
+  let bestY = -Infinity;
+  for (const b of bs) {
+    if (b.destruido) continue;
+    if (b.y > pos.y + 0.2) continue;            // solo al nivel o por debajo
+    if (Math.abs(b.x - pos.x) > 1.7) continue;  // misma columna aproximada
+    if (b.y > bestY) { bestY = b.y; best = b.id; }
+  }
+  return best;
+}
+
+/** B5 asistencia magnética: el anclaje más cercano al punto del clic dentro
+ *  del radio (null si ninguno). */
+export function anclajeMasCercano<T extends { pos: V3; id: string }>(
+  p: { x: number; y: number }, holds: T[], radio: number,
+): T | null {
+  let best: T | null = null;
+  let bd = radio;
+  for (const h of holds) {
+    const d = Math.hypot(h.pos.x - p.x, h.pos.y - p.y);
+    if (d < bd) { bd = d; best = h; }
+  }
+  return best;
+}
+
+/** B3 añicos: velocidades/espines deterministas por semilla del bloque. */
+export function velocidadesAnicos(seed: number, n: number): { vx: number; vy: number; vz: number; sx: number; sy: number }[] {
+  const rng = mulberry32(seed >>> 0);
+  const out: { vx: number; vy: number; vz: number; sx: number; sy: number }[] = [];
+  for (let i = 0; i < n; i++) {
+    out.push({
+      vx: (rng() - 0.5) * 2.6,
+      vy: 1.1 + rng() * 2.3,
+      vz: (rng() - 0.5) * 1.7,
+      sx: (rng() - 0.5) * 7,
+      sy: (rng() - 0.5) * 7,
+    });
+  }
+  return out;
+}
+
 // T119 — PANEL DE AJUSTE (modo dev): todos los knobs de dificultad del nivel
 // viven en paredAjuste.ts (persistencia + clamp + serialización puros). En el
 // juego normal el panel NO existe: se abre solo con ?dev=1 o la tecla F3.
 
 // ---------- patrones de movimiento (puro, testeable) ----------
 
-export type Patron = "estatico" | "vertical" | "horizontal" | "giro";
+export type Patron = "estatico" | "vertical" | "horizontal" | "giro" | "giro180";
 
 /** Desplazamiento (dx, dy) del bloque en el instante t (s). */
 export function offsetPatron(p: Patron, amp: number, periodS: number, phase: number, t: number): { dx: number; dy: number } {
@@ -95,9 +217,11 @@ export function offsetPatron(p: Patron, amp: number, periodS: number, phase: num
   return { dx: 0, dy: 0 };
 }
 
-/** Giro (yaw, rad) del bloque en el instante t (s): oscila — sensación de flotación. */
+/** Giro (yaw, rad) del bloque en el instante t (s): oscila — sensación de
+ *  flotación. T121 «giro180»: el mismo vaivén con amplitud GRANDE (~±1,4 rad,
+ *  barrido total cercano a los 180 grados del jugador) y periodo lento. */
 export function yawPatron(p: Patron, amp: number, periodS: number, phase: number, t: number): number {
-  return p === "giro" ? amp * Math.sin((2 * Math.PI * t) / periodS + phase) : 0;
+  return p === "giro" || p === "giro180" ? amp * Math.sin((2 * Math.PI * t) / periodS + phase) : 0;
 }
 
 /** Muelle amortiguado de la basculación al agarrar: acc = −k·(sag−target) − c·vel. */
@@ -127,8 +251,14 @@ export const SAG_IMPULSO = 0.22;
 /** CAP de amplitud por patrón: el multiplicador del panel da VIDA hasta el
  *  máximo seguro — el valor EFECTIVO nunca lo supera (haySolape se verifica
  *  con estos peores casos). */
+// T121 B2 «movimiento más amplio»: los CAPS suben (vertical 0,25→0,35 — la
+// columna sigue SINCRONIZADA así que el relativo entre filas no cambia;
+// horizontal 0,5→0,62 — sin dy, el hueco vertical queda intacto y 2,6−0,62
+// deja 1,98 m hasta la otra columna > 1,8 de cajas). El giro180 barrido
+// completo cabe: radio máximo hipot(0,7, 0,75) del cubo 1,4×1,5 = 1,026 m
+// y 1,026+0,75+sag < 1,9 de paso (haySolape lo certifica en el tiempo).
 export const CAP_AMP: Record<Patron, number> = {
-  estatico: 0, vertical: 0.25, horizontal: 0.5, giro: 0.25,
+  estatico: 0, vertical: 0.35, horizontal: 0.62, giro: 0.25, giro180: 1.45,
 };
 
 /** Amplitud efectiva: amp·mult acotada al CAP del patrón. */
@@ -146,6 +276,9 @@ export interface BloqueSpec {
   amp: number; periodS: number; phase: number;
   salida?: boolean;
   cima?: boolean;
+  /** T121 B3: caja rojiza que se rompe en añicos (segundosRotura desde el
+   *  primer agarre) — el escalador cae a un bloque inferior intacto. */
+  destructible?: boolean;
 }
 
 /** Ciclo de la columna «mixta»: estáticos intercalados (opción de anclaje
@@ -179,28 +312,39 @@ export function layoutPared(seed: number, mod?: ParedModLayout): BloqueSpec[] {
     out.push({ id: `salida_${i}`, x, y: Y_SALIDA, z: zCara(0.5), w: 1.8, h: 1.8, d: 0.5, patron: "estatico", amp: 0, periodS: 1, phase: 0, salida: true });
   }
   const colBaila = rng() < 0.5 ? 0 : 1;   // qué columna sube y baja (la otra es mixta)
-  const ampCol = 0.18 + rng() * 0.07;     // ≤ 0,25 = CAP vertical
+  // T121 B2 «movimiento más amplio»: base de vertical 0,24-0,32 (CAP 0,35) y
+  // de horizontal 0,42-0,60 (CAP 0,62) — más vaivén, más maniobra.
+  const ampCol = 0.24 + rng() * 0.08;     // ≤ 0,32 < CAP vertical 0,35
   const perCol = 3.4 + rng() * 2.2;
   const phCol = rng() * Math.PI * 2;
   const ciclo = Math.floor(rng() * CICLO_MIXTA.length);
+  // T121 B2: la fila 5 de la columna mixta es el GIRO180 (una caja que barre
+  // ~160°). Sus vecinas 4 y 6 quedan en HORIZONTAL (sin yaw ni dy) para que
+  // el barrido del cubo no las toque (haySolape lo certifica).
+  const filaGiro180 = 5;
   // las amplitudes se sortean SIEMPRE en el mismo orden → layout determinista
   for (let r = 1; r <= 9; r++) {
     const y = Y_SALIDA + paso + (r - 1) * paso;
     const fade = r === 1 || r === 9 ? 0.3 : 1;
     let patronMixto = CICLO_MIXTA[(r - 1 + ciclo) % CICLO_MIXTA.length];
     if (r === 1 && patronMixto === "giro") patronMixto = "horizontal";
+    if (r === filaGiro180) patronMixto = "giro180";
+    else if ((r === filaGiro180 - 1 || r === filaGiro180 + 1) && patronMixto === "giro") patronMixto = "horizontal";
     const esGiro = patronMixto === "giro";
-    const ampMix = esGiro ? 0.18 + rng() * 0.07 : 0.3 + rng() * 0.18;
-    const perMix = esGiro ? 5.5 + rng() * 2.5 : 3.4 + rng() * 2.2;
+    const es180 = patronMixto === "giro180";
+    const ampMix = es180 ? 1.38 + rng() * 0.06 : esGiro ? 0.18 + rng() * 0.07 : 0.42 + rng() * 0.18;
+    const perMix = es180 ? 9 + rng() * 3 : esGiro ? 5.5 + rng() * 2.5 : 3.4 + rng() * 2.2;
     const phMix = rng() * Math.PI * 2;
+    const dest = esFilaDestructible(r);
     for (let c = 0; c < 2; c++) {
       const x = c === 0 ? -1.3 : 1.3;
       const suf = c === 0 ? "i" : "d";
       if (c === colBaila) {
-        out.push({ id: `f${r}_${suf}`, x, y, z: zCara(0.5), w: 1.8, h: H_MOVIL, d: 0.5, patron: "vertical", amp: ampCol * fade, periodS: perCol, phase: phCol });
+        out.push({ id: `f${r}_${suf}`, x, y, z: zCara(0.5), w: 1.8, h: H_MOVIL, d: 0.5, patron: "vertical", amp: ampCol * fade, periodS: perCol, phase: phCol, destructible: dest });
       } else {
         // estático: amp 0 (el sorteo de ampMix queda en el orden fijo aunque no se use)
-        out.push({ id: `f${r}_${suf}`, x, y, z: zCara(0.5), w: esGiro ? 1.5 : 1.8, h: H_MOVIL, d: 0.5, patron: patronMixto, amp: patronMixto === "estatico" ? 0 : ampMix, periodS: perMix, phase: phMix });
+        const patron = patronMixto === "estatico" ? "estatico" : patronMixto;
+        out.push({ id: `f${r}_${suf}`, x, y, z: zCara(0.5), w: es180 ? 1.4 : esGiro ? 1.5 : 1.8, h: H_MOVIL, d: 0.5, patron, amp: patronMixto === "estatico" ? 0 : ampMix, periodS: perMix, phase: phMix, destructible: dest });
       }
     }
   }
@@ -318,6 +462,9 @@ interface Bloque {
   sagVel: number;
   carga: number;      // nº de extremidades ancladas al bloque (objetivo del muelle)
   dx: number; dy: number; yaw: number; // última transformación aplicada
+  destruido: boolean; // T121 B3
+  roturaT: number | null; // cuenta atrás iniciada por el primer agarre (s)
+  anicos: { mesh: Mesh; vel: V3; spin: number; t: number }[]; // T121 B3 añicos
 }
 
 export interface ParedDeps {
@@ -340,9 +487,23 @@ const HOLD_LOCALS_W18: [number, number][] = [
 const HOLD_LOCALS_W15: [number, number][] = [
   [-0.417, 0.55], [0.417, 0.55], [-0.375, 0.05], [0.375, 0.05], [-0.333, -0.5], [0.333, -0.5],
 ];
+/** Cubo de GIRO180 (1,4 m de cara, T121): mismas alturas, X escalada. */
+const HOLD_LOCALS_W14: [number, number][] = [
+  [-0.389, 0.55], [0.389, 0.55], [-0.35, 0.05], [0.35, 0.05], [-0.311, -0.5], [0.311, -0.5],
+];
 const HOLD_LOCALS_CIMA: [number, number][] = [
   [-0.42, 0.5], [0.42, 0.5], [-0.38, 0], [0.38, 0], [-0.32, -0.45], [0.32, -0.45],
 ];
+
+/** T121 B5: partículas del CUERPO que se hunden tirando de la mochila (todas
+ *  menos las manos — esas permanecen PERFECTAMENTE ancladas). */
+const GOMA_CUERPO: number[] = [
+  P.head, P.chest, P.shL, P.shR, P.pelvisC, P.hipL, P.hipR,
+  P.elbowL, P.elbowR, P.kneeL, P.kneeR, P.footL, P.footR,
+];
+
+/** T121 B5: icono de MUELLE del badge de lanzamientos (SVG inline). */
+const SPRING_SVG = '<svg viewBox="0 0 28 16" width="26" height="15" aria-hidden="true"><path d="M2 8c2.5-6 5-6 7.5 0s5 6 7.5 0 5-6 7.5 0" fill="none" stroke="#9fe0b9" stroke-width="2.2" stroke-linecap="round"/></svg>';
 
 export class ParedNivel {
   private anchors!: AnchorSystem;
@@ -351,6 +512,7 @@ export class ParedNivel {
   private salidaHolds: AnclajesIniciales[] = [];
   private matBloque: PBRMaterial | null = null;
   private matPresa: PBRMaterial | null = null;
+  private matRojizo: PBRMaterial | null = null;   // T121 B3 cajas destructibles
   private masterPresa: Mesh | null = null;
   private pointerDrag: PointerDrag | null = null;
   private raf = 0;
@@ -364,6 +526,18 @@ export class ParedNivel {
   private dragPlayer: 0 | 1 | null = null;
   private dragLimb: (typeof LIMBS)[number] | null = null;
   private dragCursor: V3 | null = null;
+  // T121 B5 — mochila-chicle
+  private gomaPendiente: { pi: 0 | 1; x0: number; y0: number } | null = null; // clic sin decidir
+  private goma: { pi: 0 | 1; origen: V3; puntero: V3; m: number; mPrev: number } | null = null;
+  private enVuelo: [boolean, boolean] = [false, false];
+  private lanzados: [number, number] = [3, 3]; // restantes (se ajusta al max del panel en start)
+  private vueloObjetivo: HoldInstance | null = null; // presa elegida durante el vuelo
+  private rescate: ({ pi: 0 | 1; bloqueId: string; desdeT: number } | null)[] = [null, null];
+  // HUD del badge de lanzamientos (muelle) y avisos
+  private elMochila: HTMLElement | null = null;
+  private elMochilaN: HTMLElement | null = null;
+  private elAviso: HTMLElement | null = null;
+  private avisoT = 0;
   // cuerda visual: cadena verlet A→B
   private ropeNodes: { pos: V3; prev: V3 }[] = [];
   // T120 minimapa: réplica estática de las presas + índice por id de presa
@@ -409,6 +583,7 @@ export class ParedNivel {
     this.construirSherpas();
     this.conectarDrag();
     this.crearHud();
+    this.lanzados = [this.ajuste.lanzamientosMax, this.ajuste.lanzamientosMax];
     this.d.scene.setSnowVisual(false, 0, Number.POSITIVE_INFINITY);
     this.d.hud.banner(
       txt(this.d.data.strings, this.d.hud.lang, "pared.title", "Prueba del Campamento"),
@@ -423,7 +598,7 @@ export class ParedNivel {
     (window as unknown as { __PARED?: unknown }).__PARED = this;
   }
 
-  private ensureMaterials(): { bloque: PBRMaterial; presa: PBRMaterial } {
+  private ensureMaterials(): { bloque: PBRMaterial; presa: PBRMaterial; rojizo: PBRMaterial } {
     const scene = this.d.scene.scene;
     if (!this.matBloque) {
       // MISMA RECETA que ensureMassifRockMaterial (scene.ts): el material EXACTO
@@ -470,7 +645,26 @@ export class ParedNivel {
       p.roughness = 0.72;
       this.matPresa = p;
     }
-    return { bloque: this.matBloque, presa: this.matPresa };
+    if (!this.matRojizo) {
+      // T121 B3: MISMAS texturas de roca, tinte ROJIZO — la caja destructible
+      // se distingue a golpe de vista (petición: «color distintivo como rojizo»)
+      const base = this.matBloque;
+      const r = new PBRMaterial("paredBloqueRojizoM", scene);
+      r.albedoTexture = base.albedoTexture;
+      r.bumpTexture = base.bumpTexture;
+      const alb = r.albedoTexture as Texture;
+      alb.uScale = 1.8 / 6.4;
+      alb.vScale = 1.8 / 6.4;
+      const bmp = r.bumpTexture as Texture;
+      bmp.uScale = 1.8 / 6.4;
+      bmp.vScale = 1.8 / 6.4;
+      r.albedoColor = new Color3(1.55, 0.34, 0.26); // rojizo intenso
+      r.metallic = 0;
+      r.roughness = 0.85;
+      r.backFaceCulling = false;
+      this.matRojizo = r;
+    }
+    return { bloque: this.matBloque, presa: this.matPresa, rojizo: this.matRojizo };
   }
 
   private construirBloques(): void {
@@ -484,10 +678,12 @@ export class ParedNivel {
       },
       { cracked: () => {}, broken: () => {} },
     );
-    // master de presa (esfera achatada) + instancias por presa
-    this.masterPresa = MeshBuilder.CreateSphere("paredPresaMaster", { diameter: 0.2, segments: 6 }, scene);
+    // master de presa (esfera achatada) + instancias por presa — T121 B1:
+    // bulto MÁS GRANDE que sobresale de la cara (brazos/piernas ya no entran
+    // en la caja: se agarran al bulto)
+    this.masterPresa = MeshBuilder.CreateSphere("paredPresaMaster", { diameter: PRESA_DIAMETRO, segments: 8 }, scene);
     this.masterPresa.material = mats.presa;
-    this.masterPresa.scaling.z = 0.62;
+    this.masterPresa.scaling.z = 0.7;
     this.masterPresa.isVisible = false;
 
     const specs = layoutPared(20261106, { filaPaso: this.paso });
@@ -496,14 +692,17 @@ export class ParedNivel {
       const node = new TransformNode(`blk_${spec.id}`, scene);
       node.position.set(spec.x, spec.y, spec.z);
       const mesh = MeshBuilder.CreateBox(`blkM_${spec.id}`, { width: spec.w, height: spec.h, depth: spec.d }, scene);
-      mesh.material = mats.bloque;
+      mesh.material = spec.destructible ? mats.rojizo : mats.bloque;
       mesh.parent = node;
-      const locals = spec.cima ? HOLD_LOCALS_CIMA : spec.w < 1.6 ? HOLD_LOCALS_W15 : HOLD_LOCALS_W18;
-      const bloque: Bloque = { spec, node, mesh, presas: [], sag: 0, sagVel: 0, carga: 0, dx: 0, dy: 0, yaw: 0 };
+      const locals = spec.cima ? HOLD_LOCALS_CIMA
+        : spec.w < 1.45 ? HOLD_LOCALS_W14
+        : spec.w < 1.6 ? HOLD_LOCALS_W15
+        : HOLD_LOCALS_W18;
+      const bloque: Bloque = { spec, node, mesh, presas: [], sag: 0, sagVel: 0, carga: 0, dx: 0, dy: 0, yaw: 0, destruido: false, roturaT: null, anicos: [] };
       for (const [k, [lx, ly]] of locals.entries()) {
-        // presas EN LA CARA (z −d/2 hacia el escalador): la física coincide con
-        // el bulto visible y ambos quedan de cara a la cámara
-        const zCaraLocal = -spec.d / 2 + 0.03;
+        // presas EN LA CARA saliendo hacia FUERA (T121 B1): la física coincide
+        // con el bulto visible y ambos quedan de cara a la cámara
+        const zCaraLocal = zLocalPresa(spec.d);
         const inst: HoldInstance = {
           id: `${spec.id}_h${k}`,
           pos: v3(spec.x + lx, spec.y + ly, spec.z + zCaraLocal),
@@ -581,10 +780,10 @@ export class ParedNivel {
     };
   }
 
-  private construirSherpas(anclajes?: AnclajesIniciales[]): void {
+  private depsDe(pi: 0 | 1): SherpaDeps {
     const t = this.d.data.tuning;
-    const mkDeps = (player: 0 | 1): SherpaDeps => ({
-      player,
+    return {
+      player: pi,
       profile: this.d.profile,
       character: this.d.character,
       tuning: this.rigTuning(),
@@ -594,10 +793,13 @@ export class ParedNivel {
       floorY: -6,
       wallFrontZ: Z_PRESA,
       rope: t.rope,
-    });
+    };
+  }
+
+  private construirSherpas(anclajes?: AnclajesIniciales[]): void {
     this.sherpas = [
-      new SherpaRig(mkDeps(0), anclajes?.[0] ?? this.salidaHolds[0]),
-      new SherpaRig(mkDeps(1), anclajes?.[1] ?? this.salidaHolds[1]),
+      new SherpaRig(this.depsDe(0), anclajes?.[0] ?? this.salidaHolds[0]),
+      new SherpaRig(this.depsDe(1), anclajes?.[1] ?? this.salidaHolds[1]),
     ];
     for (const pi of [0, 1] as const) this.d.scene.spawnSherpa(pi, this.sherpas[pi].rig);
     const a = this.sherpas[0].waist();
@@ -632,6 +834,23 @@ export class ParedNivel {
 
   private onDragDown(xCss: number, yCss: number): void {
     if (this.state !== "jugando") return;
+    // T121 B5: en vuelo balístico el clic ES el agarre (asistencia magnética)
+    if (this.enVuelo[0] || this.enVuelo[1]) {
+      const pf = this.puntoPlano(xCss, yCss);
+      if (pf) this.intentaAgarreVuelo(pf);
+      return;
+    }
+    // T121 B5: ¿clic en la mochila? → pendiente: clic seco = badge, arrastre = tiro
+    const pi = this.d.scene.backpackAt(xCss, yCss);
+    if (pi !== null && !this.goma && this.gomaPendiente === null) {
+      if (this.lanzados[pi] <= 0) {
+        this.muestraBadgeMochila(pi);
+        this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.mochila.agotado", "Sin lanzamientos"));
+        return;
+      }
+      this.gomaPendiente = { pi, x0: xCss, y0: yCss };
+      return;
+    }
     const p = this.puntoPlano(xCss, yCss);
     if (!p) return;
     const cands: { player: 0 | 1; limb: (typeof LIMBS)[number]; d: number }[] = [];
@@ -655,6 +874,20 @@ export class ParedNivel {
   }
 
   private onDragMove(xCss: number, yCss: number): void {
+    // T121 B5: tirar de la mochila — el arrastre hacia abajo estira la goma
+    if (this.gomaPendiente) {
+      const g = this.gomaPendiente;
+      if (!this.goma && Math.hypot(xCss - g.x0, yCss - g.y0) > GOMA_UMBRAL_PX) this.arrancaGoma(g.pi, g.x0, g.y0);
+      if (this.goma) {
+        const p = this.puntoPlano(xCss, yCss);
+        if (p) {
+          this.goma.puntero = p;
+          // estira SOLO la componente descendente (tirar hacia abajo)
+          this.goma.m = Math.min(GOMA_EXTRA_M, Math.max(0, this.goma.origen.y - p.y));
+        }
+      }
+      return;
+    }
     if (this.dragLimb === null || this.dragPlayer === null) return;
     const p = this.puntoPlano(xCss, yCss);
     if (!p) return;
@@ -663,10 +896,102 @@ export class ParedNivel {
   }
 
   private onDragUp(): void {
+    // T121 B5: clic SECO sobre la mochila → badge de muelle con lanzamientos
+    if (this.gomaPendiente) {
+      this.muestraBadgeMochila(this.gomaPendiente.pi);
+      this.gomaPendiente = null;
+      return;
+    }
+    // T121 B5: soltar la mochila estirada → LANZAMIENTO
+    if (this.goma) {
+      this.lanzaGoma();
+      return;
+    }
     if (this.dragLimb !== null && this.dragPlayer !== null) this.sherpas[this.dragPlayer].endDrag();
     this.dragPlayer = null;
     this.dragLimb = null;
     this.dragCursor = null;
+    this.vueloObjetivo = null;
+  }
+
+  /** T121 B5: arranca la goma — exige las DOS manos ancladas (petición);
+   *  suelta los pies para que el cuerpo cuelgue solo de los brazos. */
+  private arrancaGoma(pi: 0 | 1, x0: number, y0: number): void {
+    const rig = this.sherpas[pi];
+    const dosManos = (["hand_l", "hand_r"] as const).every((l) => rig.states.get(l)!.anchored);
+    if (!dosManos) {
+      this.gomaPendiente = null;
+      this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.mochila.manos", "Ancla las DOS manos para tirar de la mochila"));
+      return;
+    }
+    const origen = this.puntoPlano(x0, y0) ?? rig.waist();
+    for (const f of ["foot_l", "foot_r"] as const) {
+      if (rig.states.get(f)!.anchored) rig.forceRelease(f, 0, "player");
+    }
+    this.goma = { pi, origen, puntero: origen, m: 0, mPrev: 0 };
+    this.gomaPendiente = null;
+  }
+
+  /** T121 B5: soltar la mochila estirada → lanzamiento balístico (1 lanzamiento
+   *  menos). El destino lo decide el vector mochila→puntero antes de soltar. */
+  private lanzaGoma(): void {
+    const g = this.goma;
+    this.goma = null;
+    if (!g || g.m <= 0.05) return; // estiramiento testimonial: sin tiro
+    const pi = g.pi;
+    const rig = this.sherpas[pi];
+    const v = velLanzamiento(g.origen, g.puntero, g.m);
+    this.impulsoBalistico(rig, v);
+    this.lanzados[pi] = Math.max(0, this.lanzados[pi] - 1);
+    this.enVuelo[pi] = true;
+    this.muestraBadgeMochila(pi);
+    this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.mochila.vuelo", "¡Pulsa una presa para agarrarte!"));
+  }
+
+  /** Inyecta la velocidad en TODAS las partículas (Verlet: prev = pos − v·dt)
+   *  y suelta TODO lo anclado — el cuerpo entero sale despedido. */
+  private impulsoBalistico(rig: SherpaRig, v: { vx: number; vy: number }): void {
+    const dt = this.d.data.tuning.tick.fixedDeltaSeconds;
+    const vz = -0.5; // ligero empuje hacia cámara: el vuelo no roza la cara del muro
+    for (const p of rig.rig.particles) {
+      p.prev = v3(p.pos.x - v.vx * dt, p.pos.y - v.vy * dt, p.pos.z - vz * dt);
+    }
+    for (const limb of LIMBS) {
+      if (rig.states.get(limb)!.anchored) rig.forceRelease(limb, 0, "player");
+    }
+  }
+
+  /** T121 B5: durante el vuelo, clic sobre una presa (asistencia magnética
+   *  MAGNET_VUELO_M): la mano libre más cercana la persigue — en cuanto el
+   *  cuerpo pasa a su alcance, el imán del arrastre la ancla. */
+  private intentaAgarreVuelo(p: V3): void {
+    const libres: HoldInstance[] = [];
+    for (const b of this.bloques) {
+      if (b.destruido) continue;
+      for (const pr of b.presas) libres.push(pr.inst);
+    }
+    const objetivo = anclajeMasCercano({ x: p.x, y: p.y }, libres, MAGNET_VUELO_M);
+    if (!objetivo) return;
+    for (const pi of [0, 1] as const) {
+      if (!this.enVuelo[pi] || this.dragPlayer !== null) continue;
+      const rig = this.sherpas[pi];
+      const manos = (["hand_l", "hand_r"] as const)
+        .filter((l) => !rig.states.get(l)!.anchored)
+        .sort((a, b) => {
+          const pa = rig.limbPos(a), pb = rig.limbPos(b);
+          return Math.hypot(pa.x - p.x, pa.y - p.y) - Math.hypot(pb.x - p.x, pb.y - p.y);
+        });
+      for (const mano of manos) {
+        if (rig.beginDrag(mano)) {
+          this.dragPlayer = pi;
+          this.dragLimb = mano;
+          this.dragCursor = vClone(objetivo.pos);
+          this.vueloObjetivo = objetivo;
+          rig.moveDrag(objetivo.pos);
+          break;
+        }
+      }
+    }
   }
 
   // ---------- simulación ----------
@@ -692,6 +1017,15 @@ export class ParedNivel {
     // cuerda: límite de separación entre los dos sherpas (petición del jugador)
     this.aplicaCuerda();
 
+    // T121 B5 — imán de vuelo sostenido sobre la presa elegida (ANTES del paso:
+    // el magnetismo del arrastre decide el agarre dentro de rig.step)
+    for (const pi of [0, 1] as const) {
+      if (this.enVuelo[pi] && this.dragPlayer === pi && this.vueloObjetivo) {
+        this.sherpas[pi].moveDrag(this.vueloObjetivo.pos);
+        this.dragCursor = vClone(this.vueloObjetivo.pos);
+      }
+    }
+
     for (const pi of [0, 1] as const) {
       const rig = this.sherpas[pi];
       rig.feedRopeMash(mash[pi], mash[1 - pi], this.sherpas[1 - pi].anchorsCount() > 0);
@@ -716,6 +1050,67 @@ export class ParedNivel {
       b.carga = n;
     }
 
+    // T121 B3 — cuenta atrás de rotura de las cajas rojas (desde el 1er agarre)
+    for (const b of this.bloques) {
+      if (!b.spec.destructible || b.destruido) continue;
+      if (b.roturaT === null && b.carga > 0) {
+        b.roturaT = 0;
+        this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.mochila.rompe", "¡El bloque va a romperse!"));
+      }
+      if (b.roturaT !== null) {
+        b.roturaT += dt;
+        if (b.roturaT >= this.ajuste.segundosRotura) this.romperBloque(b);
+      }
+    }
+
+    // T121 B5 — estiramiento de goma: hundir el CUERPO con las manos clavadas
+    if (this.goma) {
+      const dm = this.goma.m - this.goma.mPrev;
+      if (dm > 0) {
+        const rig = this.sherpas[this.goma.pi];
+        for (const i of GOMA_CUERPO) {
+          const pt = rig.rig.particles[i];
+          pt.pos = v3(pt.pos.x, pt.pos.y - dm, pt.pos.z);
+          pt.prev = v3(pt.prev.x, pt.prev.y - dm, pt.prev.z);
+        }
+      }
+      this.goma.mPrev = this.goma.m;
+    }
+
+    // T121 B5 — fin del vuelo: agarró algo o la cuerda lo retiene
+    for (const pi of [0, 1] as const) {
+      if (!this.enVuelo[pi]) continue;
+      const rig = this.sherpas[pi];
+      if (rig.anchorsCount() > 0) {
+        this.enVuelo[pi] = false;
+        this.vueloObjetivo = null;
+        if (this.dragPlayer === pi) this.onDragUp();
+      } else if (rig.ropeState === "caught" || rig.ropeState === "hauling" || rig.ropeState === "grounded") {
+        this.enVuelo[pi] = false;
+        this.vueloObjetivo = null;
+      }
+    }
+
+    // T121 B3 — rescate: caer un instante y ANCLARSE SOLO al bloque inferior
+    for (const pi of [0, 1] as const) {
+      const r = this.rescate[pi];
+      if (!r) continue;
+      const rig = this.sherpas[pi];
+      if (rig.anchorsCount() > 0 || this.enVuelo[pi]) { this.rescate[pi] = null; continue; }
+      const dest = this.bloques.find((bb) => bb.spec.id === r.bloqueId);
+      const w = rig.waist();
+      const plano = this.bloques.map((bb) => ({ id: bb.spec.id, x: bb.spec.x, y: bb.spec.y, destruido: bb.destruido }));
+      if (!dest || dest.destruido) {
+        const nuevo = bloqueReceptorId(plano, w);
+        this.rescate[pi] = nuevo ? { pi, bloqueId: nuevo, desdeT: r.desdeT } : null;
+        continue;
+      }
+      if (this.simTime - r.desdeT > 0.35 && w.y < dest.spec.y + 0.3) {
+        this.rescate[pi] = null;
+        this.reanclaSherpa(pi, r.bloqueId);
+      }
+    }
+
     // ¿ganado? / ¿fallado?
     const a = this.sherpas[0].waist();
     const b = this.sherpas[1].waist();
@@ -737,6 +1132,64 @@ export class ParedNivel {
     if (!b) return;
     b.sagVel -= SAG_IMPULSO;   // el peso recién ganado hunde el bloque
     b.sag -= 0.02;
+  }
+
+  /** T121 B3: la caja roja se hace AÑICOS — fuera presas (soltando a quien
+   *  agarraba), fuera malla, añicos con física propia y RESCATE en marcha. */
+  private romperBloque(b: Bloque): void {
+    b.destruido = true;
+    b.roturaT = null;
+    b.mesh.isVisible = false;
+    for (const p of b.presas) {
+      p.inst.radius = 0;              // ya no es agarrable
+      p.mesh.isVisible = false;
+      this.anchors.holds.delete(p.inst.id);
+    }
+    // soltar a quien agarraba de ese bloque (las presas desaparecieron)
+    for (const pi of [0, 1] as const) {
+      const rig = this.sherpas[pi];
+      for (const limb of LIMBS) {
+        const st = rig.states.get(limb)!;
+        if (st.anchored && st.holdId && st.holdId.startsWith(b.spec.id)) rig.forceRelease(limb, 0, "player");
+      }
+    }
+    // añicos deterministas (semilla por id de bloque)
+    const scene = this.d.scene.scene;
+    const semilla = [...b.spec.id].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 0x9e3779b9);
+    const vs = velocidadesAnicos(semilla, 12);
+    const rng = mulberry32((semilla ^ 0x5bf03635) >>> 0);
+    for (const v of vs) {
+      const s = 0.07 + rng() * 0.16;
+      const mesh = MeshBuilder.CreateBox(`anico_${b.spec.id}_${b.anicos.length}`, { size: s }, scene);
+      mesh.material = this.matRojizo;
+      mesh.position.set(
+        b.spec.x + (rng() - 0.5) * b.spec.w,
+        b.spec.y + (rng() - 0.5) * b.spec.h,
+        b.spec.z + (rng() - 0.5) * 0.3,
+      );
+      b.anicos.push({ mesh, vel: v3(v.vx, v.vy, v.vz), spin: v.sx, t: 0 });
+    }
+    // rescate: quien se quedó SIN anclajes cae al bloque inferior intacto
+    const plano = this.bloques.map((bb) => ({ id: bb.spec.id, x: bb.spec.x, y: bb.spec.y, destruido: bb.destruido }));
+    for (const pi of [0, 1] as const) {
+      if (this.enVuelo[pi]) continue;      // lanzándose a propósito: no hay rescate
+      const rig = this.sherpas[pi];
+      if (rig.anchorsCount() > 0) continue;
+      const receptor = bloqueReceptorId(plano, rig.waist());
+      if (receptor) this.rescate[pi] = { pi, bloqueId: receptor, desdeT: this.simTime };
+    }
+  }
+
+  /** T121 B3: reancla UN escalador a un bloque (rig NUEVO anclado a sus presas)
+   *  — el mismo camino de construcción que el inicio y saltarAFila. */
+  private reanclaSherpa(pi: 0 | 1, bloqueId: string): void {
+    const a = this.anclajesDe(bloqueId);
+    if (!a) return;
+    this.onDragUp();
+    this.d.scene.despawnSherpa(pi);
+    this.sherpas[pi] = new SherpaRig(this.depsDe(pi), a);
+    this.d.scene.spawnSherpa(pi, this.sherpas[pi].rig);
+    this.ropeReset(this.sherpas[0].waist(), this.sherpas[1].waist());
   }
 
   /** Cuerda: corrige el exceso de separación — el anclado aguanta, el libre cae. */
@@ -770,6 +1223,15 @@ export class ParedNivel {
       const yaw = yawPatron(s.patron, amp, per, fase, this.simTime);
       b.dx = off.dx;
       b.dy = off.dy + b.sag;
+      // T121 B3: aviso físico de rotura — la caja TIEMBLA en la última ventana
+      if (b.roturaT !== null && !b.destruido) {
+        const restante = this.ajuste.segundosRotura - b.roturaT;
+        if (restante < ROTURA_AVISO_S) {
+          const j = (1 - restante / ROTURA_AVISO_S) * 0.035;
+          b.dx += Math.sin(this.simTime * 38) * j;
+          b.dy += Math.cos(this.simTime * 31) * j * 0.7;
+        }
+      }
       b.yaw = yaw;
       b.node.position.set(s.x + b.dx, s.y + b.dy, s.z);
       b.node.rotation.y = yaw;
@@ -785,7 +1247,9 @@ export class ParedNivel {
   // ---------- cuerda visual (verlet A→B, cadena con comba) ----------
 
   private ropeReset(a: V3, b: V3): void {
-    const nSeg = Math.max(4, Math.floor(this.d.data.tuning.rope.visualNodes / 2));
+    // T121 B4: 22 tramos (antes 7) — la cuerda se ve DENSA y real y sigue
+    // cabiendo en el pool de la escena (24 instancias por mitad)
+    const nSeg = CUERDA_SEG;
     this.ropeNodes = [];
     const mid = v3((a.x + b.x) / 2, (a.y + b.y) / 2 - 0.35, (a.z + b.z) / 2);
     for (let i = 0; i <= nSeg; i++) {
@@ -840,6 +1304,21 @@ export class ParedNivel {
     const n = this.ropeNodes.length;
     const mid = Math.floor(n / 2);
     s.syncRope(this.ropeNodes.slice(0, mid + 1).map((nd) => nd.pos), this.ropeNodes.slice(mid).map((nd) => nd.pos));
+    // T121 B3: añicos en vuelo (gravedad + giro + encogido y fuera)
+    for (const bb of this.bloques) {
+      for (const a of bb.anicos) {
+        if (a.t > 1.5) continue;
+        a.t += frameDt;
+        a.mesh.position.x += a.vel.x * frameDt;
+        a.mesh.position.y += a.vel.y * frameDt;
+        a.mesh.position.z += a.vel.z * frameDt;
+        a.vel = v3(a.vel.x, a.vel.y - 7.5 * frameDt, a.vel.z);
+        a.mesh.rotation.z += a.spin * frameDt;
+        const k = Math.max(0.01, 1 - a.t / 1.5);
+        a.mesh.scaling.setAll(k);
+        if (a.t >= 1.5) a.mesh.isVisible = false;
+      }
+    }
     // sherpas
     s.syncSherpa(0, this.sherpas[0].solver, this.alpha);
     s.syncSherpa(1, this.sherpas[1].solver, this.alpha);
@@ -852,7 +1331,7 @@ export class ParedNivel {
     const wb = this.sherpas[1].waist();
     s.updateCamera(frameDt, [wa, wb], vLen(vSub(wa, wb)), this.d.input.orbitAxis(), this.d.input.freeViewHeld());
     this.fps = fpsEma(this.fps, frameDt);
-    this.hudTick(wa, wb);
+    this.hudTick(wa, wb, frameDt);
     s.render();
     this.debug(wa, wb);
   }
@@ -870,9 +1349,38 @@ export class ParedNivel {
     };
     this.elAlt = mk("pared-alt", "position:absolute;top:10px;left:50%;transform:translateX(-50%);background:rgba(10,20,16,.72);color:#eaf4ec;border:1px solid #57b17e;border-radius:10px;padding:5px 14px;font:700 15px/1.3 system-ui,sans-serif;letter-spacing:.03em;pointer-events:none;");
     this.elFat = mk("pared-fat", "position:absolute;top:52px;left:50%;transform:translateX(-50%);background:rgba(80,18,10,.85);color:#ffd9d0;border:1px solid #e2694f;border-radius:10px;padding:5px 14px;font:700 14px/1.3 system-ui,sans-serif;pointer-events:none;display:none;");
+    // T121 B5: badge de LANZAMIENTOS (icono de muelle + nº restante) — aparece
+    // al pulsar una vez sobre la mochila (petición literal)
+    const mochila = document.createElement("div");
+    mochila.id = "pared-mochila";
+    mochila.setAttribute("style", "position:absolute;top:52px;right:12px;display:none;align-items:center;gap:7px;background:rgba(10,20,16,.78);color:#eaf4ec;border:1px solid #57b17e;border-radius:10px;padding:5px 11px;font:700 14px/1.3 system-ui,sans-serif;pointer-events:none;");
+    mochila.innerHTML = SPRING_SVG;
+    const nEl = document.createElement("b");
+    nEl.setAttribute("style", "color:#9fe0b9");
+    nEl.textContent = "×3";
+    mochila.appendChild(nEl);
+    this.elMochilaN = nEl;
+    root.appendChild(mochila);
+    this.elMochila = mochila;
+    // avisos transitorios (manos, agotado, rotura, vuelo)
+    this.elAviso = mk("pared-aviso", "position:absolute;bottom:64px;left:50%;transform:translateX(-50%);background:rgba(80,18,10,.85);color:#ffd9d0;border:1px solid #e2694f;border-radius:10px;padding:5px 14px;font:700 13px/1.3 system-ui,sans-serif;pointer-events:none;display:none;");
   }
 
-  private hudTick(wa: V3, wb: V3): void {
+  /** T121 B5: enseña el badge del muelle con los lanzamientos del escalador. */
+  private muestraBadgeMochila(pi: 0 | 1): void {
+    if (this.elMochila) this.elMochila.style.display = "flex";
+    if (this.elMochilaN) this.elMochilaN.textContent = `×${this.lanzados[pi]}`;
+  }
+
+  /** Aviso transitorio (2,4 s) en la parte baja del HUD. */
+  private aviso(msg: string): void {
+    if (!this.elAviso) return;
+    this.elAviso.textContent = msg;
+    this.elAviso.style.display = "block";
+    this.avisoT = 2.4;
+  }
+
+  private hudTick(wa: V3, wb: V3, frameDt: number): void {
     if (this.elAlt) {
       const alt = Math.max(0, Math.max(wa.y, wb.y) - Y_SALIDA);
       const ambos = Math.min(wa.y, wb.y) - Y_SALIDA;
@@ -891,6 +1399,11 @@ export class ParedNivel {
       }
       this.elFat.style.display = warn ? "block" : "none";
       if (warn) this.elFat.textContent = txt(this.d.data.strings, this.d.hud.lang, "pared.soloMano", "⚠ ¡Sólo una mano! Afírmate rápido");
+    }
+    // T121 B5: apagar el aviso transitorio
+    if (this.avisoT > 0 && this.elAviso) {
+      this.avisoT -= frameDt;
+      if (this.avisoT <= 0) this.elAviso.style.display = "none";
     }
     if (this.panelAbierto) this.teleTick(wa, wb);
     // T120 minimapa: ~10 Hz (el HUD cachea la capa estática; esto solo estampa)
@@ -988,6 +1501,15 @@ export class ParedNivel {
     this.simTime = 0;
     this.acc = 0;
     this.onDragUp();
+    // T121: reset de mochila/roturas/rescates
+    this.goma = null;
+    this.gomaPendiente = null;
+    this.enVuelo = [false, false];
+    this.vueloObjetivo = null;
+    this.rescate = [null, null];
+    this.lanzados = [this.ajuste.lanzamientosMax, this.ajuste.lanzamientosMax];
+    this.avisoT = 0;
+    if (this.elAviso) this.elAviso.style.display = "none";
     this.aplicaAlturas();
     this.limpiaBloques();
     this.construirBloques();
@@ -999,10 +1521,11 @@ export class ParedNivel {
     this.elFin = null;
   }
 
-  /** Disposición de bloques/presas SIN tocar materiales ni master compartido. */
+  /** Disposición de bloques/presas/añicos SIN tocar materiales ni master compartido. */
   private limpiaBloques(): void {
     for (const b of this.bloques) {
       b.mesh.dispose();
+      for (const a of b.anicos) a.mesh.dispose();
       for (const p of b.presas) p.mesh.dispose();
       b.node.dispose();
     }
@@ -1048,6 +1571,8 @@ export class ParedNivel {
     const v = this.ajuste[key];
     if (key === "faseOffset") return `${v.toFixed(2)} rad`;
     if (key === "cambioManoSegundos") return `${v.toFixed(1)} s`;
+    if (key === "segundosRotura") return `${v.toFixed(0)} s`;
+    if (key === "lanzamientosMax") return `×${v.toFixed(0)}`;
     if (key === "filaPaso" || key === "cuerdaMetros") return `${v.toFixed(2)} m`;
     return `×${v.toFixed(2)}`;
   }
@@ -1129,6 +1654,9 @@ export class ParedNivel {
     slider(`${t("fatigaSinApoyo", "Fatiga sin pies")} ⟳`, "fatigaSinApoyo");
     slider(`${t("cambioMano", "Límite cambio mano")} ⟳`, "cambioManoSegundos");
     slider(t("cuerda", "Cuerda"), "cuerdaMetros");
+    // T121: los 2 knobs de las mecánicas nuevas
+    slider(t("rotura", "Rotura cajas (s)"), "segundosRotura");
+    slider(t("lanzamientos", "Lanzamientos mochila"), "lanzamientosMax");
 
     const teleTit = document.createElement("div");
     teleTit.setAttribute("style", "margin:10px 0 4px;font:700 11px system-ui,sans-serif;color:#9fe0b9;letter-spacing:.06em;text-transform:uppercase");
@@ -1220,6 +1748,11 @@ export class ParedNivel {
       this.winT = 0;
     }
     this.onDragUp();
+    this.goma = null;
+    this.gomaPendiente = null;
+    this.enVuelo = [false, false];
+    this.vueloObjetivo = null;
+    this.rescate = [null, null];
     for (const pi of [0, 1] as const) this.d.scene.despawnSherpa(pi);
     this.sherpas = [];
     this.construirSherpas([aA, aB]);
@@ -1239,6 +1772,12 @@ export class ParedNivel {
         cuerda: this.ajuste.cuerdaMetros,
         paso: this.paso,
         ajuste: this.ajuste,
+        // T121: sondas de las mecánicas nuevas
+        lanzamientos: this.lanzados,
+        enVuelo: [...this.enVuelo],
+        gomaM: this.goma?.m ?? null,
+        roturas: this.bloques.filter((bb) => bb.spec.destructible)
+          .map((bb) => ({ id: bb.spec.id, destruido: bb.destruido, roturaT: bb.roturaT })),
       });
     }
   }
@@ -1256,7 +1795,10 @@ export class ParedNivel {
     this.elAlt?.remove();
     this.elFat?.remove();
     this.elFin?.remove();
+    this.elMochila?.remove();
+    this.elAviso?.remove();
     this.elAlt = this.elFat = this.elFin = null;
+    this.elMochila = this.elMochilaN = this.elAviso = null;
     delete (window as unknown as { __PARED?: unknown }).__PARED;
     const scene = this.d.scene;
     scene.despawnSherpa(0);
@@ -1264,7 +1806,8 @@ export class ParedNivel {
     this.limpiaBloques();
     this.matBloque?.dispose();
     this.matPresa?.dispose();
-    this.matBloque = this.matPresa = null;
+    this.matRojizo?.dispose();
+    this.matBloque = this.matPresa = this.matRojizo = null;
   }
 }
 

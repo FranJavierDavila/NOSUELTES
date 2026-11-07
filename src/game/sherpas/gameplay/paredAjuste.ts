@@ -32,6 +32,12 @@ export interface ParedAjusteParams {
   cambioManoSegundos: number;
   /** Longitud máxima de la cuerda entre los dos sherpas (m, default 5). */
   cuerdaMetros: number;
+  /** T121 — segundos que aguanta una caja DESTRUCTIBLE desde el primer agarre
+   *  antes de romperse en añicos (default 10, petición del jugador). */
+  segundosRotura: number;
+  /** T121 — lanzamientos de mochila (mecánica chicle) disponibles por escalador
+   *  (default 3, petición del jugador). */
+  lanzamientosMax: number;
 }
 
 export const PARED_AJUSTE_DEFAULTS: ParedAjusteParams = {
@@ -44,6 +50,8 @@ export const PARED_AJUSTE_DEFAULTS: ParedAjusteParams = {
   fatigaSinApoyo: 1.75,
   cambioManoSegundos: 10,
   cuerdaMetros: 5,
+  segundosRotura: 10,
+  lanzamientosMax: 3,
 };
 
 /** Límites de cada slider (min/max/paso) — el clamp usa los mismos valores. */
@@ -59,6 +67,8 @@ export const PARED_AJUSTE_LIMITES: Record<keyof ParedAjusteParams, { min: number
   fatigaSinApoyo: { min: 1, max: 5, step: 0.05 },
   cambioManoSegundos: { min: 2, max: 30, step: 0.5 },
   cuerdaMetros: { min: 2, max: 10, step: 0.25 },
+  segundosRotura: { min: 4, max: 30, step: 1 },
+  lanzamientosMax: { min: 1, max: 10, step: 1 },
 };
 
 const REDONDEO = 1e4; // 4 decimales: evita 0,30000000000004 en el JSON

@@ -371,7 +371,15 @@
       "defecto": "Defaults",
       "copiar": "Copy values",
       "copiado": "Copied! (also in console)",
-      "nota": "⟳ applies on Restart · F3 closes"
+      "nota": "⟳ applies on Restart · F3 closes",
+      "rotura": "Box break (s)",
+      "lanzamientos": "Backpack launches"
+    },
+    "mochila": {
+      "manos": "Anchor BOTH hands to pull the backpack",
+      "agotado": "No launches left",
+      "vuelo": "Click a hold to grab it!",
+      "rompe": "The block is about to break!"
     }
   }
 }

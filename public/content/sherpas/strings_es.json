@@ -371,7 +371,15 @@
       "defecto": "Por defecto",
       "copiar": "Copiar valores",
       "copiado": "¡Copiado! (también en consola)",
-      "nota": "⟳ se aplica al Reiniciar · F3 cierra"
+      "nota": "⟳ se aplica al Reiniciar · F3 cierra",
+      "rotura": "Rotura cajas (s)",
+      "lanzamientos": "Lanzamientos mochila"
+    },
+    "mochila": {
+      "manos": "Ancla las DOS manos para tirar de la mochila",
+      "agotado": "Sin lanzamientos",
+      "vuelo": "¡Pulsa una presa para agarrarte!",
+      "rompe": "¡El bloque va a romperse!"
     }
   }
 }

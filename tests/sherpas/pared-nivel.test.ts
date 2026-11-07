@@ -278,3 +278,204 @@ describe("T118 layout de la pared de bloques", () => {
     expect(FAIL_Y).toBeLessThan(Y_SALIDA - 2);
   });
 });
+
+// ==================== T121 — los 5 detalles nuevos del jugador ====================
+
+import {
+  CUERDA_SEG, GOMA_EXTRA_M, LANZ_V_MAX, MAGNET_VUELO_M, PRESA_SALIENTE,
+  anclajeMasCercano, bloqueReceptorId, esFilaDestructible, velLanzamiento,
+  velocidadesAnicos, zLocalPresa,
+} from "../../src/game/sherpas/gameplay/paredNivel";
+
+describe("T121 B2 — la caja «giro180» (gira cerca de 180 grados)", () => {
+  const specs = layoutPared(20261106);
+
+  it("hay EXACTAMENTE una caja giro180, de 1,4 m y amplitud ~±1,4 rad", () => {
+    const g = specs.filter((s) => s.patron === "giro180");
+    expect(g.length).toBe(1);
+    expect(g[0].w).toBeCloseTo(1.4, 9);
+    expect(g[0].amp).toBeGreaterThan(1.3);
+    expect(g[0].amp).toBeLessThanOrEqual(CAP_AMP.giro180 + 1e-9);
+    // lenta: el barrido de ~160° tarda ~9-12 s
+    expect(g[0].periodS).toBeGreaterThanOrEqual(9);
+    // la fila 5: el centro de la pared
+    expect(g[0].id).toContain("f5_");
+  });
+
+  it("sus vecinas de fila (4 y 6) NO giran: el barrido no las toca", () => {
+    const fila = (r: number): BloqueSpec[] => specs.filter((s) => s.id.startsWith(`f${r}_`));
+    for (const r of [4, 6]) {
+      for (const s of fila(r)) {
+        expect(s.patron === "estatico" || s.patron === "horizontal" || s.patron === "vertical").toBe(true);
+      }
+    }
+  });
+
+  it("el yaw del giro180 oscila sin desplazarse y barre cerca de 180 grados", () => {
+    let min = 9, max = -9;
+    for (let t = 0; t < 12; t += 1 / 60) {
+      const yaw = yawPatron("giro180", 1.42, 10, 0, t);
+      expect(offsetPatron("giro180", 1.42, 10, 0, t).dx).toBe(0);
+      expect(offsetPatron("giro180", 1.42, 10, 0, t).dy).toBe(0);
+      min = Math.min(min, yaw);
+      max = Math.max(max, yaw);
+    }
+    expect(max - min).toBeGreaterThan(2.6); // ~150° de barrido mínimo
+    expect(max - min).toBeLessThanOrEqual(Math.PI + 1e-9);
+  });
+
+  it("ampEfectiva acota el giro180 al CAP para cualquier multiplicador", () => {
+    for (const mult of [0, 1, 2.5, 10]) {
+      expect(ampEfectiva("giro180", 1.4, mult)).toBeLessThanOrEqual(CAP_AMP.giro180 + 1e-9);
+    }
+  });
+
+  it("B2: las amplitudes ampliadas siguen respetando los CAPS del panel", () => {
+    for (const s of specs) expect(s.amp).toBeLessThanOrEqual(CAP_AMP[s.patron] + 1e-9);
+  });
+});
+
+describe("T121 B3 — cajas destructibles (rojizas, 10 s, nunca dos seguidas)", () => {
+  const specs = layoutPared(20261106);
+
+  it("las filas pares 2-8 son destructibles; salida, cima e impares NO", () => {
+    for (const s of specs) {
+      const m = s.id.match(/^f(\d+)_/);
+      if (!m) {
+        expect(s.destructible ?? false).toBe(false); // salida y cima intactas
+        continue;
+      }
+      expect(s.destructible === true).toBe(esFilaDestructible(Number(m[1])));
+    }
+    expect(esFilaDestructible(2)).toBe(true);
+    expect(esFilaDestructible(8)).toBe(true);
+    expect(esFilaDestructible(1)).toBe(false);
+    expect(esFilaDestructible(9)).toBe(false);
+    expect(esFilaDestructible(0)).toBe(false);
+    expect(esFilaDestructible(10)).toBe(false);
+  });
+
+  it("NUNCA hay dos filas destructibles consecutivas (regla dura del jugador)", () => {
+    for (let r = 1; r < 9; r++) {
+      const fila = specs.filter((s) => s.id.startsWith(`f${r}_`) && s.destructible);
+      const arriba = specs.filter((s) => s.id.startsWith(`f${r + 1}_`) && s.destructible);
+      if (fila.length > 0) expect(arriba.length).toBe(0);
+    }
+  });
+
+  it("el receptor de rescate es el bloque INTACTO más cercano por debajo en columna", () => {
+    const bs = [
+      { id: "a", x: -1.3, y: 5 },
+      { id: "b", x: -1.3, y: 3.1 },
+      { id: "c", x: -1.3, y: 1.2, destruido: true },
+      { id: "d", x: 1.3, y: 2.5 },   // otra columna: fuera de ±1,7
+    ];
+    // cayendo desde y=4.2: el mejor debajo en columna es «b» (a está encima)
+    expect(bloqueReceptorId(bs, { x: -1.3, y: 4.2 })).toBe("b");
+    // destruido b → sin nadie en columna (c destruido, d otra columna)
+    const bs2 = bs.map((x) => (x.id === "b" ? { ...x, destruido: true } : x));
+    expect(bloqueReceptorId(bs2, { x: -1.3, y: 4.2 })).toBeNull();
+    // bloque a nivel del cuerpo (+0,2) también vale
+    expect(bloqueReceptorId(bs, { x: -1.3, y: 4.95 })).toBe("a");
+  });
+});
+
+describe("T121 B1 — presas salientes (brazos/piernas fuera de las cajas)", () => {
+  it("el offset local de presa SOBRESALE de la cara del cubo para cualquier profundidad", () => {
+    for (const d of [0.5, 0.4, 0.6]) {
+      expect(zLocalPresa(d)).toBeLessThan(-d / 2 - 0.05);
+      expect(zLocalPresa(d)).toBeCloseTo(-d / 2 - PRESA_SALIENTE, 12);
+    }
+  });
+});
+
+describe("T121 B4 — cuerda densa (22 tramos, estable)", () => {
+  it("CUERDA_SEG = 22 tramos (antes 7) y cabe en el pool de la escena (24/mitad)", () => {
+    expect(CUERDA_SEG).toBe(22);
+    expect(CUERDA_SEG / 2).toBeLessThanOrEqual(24);
+  });
+
+  it("el verlet con 22 tramos NO explota (900 pasos, comba real estable)", () => {
+    const a = v3(-1.3, 2.18, 0.01), b = v3(1.3, 2.18, 0.01);
+    const nodes: NodoCuerda[] = [];
+    const mid = v3(0, (a.y + b.y) / 2 - 0.35, (a.z + b.z) / 2 - 0.04);
+    for (let i = 0; i <= CUERDA_SEG; i++) {
+      const t = i / CUERDA_SEG;
+      const src = t < 0.5 ? a : mid, dst = t < 0.5 ? mid : b;
+      const u = t < 0.5 ? t * 2 : (t - 0.5) * 2;
+      const pos = v3(
+        src.x + (dst.x - src.x) * u,
+        src.y + (dst.y - src.y) * u - Math.sin(u * Math.PI) * 0.22,
+        src.z + (dst.z - src.z) * u - 0.04,
+      );
+      nodes.push({ pos, prev: { ...pos } });
+    }
+    for (let f = 0; f < 900; f++) pasoCuerdaVerlet(nodes, a, b, 1 / 60, 5.5 / CUERDA_SEG, 9.81, 0.975);
+    for (const nd of nodes) {
+      expect(Number.isFinite(nd.pos.x) && Number.isFinite(nd.pos.y) && Number.isFinite(nd.pos.z)).toBe(true);
+      expect(vLen(nd.pos)).toBeLessThan(6);
+    }
+  });
+});
+
+describe("T121 B5 — mochila-chicle: lanzamiento balístico", () => {
+  it("tirar hacia ABAJO dispara hacia ARRIBA (dirección invertida)", () => {
+    const v = velLanzamiento({ x: 0, y: 2 }, { x: 0, y: 0.6 }, GOMA_EXTRA_M);
+    expect(v.vy).toBeGreaterThan(0);
+    expect(v.vx).toBeCloseTo(0, 9);
+  });
+
+  it("la fuerza es proporcional al estiramiento y satura en LANZ_V_MAX", () => {
+    const origen = { x: 0, y: 2 }, puntero = { x: 0, y: 2 - GOMA_EXTRA_M };
+    const media = velLanzamiento(origen, puntero, GOMA_EXTRA_M / 2);
+    const full = velLanzamiento(origen, puntero, GOMA_EXTRA_M);
+    expect(full.vy).toBeGreaterThan(media.vy);
+    expect(full.vy).toBeLessThanOrEqual(LANZ_V_MAX + 1e-9);
+    expect(media.vy).toBeCloseTo(LANZ_V_MAX / 2, 1);
+  });
+
+  it("sin estiramiento no hay tiro (m=0)", () => {
+    const v = velLanzamiento({ x: 0, y: 2 }, { x: 0, y: 0.5 }, 0);
+    expect(v.vx).toBe(0);
+    expect(v.vy).toBe(0);
+  });
+
+  it("el alcance ~3 cuerpos: la subida balística ronda 3,6 m (3× el cuerpo)", () => {
+    const rise = (LANZ_V_MAX * LANZ_V_MAX) / (2 * 9.81);
+    expect(rise).toBeGreaterThan(3.2);
+    expect(rise).toBeLessThan(4.0);
+  });
+
+  it("en diagonal (abajo-izquierda) sale arriba-derecha con la misma norma", () => {
+    const v = velLanzamiento({ x: 0, y: 2 }, { x: -0.8, y: 0.6 }, GOMA_EXTRA_M);
+    expect(v.vx).toBeGreaterThan(0);
+    expect(v.vy).toBeGreaterThan(0);
+    expect(Math.hypot(v.vx, v.vy)).toBeCloseTo(LANZ_V_MAX, 6);
+  });
+
+  it("asistencia magnética: elige el anclaje más cercano dentro del radio", () => {
+    const holds = [
+      { id: "a", pos: v3(0, 5, 0) },
+      { id: "b", pos: v3(1, 5, 0) },
+      { id: "c", pos: v3(3, 5, 0) },
+    ];
+    expect(anclajeMasCercano({ x: 0.9, y: 5 }, holds, MAGNET_VUELO_M)?.id).toBe("b");
+    expect(anclajeMasCercano({ x: 2.9, y: 5 }, holds, 0.1)).toBeNull();
+  });
+});
+
+describe("T121 B3 — añicos deterministas", () => {
+  it("la misma semilla genera los mismos añicos, acotados y con salida hacia arriba", () => {
+    const a = velocidadesAnicos(1234, 12);
+    const b = velocidadesAnicos(1234, 12);
+    expect(a).toEqual(b);
+    expect(a.length).toBe(12);
+    for (const v of a) {
+      expect(Math.abs(v.vx)).toBeLessThanOrEqual(1.31);
+      expect(v.vy).toBeGreaterThan(1);
+      expect(v.vy).toBeLessThan(3.41);
+      expect(Math.abs(v.sx)).toBeLessThanOrEqual(3.51);
+    }
+    expect(velocidadesAnicos(999, 12)).not.toEqual(a);
+  });
+});
