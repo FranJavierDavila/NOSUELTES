@@ -101,7 +101,7 @@ import {
 } from "./paredAjuste"; // T119: panel de ajuste (modo dev)
 import { isTypingTarget } from "./devMode"; // T114: guard de campos de texto
 import {
-  desvioCabeza, maxEstiramiento, nudoValle, pasoLastreNudo, pasoRabietas, pasoRicachon,
+  CUERDA_COMBA_MAX, desvioCabeza, maxEstiramiento, nudoValle, pasoLastreNudo, pasoRabietas, pasoRicachon,
   rabietasInicio, ricachonReset, sacudidaRabieta, RABIETA_FATIGA_POR_S,
   type CuerpoRicachon, type EstadoRabietas,
 } from "./ricachonColgado"; // T122: ricachón de lastre colgado del valle (T86)
@@ -1034,6 +1034,10 @@ export class ParedNivel {
     this.simTime += dt;
     this.actualizaTransformaciones(dt);
 
+    // T86 — la cuerda (verlet + lastre + amarre deslizante) es SIMULACIÓN:
+    // avanza tick a tick con el resto del juego (determinista)
+    this.ropeFisica(dt);
+
     // pulsaciones A SACO (rescate colgado) — mismo camino que match.ts
     const intents = this.d.input.poll(dt);
     const mash: [number, number] = [0, 0];
@@ -1306,13 +1310,17 @@ export class ParedNivel {
     const nSeg = CUERDA_SEG;
     this.ropeNodes = [];
     this.nudoIdx = -1; // T86: el amarre renace con la cuerda
-    this.nudoHacia = -1;
-    this.nudoDesde = null;
+    this.nudoX = null;
     this.amarre = null;
-    const mid = v3((a.x + b.x) / 2, (a.y + b.y) / 2 - 0.35, (a.z + b.z) / 2);
+    const mid = v3(
+      (a.x + b.x) / 2,
+      Math.min(a.y, b.y) - Math.min(CUERDA_COMBA_MAX - 0.4, 3.0),
+      (a.z + b.z) / 2 - 0.04,
+    );
     for (let i = 0; i <= nSeg; i++) {
       const tt = i / nSeg;
-      // catenaria aproximada por dos mitades (A→medio, medio→B)
+      // T86 — catenaria por dos mitades SEMBRADA EN REGIMEN: A→fondo de la V
+      // del lastre→B (la cuerda nace YA combada: sin excavación de arranque)
       const src = tt < 0.5 ? a : mid;
       const dst = tt < 0.5 ? mid : b;
       const u = tt < 0.5 ? tt * 2 : (tt - 0.5) * 2;
@@ -1320,10 +1328,12 @@ export class ParedNivel {
       const pos = v3(
         src.x + (dst.x - src.x) * u,
         src.y + (dst.y - src.y) * u - sag,
-        src.z + (dst.z - src.z) * u - 0.04,
+        src.z + (dst.z - src.z) * u,
       );
       this.ropeNodes.push({ pos, prev: vClone(pos) });
     }
+    this.nudoIdx = nSeg >> 1; // el amarre nace en el fondo de la V
+    this.amarre = vClone(this.ropeNodes[this.nudoIdx].pos);
   }
 
   /** T86: punto de amarre del ricachón = la parte MÁS BAJA del arco de la
@@ -1340,61 +1350,76 @@ export class ParedNivel {
   }
 
   /** Posición actual del amarre (el nudo donde los pies van atados).
-   *  T86 — DESLIZAMIENTO POR ALTURA DE SHERPAS (petición literal: «si un
-   *  sherpa sube mucho en relación al otro la cuerda hará que el ricachón se
-   *  acerque al sherpa que se encuentra más abajo porque deslizaría por la
-   *  cuerda hasta la posición baja»): la diferencia de altura MANDA — cuando
-   *  un sherpa supera al otro por NUDO_ALT_DIFF_M, el nudo desliza tramo a
-   *  tramo hacia el lado del sherpa más bajo (interpolado sobre la cuerda: se
-   *  VE deslizar). Con alturas parecidas el nudo se queda en el centro.
-   *  Nunca pasa de 2 tramos antes del cabo: el lastre no se cuela al sherpa. */
-  private static NUDO_ALT_DIFF_M = 0.3;
-  private static NUDO_PASO_S = 0.34;   // segundos por tramo deslizado
-  private nudoIdx = -1;                // nodo amarre actual (−1 = sin inicializar)
-  private nudoDesde: V3 | null = null; // posición de partida del deslizamiento
-  private nudoHacia = -1;              // nodo destino del deslizamiento en curso
-  private nudoT = 0;                   // progreso 0..1 del deslizamiento
+   *  T86 — DESLIZAMIENTO POR EL ARCO (petición literal: «es preciso calcular
+   *  siempre la parte más baja del arco de la cuerda para situar en esa zona
+   *  colgado al Ricachón... si un sherpa sube mucho en relación al otro la
+   *  cuerda hará que el ricachón se acerque al sherpa que se encuentra más
+   *  abajo porque deslizaría por la cuerda hasta la posición baja»):
+   *  · el VALLE IDEAL de la catenaria se desplaza hacia el sherpa más bajo
+   *    proporcionalmente al desnivel (acotado — nunca se cuela en su cintura);
+   *  · el nudo DESLIZA en X hacia ese valle (velocidad limitada: se VE
+   *    deslizar por la cuerda) y su Y queda PEGADA a la superficie de la
+   *  cuerda en esa X (los tobillos jamás se separan de la cuerda);
+   *  · el lastre hunde el nodo más cercano al nudo: la V se forma DONDE
+   *    cuelga el ricachón y le sigue. */
+  private static NUDO_ALT_SHIFT = 0.22;  // fracción del vano por metro de desnivel
+  private static NUDO_SHIFT_MAX = 0.45;  // tope del desplazamiento (fracción del vano)
+  private static NUDO_SLIDE_MPS = 0.9;   // velocidad de deslizamiento del nudo (m/s)
+  private nudoX: number | null = null;   // X actual del nudo (desliza)
+  private nudoIdx = -1;                  // nodo más cercano al nudo (el lastre hunde este)
 
-  private actualizaAmarre(dt: number, a: V3, b: V3): V3 {
+  private actualizaAmarre(dt: number, a: V3, b: V3): void {
     const nds = this.ropeNodes;
-    if (nds.length < 3) return v3(0, Y_SALIDA - 0.5, Z_PRESA - 0.15);
-    if (this.nudoIdx < 0) this.nudoIdx = nds.length >> 1; // nace en el centro
-    const clampIdx = (i: number): number => Math.max(2, Math.min(nds.length - 3, i));
-    if (this.nudoHacia >= 0) {
-      // deslizamiento en curso: interpola a lo largo del tramo (sobre la cuerda)
-      this.nudoT = Math.min(1, this.nudoT + dt / ParedNivel.NUDO_PASO_S);
-      const k = this.nudoT * this.nudoT * (3 - 2 * this.nudoT); // smoothstep
-      const destino = nds[clampIdx(this.nudoHacia)].pos;
-      const desde = this.nudoDesde ?? nds[this.nudoIdx].pos;
-      if (this.nudoT >= 1) {
-        this.nudoIdx = clampIdx(this.nudoHacia);
-        this.nudoHacia = -1;
-        this.nudoDesde = null;
-        return vClone(destino);
-      }
-      return v3(desde.x + (destino.x - desde.x) * k, desde.y + (destino.y - desde.y) * k, desde.z + (destino.z - desde.z) * k);
+    if (nds.length < 3) { this.amarre = v3(0, Y_SALIDA - 0.5, Z_PRESA - 0.15); return; }
+    const xa = nds[0].pos.x, xb = nds[nds.length - 1].pos.x;
+    const span = xb - xa;
+    // valle IDEAL: centro del vano corregido por el desnivel (acotado)
+    const dif = a.y - b.y; // >0: A más alto → el valle se corre hacia B
+    const shift = Math.max(-ParedNivel.NUDO_SHIFT_MAX, Math.min(ParedNivel.NUDO_SHIFT_MAX, dif * ParedNivel.NUDO_ALT_SHIFT));
+    const xValle = (xa + xb) / 2 + shift * span;
+    if (this.nudoX === null) this.nudoX = (xa + xb) / 2;
+    // deslizamiento limitado hacia el valle ideal (se VE deslizar)
+    const dx = xValle - this.nudoX;
+    const paso = ParedNivel.NUDO_SLIDE_MPS * Math.max(1e-4, dt);
+    this.nudoX = Math.abs(dx) <= paso ? xValle : this.nudoX + Math.sign(dx) * paso;
+    // la Y del nudo = la superficie de la CUERDA en esa X (rama más baja)
+    const yCuerda = this.cuerdaYEnX(this.nudoX, this.amarre ? this.amarre.y : nds[nds.length >> 1].pos.y);
+    const zRef = nds[nds.length >> 1].pos.z;
+    this.amarre = v3(this.nudoX, yCuerda, zRef);
+    // el lastre cae en el nodo más cercano al nudo
+    let bd = Infinity;
+    this.nudoIdx = nds.length >> 1;
+    for (let i = 1; i < nds.length - 1; i++) {
+      const d = Math.abs(nds[i].pos.x - this.nudoX);
+      if (d < bd) { bd = d; this.nudoIdx = i; }
     }
-    // ¿un sherpa está claramente MÁS ARRIBA que el otro? el nudo se desplaza
-    // hacia el LADO del sherpa más bajo (la posición baja del arco)
-    const dif = a.y - b.y; // >0: A más alto → el nudo va hacia B (derecha)
-    if (dif > ParedNivel.NUDO_ALT_DIFF_M && this.nudoIdx < nds.length - 3) {
-      this.nudoHacia = this.nudoIdx + 1;
-      this.nudoDesde = vClone(nds[clampIdx(this.nudoIdx)].pos);
-      this.nudoT = 0;
-      return vClone(this.nudoDesde);
-    }
-    if (dif < -ParedNivel.NUDO_ALT_DIFF_M && this.nudoIdx > 2) {
-      this.nudoHacia = this.nudoIdx - 1;
-      this.nudoDesde = vClone(nds[clampIdx(this.nudoIdx)].pos);
-      this.nudoT = 0;
-      return vClone(this.nudoDesde);
-    }
-    return vClone(nds[clampIdx(this.nudoIdx)].pos);
   }
 
-  /** Cuerda visual: UN paso del verlet puro con los parámetros del pack y la
-   *  cuerda del panel (total = cuerdaMetros + 0,5 de holgura de dibujo). */
-  private ropeStep(dt: number): void {
+  /** Altura de la CUERDA (superficie del verlet) en la vertical x: el punto
+   *  MÁS BAJO de los tramos que cruzan esa x (el nudo cuelga de la rama
+   *  baja; nunca de un cruce por arriba). */
+  private cuerdaYEnX(x: number, fallback: number): number {
+    const nds = this.ropeNodes;
+    let best = fallback;
+    let bestY = Infinity;
+    for (let i = 0; i < nds.length - 1; i++) {
+      const x1 = nds[i].pos.x, x2 = nds[i + 1].pos.x;
+      if (Math.abs(x2 - x1) < 1e-6) continue;
+      const t = (x - x1) / (x2 - x1);
+      if (t < 0 || t > 1) continue;
+      const y = nds[i].pos.y + (nds[i + 1].pos.y - nds[i].pos.y) * t;
+      if (y < bestY) { bestY = y; best = y; }
+    }
+    return best;
+  }
+
+  /** T86 — FÍSICA DE LA CUERDA EN EL TICK DE SIMULACIÓN (determinista): el
+   *  amarre del ricachón es ESTADO DE JUEGO y debía vivir en el tick — en el
+   *  frame de render (que SwiftShader puede dejar a <1 fps) el amarre se
+   *  CONGELABA y el ricachón quedaba colgado de un punto fantasma. Orden:
+   *  verlet → decisión del amarre (índice) → lastre (hunde SU nodo + clamp de
+   *  comba) → el amarre se PEGA al nodo clampado (siempre en la cuerda). */
+  private ropeFisica(dt: number): void {
     const a = this.sherpas[0].waist();
     const b = this.sherpas[1].waist();
     if (this.ropeNodes.length < 3) return;
@@ -1402,13 +1427,13 @@ export class ParedNivel {
     const damp = this.d.data.tuning.rope.nodeDamping ?? 0.975;
     const segLen = (this.ajuste.cuerdaMetros + 0.5) / (this.ropeNodes.length - 1);
     pasoCuerdaVerlet(this.ropeNodes, a, b, dt, segLen, g, damp);
-    // T122 — LASTRE: el ricachón (atado por los pies al VALLE de la cuerda,
-    // T86) hunde la V — comba acotada y tramos que no se estiran (8 pasadas PBD).
-    // La V se forma EN EL AMARRE (nodo más cercano al punto suavizado): la
-    // cuerda cede donde cuelga el ricachón y desliza con él.
-    // T86 — el amarre desliza (UNA decisión por frame) y el lastre hunde SU nodo
-    this.amarre = this.actualizaAmarre(dt, a, b);
+    // el nudo desliza y la Y se pega a la cuerda POST-verlet; el lastre hunde
+    // SU nodo (la V nace bajo el ricachón) y el clamp de comba manda en todo
+    this.actualizaAmarre(dt, a, b);
     pasoLastreNudo(this.ropeNodes, segLen, dt, a, b, Math.min(a.y, b.y), undefined, this.nudoIdx);
+    // re-pega la Y del nudo a la cuerda ya clampada (los tobillos no se van)
+    const yClamp = this.cuerdaYEnX(this.nudoX ?? (a.x + b.x) / 2, this.amarre ? this.amarre.y : a.y);
+    this.amarre = v3(this.nudoX ?? (a.x + b.x) / 2, yClamp, this.ropeNodes[this.ropeNodes.length >> 1].pos.z);
   }
 
   private frame = (ms: number): void => {
@@ -1430,8 +1455,7 @@ export class ParedNivel {
 
   private renderTick(frameDt: number): void {
     const s = this.d.scene;
-    // cuerda visual
-    this.ropeStep(frameDt);
+    // cuerda visual: SOLO DIBUJO — la física vive en ropeFisica (simTick, T86)
     const n = this.ropeNodes.length;
     const mid = Math.floor(n / 2);
     s.syncRope(this.ropeNodes.slice(0, mid + 1).map((nd) => nd.pos), this.ropeNodes.slice(mid).map((nd) => nd.pos));
