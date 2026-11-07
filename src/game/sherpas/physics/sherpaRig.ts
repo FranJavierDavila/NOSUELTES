@@ -62,6 +62,12 @@ const DAMP_FALL = 0.998;        // factor verlet por paso en caída libre
 const TRAVEL_SPEED = 3.0;       // velocidad del viaje de extremidad (m/s)
 const TRAVEL_MIN_S = 0.2;
 const TRAVEL_MAX_S = 0.55;
+/** T89 — IMÁN del vuelo en DESCENSO: alcance extra SOLO de manos (×1,35) y
+ *  viaje relámpago (0,1 s): la presa que pasa al alcance se AGARRA, no se
+ *  escapa (petición del jugador: «debe agarrarse para no caer… anclarnos en
+ *  la parte de arriba del movimiento»). Los pies nunca reciben el imán. */
+const IMAN_MANOS_VUELO = 1.35;
+const TRAVEL_RAPIDO_S = 0.1;
 const LIMB_FOLLOW = 12;         // ganancia del pendejo cosmético (1/s)
 // Huesos cosméticos IGUALADOS al alcance real de juego (fix "escaladores de
 // goma"): colgado, el hombro queda a 0,87 m de la presa y el pie de apoyo a
@@ -331,12 +337,8 @@ export class SherpaRig {
    *  El match valida requisitos y lo desactiva si se pierden los agarres. */
   belaying = false;
   private belayCatchDropM = 2.9;
-  /** T88 — CHICLE DEL ANTEBRAZO: longitud de reposo del BRAZO (hombro→codo),
-   *  capturada del bind en el constructor. Con la goma tirando, el CODO se
-   *  repiña a ESA distancia del hombro (el hueso del brazo no cambia ni de
-   *  escala ni de posición) y SOLO el antebrazo se estira como goma hasta la
-   *  mano clavada a su presa (petición literal del jugador). */
-  private restUarm = { L: 0.46, R: 0.46 };
+  // T89 — el chicle del antebrazo vive en fillSkeleton (codoGoma) y en la
+  // escala de la pieza del puppet: nada de repiñes de partículas aquí.
   /** IMPULSO del compañero (mini-ascensión cinemática): ventana activa (reloj
    *  INTERNO del rig, decrece en step) para el bono de alcance + propina. */
   private impulseWindowT = 0;
@@ -384,12 +386,6 @@ export class SherpaRig {
       tremor: this.tremorRecord,
     };
     this.seedAt(startHolds);
-    // T88 — la pose sembrada ES el bind: de ahí salen los largos de reposo
-    // del brazo (hombro→codo) que el chicle del antebrazo respeta.
-    this.restUarm = {
-      L: vLen(vSub(this.rig.particles[P.elbowL].pos, this.rig.particles[P.shL].pos)),
-      R: vLen(vSub(this.rig.particles[P.elbowR].pos, this.rig.particles[P.shR].pos)),
-    };
   }
 
   get gripTuning(): SherpaGripTuning { return this.deps.tuning; }
@@ -559,7 +555,19 @@ export class SherpaRig {
    *  alcanzable (mano o pie) por DEBAJO de la cintura (caída: anclarse a lo
    *  primero que pasa al alcance). Solo presas libres dentro de canReach —
    *  nunca una extremidad fuera del anclaje. false si no hay nada. */
-  autoGripVuelo(mode: "alto" | "bajo"): boolean {
+  /** T89 — `magnetico` (DESCENSO del vuelo, petición del jugador: «debe
+   *  agarrarse para no caer… anclarnos en la parte de arriba»): el alcance de
+   *  las MANOS se multiplica ×IMAN_MANOS_VUELO (imán de agarre) y el viaje
+   *  de la mano elegida es RÁPIDO para que la presa no se escape en la caída.
+   *  Los pies JAMÁS reciben el imán (dictado: «solo se anclarán las manos»). */
+  autoGripVuelo(mode: "alto" | "bajo", magnetico = false): boolean {
+    const iman = (limb: Limb): number =>
+      magnetico && isHand(limb) ? IMAN_MANOS_VUELO : 1;
+    const alcanzable = (limb: Limb, pos: V3): boolean => {
+      const maxLen = this.fatiguedReach(limb) * iman(limb);
+      if (vLen(vSub(pos, this.rig.particles[CHAIN_ROOT[limb]].pos)) <= maxLen) return true;
+      return vLen(vSub(pos, this.limbPt[limb])) <= maxLen;
+    };
     const cintura = this.rig.particles[P.pelvisC].pos;
     // T86 — "alto": primero el ANCLAJE más alto alcanzable por CUALQUIER mano
     // libre, y después la MANO MÁS PRÓXIMA a ese anclaje (petición del jugador:
@@ -576,7 +584,7 @@ export class SherpaRig {
           if (this.dragging === limb) continue;
           const st = this.states.get(limb)!;
           if (st.anchored || st.traveling || st.lockedFor > 0) continue;
-          if (this.canReach(limb, hold.pos)) { reached = true; break; }
+          if (alcanzable(limb, hold.pos)) { reached = true; break; }
         }
         if (reached && hold.pos.y > bestY) { bestY = hold.pos.y; bestHold = hold; }
       }
@@ -592,7 +600,7 @@ export class SherpaRig {
       }
       if (!bestLimb) return false;
       this.gripWanted[bestLimb] = true;
-      this.startTravel(bestLimb, bestHold);
+      this.startTravel(bestLimb, bestHold, magnetico);
       return true;
     }
     let bestLimb: Limb | null = null;
@@ -875,15 +883,18 @@ export class SherpaRig {
   dragMagnetId(): string | null { return this.dragHold?.id ?? null; }
   dragMagnetPos(): V3 | null { return this.dragHold ? vClone(this.dragHold.pos) : null; }
 
-  /** Viaje determinista: la extremidad SIEMPRE llega (control total del jugador). */
-  private startTravel(limb: Limb, hold: HoldInstance): void {
+  /** Viaje determinista: la extremidad SIEMPRE llega (control total del jugador).
+   *  T89 — `rapido` (imán del descenso): duración mínima 0,1 s. */
+  private startTravel(limb: Limb, hold: HoldInstance, rapido = false): void {
     const st = this.states.get(limb)!;
     const start = vClone(this.limbPt[limb]);
     const mid = vScale(vAdd(start, hold.pos), 0.5);
     const dist = vLen(vSub(hold.pos, start));
     // arco hacia fuera de la pared: se ve "a través del aire", nunca a través de roca.
     const ctrl = v3(mid.x, mid.y + Math.min(0.1, dist * 0.15), mid.z - Math.min(0.35, 0.1 + dist * 0.25));
-    const dur = Math.min(TRAVEL_MAX_S, Math.max(Math.max(TRAVEL_MIN_S, this.deps.tuning.attachSeconds), dist / TRAVEL_SPEED));
+    const dur = rapido
+      ? TRAVEL_RAPIDO_S
+      : Math.min(TRAVEL_MAX_S, Math.max(Math.max(TRAVEL_MIN_S, this.deps.tuning.attachSeconds), dist / TRAVEL_SPEED));
     this.travel[limb] = { start, ctrl, target: vClone(hold.pos), dur, t: 0 };
     st.traveling = true;
     st.travelTime = 0;
@@ -1282,26 +1293,6 @@ export class SherpaRig {
 
     result.maxSpeed = vAbs / dt;
     result.com = this.com();
-    // T88 — CHICLE DEL ANTEBRAZO: con la goma tirando, al final del tick el
-    // CODO vuelve a su distancia de reposo del hombro (el brazo queda INTACTO
-    // en escala y posición) y todo el estiramiento lo absorbe el antebrazo
-    // (codo→mano > reposo), cuyas piezas se dibujan entre partículas y por
-    // tanto se ven ELÁSTICAS. pos y prev juntos: el repiñe no inyecta
-    // velocidad (petición: «sin modificar los huesos del brazo… el sherpa
-    // parecerá un chicle al estirar los antebrazos»).
-    if (this.gomaEstirando) {
-      for (const lado of [["L", P.shL, P.elbowL], ["R", P.shR, P.elbowR]] as const) {
-        const [k, iSh, iEl] = lado;
-        const sh = this.rig.particles[iSh];
-        const el = this.rig.particles[iEl];
-        const d = vSub(el.pos, sh.pos);
-        const len = vLen(d);
-        if (len < 1e-5) continue;
-        const repino = vScale(d, this.restUarm[k] / len);
-        el.pos = vAdd(sh.pos, repino);
-        el.prev = vAdd(el.prev, vSub(el.pos, vAdd(sh.pos, d))); // acompaña el mismo desplazamiento
-      }
-    }
     return {
       result, released, gripped,
       slippedByTwoHands: this.slippedByTwoHands, fartGained,
@@ -1616,21 +1607,38 @@ export class SherpaRig {
       // Techo duro del dibujo: la punta dibujada nunca supera huesos × STRETCH_HARD
       // desde su raíz (garantía anti-goma incluso en configuraciones patológicas;
       // la física de agarre sigue en limbPt exacto).
+      // T89 — EXCEPCIÓN del dictado (5ª vez que lo pide el jugador): con la
+      // goma del lanzamiento tirando, una MANO anclada es un CLAVO en su
+      // presa: la punta dibujada ES limbPt exacto — NUNCA se acota, y el
+      // brazo se alarga para seguir alcanzándola mientras el cuerpo se hunde.
+      const anclada = this.states.get(limb)?.anchored ?? false;
+      const clavo = this.gomaEstirando && isHand(limb) && anclada;
       const rootS = vAdd(body.pos, ROOT_OFFSET[limb]);
       let tip = this.limbPt[limb];
-      const dTip = vLen(vSub(tip, rootS));
-      // T86 — CHICLE: con la goma estirada los BRAZOS son elásticos (la mano
-      // vive en la presa y el brazo crece); el tope óseo sigue para pies.
-      const hardMax = isHand(limb) && this.gomaEstirando
-        ? Math.max(this.boneLen(limb) * STRETCH_HARD, dTip)
-        : this.boneLen(limb) * STRETCH_HARD;
-      if (dTip > hardMax) tip = vAdd(rootS, vScale(vSub(tip, rootS), hardMax / dTip));
+      if (!clavo) {
+        const dTip = vLen(vSub(tip, rootS));
+        const hardMax = this.boneLen(limb) * STRETCH_HARD;
+        if (dTip > hardMax) tip = vAdd(rootS, vScale(vSub(tip, rootS), hardMax / dTip));
+      }
       drawnTip[limb] = tip;
       set(i, tip);
     }
     // codos (afuera y separados de la pared) y rodillas (hacia la pared).
-    set(P.elbowL, ik(shL, drawnTip.hand_l, ARM.upper, ARM.fore, v3(-0.85, -0.3, -0.35)));
-    set(P.elbowR, ik(shR, drawnTip.hand_r, ARM.upper, ARM.fore, v3(0.85, -0.3, -0.35)));
+    // T89 — GOMA DEL ANTEBRAZO (el dibujo que el jugador trazó en rojo):
+    // mientras la mano clavada quede fuera del alcance natural, el CODO se
+    // coloca en la línea hombro→mano a la longitud EXACTA del hueso superior
+    // (el brazo no cambia de escala ni se desplaza de su sitio) y TODO el
+    // estiramiento lo absorbe el antebrazo (codo→mano > reposo): el sherpa
+    // parece un chicle con las manos soldadas a las presas.
+    const codoGoma = (S: V3, H: V3, upper: number, fore: number, bend: V3): V3 => {
+      const delta = vSub(H, S);
+      const d0 = vLen(delta);
+      if (d0 <= (upper + fore) * 0.995) return ik(S, H, upper, fore, bend); // pose normal
+      const dir = vScale(delta, 1 / d0);
+      return vAdd(S, vScale(dir, upper)); // codo en línea, hueso superior intacto
+    };
+    set(P.elbowL, codoGoma(shL, drawnTip.hand_l, ARM.upper, ARM.fore, v3(-0.85, -0.3, -0.35)));
+    set(P.elbowR, codoGoma(shR, drawnTip.hand_r, ARM.upper, ARM.fore, v3(0.85, -0.3, -0.35)));
     set(P.kneeL, ik(hipL, drawnTip.foot_l, LEG.thigh, LEG.shin, v3(-0.08, 0.22, 0.97)));
     set(P.kneeR, ik(hipR, drawnTip.foot_r, LEG.thigh, LEG.shin, v3(0.08, 0.22, 0.97)));
   }

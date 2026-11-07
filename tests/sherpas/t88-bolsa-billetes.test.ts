@@ -19,7 +19,7 @@ import { join } from "node:path";
 import { mulberry32 } from "../../src/game/sherpas/core/rng";
 import {
   sacudidaBilletes, pasoBilletes, billeteCogible, billetesVivos,
-  BILLETES_MIN, BILLETES_MAX, BILLETE_DINERO, BILLETE_SUBIDA_S, BILLETE_RADIO_COGIDA,
+  BILLETES_MIN, BILLETES_MAX, BILLETE_DINERO, BILLETE_RADIO_COGIDA,
   type ManoLibre,
 } from "../../src/game/sherpas/gameplay/billetesAire";
 import {
@@ -29,6 +29,7 @@ import { v3 } from "../../src/game/physics/pbd/math";
 
 const RIG = join(__dirname, "../../src/game/sherpas/physics/sherpaRig.ts");
 const NIVEL = join(__dirname, "../../src/game/sherpas/gameplay/paredNivel.ts");
+const PUPPET = join(__dirname, "../../src/game/sherpas/presentation/sherpaPuppetFactory.ts");
 
 describe("T88 · sacudida de la bolsa → billetes", () => {
   it("suelta entre 3 y 6 billetes (petición literal), con fases distintas", () => {
@@ -57,24 +58,26 @@ describe("T88 · sacudida de la bolsa → billetes", () => {
     expect(oscilo).toBeGreaterThan(5); // NO sube en línea recta
   });
 
-  it("tras la corriente planean hacia abajo y mueren por vida o suelo", () => {
+  it("T89: suben SIN PARAR hasta el techo de pantalla y mueren al cruzarlo", () => {
     const { billetes } = sacudidaBilletes(mulberry32(11), 1, v3(0, 2, 0));
-    const yApejo = (() => {
-      let yMax = -99;
-      for (let i = 0; i < 90; i++) { pasoBilletes(billetes, 1 / 30, -6); yMax = Math.max(yMax, billetes[0].pos.y); }
-      return yMax;
-    })();
-    // sigue vivo tras la subida (2,4 s < 3 s muestreados)
-    expect(billetes[0].vivo).toBe(true);
-    // tras la corriente CAE
-    let bajo = false;
-    for (let i = 0; i < 240; i++) {
-      pasoBilletes(billetes, 1 / 30, 1.5); // suelo a 1,5: caen hasta morir
-      if (yApejo > 2 && billetes[0].pos.y < yApejo - 0.5) bajo = true;
-      if (!billetes[0].vivo) break;
+    const b = billetes[0];
+    let yMax = -99;
+    for (let i = 0; i < 600 && b.vivo; i++) {
+      pasoBilletes(billetes, 1 / 30, -6, 9); // techo de pantalla a y=9
+      yMax = Math.max(yMax, b.pos.y);
     }
-    expect(bajo || !billetes[0].vivo).toBe(true);
-    expect(yApejo).toBeGreaterThan(2.5); // alcanzó altura real (cogible en subida)
+    expect(b.vivo).toBe(false);                 // desapareció
+    expect(yMax).toBeGreaterThan(8.4);          // cruzó el techo por ARRIBA
+    expect(yMax).toBeLessThan(9.6);             // apenas lo cruzó (sale en pantalla alta)
+  });
+
+  it("T89: los billetes DIVERGEN (x de dos billetes se separa con el tiempo)", () => {
+    const { billetes } = sacudidaBilletes(mulberry32(5), 1, v3(0, 2, 0));
+    const a = billetes[0], c = billetes[1 % billetes.length];
+    const x0 = a.pos.x - c.pos.x;
+    for (let i = 0; i < 90; i++) pasoBilletes(billetes, 1 / 30, -6, 99);
+    const x1 = a.pos.x - c.pos.x;
+    expect(Math.abs(x1 - x0)).toBeGreaterThan(0.35); // trayectorias distintas
   });
 });
 
@@ -136,27 +139,29 @@ describe("T88 · lanzamiento del DOBLE de altura y DOBLE recorrido", () => {
 });
 
 describe("T88 · chicle del antebrazo (brazo intacto)", () => {
-  it("el rig captura los largos de reposo del brazo al nacer", () => {
+  it("T89 chicle: fillSkeleton dibuja la mano CLAVADA (sin techo) y el codo a reposo del hombro", () => {
     const src = readFileSync(RIG, "utf8");
-    expect(src).toContain("restUarm = {");
-    expect(src).toContain("this.restUarm = {");
-  });
-
-  it("con gomaEstirando el CODO se repiña a su largo de reposo al final del step", () => {
-    const src = readFileSync(RIG, "utf8");
-    const i = src.indexOf("CHICLE DEL ANTEBRAZO: con la goma tirando");
+    const i = src.indexOf("GOMA DEL ANTEBRAZO (el dibujo que el jugador trazó en rojo)");
     expect(i).toBeGreaterThan(0);
-    const bloque = src.slice(i, i + 1700);
-    expect(bloque).toContain("if (this.gomaEstirando)");
-    expect(bloque).toContain("this.restUarm[k] / len");
-    expect(bloque.indexOf("return {")).toBeGreaterThan(0); // va antes del retorno
+    const bloque = src.slice(src.indexOf("const clavo = this.gomaEstirando"), src.indexOf("set(P.kneeL"));
+    expect(bloque).toContain("const clavo = this.gomaEstirando && isHand(limb) && anclada");
+    expect(bloque).toContain("if (!clavo) {");                       // el clavo NUNCA se acota
+    expect(bloque).toContain("codoGoma");                            // codo del T89
+    expect(bloque).toContain("return vAdd(S, vScale(dir, upper))");  // hueso superior EXACTO en línea
   });
 
-  it("el repiñe no inyecta velocidad (pos y prev se desplazan JUNTOS)", () => {
+  it("T89 chicle: la PIEZA del antebrazo se ESCALA a lo largo del hueso (puppet)", () => {
+    const src = readFileSync(PUPPET, "utf8");
+    expect(src).toContain("pieza_antebrazo");            // SOLO antebrazos elásticos
+    expect(src).toContain("node.scaling.set(base[0]");   // escala por eje largo
+    expect(src).toContain("Math.min(9,");                // tope de seguridad
+  });
+
+  it("T89 imán del descenso: alcance ×1,35 SOLO manos y viaje relámpago", () => {
     const src = readFileSync(RIG, "utf8");
-    const i = src.indexOf("CHICLE DEL ANTEBRAZO: con la goma tirando");
-    const bloque = src.slice(i, i + 1700);
-    expect(bloque).toContain("el.prev =");
+    expect(src).toContain("const IMAN_MANOS_VUELO = 1.35;");
+    expect(src).toContain("magnetico && isHand(limb) ? IMAN_MANOS_VUELO : 1");
+    expect(src).toContain("const TRAVEL_RAPIDO_S = 0.1;");
   });
 
   it("la bolsa es el nuevo decorado: fuera spawnRichMan, dentro la bolsa + billetes", () => {
@@ -182,7 +187,7 @@ describe("T88 · chicle del antebrazo (brazo intacto)", () => {
 describe("T88 · el agarre automático en vuelo sigue siendo SOLO de manos", () => {
   it("autoGripVuelo('alto') itera EXCLUSIVAMENTE hand_l/hand_r (nunca pies)", () => {
     const src = readFileSync(RIG, "utf8");
-    const i = src.indexOf('autoGripVuelo(mode: "alto" | "bajo")');
+    const i = src.indexOf('autoGripVuelo(mode: "alto" | "bajo", magnetico = false)');
     expect(i).toBeGreaterThan(0);
     const alto = src.slice(i, src.indexOf("let bestLimb: Limb | null = null;", i));
     expect(alto).toContain('"hand_l", "hand_r"');

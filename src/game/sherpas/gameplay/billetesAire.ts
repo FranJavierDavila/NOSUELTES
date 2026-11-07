@@ -19,23 +19,24 @@ export const BILLETES_MAX = 6;
 export const BILLETE_DINERO = 10;
 /** Radio de cogida con la mano libre (m) — generoso: es un premio, no un reto. */
 export const BILLETE_RADIO_COGIDA = 0.75;
-/** Tiempo que el billete SUBE empujado por la corriente (s): en ese tramo el
- *  sherpa puede alcanzarlo (sube más lento que un lanzamiento, es papel). */
-export const BILLETE_SUBIDA_S = 2.4;
-/** Velocidad de subida por la corriente (m/s) con oscilación lateral. */
-export const BILLETE_SUBIDA_MPS = 1.5;
-/** Velocidad lateral de la oscilación (m/s) y frecuencia (rad/s): el papel
- *  «mariposea» — sube en S, jamás en línea recta. */
-export const BILLETE_OSC_MPS = 0.55;
+/** T89 (dictado): los billetes SUBEN sin parar hasta desaparecer por la parte
+ *  alta de la PANTALLA (techoY lo da el nivel) — el final del vuelo es salir
+ *  por arriba, no un temporizador. Vida de seguridad muy larga (14 s). */
+export const BILLETE_VIDA_S = 14.0;
+/** Velocidad de subida por la corriente (m/s): papel empujado, alcanzable. */
+export const BILLETE_SUBIDA_MPS = 1.45;
+/** Deriva propia de cada billete (m/s): TODOS suben con movimientos distintos
+ *  que DIVERGEN (dictado: «suben todos con movimientos diferentes»). */
+export const BILLETE_DERIVA_MPS = 0.7;
+/** Velocidad lateral del aleteo (m/s) y frecuencia (rad/s): agitado por el
+ *  viento «como hojas de un árbol» (dictado). */
+export const BILLETE_OSC_MPS = 0.5;
 export const BILLETE_OSC_OMEGA = 3.1;
-/** Caída en línea descendente tras la corriente (m/s) y vida total (s). */
-export const BILLETE_CAIDA_MPS = 0.9;
-export const BILLETE_VIDA_S = 7.0;
 
 export interface Billete {
   id: number;
   pos: V3;
-  /** Velocidad base (la corriente); el vaivén va aparte, por fase. */
+  /** Corriente propia: subida + deriva lateral de ESTE billete (divergen). */
   vel: V3;
   /** Fase propia del vaivén (cada billete mariposea distinto). */
   fase: number;
@@ -57,8 +58,14 @@ export function sacudidaBilletes(
   for (let i = 0; i < n; i++) {
     billetes.push({
       id: id++,
-      pos: v3(origen.x + (rng() - 0.5) * 0.24, origen.y + 0.12 + rng() * 0.2, origen.z + (rng() - 0.5) * 0.2),
-      vel: v3(0, BILLETE_SUBIDA_MPS * (0.85 + rng() * 0.35), 0),
+      // nacen en la BOCA del saco (justo bajo el amarre que ata el cuello)
+      pos: v3(origen.x + (rng() - 0.5) * 0.16, origen.y - 0.05 - rng() * 0.12, origen.z + (rng() - 0.5) * 0.14),
+      // corriente propia: sube y DIVERGE (cada billete con su deriva)
+      vel: v3(
+        (rng() - 0.5) * 2 * BILLETE_DERIVA_MPS,
+        BILLETE_SUBIDA_MPS * (0.8 + rng() * 0.45),
+        (rng() - 0.5) * BILLETE_DERIVA_MPS * 0.6,
+      ),
       fase: rng() * Math.PI * 2,
       t: 0,
       vivo: true,
@@ -67,32 +74,25 @@ export function sacudidaBilletes(
   return { billetes, idSiguiente: id };
 }
 
-/** Paso de física de papel: sube con vaivén sinusoidal mientras dura la
- *  corriente (t < SUBIDA_S), luego planea hacia abajo; muere al agotar vida
- *  o al caer bajo el suelo. Determinista (sin rng: el vaivén es sin()). */
+/** Paso de física de papel (T89): SUBE sin parar con su corriente propia +
+ *  aleteo sinusoidal de hoja (x/z con fase propia: todos distintos y
+ *  divergentes) hasta cruzar `techoY` (la parte alta de la PANTALLA, lo pasa
+ *  el nivel cada tick) — ahí desaparece. También muere por vida de seguridad
+ *  o tocando el suelo. Determinista (el aleteo es sin()). */
 export function pasoBilletes(
-  lista: Billete[], dt: number, floorY: number,
+  lista: Billete[], dt: number, floorY: number, techoY: number,
 ): void {
   for (const b of lista) {
     if (!b.vivo) continue;
     b.t += dt;
-    if (b.t <= BILLETE_SUBIDA_S) {
-      // corriente ascendente: sube y mariposea (el vaivén NO altera la subida)
-      b.pos = v3(
-        b.pos.x + Math.sin(b.t * BILLETE_OSC_OMEGA + b.fase) * BILLETE_OSC_MPS * dt,
-        b.pos.y + b.vel.y * dt,
-        b.pos.z + Math.cos(b.t * BILLETE_OSC_OMEGA * 0.83 + b.fase) * BILLETE_OSC_MPS * 0.5 * dt,
-      );
-    } else {
-      // corriente perdida: planea caótico hacia abajo (papel)
-      const cae = -BILLETE_CAIDA_MPS * Math.min(1, (b.t - BILLETE_SUBIDA_S) * 2);
-      b.pos = v3(
-        b.pos.x + Math.sin(b.t * BILLETE_OSC_OMEGA * 1.4 + b.fase) * BILLETE_OSC_MPS * 0.7 * dt,
-        b.pos.y + cae * dt,
-        b.pos.z,
-      );
-    }
-    if (b.t >= BILLETE_VIDA_S || b.pos.y <= floorY + 0.05) b.vivo = false;
+    // la corriente se afloja en lo alto (el papel casi flota al salir)
+    const decay = Math.max(0.55, 1 - Math.max(0, b.pos.y - floorY - 6) * 0.04);
+    b.pos = v3(
+      b.pos.x + (b.vel.x + Math.sin(b.t * BILLETE_OSC_OMEGA + b.fase) * BILLETE_OSC_MPS) * dt,
+      b.pos.y + b.vel.y * decay * dt,
+      b.pos.z + (b.vel.z + Math.cos(b.t * BILLETE_OSC_OMEGA * 0.83 + b.fase) * BILLETE_OSC_MPS * 0.5) * dt,
+    );
+    if (b.pos.y > techoY || b.t >= BILLETE_VIDA_S || b.pos.y <= floorY + 0.05) b.vivo = false;
   }
 }
 

@@ -626,6 +626,11 @@ export class ParedNivel {
   private billetesCogidos: [number, number] = [0, 0];
   // T88 — badge de muelles sobre cada mochila (icono + numerito disponible)
   private elMuelleBadge: [HTMLElement | null, HTMLElement | null] = [null, null];
+  // T89 — giro de la bolsa al deslizar + ESTRELLA DE ORO al coger billete
+  private bolsaPrevX = 0;
+  private bolsaYaw = 0;
+  private elEstrella: [HTMLElement | null, HTMLElement | null] = [null, null];
+  private estrellaHasta = [0, 0];
   // HUD del interior de la mochila, la barra/flecha de la goma y los avisos
   private elMochilaWin: HTMLElement | null = null;
   private elGoma: HTMLElement | null = null;
@@ -1107,7 +1112,10 @@ export class ParedNivel {
       const cintura = rig.rig.particles[P.pelvisC];
       const vy = (cintura.pos.y - cintura.prev.y) / Math.max(1e-4, dt);
       // T87 — puedeAgarrarVueloAlto: tiempo mínimo + vy ≤ 0 (ápice real).
-      if (puedeAgarrarVueloAlto(this.vueloT[pi], vy)) rig.autoGripVuelo("alto");
+      // T89 — IMÁN en el DESCENSO (vy < −1 m/s): alcance ×1,35 SOLO manos y
+      // viaje relámpago — «debe agarrarse para no caer, el propósito es
+      // anclarnos en la parte de arriba del movimiento» (dictado del jugador).
+      if (puedeAgarrarVueloAlto(this.vueloT[pi], vy)) rig.autoGripVuelo("alto", vy < -1);
     }
 
     // T123 — CAÍDA REAL con AUTO-ANCLAJE: en plena caída (y también colgado
@@ -1162,7 +1170,9 @@ export class ParedNivel {
     // sherpa que lo pille (la detección usa la partícula de la mano: la
     // física ya corrió este tick). Los billetes en subida SON cogibles
     // (petición: «que permita a los sherpas alcanzarlo en su ascenso»).
-    pasoBilletes(this.billetes, dt, -6);
+    // T89 — techo de PANTALLA: los billetes desaparecen por la parte alta
+    const techoPant = Math.max(this.sherpas[0].waist().y, this.sherpas[1].waist().y) + 6.5;
+    pasoBilletes(this.billetes, dt, -6, techoPant);
     this.aseguraMallasBilletes();
     const manos: ManoLibre[] = [];
     for (const pi of [0, 1] as const) {
@@ -1183,6 +1193,8 @@ export class ParedNivel {
         this.aseguraMallasBilletes();
         this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.dinero.cogido",
           `¡+${BILLETE_DINERO} $! Billete para el Sherpa ${cogida.pi + 1}`));
+        // T89 — ESTRELLA DE ORO girando sobre SU mochila: el contenido cambió
+        this.estrellaHasta[cogida.pi] = this.simTime + 3.0;
         if (this.mochilaAbierta !== null) this.refrescaMochila(this.mochilaAbierta);
       }
     }
@@ -1594,10 +1606,16 @@ export class ParedNivel {
     // (vaivén suave: la bolsa es blanda y el viento de la pared la mueve)
     if (this.bolsaNodo) {
       const pto = this.amarre ?? this.nudoCuerda();
+      // T89 — giro al DESLIZAR: el saco gira en torno a su cuello según la
+      // velocidad del amarre (que corre siempre hacia la parte más baja de
+      // la cuerda) y vaivén pendular suave de papel/bolsa.
+      const vx = pto.x - this.bolsaPrevX;
+      this.bolsaPrevX = pto.x;
+      this.bolsaYaw += (Math.max(-0.7, Math.min(0.7, vx * 9)) - this.bolsaYaw) * 0.12;
       this.bolsaNodo.position.set(pto.x, pto.y, pto.z);
       if (this.bolsaLista) {
-        const giro = Math.sin(this.simTime * 1.7) * 0.09 + this.rabietaAmp * Math.sin(this.simTime * 21) * 0.35;
-        this.bolsaNodo.rotation.y = giro;
+        this.bolsaNodo.rotation.y = this.bolsaYaw + Math.sin(this.simTime * 1.7) * 0.08
+          + this.rabietaAmp * Math.sin(this.simTime * 21) * 0.35;
         this.bolsaNodo.rotation.z = Math.sin(this.simTime * 1.3 + 0.7) * 0.05;
       }
     }
@@ -1816,22 +1834,56 @@ export class ParedNivel {
       root.appendChild(el);
       this.elMuelleBadge[pi] = el;
     }
+    // T89 — ESTRELLA DE ORO giratoria sobre la mochila (el contenido cambió:
+    // el sherpa ha cogido un billete). CSS keyframes inyectados una vez.
+    if (!document.getElementById("pared-estrella-kf")) {
+      const kf = document.createElement("style");
+      kf.id = "pared-estrella-kf";
+      kf.textContent = "@keyframes paredGirar{to{transform:rotate(360deg)}}";
+      document.head.appendChild(kf);
+    }
+    for (const pi of [0, 1] as const) {
+      const st = document.createElement("div");
+      st.id = `pared-estrella-${pi}`;
+      st.setAttribute("style",
+        "position:absolute;display:none;pointer-events:none;z-index:26;transform:translate(-50%,-130%);" +
+        "filter:drop-shadow(0 0 6px rgba(232,193,90,.9));");
+      st.innerHTML = '<span style="display:block;width:34px;height:34px;animation:paredGirar 1.1s linear infinite">' +
+        '<svg viewBox="0 0 24 24" width="34" height="34"><path d="M12 2l2.9 6.3 6.9.7-5.2 4.6 1.5 6.8L12 16.9 5.9 20.4l1.5-6.8L2.2 9l6.9-.7z" ' +
+        'fill="#e8c15a" stroke="#a9821f" stroke-width="1"/></svg></span>';
+      root.appendChild(st);
+      this.elEstrella[pi] = st;
+    }
   }
 
-  /** Repone posición/valor de los badges cada frame (siguen a cada mochila). */
+  /** Repone posición/valor de los badges cada frame (siguen a cada mochila).
+   *  T89 — SIEMPRE visibles (dictado: «el icono del muelle con el número no
+   *  se ve fuera»): mismo camino que la ventana — backpackScreenPx y, si la
+   *  pieza «mochila» del GLB aún no proyecta, la proyección del pecho. */
   private posicionaMuelleBadges(): void {
     const cv = this.d.scene.engine.getRenderingCanvas();
     if (!cv) return;
     for (const pi of [0, 1] as const) {
       const el = this.elMuelleBadge[pi];
       if (!el) continue;
-      const bp = this.d.scene.backpackScreenPx(pi);
+      const bp = this.d.scene.backpackScreenPx(pi) ?? this.proyeccionPecho(pi);
       if (!bp) { el.style.display = "none"; continue; }
       el.style.display = "block";
       el.style.left = `${bp.x.toFixed(0)}px`;
       el.style.top = `${(bp.y - 34).toFixed(0)}px`;
       const n = el.querySelector("b");
       if (n) n.textContent = String(this.muelles[pi]);
+    }
+    // T89 — estrella de oro: visible 3 s desde la cogida, sobre la mochila
+    for (const pi of [0, 1] as const) {
+      const st = this.elEstrella[pi];
+      if (!st) continue;
+      const activa = this.simTime < this.estrellaHasta[pi];
+      const bpa = this.d.scene.backpackScreenPx(pi) ?? this.proyeccionPecho(pi);
+      if (!activa || !bpa) { st.style.display = "none"; continue; }
+      st.style.display = "block";
+      st.style.left = `${bpa.x.toFixed(0)}px`;
+      st.style.top = `${(bpa.y - 40).toFixed(0)}px`;
     }
   }
 
@@ -2407,6 +2459,15 @@ export class ParedNivel {
         mochilaAbierta: this.mochilaAbierta,
         enVuelo: [...this.enVuelo],
         gomaM: this.goma?.m ?? null,
+        // T89 — largos DIBUJADOS del brazo con la goma tirando (certifica el
+        // chicle: húmero ≈ reposo 0,46 y ANTEBRAZO estirado > 0,6)
+        gomaHuesos: this.goma ? (() => {
+          const ps = this.sherpas[this.goma.pi].rig.particles;
+          return {
+            uarm: +vLen(vSub(ps[P.elbowL].pos, ps[P.shL].pos)).toFixed(3),
+            farm: +vLen(vSub(ps[P.handL].pos, ps[P.elbowL].pos)).toFixed(3),
+          };
+        })() : null,
         gomaFlecha: this.goma
           ? { ang: flechaLanzamiento(this.goma.origen, this.goma.puntero), frac: Math.min(1, Math.max(0, this.goma.m / GOMA_EXTRA_M)) }
           : null,
@@ -2516,6 +2577,9 @@ export class ParedNivel {
     this.elMuelleBadge[0]?.remove(); // T88: badges de muelles fuera
     this.elMuelleBadge[1]?.remove();
     this.elMuelleBadge = [null, null];
+    this.elEstrella[0]?.remove(); // T89: estrellas fuera
+    this.elEstrella[1]?.remove();
+    this.elEstrella = [null, null];
     for (const [, m] of this.billeteMallas) m.dispose();
     this.billeteMallas.clear();
     this.billetes = [];
