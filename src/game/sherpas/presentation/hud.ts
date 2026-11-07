@@ -540,18 +540,20 @@ export class SherpaHud {
 
   // ---------- paneles de jugador ----------
 
-  bindPlayers(labels: { p1: string; p2: string }, limbLabels: Limb[]): void {
+  bindPlayers(labels: { p1: string; p2: string }, limbLabels: Limb[], opts?: { mostrarFlatulencia?: boolean }): void {
     void limbLabels;
+    const fart = opts?.mostrarFlatulencia !== false;
     // FATIGA SOBRE LAS EXTREMIDADES (petición del jugador): los chips de las
     // esquinas se SUSTITUYEN por insignias proyectadas sobre cada extremidad
     // (setLimbBadges); el panel queda como etiqueta + indicador de superpoder.
+    // T122: el nivel pared pasa mostrarFlatulencia:false (no hay superpoder ahí).
     for (const key of ["p1", "p2"] as const) {
       const player = key === "p1" ? 0 : 1;
       const color = player === 0 ? "#3fae5a" : "#e05245";
       const pname = player === 0 ? this.t("hud.player0") : this.t("hud.player1");
       this.el[key]!.innerHTML = `
         <div class="p-title"><span><span class="p-dot" style="background:${color}"></span>${esc(pname)}</span><span style="opacity:.6">${esc(labels[key])}</span></div>
-        <div style="font-size:10.5px;opacity:.8;margin-top:3px"><span class="fart-ico" data-fart="${player}">💨 <b style="color:#7dff4a">${esc(this.t("hud.fartReadyShort"))}</b></span></div>`;
+        ${fart ? `<div style="font-size:10.5px;opacity:.8;margin-top:3px"><span class="fart-ico" data-fart="${player}">💨 <b style="color:#7dff4a">${esc(this.t("hud.fartReadyShort"))}</b></span></div>` : ""}`;
     }
     // insignias una por extremidad (8): creadas una sola vez, movidas cada frame.
     const layer = this.el.badges!;
@@ -595,6 +597,18 @@ export class SherpaHud {
       node.classList.remove("ok", "warn", "crit", "free");
       node.classList.add(cs);
     }
+  }
+
+  /** T122: nº de insignias de extremidad creadas y VISIBLES ahora (sonda E2E:
+   *  el nivel pared creaba 0 porque nunca llamaba a bindPlayers). */
+  badgesVisibles(): number {
+    const layer = this.el.badges;
+    if (!layer) return 0;
+    let n = 0;
+    for (const node of layer.children as HTMLCollectionOf<HTMLElement>) {
+      if (node.style.display !== "none") n++;
+    }
+    return n;
   }
 
   /** MINIMAPA v2 (petición del jugador): réplica de la pared del tramo en

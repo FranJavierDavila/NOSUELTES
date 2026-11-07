@@ -380,6 +380,10 @@
       "agotado": "No launches left",
       "vuelo": "Click a hold to grab it!",
       "rompe": "The block is about to break!"
+    },
+    "ricachon": {
+      "enfado": "Get me out of here NOW!",
+      "furia": "Who TIED me down here?!"
     }
   }
 }

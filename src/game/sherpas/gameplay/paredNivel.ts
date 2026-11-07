@@ -39,9 +39,9 @@
 //       nadie (haySolape lo verifica en el tiempo).
 //  B3 · CAJAS DESTRUCTIBLES: las filas PARES 2-8 son rojizas y al primer
 //       agarre arrancan cuenta atrás (segundosRotura, default 10 s): avisan
-//       temblando, se hacen AÑICOS y el escalador cae a un bloque inferior
-//       intacto donde se ANCLA SOLO (rescate). Nunca dos destructibles
-//       seguidos (esFilaDestructible, filas alternas).
+//       temblando y se hacen AÑICOS. T122: quien estaba agarrado CAE DE
+//       VERDAD (fuera el auto-anclaje: la cuerda lo retiene y toca volver a
+//       mano). Nunca dos destructibles seguidas (esFilaDestructible).
 //  B4 · CUERDA DENSA: la cadena verlet pasa de 7 a CUERDA_SEG=22 tramos
 //       (encaja en el pool de la escena: 24 por mitad) — parece una cuerda
 //       real y no 6 eslabones rígidos.
@@ -68,6 +68,7 @@ import {
   LIMBS, P, SherpaRig,
   type DragReachInfo, type SherpaDeps, type SherpaGripTuning,
 } from "../physics/sherpaRig";
+import type { Limb } from "../core/bus";
 import { AnchorSystem, type HoldInstance } from "../physics/anchors";
 import type { SherpasData } from "../core/data";
 import type { BodyProfileDefinition, CharacterDefinition } from "../../types";
@@ -86,6 +87,11 @@ import {
   type MiniStorage, type ParedAjusteParams,
 } from "./paredAjuste"; // T119: panel de ajuste (modo dev)
 import { isTypingTarget } from "./devMode"; // T114: guard de campos de texto
+import {
+  pasoLastreNudo, pasoRabietas, pasoRicachon, rabietasInicio, ricachonReset,
+  sacudidaRabieta, RABIETA_FATIGA_POR_S,
+  type CuerpoRicachon, type EstadoRabietas,
+} from "./ricachonColgado"; // T122: ricachón de lastre colgado del nudo
 
 // ---------- geometría del nivel (calibrada con los huesos del rig) ----------
 // Alcances reales (sherpaRig.ts): brazo 0,88×1,08 ≈ 0,95 m; pierna 0,97×1,08 ≈ 1,05 m;
@@ -128,6 +134,26 @@ export const ROTURA_AVISO_S = 2.5;
 /** B5: umbral de píxeles que separa un CLIC (badge) de un ARRASTRE (tiro). */
 export const GOMA_UMBRAL_PX = 14;
 
+// T122 — arreglos del agarre en vuelo y de la goma (repro E2E: el clic
+// beginDrag+endDrag era inalcanzable en pleno vuelo y la goma no se sostenía)
+/** Imán de CUERPO durante el vuelo hacia la presa ELEGIDA (m/s²): curva el
+ *  arco balístico — el imán del arrastre exige canReach EN el clic, imposible
+ *  en vuelo. */
+export const IMAN_CUERPO_ACC = 6.5;
+/** Freno vertical cuando la presa elegida queda ARRIBA del arco (m/s²). */
+export const IMAN_FRENO_ARRIBA = 3.2;
+/** Distancia cintura→presa a la que la mano libre SALE SOLA (m). */
+export const AGARRE_VUELO_M = 1.55;
+/** Multiplicador del imán cuando la mano ya SALIÓ (fase de pinza): la mano no
+ *  ancla si el cuerpo sigue cayendo más rápido de lo que el brazo alcanza —
+ *  6,5 × 2,2 = 14,3 m/s² > gravedad: el cuerpo SUBE hacia la presa elegida. */
+export const IMAN_MANO_MULT = 2.2;
+/** SERVO de la goma: el cuerpo se hunde/afloja hacia manosY − base − m.
+ *  Solo el DELTA del arrastre no sostenía el estiramiento (el muelle del rig
+ *  recuperaba el cuerpo en ~0,2 s). */
+export const COLGADO_BASE_M = 1.15;
+export const GOMA_SERVO_MPS = 5.4;
+
 /** B1: offset local z de la presa respecto al CENTRO del cubo (cara = −d/2):
  *  negativo de sobra → el bulto SOBRESALE de la cara hacia el escalador. */
 export function zLocalPresa(d: number): number {
@@ -153,23 +179,6 @@ export function velLanzamiento(
   if (len < 1e-4) return { vx: 0, vy: 0 };
   const v = Math.min(LANZ_V_MAX, Math.max(LANZ_V_MIN, LANZ_V_MAX * (m / GOMA_EXTRA_M)));
   return { vx: (dx / len) * v, vy: (dy / len) * v };
-}
-
-/** B3 rescate: el bloque INTACTO más cercano POR DEBAJO del escalador y en su
- *  columna (±1,7 m) — donde se ancla solo al romperse el suyo. */
-export function bloqueReceptorId(
-  bs: { id: string; x: number; y: number; destruido?: boolean }[],
-  pos: { x: number; y: number },
-): string | null {
-  let best: string | null = null;
-  let bestY = -Infinity;
-  for (const b of bs) {
-    if (b.destruido) continue;
-    if (b.y > pos.y + 0.2) continue;            // solo al nivel o por debajo
-    if (Math.abs(b.x - pos.x) > 1.7) continue;  // misma columna aproximada
-    if (b.y > bestY) { bestY = b.y; best = b.id; }
-  }
-  return best;
 }
 
 /** B5 asistencia magnética: el anclaje más cercano al punto del clic dentro
@@ -532,7 +541,12 @@ export class ParedNivel {
   private enVuelo: [boolean, boolean] = [false, false];
   private lanzados: [number, number] = [3, 3]; // restantes (se ajusta al max del panel en start)
   private vueloObjetivo: HoldInstance | null = null; // presa elegida durante el vuelo
-  private rescate: ({ pi: 0 | 1; bloqueId: string; desdeT: number } | null)[] = [null, null];
+  private vueloJugador: 0 | 1 | null = null; // sherpa cuya presa elegida persigue el imán
+  // T122 — ricachón de lastre colgado del nudo medio de la cuerda + rabietas
+  private richi: CuerpoRicachon[] = [];
+  private rabietas: EstadoRabietas = rabietasInicio();
+  private rabRng = mulberry32(0x71c4a6d5);
+  private rabietaAmp = 0;
   // HUD del badge de lanzamientos (muelle) y avisos
   private elMochila: HTMLElement | null = null;
   private elMochilaN: HTMLElement | null = null;
@@ -584,6 +598,16 @@ export class ParedNivel {
     this.conectarDrag();
     this.crearHud();
     this.lanzados = [this.ajuste.lanzamientosMax, this.ajuste.lanzamientosMax];
+    // T122 — insignias de fatiga: bindPlayers crea los 8 nodos .lbadge que
+    // setLimbBadges mueve cada frame (el nivel nunca los creaba: 0 insignias).
+    this.d.hud.bindPlayers(
+      { p1: "", p2: "" }, // el nombre (Sherpa verde/rojo) lo pone el HUD; el banner ya explica el control
+      LIMBS,
+      { mostrarFlatulencia: false },
+    );
+    // T122 — ricachón de lastre: nace colgado del nudo medio de la cuerda
+    this.d.scene.spawnRichMan();
+    this.richi = ricachonReset(this.nudoCuerda());
     this.d.scene.setSnowVisual(false, 0, Number.POSITIVE_INFINITY);
     this.d.hud.banner(
       txt(this.d.data.strings, this.d.hud.lang, "pared.title", "Prueba del Campamento"),
@@ -911,7 +935,9 @@ export class ParedNivel {
     this.dragPlayer = null;
     this.dragLimb = null;
     this.dragCursor = null;
-    this.vueloObjetivo = null;
+    // T122: el objetivo de vuelo NO se limpia aquí — el clic down+up ELIGE la
+    // presa y el vuelo (en simTick) es quien la consume; matarla en el up
+    // cancelaba el agarre elegido un instante antes.
   }
 
   /** T121 B5: arranca la goma — exige las DOS manos ancladas (petición);
@@ -961,9 +987,11 @@ export class ParedNivel {
     }
   }
 
-  /** T121 B5: durante el vuelo, clic sobre una presa (asistencia magnética
-   *  MAGNET_VUELO_M): la mano libre más cercana la persigue — en cuanto el
-   *  cuerpo pasa a su alcance, el imán del arrastre la ancla. */
+  /** T122 B5-ARREGLO: durante el vuelo el clic ELIGE presa (y sherpa — el más
+   *  cercano a ella). T121 hacía beginDrag+endDrag en el clic y el imán del
+   *  arrastre exige canReach EN ese instante: imposible en pleno vuelo, el
+   *  agarre nunca salía. Ahora un imán de CUERPO curva el arco hacia la presa
+   *  y a AGARRE_VUELO_M la mano libre sale sola (simTick). */
   private intentaAgarreVuelo(p: V3): void {
     const libres: HoldInstance[] = [];
     for (const b of this.bloques) {
@@ -972,26 +1000,17 @@ export class ParedNivel {
     }
     const objetivo = anclajeMasCercano({ x: p.x, y: p.y }, libres, MAGNET_VUELO_M);
     if (!objetivo) return;
+    let mejor: 0 | 1 | null = null;
+    let bd = Infinity;
     for (const pi of [0, 1] as const) {
       if (!this.enVuelo[pi] || this.dragPlayer !== null) continue;
-      const rig = this.sherpas[pi];
-      const manos = (["hand_l", "hand_r"] as const)
-        .filter((l) => !rig.states.get(l)!.anchored)
-        .sort((a, b) => {
-          const pa = rig.limbPos(a), pb = rig.limbPos(b);
-          return Math.hypot(pa.x - p.x, pa.y - p.y) - Math.hypot(pb.x - p.x, pb.y - p.y);
-        });
-      for (const mano of manos) {
-        if (rig.beginDrag(mano)) {
-          this.dragPlayer = pi;
-          this.dragLimb = mano;
-          this.dragCursor = vClone(objetivo.pos);
-          this.vueloObjetivo = objetivo;
-          rig.moveDrag(objetivo.pos);
-          break;
-        }
-      }
+      const w = this.sherpas[pi].waist();
+      const d = Math.hypot(w.x - objetivo.pos.x, w.y - objetivo.pos.y);
+      if (d < bd) { bd = d; mejor = pi; }
     }
+    if (mejor === null) return;
+    this.vueloObjetivo = objetivo;
+    this.vueloJugador = mejor;
   }
 
   // ---------- simulación ----------
@@ -1017,12 +1036,49 @@ export class ParedNivel {
     // cuerda: límite de separación entre los dos sherpas (petición del jugador)
     this.aplicaCuerda();
 
-    // T121 B5 — imán de vuelo sostenido sobre la presa elegida (ANTES del paso:
-    // el magnetismo del arrastre decide el agarre dentro de rig.step)
+    // T122 B5 — imán de CUERPO hacia la presa ELEGIDA (ANTES del paso: el
+    // magnetismo del arrastre decide el agarre dentro de rig.step)
     for (const pi of [0, 1] as const) {
-      if (this.enVuelo[pi] && this.dragPlayer === pi && this.vueloObjetivo) {
-        this.sherpas[pi].moveDrag(this.vueloObjetivo.pos);
-        this.dragCursor = vClone(this.vueloObjetivo.pos);
+      if (!this.enVuelo[pi] || this.vueloJugador !== pi || !this.vueloObjetivo) continue;
+      const rig = this.sherpas[pi];
+      const cintura = rig.rig.particles[P.pelvisC];
+      const obj = this.vueloObjetivo.pos;
+      const dx = obj.x - cintura.pos.x;
+      const dy = obj.y - cintura.pos.y;
+      const d = Math.hypot(dx, dy) || 1e-4;
+      // aceleración de imán (verlet: prev sin tocar = gana velocidad);
+      // en fase de pinza (mano ya salida) el imán VENCE a la gravedad
+      const acc = IMAN_CUERPO_ACC * (this.dragPlayer === pi ? IMAN_MANO_MULT : 1);
+      cintura.pos = v3(
+        cintura.pos.x + (dx / d) * acc * dt * dt,
+        cintura.pos.y + (dy / d) * acc * dt * dt,
+        cintura.pos.z,
+      );
+      // freno vertical si la presa queda ARRIBA y el arco la pasa de largo
+      if (dy > 0.5 && cintura.pos.y > obj.y) {
+        cintura.pos = v3(cintura.pos.x, cintura.pos.y - IMAN_FRENO_ARRIBA * dt * dt, cintura.pos.z);
+      }
+      // a distancia de brazo: la mano libre SALE SOLA hacia la presa
+      if (d < AGARRE_VUELO_M && this.dragPlayer === null) {
+        const manos = (["hand_l", "hand_r"] as const)
+          .filter((l) => !rig.states.get(l)!.anchored)
+          .sort((a2, b2) => {
+            const pa = rig.limbPos(a2), pb = rig.limbPos(b2);
+            return Math.hypot(pa.x - obj.x, pa.y - obj.y) - Math.hypot(pb.x - obj.x, pb.y - obj.y);
+          });
+        for (const mano of manos) {
+          if (rig.beginDrag(mano)) {
+            this.dragPlayer = pi;
+            this.dragLimb = mano;
+            this.dragCursor = vClone(obj);
+            break;
+          }
+        }
+      }
+      // el imán del arrastre termina el trabajo: cursor CLAVADO a la presa
+      if (this.dragPlayer === pi) {
+        rig.moveDrag(obj);
+        this.dragCursor = vClone(obj);
       }
     }
 
@@ -1063,16 +1119,23 @@ export class ParedNivel {
       }
     }
 
-    // T121 B5 — estiramiento de goma: hundir el CUERPO con las manos clavadas
+    // T122 B5 — SERVO de goma: mientras se tira, el CUERPO se mantiene hundido
+    // hacia manosY − (COLGADO_BASE_M + m) — el estiramiento «al doble» SOSTENIDO
+    // (el muelle del rig ya no puede recuperar el cuerpo: el servo lo rehunde)
     if (this.goma) {
-      const dm = this.goma.m - this.goma.mPrev;
-      if (dm > 0) {
-        const rig = this.sherpas[this.goma.pi];
-        for (const i of GOMA_CUERPO) {
-          const pt = rig.rig.particles[i];
-          pt.pos = v3(pt.pos.x, pt.pos.y - dm, pt.pos.z);
-          pt.prev = v3(pt.prev.x, pt.prev.y - dm, pt.prev.z);
-        }
+      const rig = this.sherpas[this.goma.pi];
+      const manosY = Math.min(
+        rig.rig.particles[P.handL].pos.y,
+        rig.rig.particles[P.handR].pos.y,
+      );
+      const objetivoY = manosY - (COLGADO_BASE_M + this.goma.m);
+      const dy = objetivoY - rig.rig.particles[P.pelvisC].pos.y;
+      const paso = Math.sign(dy) * Math.min(Math.abs(dy), GOMA_SERVO_MPS * dt);
+      for (const i of GOMA_CUERPO) {
+        const pt = rig.rig.particles[i];
+        // pos Y prev acompañados: el servo MUEVE, no inyecta velocidad
+        pt.pos = v3(pt.pos.x, pt.pos.y + paso, pt.pos.z);
+        pt.prev = v3(pt.prev.x, pt.prev.y + paso, pt.prev.z);
       }
       this.goma.mPrev = this.goma.m;
     }
@@ -1084,30 +1147,37 @@ export class ParedNivel {
       if (rig.anchorsCount() > 0) {
         this.enVuelo[pi] = false;
         this.vueloObjetivo = null;
+        this.vueloJugador = null;
         if (this.dragPlayer === pi) this.onDragUp();
       } else if (rig.ropeState === "caught" || rig.ropeState === "hauling" || rig.ropeState === "grounded") {
         this.enVuelo[pi] = false;
         this.vueloObjetivo = null;
+        this.vueloJugador = null;
+        // la cuerda lo cogió con la mano fuera: soltar el drag (si no, la
+        // mano queda "arrastrando" una presa que nunca ancló)
+        if (this.dragPlayer === pi) {
+          this.sherpas[pi].endDrag();
+          this.dragPlayer = null;
+          this.dragLimb = null;
+          this.dragCursor = null;
+        }
       }
     }
 
-    // T121 B3 — rescate: caer un instante y ANCLARSE SOLO al bloque inferior
-    for (const pi of [0, 1] as const) {
-      const r = this.rescate[pi];
-      if (!r) continue;
-      const rig = this.sherpas[pi];
-      if (rig.anchorsCount() > 0 || this.enVuelo[pi]) { this.rescate[pi] = null; continue; }
-      const dest = this.bloques.find((bb) => bb.spec.id === r.bloqueId);
-      const w = rig.waist();
-      const plano = this.bloques.map((bb) => ({ id: bb.spec.id, x: bb.spec.x, y: bb.spec.y, destruido: bb.destruido }));
-      if (!dest || dest.destruido) {
-        const nuevo = bloqueReceptorId(plano, w);
-        this.rescate[pi] = nuevo ? { pi, bloqueId: nuevo, desdeT: r.desdeT } : null;
-        continue;
-      }
-      if (this.simTime - r.desdeT > 0.35 && w.y < dest.spec.y + 0.3) {
-        this.rescate[pi] = null;
-        this.reanclaSherpa(pi, r.bloqueId);
+    // T122 — RABIETAS del ricachón: agenda + sacudida física en los sherpas
+    // (se rencillen: signo alterno) + fatiga extra mientras dura
+    const rab = pasoRabietas(this.rabietas, dt, this.rabRng);
+    this.rabietaAmp = rab.amp;
+    if (rab.nueva) this.hablaRabieta();
+    if (rab.amp > 0.02) {
+      for (const pi of [0, 1] as const) {
+        const c = this.sherpas[pi].rig.particles[P.pelvisC];
+        const s = sacudidaRabieta(rab.amp, this.simTime, pi);
+        c.pos = v3(c.pos.x + s.ax * dt * dt, c.pos.y + s.ay * dt * dt, c.pos.z);
+        for (const limb of LIMBS) {
+          const st = this.sherpas[pi].states.get(limb)!;
+          if (st.anchored) st.fatigue = Math.min(1, st.fatigue + RABIETA_FATIGA_POR_S * dt);
+        }
       }
     }
 
@@ -1169,27 +1239,20 @@ export class ParedNivel {
       );
       b.anicos.push({ mesh, vel: v3(v.vx, v.vy, v.vz), spin: v.sx, t: 0 });
     }
-    // rescate: quien se quedó SIN anclajes cae al bloque inferior intacto
-    const plano = this.bloques.map((bb) => ({ id: bb.spec.id, x: bb.spec.x, y: bb.spec.y, destruido: bb.destruido }));
-    for (const pi of [0, 1] as const) {
-      if (this.enVuelo[pi]) continue;      // lanzándose a propósito: no hay rescate
-      const rig = this.sherpas[pi];
-      if (rig.anchorsCount() > 0) continue;
-      const receptor = bloqueReceptorId(plano, rig.waist());
-      if (receptor) this.rescate[pi] = { pi, bloqueId: receptor, desdeT: this.simTime };
-    }
+    // T122: NADA de rescate — quien estaba agarrado CAE DE VERDAD: la cuerda
+    // lo retiene (~2,9 m) y toca volver a mano, o la prueba se falla.
   }
 
-  /** T121 B3: reancla UN escalador a un bloque (rig NUEVO anclado a sus presas)
-   *  — el mismo camino de construcción que el inicio y saltarAFila. */
-  private reanclaSherpa(pi: 0 | 1, bloqueId: string): void {
-    const a = this.anclajesDe(bloqueId);
-    if (!a) return;
-    this.onDragUp();
-    this.d.scene.despawnSherpa(pi);
-    this.sherpas[pi] = new SherpaRig(this.depsDe(pi), a);
-    this.d.scene.spawnSherpa(pi, this.sherpas[pi].rig);
-    this.ropeReset(this.sherpas[0].waist(), this.sherpas[1].waist());
+  /** T122 — la rabieta ARRANCA: ánimo (enfado/furia) + bocadillo con frase
+   *  (la cara del ánimo se fija con pin para que sayRichLine la acepte). */
+  private hablaRabieta(): void {
+    const mood = this.rabRng() < 0.5 ? "enfado" : "furia";
+    this.d.scene.setRichMood(mood, true, true);
+    this.d.scene.sayRichLine(
+      txt(this.d.data.strings, this.d.hud.lang, `pared.ricachon.${mood}`,
+        mood === "furia" ? "¡¿Quién me ha ATADO aquí abajo?!" : "¡Sacadme de aquí YA!"),
+      2.6,
+    );
   }
 
   /** Cuerda: corrige el exceso de separación — el anclado aguanta, el libre cae. */
@@ -1268,6 +1331,13 @@ export class ParedNivel {
     }
   }
 
+  /** T122: nudo MEDIO de la cuerda visual — donde cuelga el ricachón. */
+  private nudoCuerda(): V3 {
+    const mid = this.ropeNodes.length >> 1;
+    if (this.ropeNodes[mid]) return vClone(this.ropeNodes[mid].pos);
+    return v3(0, Y_SALIDA - 0.5, Z_PRESA - 0.15);
+  }
+
   /** Cuerda visual: UN paso del verlet puro con los parámetros del pack y la
    *  cuerda del panel (total = cuerdaMetros + 0,5 de holgura de dibujo). */
   private ropeStep(dt: number): void {
@@ -1278,6 +1348,9 @@ export class ParedNivel {
     const damp = this.d.data.tuning.rope.nodeDamping ?? 0.975;
     const segLen = (this.ajuste.cuerdaMetros + 0.5) / (this.ropeNodes.length - 1);
     pasoCuerdaVerlet(this.ropeNodes, a, b, dt, segLen, g, damp);
+    // T122 — LASTRE: el ricachón (atado por los pies al nudo medio) hunde la V
+    // — comba acotada y tramos que no se estiran (8 pasadas PBD)
+    pasoLastreNudo(this.ropeNodes, segLen, dt, a, b, Math.min(a.y, b.y));
   }
 
   private frame = (ms: number): void => {
@@ -1322,6 +1395,25 @@ export class ParedNivel {
     // sherpas
     s.syncSherpa(0, this.sherpas[0].solver, this.alpha);
     s.syncSherpa(1, this.sherpas[1].solver, this.alpha);
+    // T122 — ricachón colgado del nudo: verlet propio (pies CLAVADOS) + gesto
+    if (this.richi.length >= 11) {
+      pasoRicachon(this.richi, this.nudoCuerda(), frameDt, this.simTime, this.rabietaAmp);
+      s.syncRichMan(
+        { bodies: this.richi, gesture: this.rabietaAmp > 0.02 ? "pataleando" : "ninguno" },
+        this.alpha,
+      );
+    }
+    // T122 — INSIGNIAS DE FATIGA sobre las extremidades (mismo camino que
+    // match.ts: proyección de cada extremidad → setLimbBadges cada frame)
+    const badgeData: { p: 0 | 1; limb: Limb; sx: number; sy: number; tension: number; fatigue: number; anchored: boolean }[] = [];
+    for (const pi of [0, 1] as const) {
+      for (const limb of LIMBS) {
+        const st = this.sherpas[pi].states.get(limb)!;
+        const sp = s.projectToScreenCss(this.sherpas[pi].limbPos(limb));
+        badgeData.push({ p: pi, limb, sx: sp.x, sy: sp.y, tension: st.tension, fatigue: st.fatigue, anchored: st.anchored });
+      }
+    }
+    this.d.hud.setLimbBadges(badgeData);
     // círculos de arrastre (mismos que la partida)
     const dragging = this.dragPlayer !== null;
     s.syncDrag(dragging ? this.dragPlayer : null, this.dragCursor, dragging && this.dragPlayer !== null ? this.sherpas[this.dragPlayer].dragMagnetPos() : null);
@@ -1506,7 +1598,11 @@ export class ParedNivel {
     this.gomaPendiente = null;
     this.enVuelo = [false, false];
     this.vueloObjetivo = null;
-    this.rescate = [null, null];
+    this.vueloJugador = null;
+    // T122: reinicio de rabietas + ricachón reenganchado al nudo
+    this.rabietaAmp = 0;
+    this.rabietas = rabietasInicio();
+    this.richi = ricachonReset(this.nudoCuerda());
     this.lanzados = [this.ajuste.lanzamientosMax, this.ajuste.lanzamientosMax];
     this.avisoT = 0;
     if (this.elAviso) this.elAviso.style.display = "none";
@@ -1752,7 +1848,10 @@ export class ParedNivel {
     this.gomaPendiente = null;
     this.enVuelo = [false, false];
     this.vueloObjetivo = null;
-    this.rescate = [null, null];
+    this.vueloJugador = null;
+    this.rabietaAmp = 0;
+    this.rabietas = rabietasInicio();
+    this.richi = ricachonReset(this.nudoCuerda());
     for (const pi of [0, 1] as const) this.d.scene.despawnSherpa(pi);
     this.sherpas = [];
     this.construirSherpas([aA, aB]);
@@ -1778,8 +1877,60 @@ export class ParedNivel {
         gomaM: this.goma?.m ?? null,
         roturas: this.bloques.filter((bb) => bb.spec.destructible)
           .map((bb) => ({ id: bb.spec.id, destruido: bb.destruido, roturaT: bb.roturaT })),
+        // T122: vuelo (sherpa/presa/mano), rabieta, ricachón y PROYECCIONES
+        // deterministas para el E2E (solo se calculan al LLAMAR la sonda)
+        vueloJugador: this.vueloJugador,
+        vueloObjetivo: this.vueloObjetivo?.id ?? null,
+        vueloMano: this.dragLimb,
+        rabieta: this.rabietaAmp,
+        insignias: this.d.hud.badgesVisibles(),
+        ricachon: this.sondaRicachon(),
+        mochilaPx: this.sondaMochilaPx(),
+        presas: this.sondaPresas(),
       });
     }
+  }
+
+  /** T122: posición del nudo/cabeza del ricachón (referencia Y_SALIDA). */
+  private sondaRicachon(): { nudoY: number; comba: number; cabezaY: number } | null {
+    const mid = this.ropeNodes.length >> 1;
+    const nudo = this.ropeNodes[mid]?.pos;
+    const cabeza = this.richi[0]?.pos; // RM.head = 0
+    if (!nudo || !cabeza) return null;
+    const arriba = Math.max(this.sherpas[0].waist().y, this.sherpas[1].waist().y);
+    return { nudoY: nudo.y - Y_SALIDA, comba: nudo.y - arriba, cabezaY: cabeza.y - Y_SALIDA };
+  }
+
+  /** T122: mochila del sherpa EN PÍXEL CSS — el MISMO punto que usa el
+   *  hit-test de la escena (backpackScreenPx, pieza «mochila» de la marioneta),
+   *  con caída al pecho proyectado si la pieza aún no está. */
+  private sondaMochilaPx(): { x: number; y: number; pi: 0 | 1 } | null {
+    if (this.sherpas.length < 2) return null;
+    const cv = this.d.scene.engine.getRenderingCanvas();
+    if (!cv) return null;
+    for (const pi of [0, 1] as const) {
+      const bp = this.d.scene.backpackScreenPx(pi);
+      if (bp) return { x: bp.x, y: bp.y, pi };
+      const c = this.sherpas[pi].rig.particles[P.chest];
+      const sp = this.d.scene.projectToScreenCss(v3(c.pos.x, c.pos.y, c.pos.z - 0.35));
+      return { x: (sp.x / 100) * cv.clientWidth, y: (sp.y / 100) * cv.clientHeight, pi };
+    }
+    return null;
+  }
+
+  /** T122: TODAS las presas vivas proyectadas a % de pantalla (el E2E clica
+   *  la presa exacta en vez de barrer a ciegas). */
+  private sondaPresas(): Record<string, { sx: number; sy: number }> {
+    const out: Record<string, { sx: number; sy: number }> = {};
+    for (const b of this.bloques) {
+      if (b.destruido) continue;
+      for (const pr of b.presas) {
+        if (pr.inst.radius <= 0) continue;
+        const sp = this.d.scene.projectToScreenCss(pr.inst.pos);
+        out[pr.inst.id] = { sx: sp.x, sy: sp.y };
+      }
+    }
+    return out;
   }
 
   // ---------- limpieza ----------
@@ -1803,6 +1954,8 @@ export class ParedNivel {
     const scene = this.d.scene;
     scene.despawnSherpa(0);
     scene.despawnSherpa(1);
+    scene.despawnRichMan(); // T122: el ricachón de lastre también sale
+    this.richi = [];
     this.limpiaBloques();
     this.matBloque?.dispose();
     this.matPresa?.dispose();

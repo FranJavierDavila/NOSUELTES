@@ -283,7 +283,7 @@ describe("T118 layout de la pared de bloques", () => {
 
 import {
   CUERDA_SEG, GOMA_EXTRA_M, LANZ_V_MAX, MAGNET_VUELO_M, PRESA_SALIENTE,
-  anclajeMasCercano, bloqueReceptorId, esFilaDestructible, velLanzamiento,
+  anclajeMasCercano, esFilaDestructible, velLanzamiento,
   velocidadesAnicos, zLocalPresa,
 } from "../../src/game/sherpas/gameplay/paredNivel";
 
@@ -363,20 +363,9 @@ describe("T121 B3 — cajas destructibles (rojizas, 10 s, nunca dos seguidas)", 
     }
   });
 
-  it("el receptor de rescate es el bloque INTACTO más cercano por debajo en columna", () => {
-    const bs = [
-      { id: "a", x: -1.3, y: 5 },
-      { id: "b", x: -1.3, y: 3.1 },
-      { id: "c", x: -1.3, y: 1.2, destruido: true },
-      { id: "d", x: 1.3, y: 2.5 },   // otra columna: fuera de ±1,7
-    ];
-    // cayendo desde y=4.2: el mejor debajo en columna es «b» (a está encima)
-    expect(bloqueReceptorId(bs, { x: -1.3, y: 4.2 })).toBe("b");
-    // destruido b → sin nadie en columna (c destruido, d otra columna)
-    const bs2 = bs.map((x) => (x.id === "b" ? { ...x, destruido: true } : x));
-    expect(bloqueReceptorId(bs2, { x: -1.3, y: 4.2 })).toBeNull();
-    // bloque a nivel del cuerpo (+0,2) también vale
-    expect(bloqueReceptorId(bs, { x: -1.3, y: 4.95 })).toBe("a");
+  it("T122: la caída es REAL — ya NO existe rescate (bloqueReceptorId exportado)", async () => {
+    const mod = await import("../../src/game/sherpas/gameplay/paredNivel");
+    expect("bloqueReceptorId" in mod).toBe(false);
   });
 });
 

@@ -380,6 +380,10 @@
       "agotado": "Sin lanzamientos",
       "vuelo": "¡Pulsa una presa para agarrarte!",
       "rompe": "¡El bloque va a romperse!"
+    },
+    "ricachon": {
+      "enfado": "¡Sacadme de aquí YA!",
+      "furia": "¡¿Quién me ha ATADO aquí abajo?!"
     }
   }
 }
