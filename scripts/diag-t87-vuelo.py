@@ -68,7 +68,7 @@ try:
         if sonda(page)["mochilaAbierta"] != pi:
             print("FALLO: interior no abrió", flush=True)
             sys.exit(1)
-        page.locator("#pared-mochila-win > div").nth(2).click()
+        page.locator("#pared-mochila-win > div").nth(3).click()  # T88: el dinero ocupa el índice 2
         page.wait_for_timeout(300)
 
         m = sonda(page)["mochilaPx"]

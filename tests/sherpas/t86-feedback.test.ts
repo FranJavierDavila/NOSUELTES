@@ -100,9 +100,9 @@ describe("T86 · mochila-chicle: recorrido mayor, sin agarre en el ascenso, mano
     expect(VUELO_GRAB_VY).toBe(0);
   });
 
-  it("GOMA_EXTRA_M = 1,6 m: recorrido de estiramiento bastante mayor", () => {
+  it("GOMA_EXTRA_M: recorrido de estiramiento mayor (T88: 3,2 m — el DOBLE)", () => {
     expect(GOMA_EXTRA_M).toBeGreaterThan(1.4); // antes 0,9
-    expect(GOMA_EXTRA_M).toBeLessThanOrEqual(2.0);
+    expect(GOMA_EXTRA_M).toBeCloseTo(3.2, 9); // T88: doble recorrido del dictado
   });
 
   const buildRig = (): { rig: SherpaRig; z: number; anchors: AnchorSystem } => {

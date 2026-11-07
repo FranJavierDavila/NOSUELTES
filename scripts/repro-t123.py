@@ -120,7 +120,7 @@ try:
         page.screenshot(path=f"{OUT}/t123-2-interior-mochila.png")
 
         # ---------- 2b) ARMAR un muelle (pulsar el primer chip) ----------
-        page.locator("#pared-mochila-win > div").nth(2).click()
+        page.locator("#pared-mochila-win > div").nth(3).click()  # T88: el dinero ocupa el índice 2
         page.wait_for_timeout(300)
         s = sonda(page)
         assert s["muelleActivo"][pi] is True, f"el muelle no se armó: {s['muelleActivo']}"
@@ -137,13 +137,13 @@ try:
             page.mouse.move(m["x"], m["y"] + 16 * i, steps=2)
             page.wait_for_timeout(60)
             goma = sonda(page)["gomaM"] or 0.0
-            if goma >= 0.72:
+            if goma >= 0.8:
                 break
         s = sonda(page)
         fl = s.get("gomaFlecha")
         fat_antes = s["fatigaMax"][pi]
         assert goma > 0.55, f"la goma no estiró: {goma}"
-        assert fl and fl["frac"] > 0.3 and 1.2 < fl["ang"] < 2.0, f"flecha rara: {fl}"
+        assert fl and fl["frac"] > 0.2 and 1.2 < fl["ang"] < 2.0, f"flecha rara: {fl}"
         print(f"OK goma m={goma:.2f} · flecha frac={fl['frac']:.2f} ang={fl['ang']:.2f} (arriba)", flush=True)
         page.screenshot(path=f"{OUT}/t123-3-goma-barra-flecha.png")
         page.mouse.up()

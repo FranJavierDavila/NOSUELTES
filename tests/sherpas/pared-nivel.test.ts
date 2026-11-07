@@ -430,10 +430,10 @@ describe("T121 B5 — mochila-chicle: lanzamiento balístico", () => {
     expect(v.vy).toBe(0);
   });
 
-  it("el alcance ~3 cuerpos: la subida balística ronda 3,6 m (3× el cuerpo)", () => {
+  it("T88: la subida balística DOBLA la anterior — ~7,2 m con LANZ_V_MAX 11,9", () => {
     const rise = (LANZ_V_MAX * LANZ_V_MAX) / (2 * 9.81);
-    expect(rise).toBeGreaterThan(3.2);
-    expect(rise).toBeLessThan(4.0);
+    expect(rise).toBeGreaterThan(6.8);
+    expect(rise).toBeLessThan(7.6);
   });
 
   it("en diagonal (abajo-izquierda) sale arriba-derecha con la misma norma", () => {

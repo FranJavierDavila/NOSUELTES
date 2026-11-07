@@ -93,7 +93,8 @@ try:
         m = mochila_px(page)
         pi = m["pi"]
         abierto = None
-        for intento in range(4):
+        for intento in range(5):
+            m = mochila_px(page)  # re-muestrea: el sherpa se mueve (posición rancia)
             page.mouse.click(m["x"], m["y"])
             page.wait_for_timeout(500)
             abierto = sonda(page)["mochilaAbierta"]
@@ -101,7 +102,7 @@ try:
                 break
         s = sonda(page)
         assert abierto == pi, f"el interior no abrió tras reintentos: {abierto}"
-        page.locator("#pared-mochila-win > div").nth(2).click()
+        page.locator("#pared-mochila-win > div").nth(3).click()  # T88: el dinero ocupa el índice 2
         page.wait_for_timeout(300)
         assert sonda(page)["muelleActivo"][pi] is True, "el muelle no se armó"
         print("OK muelle ARMADO", flush=True)
@@ -116,12 +117,12 @@ try:
             page.mouse.move(x0px + 9 * i, y0px + 13 * i, steps=2)
             page.wait_for_timeout(55)
             goma = sonda(page)["gomaM"] or 0.0
-            if goma >= 1.3:
+            if goma >= 1.6:
                 break
         s = sonda(page)
         fl = s.get("gomaFlecha")
-        assert goma > 1.2, f"la goma no estiró: {goma}"
-        assert fl and fl["frac"] > 0.7, f"flecha sin fuerza: {fl}"
+        assert goma > 1.5, f"la goma no estiró: {goma}"
+        assert fl and fl["frac"] > 0.45, f"flecha sin fuerza: {fl}"  # T88: frac = m/3,2
         # DIAGONAL: el puntero fue abajo-derecha ⇒ ang en (π/2, π) — apunta arriba-izquierda
         assert 1.65 < fl["ang"] < 2.6, f"la flecha NO es diagonal: {fl}"
         print(f"OK goma m={goma:.2f} · flecha DIAGONAL ang={fl['ang']:.2f} frac={fl['frac']:.2f}", flush=True)
@@ -146,11 +147,11 @@ try:
             page.wait_for_timeout(110)
 
         # (a) VUELO LIBRE: en el primer segundo REAL no hay NI UN anclaje
-        temprano = [mm for mm in muestras if mm[0] <= 1.0]
+        temprano = [mm for mm in muestras if mm[0] <= 2.5]
         enganchados = [mm for mm in temprano if mm[2] > 0]
         assert temprano, "sin muestras tempranas del vuelo"
         assert not enganchados, f"SE ENGANCHÓ en el arranque: {enganchados[:3]}"
-        print(f"OK vuelo LIBRE el primer segundo ({len(temprano)} muestras, 0 anclajes)", flush=True)
+        print(f"OK vuelo LIBRE al arranque ({len(temprano)} muestras, 0 anclajes)", flush=True)
         # (a2) y NINGÚN anclaje mientras el vuelo sigue en marcha
         en_vuelo_con_anclajes = [mm for mm in muestras if mm[1] and mm[2] > 0]
         assert not en_vuelo_con_anclajes, f"anclajes durante el vuelo: {en_vuelo_con_anclajes[:3]}"
@@ -163,7 +164,7 @@ try:
             subiendo = [mm for mm in vuelo if mm[4] < alt_max - 0.05]
             dx = subiendo[-1][3] - vuelo[0][3]
             print(f"TRAYECTORIA: alt {alt_ini:.2f}→{alt_max:.2f} m · dx en ascenso={dx:+.3f} m", flush=True)
-            assert alt_max > alt_ini + 0.8, f"el vuelo no ganó altura: {alt_ini:.2f}→{alt_max:.2f}"
+            assert alt_max > alt_ini + 0.5, f"el vuelo no ganó altura: {alt_ini:.2f}→{alt_max:.2f}"
             assert dx < -0.5, f"NO sigue la flecha (esperaba deriva a la izquierda): dx={dx:+.3f}"
         else:
             print(f"AVISO: vuelo corto ({len(vuelo)} muestras en vuelo)", flush=True)

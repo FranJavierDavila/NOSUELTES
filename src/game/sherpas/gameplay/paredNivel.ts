@@ -74,8 +74,10 @@
 
 import {
   Color3, Matrix, Mesh, MeshBuilder, PBRMaterial, Quaternion, RawTexture,
-  StandardMaterial, Texture, TransformNode, Vector3,
+  SceneLoader, StandardMaterial, Texture, TransformNode, Vector3,
 } from "@babylonjs/core";
+import { assetUrl } from "../../assetPath"; // T88: bolsadinero.glb / dollar.glb
+import "@babylonjs/loaders/glTF"; // T88: registro del cargador .glb también desde este módulo
 import { v3, vAdd, vClone, vLen, vScale, vSub, type V3 } from "../../physics/pbd/math";
 import {
   LIMBS, P, SherpaRig,
@@ -106,6 +108,10 @@ import {
   type CuerpoRicachon, type EstadoRabietas,
 } from "./ricachonColgado"; // T122: ricachón de lastre colgado del valle (T86)
 import { RM, RM_PARTICLES } from "../physics/richMan"; // T123: índices de los tobillos (tirantes)
+import {
+  billeteCogible, billetesVivos, pasoBilletes, sacudidaBilletes,
+  BILLETE_DINERO, type Billete, type ManoLibre,
+} from "./billetesAire"; // T88: billetes que vuelan de la bolsa al sacudirse la cuerda
 
 // ---------- geometría del nivel (calibrada con los huesos del rig) ----------
 // Alcances reales (sherpaRig.ts): brazo 0,88×1,08 ≈ 0,95 m; pierna 0,97×1,08 ≈ 1,05 m;
@@ -134,16 +140,14 @@ export const PRESA_DIAMETRO = 0.26;
 /** B4: tramos de la cuerda visual A→B (22 = 11 por mitad, pool 24 ✓). */
 export const CUERDA_SEG = 22;
 /** B5: hundimiento MÁXIMO extra del cuerpo tirando de la mochila (m):
- *  colgado normal ~0,9 m. T86 (petición del jugador: «debemos permitir más
- *  recorrido... para que podamos estirarlos bastante más»): el recorrido pasa
- *  de 0,9 a 1,6 m — casi el DOBLE de goma; la cota de lanzamiento no cambia
- *  (sigue ~3 cuerpos: v = LANZ_V_MAX·m/GOMA_EXTRA_M).
- *  T86: el estiramiento dibuja los brazos como CHICLE (manos clavadas a sus
- *  presas, huesos elásticos — ver rig.gomaEstirando). */
-export const GOMA_EXTRA_M = 1.6;
-/** B5: velocidad máxima de lanzamiento (m/s) → subida balística v²/2g ≈ 3,6 m
- *  ≈ 3 veces el cuerpo del sherpa (petición: «alcance ~3 veces su cuerpo»). */
-export const LANZ_V_MAX = 8.4;
+ *  colgado normal ~0,9 m. T86: 0,9→1,6. T88 (petición del jugador: «debe
+ *  permitir el DOBLE de recorrido»): 1,6→3,2 m de goma. La cota de
+ *  lanzamiento escala con √2 para DOBLAR la altura del vuelo (h ∝ v²). */
+export const GOMA_EXTRA_M = 3.2;
+/** B5: velocidad máxima de lanzamiento (m/s). T88: «doble de altura» — el
+ *  ápice balístico es h = v²/2g, así que ×√2 en velocidad = ×2 en altura
+ *  (8,4→11,9 m/s: de ~3,6 m a ~7,2 m de subida). */
+export const LANZ_V_MAX = 11.9;
 /** B5: velocidad mínima al soltar con estiramiento perceptible (m/s). */
 export const LANZ_V_MIN = 2.2;
 /** B3: ventana de aviso (temblor) antes de la rotura (s). */
@@ -606,6 +610,22 @@ export class ParedNivel {
   private rabietaAmp = 0;
   // T123 — tirantes del atado (nudo→tobillos y banda entre tobillos)
   private straps: Mesh[] = [];
+  // T88 — BOLSA DE DINERO: sustituye al ricachón (mismo amarre, mismo
+  // lastre, misma física de cuerda — solo cambia el decorado en pantalla)
+  private bolsaNodo: TransformNode | null = null;
+  private bolsaWrap: TransformNode | null = null;
+  private bolsaTopY = 0.0; // del origen del wrap al TECHO de la bolsa (m, escalado)
+  private bolsaLista = false;
+  // T88 — billetes en el aire: estado PURO (billetesAire.ts) + clones GLB
+  private billetes: Billete[] = [];
+  private billeteId = 1;
+  private billeteRng = mulberry32(0x64cce5);
+  private billeteMallas = new Map<number, Mesh>();
+  private dollarProto: Mesh | null = null;
+  private dinero: [number, number] = [0, 0];
+  private billetesCogidos: [number, number] = [0, 0];
+  // T88 — badge de muelles sobre cada mochila (icono + numerito disponible)
+  private elMuelleBadge: [HTMLElement | null, HTMLElement | null] = [null, null];
   // HUD del interior de la mochila, la barra/flecha de la goma y los avisos
   private elMochilaWin: HTMLElement | null = null;
   private elGoma: HTMLElement | null = null;
@@ -671,8 +691,13 @@ export class ParedNivel {
       LIMBS,
       { mostrarFlatulencia: false },
     );
-    // T122 — ricachón de lastre: nace colgado del nudo medio de la cuerda
-    this.d.scene.spawnRichMan();
+    // T88 — BOLSA DE DINERO en lugar del ricachón: cuelga BIEN ATADA del
+    // valle de la cuerda, desliza con ella según su inclinación (la física
+    // del amarre/lastre es la MISMA que la del ricachón: el verlet invisible
+    // sigue siendo el lastre) y suelta billetes cuando la cuerda recibe
+    // sacudidas. En pantalla ya no hay ricachón.
+    this.creaBolsa();
+    this.cargaDolar();
     this.richi = ricachonReset(this.nudoCuerda());
     this.d.scene.setSnowVisual(false, 0, Number.POSITIVE_INFINITY);
     this.d.hud.banner(
@@ -1116,7 +1141,11 @@ export class ParedNivel {
       rig.feedRopeMash(mash[pi], mash[1 - pi], this.sherpas[1 - pi].anchorsCount() > 0);
       const info = rig.step(dt, multCarga(pi, colgado, gomas));
       for (const g of info.gripped) this.alAgarrar(g.anchor.hold.id, pi);
-      if (info.rope.tautNow) this.falls++;
+      if (info.rope.tautNow) {
+        this.falls++;
+        // T88 — el TIRÓN de la cuerda (captura de caída) sacude la bolsa
+        this.sacudidaBolsa();
+      }
       // carga del muelle = extremidades ancladas a cada bloque
       const cargaPorBloque = new Map<string, number>();
       for (const limb of LIMBS) {
@@ -1128,6 +1157,37 @@ export class ParedNivel {
         if (b) b.carga = Math.max(b.carga, n);
       }
     }
+    // T88 — BILLETES: física de papel (suben con la corriente, vaivén
+    // oscilante) y COGIDA con la MANO LIBRE — cada billete son +10 $ para el
+    // sherpa que lo pille (la detección usa la partícula de la mano: la
+    // física ya corrió este tick). Los billetes en subida SON cogibles
+    // (petición: «que permita a los sherpas alcanzarlo en su ascenso»).
+    pasoBilletes(this.billetes, dt, -6);
+    this.aseguraMallasBilletes();
+    const manos: ManoLibre[] = [];
+    for (const pi of [0, 1] as const) {
+      const rig = this.sherpas[pi];
+      for (const limb of ["hand_l", "hand_r"] as const) {
+        const st = rig.states.get(limb)!;
+        if (st.anchored || st.traveling || rig.dragging === limb) continue;
+        manos.push({ pi, limb, pos: rig.rig.particles[limb === "hand_l" ? P.handL : P.handR].pos });
+      }
+    }
+    const cogida = billeteCogible(this.billetes, manos);
+    if (cogida) {
+      const b = this.billetes[cogida.i];
+      if (b && b.vivo) {
+        b.vivo = false;
+        this.dinero[cogida.pi] += BILLETE_DINERO;
+        this.billetesCogidos[cogida.pi] += 1;
+        this.aseguraMallasBilletes();
+        this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.dinero.cogido",
+          `¡+${BILLETE_DINERO} $! Billete para el Sherpa ${cogida.pi + 1}`));
+        if (this.mochilaAbierta !== null) this.refrescaMochila(this.mochilaAbierta);
+      }
+    }
+    if (this.billetes.some((b) => !b.vivo)) this.billetes = this.billetes.filter((b) => b.vivo);
+
     // descarga los bloques sin anclajes
     for (const b of this.bloques) {
       const n = [...(this.sherpas[0].states.values()), ...(this.sherpas[1].states.values())]
@@ -1161,7 +1221,11 @@ export class ParedNivel {
         rig.rig.particles[P.handL].pos.y,
         rig.rig.particles[P.handR].pos.y,
       );
-      const objetivoY = manosY - (COLGADO_BASE_M + this.goma.m);
+      const objetivoY0 = manosY - (COLGADO_BASE_M + this.goma.m);
+      // T88 — el DOBLE de recorrido no puede hundir al sherpa bajo FAIL_Y
+      // (sería fallar el nivel por estirar la goma): el servo se detiene en
+      // el borde del abismo y la goma sobrante solo estira los antebrazos.
+      const objetivoY = Math.max(objetivoY0, FAIL_Y + 0.35);
       const dy = objetivoY - rig.rig.particles[P.pelvisC].pos.y;
       const paso = Math.sign(dy) * Math.min(Math.abs(dy), GOMA_SERVO_MPS * dt);
       for (const i of GOMA_CUERPO) {
@@ -1188,7 +1252,11 @@ export class ParedNivel {
     // (se rencillen: signo alterno) + fatiga extra mientras dura
     const rab = pasoRabietas(this.rabietas, dt, this.rabRng);
     this.rabietaAmp = rab.amp;
-    if (rab.nueva) this.hablaRabieta();
+    if (rab.nueva) {
+      this.hablaRabieta();
+      // T88 — la bolsa (el «ricachón» de dinero) patalea: SACUDIDA → billetes
+      this.sacudidaBolsa();
+    }
     if (rab.amp > 0.02) {
       for (const pi of [0, 1] as const) {
         const c = this.sherpas[pi].rig.particles[P.pelvisC];
@@ -1230,6 +1298,8 @@ export class ParedNivel {
     b.destruido = true;
     b.roturaT = null;
     b.mesh.isVisible = false;
+    // T88 — la EXPLOSIÓN del bloque sacude la cuerda: la bolsa suelta billetes
+    this.sacudidaBolsa();
     for (const p of b.presas) {
       p.inst.radius = 0;              // ya no es agarrable
       p.mesh.isVisible = false;
@@ -1513,16 +1583,37 @@ export class ParedNivel {
     s.syncSherpa(1, this.sherpas[1].solver, this.alpha);
     // T122 — ricachón colgado del nudo: verlet propio (pies CLAVADOS) + gesto
     if (this.richi.length >= 11) {
+      // T88 — el verlet del «ricachón» sigue siendo el LASTRE de la cuerda
+      // (invisible: la bolsa de dinero es el decorado) y la sacudida de la
+      // rabieta le sigue entrando por la cuerda.
       pasoRicachon(this.richi, this.nudoCuerda(), frameDt, this.simTime, this.rabietaAmp);
-      s.syncRichMan(
-        { bodies: this.richi, gesture: this.rabietaAmp > 0.02 ? "pataleando" : "ninguno" },
-        this.alpha,
-      );
-      // T123 — tirantes del atado nudo↔tobillos (se VE atado por los pies)
+      // T123/T88 — tirantes: ahora ATAN LA BOLSA al amarre
       this.actualizaStraps();
+    }
+    // T88 — BOLSA DE DINERO: cuelga del amarre deslizando con la cuerda
+    // (vaivén suave: la bolsa es blanda y el viento de la pared la mueve)
+    if (this.bolsaNodo) {
+      const pto = this.amarre ?? this.nudoCuerda();
+      this.bolsaNodo.position.set(pto.x, pto.y, pto.z);
+      if (this.bolsaLista) {
+        const giro = Math.sin(this.simTime * 1.7) * 0.09 + this.rabietaAmp * Math.sin(this.simTime * 21) * 0.35;
+        this.bolsaNodo.rotation.y = giro;
+        this.bolsaNodo.rotation.z = Math.sin(this.simTime * 1.3 + 0.7) * 0.05;
+      }
+    }
+    // T88 — billetes: mallas siguiendo la física de papel (giro + aleteo;
+    // los clones heredan la escala del proto en clone(), nada que reponer)
+    for (const b of this.billetes) {
+      if (!b.vivo) continue;
+      const m = this.billeteMallas.get(b.id);
+      if (!m) continue;
+      m.position.set(b.pos.x, b.pos.y, b.pos.z);
+      m.rotation.y = b.fase + b.t * 2.1;
+      m.rotation.z = Math.sin(b.t * 6 + b.fase) * 0.55; // aleteo de papel
     }
     // T123 B5 — interior de la mochila que sigue al sherpa + barra/flecha
     this.posicionaMochilaHud();
+    this.posicionaMuelleBadges(); // T88: icono de muelle + numerito sobre cada mochila
     this.actualizaGomaHud();
     // T122 — INSIGNIAS DE FATIGA sobre las extremidades (mismo camino que
     // match.ts: proyección de cada extremidad → setLimbBadges cada frame)
@@ -1584,18 +1675,164 @@ export class ParedNivel {
   }
 
   private actualizaStraps(): void {
-    if (this.straps.length < 3 || this.richi.length < RM_PARTICLES) return;
+    if (this.straps.length < 3) return;
+    // T88 — la bolsa ATADA a la cuerda: dos tirantes del punto de amarre a
+    // los hombros de la bolsa (y la banda inferior fuera). El nudo ES el
+    // amarre: la bolsa cuelga y gira con él (se ve atada en todo momento).
     const nudo = this.nudoCuerda();
-    const pieL = this.richi[RM.footL].pos;
-    const pieR = this.richi[RM.footR].pos;
-    this.colocaStrap(this.straps[0], nudo, pieL);
-    this.colocaStrap(this.straps[1], nudo, pieR);
-    this.colocaStrap(this.straps[2], pieL, pieR);
+    const topY = nudo.y - 0.16;
+    const hombroL = v3(nudo.x - 0.11, topY, nudo.z + 0.02);
+    const hombroR = v3(nudo.x + 0.11, topY, nudo.z + 0.02);
+    const anclaL = v3(nudo.x - 0.05, nudo.y, nudo.z);
+    const anclaR = v3(nudo.x + 0.05, nudo.y, nudo.z);
+    this.colocaStrap(this.straps[0], anclaL, hombroL);
+    this.colocaStrap(this.straps[1], anclaR, hombroR);
+    this.straps[2].isVisible = false;
   }
 
   private quitaStraps(): void {
     for (const m of this.straps) m.dispose();
     this.straps = [];
+  }
+
+  // ---------- T88: bolsa de dinero, billetes y HUD de muelles/dinero ----------
+
+  /** La BOLSA DE DINERO (bolsadinero.glb): se cuelga del amarre (el punto
+   *  de la cuerda donde iba el ricachón) y la física de cuerda/lastre NO
+   *  cambia — el verlet invisible del ricachón sigue siendo la masa y el
+   *  amarre sigue deslizando hacia el valle: la bolsa SE DESLIZA por la
+   *  cuerda según su inclinación. Posición y vaivén en renderTick. */
+  private creaBolsa(): void {
+    const esc = this.d.scene.scene;
+    this.bolsaNodo = new TransformNode("bolsaDinero", esc);
+    void SceneLoader.LoadAssetContainerAsync("", assetUrl("/models/bolsadinero.glb"), esc)
+      .then((cont) => {
+        if (this.disposed || !this.bolsaNodo) { cont.dispose(); return; }
+        cont.addAllToScene();
+        // espejo LH del loader (mismo neutralizado que la fábrica de caras)
+        for (const root of cont.rootNodes as unknown as TransformNode[]) {
+          const s = root.scaling;
+          if (s && s.z < 0) {
+            s.setAll(1);
+            if (root.rotationQuaternion) root.rotationQuaternion.set(0, 0, 0, 1);
+            else if (root.rotation) root.rotation.setAll(0);
+          }
+        }
+        const piece = cont.meshes.find((m) => m.getTotalVertices() > 0) ?? cont.meshes[0];
+        if (!piece) { cont.removeAllFromScene(); cont.dispose(); return; }
+        const wrap = new TransformNode("bolsaWrap", esc);
+        wrap.parent = this.bolsaNodo;
+        piece.parent = wrap;
+        piece.isPickable = false;
+        piece.alwaysSelectAsActiveMesh = true;
+        // escala objetivo: bolsa de ~0,55 m de alto (presencia de lastre sin tapar la pared)
+        const bb = piece.getHierarchyBoundingVectors();
+        const alto = Math.max(1e-3, bb.max.y - bb.min.y);
+        const k = 0.55 / alto;
+        wrap.scaling.setAll(k);
+        // el TECHO de la bolsa cuelga bajo el nudo: wrap sitúa el top en el origen
+        this.bolsaTopY = bb.max.y * k;
+        wrap.position.set(-((bb.min.x + bb.max.x) / 2) * k, -this.bolsaTopY, -((bb.min.z + bb.max.z) / 2) * k);
+        this.bolsaWrap = wrap;
+        this.bolsaLista = true;
+      })
+      .catch((err) => console.error("[T88] bolsadinero.glb:", err));
+  }
+
+  /** Prototipo del billete (dollar.glb): se carga UNA vez y se clona por
+   *  billete vivo (máximo ~6 en vuelo por sacudida, pool acotado). */
+  private cargaDolar(): void {
+    const esc = this.d.scene.scene;
+    void SceneLoader.LoadAssetContainerAsync("", assetUrl("/models/dollar.glb"), esc)
+      .then((cont) => {
+        if (this.disposed) { cont.dispose(); return; }
+        cont.addAllToScene();
+        for (const root of cont.rootNodes as unknown as TransformNode[]) {
+          const s = root.scaling;
+          if (s && s.z < 0) {
+            s.setAll(1);
+            if (root.rotationQuaternion) root.rotationQuaternion.set(0, 0, 0, 1);
+            else if (root.rotation) root.rotation.setAll(0);
+          }
+        }
+        const piece = cont.meshes.find((m) => m.getTotalVertices() > 0) ?? cont.meshes[0];
+        if (!(piece instanceof Mesh)) { cont.removeAllFromScene(); cont.dispose(); return; }
+        const bb = piece.getHierarchyBoundingVectors();
+        const ancho = Math.max(1e-3, bb.max.x - bb.min.x);
+        piece.scaling.setAll(0.28 / ancho); // billete de ~28 cm
+        piece.isPickable = false;
+        piece.alwaysSelectAsActiveMesh = true;
+        piece.isVisible = false; // el proto nunca se ve: solo los clones
+        this.dollarProto = piece;
+      })
+      .catch((err) => console.error("[T88] dollar.glb:", err));
+  }
+
+  /** SACUDIDA DE LA CUERDA → la bolsa suelta 3-6 billetes (rabieta del
+   *  lastre, tirón de la cuerda al capturar una caída o rotura de bloque). */
+  private sacudidaBolsa(): void {
+    const origen = this.amarre ?? this.nudoCuerda();
+    const s = sacudidaBilletes(this.billeteRng, this.billeteId, origen);
+    this.billeteId = s.idSiguiente;
+    this.billetes.push(...s.billetes);
+    while (this.billetes.length > 24) this.billetes.shift(); // techo de seguridad
+    this.aseguraMallasBilletes();
+  }
+
+  /** Un clon del dollar por billete vivo (los muertos esconden su malla). */
+  private aseguraMallasBilletes(): void {
+    const proto = this.dollarProto;
+    if (!proto) return;
+    const vivos = new Set<number>();
+    for (const b of this.billetes) {
+      if (!b.vivo) continue;
+      vivos.add(b.id);
+      if (!this.billeteMallas.has(b.id)) {
+        const clon = proto.clone(`billete_${b.id}`);
+        clon.isVisible = true;
+        clon.isPickable = false;
+        clon.alwaysSelectAsActiveMesh = true;
+        clon.rotationQuaternion = Quaternion.Identity();
+        this.billeteMallas.set(b.id, clon);
+      }
+    }
+    for (const [id, m] of this.billeteMallas) {
+      if (!vivos.has(id)) { m.isVisible = false; this.billeteMallas.delete(id); m.dispose(); }
+    }
+  }
+
+  /** Badges de muelles sobre cada mochila (icono de muelle + numerito, como
+   *  el indicador de anclas de la mochila de la fase inicial). */
+  private creaMuelleBadges(root: HTMLElement): void {
+    for (const pi of [0, 1] as const) {
+      const el = document.createElement("div");
+      el.id = `pared-muelle-badge-${pi}`;
+      el.setAttribute("style",
+        "position:absolute;display:none;pointer-events:none;z-index:24;transform:translate(-50%,-100%);" +
+        "filter:drop-shadow(0 2px 4px rgba(0,0,0,.6));");
+      el.innerHTML = `<span style="display:block;width:26px;height:26px">${SPRING_SVG}</span>` +
+        `<b style="position:absolute;top:-7px;right:-9px;background:#e2694f;color:#fff;border-radius:9px;` +
+        `min-width:16px;text-align:center;padding:1px 4px;font:900 11px/1.4 system-ui,sans-serif">0</b>`;
+      root.appendChild(el);
+      this.elMuelleBadge[pi] = el;
+    }
+  }
+
+  /** Repone posición/valor de los badges cada frame (siguen a cada mochila). */
+  private posicionaMuelleBadges(): void {
+    const cv = this.d.scene.engine.getRenderingCanvas();
+    if (!cv) return;
+    for (const pi of [0, 1] as const) {
+      const el = this.elMuelleBadge[pi];
+      if (!el) continue;
+      const bp = this.d.scene.backpackScreenPx(pi);
+      if (!bp) { el.style.display = "none"; continue; }
+      el.style.display = "block";
+      el.style.left = `${bp.x.toFixed(0)}px`;
+      el.style.top = `${(bp.y - 34).toFixed(0)}px`;
+      const n = el.querySelector("b");
+      if (n) n.textContent = String(this.muelles[pi]);
+    }
   }
 
   // ---------- HUD propio del nivel ----------
@@ -1644,6 +1881,9 @@ export class ParedNivel {
     this.elGomaFlecha = flecha;
     // avisos transitorios (manos, agotado, rotura, vuelo)
     this.elAviso = mk("pared-aviso", "position:absolute;bottom:64px;left:50%;transform:translateX(-50%);background:rgba(80,18,10,.85);color:#ffd9d0;border:1px solid #e2694f;border-radius:10px;padding:5px 14px;font:700 13px/1.3 system-ui,sans-serif;pointer-events:none;display:none;");
+    // T88 — badge de muelles sobre cada mochila (icono + numerito, como el
+    // indicador de anclas de la mochila de la fase inicial)
+    this.creaMuelleBadges(root);
   }
 
   /** T123 B5 — abre el INTERIOR de la mochila: los muelles restantes como
@@ -1672,6 +1912,13 @@ export class ParedNivel {
     pista.setAttribute("style", "opacity:.72;font-size:11px");
     pista.textContent = t("pared.mochila.selecciona", "Pulsa un muelle para armar el lanzamiento");
     win.appendChild(pista);
+    // T88 — DINERO del sherpa (los billetes cogidos en vuelo valen 10 $ cada uno)
+    const dinero = document.createElement("div");
+    dinero.setAttribute("style",
+      "display:flex;align-items:center;justify-content:space-between;gap:8px;border-radius:8px;" +
+      "padding:5px 8px;border:1px solid rgba(232,193,90,.5);background:rgba(232,193,90,.12);font:800 13px system-ui,sans-serif;color:#e8c15a");
+    dinero.innerHTML = `<span>💰 ${t("pared.dinero.titulo", "Dinero")}</span><span>$${this.dinero[pi]}</span>`;
+    win.appendChild(dinero);
     for (let i = 0; i < this.ajuste.lanzamientosMax; i++) {
       const usado = i >= this.muelles[pi];
       const chip = document.createElement("div");
@@ -2175,6 +2422,13 @@ export class ParedNivel {
         ricachon: this.sondaRicachon(),
         mochilaPx: this.sondaMochilaPx(),
         presas: this.sondaPresas(),
+        // T88 — dinero, billetes en el aire y bolsa
+        dinero: [...this.dinero],
+        billetesCogidos: [...this.billetesCogidos],
+        billetes: billetesVivos(this.billetes),
+        billetesTotal: this.billetes.length,
+        bolsa: this.bolsaLista,
+        muellesBadge: [...this.muelles],
       });
     }
   }
@@ -2259,6 +2513,15 @@ export class ParedNivel {
     this.elFat?.remove();
     this.elFin?.remove();
     this.elMochilaWin?.remove();
+    this.elMuelleBadge[0]?.remove(); // T88: badges de muelles fuera
+    this.elMuelleBadge[1]?.remove();
+    this.elMuelleBadge = [null, null];
+    for (const [, m] of this.billeteMallas) m.dispose();
+    this.billeteMallas.clear();
+    this.billetes = [];
+    this.bolsaNodo?.dispose();
+    this.bolsaNodo = null;
+    this.bolsaWrap = null;
     this.elGoma?.remove();
     this.elAviso?.remove();
     this.elAlt = this.elFat = this.elFin = null;

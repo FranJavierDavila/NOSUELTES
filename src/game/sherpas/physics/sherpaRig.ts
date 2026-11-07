@@ -331,6 +331,12 @@ export class SherpaRig {
    *  El match valida requisitos y lo desactiva si se pierden los agarres. */
   belaying = false;
   private belayCatchDropM = 2.9;
+  /** T88 — CHICLE DEL ANTEBRAZO: longitud de reposo del BRAZO (hombro→codo),
+   *  capturada del bind en el constructor. Con la goma tirando, el CODO se
+   *  repiña a ESA distancia del hombro (el hueso del brazo no cambia ni de
+   *  escala ni de posición) y SOLO el antebrazo se estira como goma hasta la
+   *  mano clavada a su presa (petición literal del jugador). */
+  private restUarm = { L: 0.46, R: 0.46 };
   /** IMPULSO del compañero (mini-ascensión cinemática): ventana activa (reloj
    *  INTERNO del rig, decrece en step) para el bono de alcance + propina. */
   private impulseWindowT = 0;
@@ -378,6 +384,12 @@ export class SherpaRig {
       tremor: this.tremorRecord,
     };
     this.seedAt(startHolds);
+    // T88 — la pose sembrada ES el bind: de ahí salen los largos de reposo
+    // del brazo (hombro→codo) que el chicle del antebrazo respeta.
+    this.restUarm = {
+      L: vLen(vSub(this.rig.particles[P.elbowL].pos, this.rig.particles[P.shL].pos)),
+      R: vLen(vSub(this.rig.particles[P.elbowR].pos, this.rig.particles[P.shR].pos)),
+    };
   }
 
   get gripTuning(): SherpaGripTuning { return this.deps.tuning; }
@@ -1270,6 +1282,26 @@ export class SherpaRig {
 
     result.maxSpeed = vAbs / dt;
     result.com = this.com();
+    // T88 — CHICLE DEL ANTEBRAZO: con la goma tirando, al final del tick el
+    // CODO vuelve a su distancia de reposo del hombro (el brazo queda INTACTO
+    // en escala y posición) y todo el estiramiento lo absorbe el antebrazo
+    // (codo→mano > reposo), cuyas piezas se dibujan entre partículas y por
+    // tanto se ven ELÁSTICAS. pos y prev juntos: el repiñe no inyecta
+    // velocidad (petición: «sin modificar los huesos del brazo… el sherpa
+    // parecerá un chicle al estirar los antebrazos»).
+    if (this.gomaEstirando) {
+      for (const lado of [["L", P.shL, P.elbowL], ["R", P.shR, P.elbowR]] as const) {
+        const [k, iSh, iEl] = lado;
+        const sh = this.rig.particles[iSh];
+        const el = this.rig.particles[iEl];
+        const d = vSub(el.pos, sh.pos);
+        const len = vLen(d);
+        if (len < 1e-5) continue;
+        const repino = vScale(d, this.restUarm[k] / len);
+        el.pos = vAdd(sh.pos, repino);
+        el.prev = vAdd(el.prev, vSub(el.pos, vAdd(sh.pos, d))); // acompaña el mismo desplazamiento
+      }
+    }
     return {
       result, released, gripped,
       slippedByTwoHands: this.slippedByTwoHands, fartGained,
