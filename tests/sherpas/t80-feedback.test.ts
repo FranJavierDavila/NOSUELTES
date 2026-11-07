@@ -222,7 +222,9 @@ describe("T80 · empuje de pierna (soltar pie para estirar el alcance)", () => {
     const dt = 1 / 60;
     for (let i = 0; i < 30; i++) rig.step(dt, 1);
     // 2 anclajes (las dos manos, pies fuera): el empuje exigiría soltar el
-    // otro apoyo → colgar de UNA sola presa. El guard (≥3) lo prohíbe.
+    // otro apoyo → colgar de UNA sola presa. T86: el empuje solo suelta PIES
+    // (aquí no hay ninguno anclado) y jamás el último anclaje: la mano que
+    // queda es LA RED — el guard no toca manos.
     rig.setGrip("foot_l", false);
     rig.setGrip("foot_r", false);
     for (let i = 0; i < 10; i++) rig.step(dt, 1);
@@ -233,7 +235,7 @@ describe("T80 · empuje de pierna (soltar pie para estirar el alcance)", () => {
     rig.beginDrag("hand_r");
     rig.moveDrag(far);
     // durante el arrastre la extremidad arrastrada está libre (1 anclaje):
-    // el guard (≥3) prohíbe el empuje → NINGÚN pie se soltó para estirar
+    // sin pies anclados NO hay empuje posible → ninguna extremidad se mueve
     expect(rig.states.get("foot_l")!.anchored).toBe(false);
     expect(rig.states.get("foot_r")!.anchored).toBe(false);
     expect(rig.states.get("hand_l")!.anchored).toBe(true); // la última red, intacta

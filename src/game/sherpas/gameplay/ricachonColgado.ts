@@ -48,6 +48,11 @@ export const RICACHON_GRAVEDAD = 9.81;
 export const RICACHON_DAMP = 0.88;
 /** Pasadas de relajación de los huesos del cuerpo por paso. */
 export const RICACHON_PASOS = 10;
+/** T86 — RIGIDEZ DE LA ESTRUCTURA (petición del jugador: «la estructura debe
+ *  ser bastante más rígida boca abajo»): la corrección de hueso sube de 0,65
+ *  a 0,85 por pasada — el cuerpo se mantiene en sus longitudes de reposo
+ *  aunque el amarre deslice por la cuerda. */
+export const RICACHON_RIGIDEZ = 0.85;
 
 /** Lastre: hundimiento del NUDO (m/s) mientras el ricachón cuelga. */
 export const RICACHON_LASTRE_MPS = 0.8;
@@ -101,14 +106,20 @@ export const RICACHON_HUESOS: readonly [number, number, number][] = [
 ];
 
 const PIE_IDX: readonly number[] = [RM.footL, RM.footR];
-/** Separación de los pies alrededor del nudo (atado por LOS DOS tobillos). */
-const PIE_SEP_X = 0.06;
+/** Separación de los pies alrededor del nudo (atado por LOS DOS tobillos).
+ *  T86: un poco más separados — se leen como DOS piernas, no una sombra. */
+const PIE_SEP_X = 0.1;
 /** T123: los tobillos cuelgan TIRANTE_M bajo el nudo — entre la cuerda y las
  *  piernas quedan los tirantes visibles (se VE atado, no pegado por arte de
  *  magia a la cuerda). */
 export const TIRANTE_M = 0.13;
 /** El cuerpo cuelga un pelín hacia cámara (no se mete en la línea de cuerda). */
 const Z_CUERPO = -0.06;
+/** T86 — PIERNAS VISIBLES (petición del jugador: «no tiene sentido que no
+ *  aparezcan las piernas en la captura»): las piernas van DELANTE del torso
+ *  (z más negativo = hacia cámara) — boca abajo y con cámara baja, el torso
+ *  ya no las tapa y el amarre (tobillos + tirantes) se lee completo. */
+const Z_PIERNAS = -0.26;
 
 // ---------- cuerpo (verlet, pies clavados al nudo) ----------
 
@@ -116,27 +127,27 @@ const Z_CUERPO = -0.06;
  *  nudo), cabeza abajo. Todo el cuerpo cuelga TIRANTE_M por debajo del nudo. */
 export function ricachonReset(nudo: V3): CuerpoRicachon[] {
   const bodies: CuerpoRicachon[] = new Array(RM_PARTICLES);
-  const put = (i: number, dx: number, dy: number): void => {
-    const pos = v3(nudo.x + dx, nudo.y + dy - TIRANTE_M, nudo.z + Z_CUERPO);
+  const put = (i: number, dx: number, dy: number, z: number): void => {
+    const pos = v3(nudo.x + dx, nudo.y + dy - TIRANTE_M, nudo.z + z);
     bodies[i] = { pos, prev: vClone(pos) };
   };
-  put(RM.head, 0, -1.21);
-  put(RM.chest, 0, -0.97);
-  put(RM.pelvis, 0, -0.63);
-  put(RM.elbowL, -0.15, -1.13);
-  put(RM.elbowR, 0.15, -1.13);
-  put(RM.handL, -0.19, -1.34);
-  put(RM.handR, 0.19, -1.34);
-  put(RM.kneeL, -0.09, -0.31);
-  put(RM.kneeR, 0.09, -0.31);
-  put(RM.footL, -PIE_SEP_X, 0);
-  put(RM.footR, PIE_SEP_X, 0);
+  put(RM.head, 0, -1.21, Z_CUERPO);
+  put(RM.chest, 0, -0.97, Z_CUERPO);
+  put(RM.pelvis, 0, -0.63, Z_CUERPO);
+  put(RM.elbowL, -0.15, -1.13, Z_CUERPO);
+  put(RM.elbowR, 0.15, -1.13, Z_CUERPO);
+  put(RM.handL, -0.19, -1.34, Z_CUERPO);
+  put(RM.handR, 0.19, -1.34, Z_CUERPO);
+  put(RM.kneeL, -0.09, -0.31, Z_PIERNAS);
+  put(RM.kneeR, 0.09, -0.31, Z_PIERNAS);
+  put(RM.footL, -PIE_SEP_X, 0, Z_PIERNAS);
+  put(RM.footR, PIE_SEP_X, 0, Z_PIERNAS);
   return bodies;
 }
 
 function clavaPies(bodies: CuerpoRicachon[], nudo: V3): void {
-  bodies[RM.footL].pos = v3(nudo.x - PIE_SEP_X, nudo.y - TIRANTE_M, nudo.z + Z_CUERPO);
-  bodies[RM.footR].pos = v3(nudo.x + PIE_SEP_X, nudo.y - TIRANTE_M, nudo.z + Z_CUERPO);
+  bodies[RM.footL].pos = v3(nudo.x - PIE_SEP_X, nudo.y - TIRANTE_M, nudo.z + Z_PIERNAS);
+  bodies[RM.footR].pos = v3(nudo.x + PIE_SEP_X, nudo.y - TIRANTE_M, nudo.z + Z_PIERNAS);
 }
 
 /** T123 — CABEZA RÍGIDA: la cabeza vive en el EJE de la espina (pelvis→pecho
@@ -231,7 +242,7 @@ export function pasoRicachon(
       const pa = bodies[a], pb = bodies[b];
       const d = vLen(vSub(pb.pos, pa.pos));
       if (d < 1e-6) continue;
-      const fix = vScale(vSub(pb.pos, pa.pos), ((d - rest) / d) * 0.65);
+      const fix = vScale(vSub(pb.pos, pa.pos), ((d - rest) / d) * RICACHON_RIGIDEZ);
       if (!PIE_IDX.includes(a)) pa.pos = vAdd(pa.pos, fix);
       if (!PIE_IDX.includes(b)) pb.pos = vSub(pb.pos, fix);
     }
@@ -243,7 +254,23 @@ export function pasoRicachon(
 
 // ---------- lastre sobre el nudo de la cuerda ----------
 
-/** El PESO del ricachón hunde el nodo medio de la cuerda A→B:
+/** T86 — PUNTO MÁS BAJO DEL ARCO DE LA CUERDA (puro): el jugador pidió situar
+ *  al ricachón «SIEMPRE en la parte más baja del arco que describe y no estar
+ *  siempre en el centro de la cuerda... si un sherpa sube mucho en relación al
+ *  otro la cuerda hará que el ricachón se acerque al sherpa que se encuentra
+ *  más abajo porque deslizaría por la cuerda hasta la posición baja». */
+export function nudoValle(nodes: readonly NodoVerlet[]): V3 {
+  let best: V3 | null = null;
+  for (const nd of nodes) {
+    if (!best || nd.pos.y < best.y) best = nd.pos;
+  }
+  return best ? vClone(best) : v3(0, 0, 0);
+}
+
+/** El PESO del ricachón hunde la cuerda en SU NODO de amarre (T86: la V se
+ *  forma DONDE CUELGA el ricachón — el nivel pasa el índice del nodo amarre,
+ *  que desliza de nodo en nodo hacia el valle del arco; sin índice, el nodo
+ *  más bajo):
  *  1) hundimiento SIN velocidad (prev acompañado),
  *  2) RICACHON_RELAX pasadas de PBD con extremos fijos — y el CLAMP de comba
  *     DENTRO del bucle: si el clamp va DESPUÉS de la relajación, esta reparte
@@ -252,21 +279,33 @@ export function pasoRicachon(
  *  Mutación in situ: es el paso de render de la cuerda visual. */
 export function pasoLastreNudo(
   nodes: NodoVerlet[], segLen: number, dt: number, a: V3, b: V3, yMin: number,
-  passes = RICACHON_RELAX,
+  passes = RICACHON_RELAX, idx?: number,
 ): void {
   const n = nodes.length;
   if (n < 3) return;
-  const mid = n >> 1;
-  const m = nodes[mid];
+  // T86: con índice de amarre la V nace EXACTAMENTE bajo el ricachón y le
+  // sigue cuando desliza por la cuerda; sin índice, el nodo más bajo.
+  let vi = n >> 1;
+  if (idx !== undefined) {
+    vi = Math.max(1, Math.min(n - 2, idx));
+  } else {
+    for (let i = 0; i < n; i++) if (nodes[i].pos.y < nodes[vi].pos.y) vi = i;
+  }
+  const m = nodes[vi];
   const hundir = RICACHON_LASTRE_MPS * dt;
   m.pos = v3(m.pos.x, m.pos.y - hundir, m.pos.z);
   m.prev = v3(m.prev.x, m.prev.y - hundir, m.prev.z);
   const suelo = yMin - CUERDA_COMBA_MAX;
+  // T86 — el clamp de comba se aplica a TODOS los nodos: con cuerda larga la
+  // holgura cuelga en bucle POR DEBAJO del nudo sujeto y la V se va al abismo;
+  // la comba máxima manda en toda la cuerda, el hundimiento solo añade la V.
   const clava = (): void => {
-    if (m.pos.y < suelo) {
-      const dy = suelo - m.pos.y;
-      m.pos = v3(m.pos.x, m.pos.y + dy, m.pos.z);
-      m.prev = v3(m.prev.x, m.prev.y + dy, m.prev.z);
+    for (const nd of nodes) {
+      if (nd.pos.y < suelo) {
+        const dy = suelo - nd.pos.y;
+        nd.pos = v3(nd.pos.x, nd.pos.y + dy, nd.pos.z);
+        nd.prev = v3(nd.prev.x, nd.prev.y + dy, nd.prev.z);
+      }
     }
   };
   for (let pass = 0; pass < passes; pass++) {

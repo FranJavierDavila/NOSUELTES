@@ -131,17 +131,18 @@ try:
         m = mochila_px(page)
         page.mouse.move(m["x"], m["y"])
         page.mouse.down()
+        # T86: el recorrido creció (GOMA_EXTRA_M 0,9 → 1,6): estirar MÁS
         goma = 0.0
-        for i in range(1, 17):
+        for i in range(1, 25):
             page.mouse.move(m["x"], m["y"] + 16 * i, steps=2)
             page.wait_for_timeout(60)
             goma = sonda(page)["gomaM"] or 0.0
-            if goma >= 0.42:
+            if goma >= 0.72:
                 break
         s = sonda(page)
         fl = s.get("gomaFlecha")
         fat_antes = s["fatigaMax"][pi]
-        assert goma > 0.3, f"la goma no estiró: {goma}"
+        assert goma > 0.55, f"la goma no estiró: {goma}"
         assert fl and fl["frac"] > 0.3 and 1.2 < fl["ang"] < 2.0, f"flecha rara: {fl}"
         print(f"OK goma m={goma:.2f} · flecha frac={fl['frac']:.2f} ang={fl['ang']:.2f} (arriba)", flush=True)
         page.screenshot(path=f"{OUT}/t123-3-goma-barra-flecha.png")

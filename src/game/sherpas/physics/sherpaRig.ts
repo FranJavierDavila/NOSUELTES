@@ -293,6 +293,11 @@ export class SherpaRig {
   private dragDeadZone = false;
   /** regla de dos manos: tiempo sin NINGUNA mano comprometida (s). */
   private noHandsTimer = 0;
+  /** T86 — MOCHILA-CHICLE: true MIENTRAS se tira de la mochila (el nivel lo
+   *  fija). En el dibujo, los brazos se vuelven ELÁSTICOS (el tope óseo deja
+   *  de aplicar a las manos): la mano se ve CLAVADA a su presa y el brazo se
+   *  estira como un chicle — nunca una mano separada del agarre. */
+  gomaEstirando = false;
   /** true SOLO el tick en que el resbalón por dos manos suelta los pies. */
   slippedByTwoHands = false;
   /** T80 — cooldown del EMPUJE DE PIERNA (soltar un pie para que la mano
@@ -544,23 +549,52 @@ export class SherpaRig {
    *  nunca una extremidad fuera del anclaje. false si no hay nada. */
   autoGripVuelo(mode: "alto" | "bajo"): boolean {
     const cintura = this.rig.particles[P.pelvisC].pos;
+    // T86 — "alto": primero el ANCLAJE más alto alcanzable por CUALQUIER mano
+    // libre, y después la MANO MÁS PRÓXIMA a ese anclaje (petición del jugador:
+    // «el anclaje será con la mano más próxima al anclaje, nunca con los
+    // pies»); las manos son las únicas candidatas (en el vuelo jamás un pie).
+    // "bajo": lo más CERCANO por debajo, mano o pie (parar la caída ya).
+    if (mode === "alto") {
+      let bestHold: HoldInstance | null = null;
+      let bestY = -Infinity;
+      for (const hold of this.deps.anchorSystem.holds.values()) {
+        if (this.deps.anchorSystem.anchorAtHold(hold.id)) continue;
+        let reached = false;
+        for (const limb of ["hand_l", "hand_r"] as const) {
+          if (this.dragging === limb) continue;
+          const st = this.states.get(limb)!;
+          if (st.anchored || st.traveling || st.lockedFor > 0) continue;
+          if (this.canReach(limb, hold.pos)) { reached = true; break; }
+        }
+        if (reached && hold.pos.y > bestY) { bestY = hold.pos.y; bestHold = hold; }
+      }
+      if (!bestHold) return false;
+      let bestLimb: Limb | null = null;
+      let bestD = Infinity;
+      for (const limb of ["hand_l", "hand_r"] as const) {
+        if (this.dragging === limb) continue;
+        const st = this.states.get(limb)!;
+        if (st.anchored || st.traveling || st.lockedFor > 0) continue;
+        const d = vLen(vSub(bestHold.pos, this.limbPt[limb]));
+        if (d < bestD) { bestD = d; bestLimb = limb; }
+      }
+      if (!bestLimb) return false;
+      this.gripWanted[bestLimb] = true;
+      this.startTravel(bestLimb, bestHold);
+      return true;
+    }
     let bestLimb: Limb | null = null;
     let bestHold: HoldInstance | null = null;
     let bestScore = -Infinity;
     for (const limb of LIMBS) {
-      if (mode === "alto" && !isHand(limb)) continue; // el vuelo se agarra con las MANOS
       if (this.dragging === limb) continue;
       const st = this.states.get(limb)!;
       if (st.anchored || st.traveling || st.lockedFor > 0) continue;
       for (const hold of this.deps.anchorSystem.holds.values()) {
         if (this.deps.anchorSystem.anchorAtHold(hold.id)) continue;
         if (!this.canReach(limb, hold.pos)) continue;
-        if (mode === "bajo" && hold.pos.y > cintura.y + 0.15) continue;
-        // "alto": prima la ALTURA (la mano un poco por delante del pie);
-        // "bajo": prima lo más CERCANO por debajo (parar la caída ya)
-        const score = mode === "alto"
-          ? hold.pos.y * 10 - (isHand(limb) ? 0 : 2)
-          : -vLen(vSub(hold.pos, this.limbPt[limb]));
+        if (hold.pos.y > cintura.y + 0.15) continue;
+        const score = -vLen(vSub(hold.pos, this.limbPt[limb]));
         if (score > bestScore) { bestScore = score; bestHold = hold; bestLimb = limb; }
       }
     }
@@ -696,11 +730,12 @@ export class SherpaRig {
       if (d < MAGNET_R_DEAD) anyNear = true;
       if (d < bestD && this.canReach(limb, hold.pos)) { best = hold; bestD = d; }
     }
-    if (!best && isHand(limb) && this.simTime - this.footAssistAt > 0.8
-      && this.states.get(limb)!.fatigue < 0.5) {
-      // T80 — con el brazo AGOTADO no hay auto-empuje (el círculo de fatiga
-      // manda: mecanicas2 «las zonas de influencia se reducen con la fatiga»);
-      // el jugador siempre puede soltar el pie a mano y re-arrastrar.
+    if (!best && isHand(limb) && this.simTime - this.footAssistAt > 0.4) {
+      // T80/T86 — EMPUJE DE PIERNA SIN GATES (petición del jugador, captura
+      // zona 2: «si un sherpa marca un agarre alcanzable debe siempre llegar a
+      // él con la mano perfectamente posicionada en el mismo LIBERANDO los
+      // anclajes de los pies si es preciso para que le llegue»): sin puerta de
+      // fatiga (antes el brazo agotado bloqueaba el empuje) y cooldown corto.
       const gain = FOOT_RELEASE_GAIN;
       const maxLen = this.fatiguedReach(limb) + gain;
       let cand: HoldInstance | null = null;
@@ -727,10 +762,12 @@ export class SherpaRig {
   }
 
   /** El pie que conviene soltar para el empuje: el anclado MÁS BAJO (el que
-   *  más tira del cuerpo hacia abajo y menos aporta a la subida) y solo si
-   *  quedan ≥2 anclajes tras soltarlo (nunca colgar de una sola presa). */
+   *  más tira del cuerpo hacia abajo y menos aporta a la subida). T86 — MANOS
+   *  SIEMPRE PRIORITARIAS (petición del jugador): basta con ≥2 anclajes antes
+   *  de soltar (puede quedarse en UNO: la mano sola — la regla de dos manos y
+   *  la fatiga mandan después; jamás se suelta el último anclaje). */
   private footToPushOff(target: V3): Limb | null {
-    if (this.anchorsCount() < 3) return null;
+    if (this.anchorsCount() < 2) return null;
     let pick: Limb | null = null;
     let pickY = Infinity;
     for (const f of ["foot_l", "foot_r"] as const) {
@@ -787,7 +824,11 @@ export class SherpaRig {
   }
 
   /** Suelta el botón: si hay imán, la extremidad vuela a esa presa (viaje
-   *  determinista: SIEMPRE llega). Si no, queda colgando libre. */
+   *  determinista: SIEMPRE llega). Si no, queda colgando libre.
+   *  T86 — MANOS PRIORITARIAS: si la MANO no llega con los pies anclados, se
+   *  sueltan ANTES de viajar (el más bajo primero): la mano acaba SIEMPRE
+   *  perfectamente colocada en la presa marcada — nunca un brazo apuntando a
+   *  un anclaje que no toca (captura zona 2). */
   endDrag(): { limb: Limb; hold: HoldInstance | null } {
     const limb = this.dragging;
     this.dragging = null;
@@ -796,13 +837,23 @@ export class SherpaRig {
     this.dragHold = null;
     this.dragPos = null;
     if (!limb) return { limb: "hand_r", hold: null };
-    if (hold && !this.deps.anchorSystem.anchorAtHold(hold.id) && this.canReach(limb, hold.pos)) {
-      // apunta también el apuntado de teclado: si el viaje falla (presa muerta),
-      // el re-intento del esquema teclado busca cerca de un sitio sensato.
-      this.aim = v3(hold.pos.x, hold.pos.y, this.aim.z);
-      this.gripWanted[limb] = true;
-      this.startTravel(limb, hold);
-      return { limb, hold };
+    if (hold && !this.deps.anchorSystem.anchorAtHold(hold.id)) {
+      if (!this.canReach(limb, hold.pos) && isHand(limb)) {
+        // T86: liberar pies hasta que la presa quede al alcance (o no queden).
+        for (let i = 0; i < 2 && !this.canReach(limb, hold.pos); i++) {
+          const foot = this.footToPushOff(hold.pos);
+          if (!foot) break;
+          this.releaseAnchored(foot);
+        }
+      }
+      if (this.canReach(limb, hold.pos)) {
+        // apunta también el apuntado de teclado: si el viaje falla (presa muerta),
+        // el re-intento del esquema teclado busca cerca de un sitio sensato.
+        this.aim = v3(hold.pos.x, hold.pos.y, this.aim.z);
+        this.gripWanted[limb] = true;
+        this.startTravel(limb, hold);
+        return { limb, hold };
+      }
     }
     void pos;
     return { limb, hold: null };
@@ -1149,6 +1200,20 @@ export class SherpaRig {
           st.lastHoldId = anchor.hold.id;
           this.limbPt[limb] = vClone(anchor.hold.pos);
           gripped.push({ limb, anchor });
+          // T86 — LA MANO QUEDA PERFECTA (captura zona 2: «no visualizamos
+          // poses poco realistas donde se ve un brazo apuntando a un anclaje
+          // al que supuestamente le ha llegado pero que visualmente no puede
+          // alcanzar al estar también anclado por los pies»): si un pie
+          // anclado impide que el cuerpo suba hasta la presa de la mano
+          // (hombro→presa > hueso+margen), se suelta el pie más bajo — uno por
+          // tick; el servo anti-goma y el objetivo de colgado hacen el resto.
+          if (isHand(limb)) {
+            const rootNow = vAdd(this.rig.particles[P.pelvisC].pos, ROOT_OFFSET[limb]);
+            if (vLen(vSub(anchor.hold.pos, rootNow)) > this.boneReach(limb)) {
+              const foot = this.footToPushOff(anchor.hold.pos);
+              if (foot) this.releaseAnchored(foot);
+            }
+          }
           // PRESA SORPRESA VERDE → carga de Super Flatulencia (petición).
           if (anchor.hold.type === "surprise_fart") {
             this.fartCharge = true;
@@ -1431,23 +1496,14 @@ export class SherpaRig {
 
   /** Objetivo de colgajo de una extremidad libre. */
   private dangleTarget(limb: Limb): V3 {
-    // T58-E: COLGADO DE LA CUERDA — petición literal: "debería quedarse
-    // colgado de la cuerda sujetándola con ambas manos". En caught/hauling
-    // (sin cuerda agotada) las MANOS suben a la cuerda, los pies cuelgan.
-    // T81 — POSTURA REAL DE COLGADO (petición: «que extienda las dos manos
-    // hacia arriba cogiendo la cuerda con las mismas»): ya no a media altura
-    // del pecho (+0.52, brazos encogidos) — las dos manos van JUNTAS (±0.045)
-    // a la LÍNEA DE CUERDA sobre la cabeza, con el brazo EXTENDIDO (el tope
-    // del esqueleto: hombro +0.28 → objetivo +1.18 sobre la cadera; el clamp
-    // del hueso deja el brazo recto hacia arriba). El cuerpo pende de la
-    // cuerda: la línea sobre el arnés es vertical y el vaivén la sigue.
-    if ((this.ropeState === "caught" || this.ropeState === "hauling") && isHand(limb) && !this.ropeReleased) {
-      const body = this.rig.particles[P.pelvisC];
-      const vx = (body.pos.x - body.prev.x) * 8;
-      const sway = Math.max(-0.12, Math.min(0.12, -vx));
-      const s = sideOf(limb);
-      return v3(body.pos.x + s * 0.045 + sway, body.pos.y + 1.18, body.pos.z - 0.06);
-    }
+    // T86 — COLGADO DE PESO MUERTO DESDE EL ESTÓMAGO (petición del jugador,
+    // captura: «cae a peso muerto colgando de forma realista quedando colgado
+    // de la zona central de su cuerpo como suspendido desde su estómago y las
+    // extremidades colgando hacia abajo por efecto de la gravedad en una
+    // postura creíble»): la cuerda lo retiene POR EL ARNÉS (la cintura — el
+    // estómago) y TODAS las extremidades cuelgan RELAJADAS hacia abajo — el
+    // pendejo por defecto de abajo ES la postura. Fuera la postura T81 de
+    // manos arriba agarrando la cuerda (el jugador la sustituyó por esta).
     const root = this.rig.particles[CHAIN_ROOT[limb]].pos;
     const len = (isHand(limb) ? ARM.upper + ARM.fore : LEG.thigh + LEG.shin) * 0.92;
     const body = this.rig.particles[P.pelvisC];
@@ -1531,7 +1587,11 @@ export class SherpaRig {
       const rootS = vAdd(body.pos, ROOT_OFFSET[limb]);
       let tip = this.limbPt[limb];
       const dTip = vLen(vSub(tip, rootS));
-      const hardMax = this.boneLen(limb) * STRETCH_HARD;
+      // T86 — CHICLE: con la goma estirada los BRAZOS son elásticos (la mano
+      // vive en la presa y el brazo crece); el tope óseo sigue para pies.
+      const hardMax = isHand(limb) && this.gomaEstirando
+        ? Math.max(this.boneLen(limb) * STRETCH_HARD, dTip)
+        : this.boneLen(limb) * STRETCH_HARD;
       if (dTip > hardMax) tip = vAdd(rootS, vScale(vSub(tip, rootS), hardMax / dTip));
       drawnTip[limb] = tip;
       set(i, tip);

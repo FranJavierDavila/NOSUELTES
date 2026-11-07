@@ -101,10 +101,10 @@ import {
 } from "./paredAjuste"; // T119: panel de ajuste (modo dev)
 import { isTypingTarget } from "./devMode"; // T114: guard de campos de texto
 import {
-  desvioCabeza, maxEstiramiento, pasoLastreNudo, pasoRabietas, pasoRicachon,
+  desvioCabeza, maxEstiramiento, nudoValle, pasoLastreNudo, pasoRabietas, pasoRicachon,
   rabietasInicio, ricachonReset, sacudidaRabieta, RABIETA_FATIGA_POR_S,
   type CuerpoRicachon, type EstadoRabietas,
-} from "./ricachonColgado"; // T122: ricachón de lastre colgado del nudo
+} from "./ricachonColgado"; // T122: ricachón de lastre colgado del valle (T86)
 import { RM, RM_PARTICLES } from "../physics/richMan"; // T123: índices de los tobillos (tirantes)
 
 // ---------- geometría del nivel (calibrada con los huesos del rig) ----------
@@ -134,8 +134,13 @@ export const PRESA_DIAMETRO = 0.26;
 /** B4: tramos de la cuerda visual A→B (22 = 11 por mitad, pool 24 ✓). */
 export const CUERDA_SEG = 22;
 /** B5: hundimiento MÁXIMO extra del cuerpo tirando de la mochila (m):
- *  colgado normal ~0,9 m → el doble de brazo ≈ +0,9 m (efecto chicle). */
-export const GOMA_EXTRA_M = 0.9;
+ *  colgado normal ~0,9 m. T86 (petición del jugador: «debemos permitir más
+ *  recorrido... para que podamos estirarlos bastante más»): el recorrido pasa
+ *  de 0,9 a 1,6 m — casi el DOBLE de goma; la cota de lanzamiento no cambia
+ *  (sigue ~3 cuerpos: v = LANZ_V_MAX·m/GOMA_EXTRA_M).
+ *  T86: el estiramiento dibuja los brazos como CHICLE (manos clavadas a sus
+ *  presas, huesos elásticos — ver rig.gomaEstirando). */
+export const GOMA_EXTRA_M = 1.6;
 /** B5: velocidad máxima de lanzamiento (m/s) → subida balística v²/2g ≈ 3,6 m
  *  ≈ 3 veces el cuerpo del sherpa (petición: «alcance ~3 veces su cuerpo»). */
 export const LANZ_V_MAX = 8.4;
@@ -159,9 +164,14 @@ export const CARGA_GOMA = 0.15;
  *  cuerda (petición: «el esfuerzo… debe ser mayor, aguanta menos antes de
  *  caer»): sus extremidades se fatigan ×2,6 — y si cae, cadena. */
 export const CARGA_COLGADO = 2.6;
-/** Velocidad vertical (m/s) bajo la cual el vuelo ya frena hacia el ápice y
- *  el AGARRE AUTOMÁTICO busca el anclaje más alto alcanzable. */
-export const VUELO_GRAB_VY = 2.2;
+/** Velocidad vertical (m/s) bajo la cual el vuelo YA llegó arriba y el AGARRE
+ *  AUTOMÁTICO busca el anclaje más alto alcanzable. T86 (petición del jugador:
+ *  «durante el ascenso NO se detectarán los anclajes NUNCA... SOLO cuando ha
+ *  llegado arriba empezamos a detectar anclajes para que lo coja en la parte
+ *  alta del recorrido o en el primero que encuentre durante la fase de
+ *  descenso por gravedad»): 0 = SOLO en el ápice o cayendo — durante la subida
+ *  nada engancha (antes 2,2 agarraba todavía SUBIENDO, cortando el vuelo). */
+export const VUELO_GRAB_VY = 0;
 /** SERVO de la goma: el cuerpo se hunde/afloja hacia manosY − base − m.
  *  Solo el DELTA del arrastre no sostenía el estiramiento (el muelle del rig
  *  recuperaba el cuerpo en ~0,2 s). Las MANOS quedan clavadas a sus presas:
@@ -591,6 +601,8 @@ export class ParedNivel {
   private avisoT = 0;
   // cuerda visual: cadena verlet A→B
   private ropeNodes: { pos: V3; prev: V3 }[] = [];
+  // T86 — posición actual del amarre (nudo donde cuelga el ricachón)
+  private amarre: V3 | null = null;
   // T120 minimapa: réplica estática de las presas + índice por id de presa
   private mmHolds: MinimapHold[] = [];
   private mmIdx = new Map<string, number>();
@@ -1111,6 +1123,10 @@ export class ParedNivel {
     // T122 B5 — SERVO de goma: mientras se tira, el CUERPO se mantiene hundido
     // hacia manosY − (COLGADO_BASE_M + m) — el estiramiento «al doble» SOSTENIDO
     // (el muelle del rig ya no puede recuperar el cuerpo: el servo lo rehunde)
+    // T86 — CHICLE VISUAL: mientras la goma está tirando, los brazos del
+    // dibujo son elásticos (rig.gomaEstirando): las MANOS se ven CLAVADAS a
+    // sus presas y solo crece el brazo — nada se mueve del agarre.
+    for (const pi of [0, 1] as const) this.sherpas[pi].gomaEstirando = this.goma?.pi === pi;
     if (this.goma) {
       const rig = this.sherpas[this.goma.pi];
       const manosY = Math.min(
@@ -1289,6 +1305,10 @@ export class ParedNivel {
     // cabiendo en el pool de la escena (24 instancias por mitad)
     const nSeg = CUERDA_SEG;
     this.ropeNodes = [];
+    this.nudoIdx = -1; // T86: el amarre renace con la cuerda
+    this.nudoHacia = -1;
+    this.nudoDesde = null;
+    this.amarre = null;
     const mid = v3((a.x + b.x) / 2, (a.y + b.y) / 2 - 0.35, (a.z + b.z) / 2);
     for (let i = 0; i <= nSeg; i++) {
       const tt = i / nSeg;
@@ -1306,11 +1326,70 @@ export class ParedNivel {
     }
   }
 
-  /** T122: nudo MEDIO de la cuerda visual — donde cuelga el ricachón. */
+  /** T86: punto de amarre del ricachón = la parte MÁS BAJA del arco de la
+   *  cuerda (valle de la comba), NO el nudo medio — «es preciso calcular
+   *  siempre la parte más baja del arco de la cuerda para situar en esa zona
+   *  colgado al Ricachón... deslizará por la cuerda hasta la posición baja».
+   *  El suavizado avanza UNA vez por frame (actualizaNudoValle, desde
+   *  ropeStep); esto solo LEE, así las tirantes, el paso y el reset comparten
+   *  el mismo punto sin acumular el seguimiento varias veces. */
   private nudoCuerda(): V3 {
-    const mid = this.ropeNodes.length >> 1;
-    if (this.ropeNodes[mid]) return vClone(this.ropeNodes[mid].pos);
-    return v3(0, Y_SALIDA - 0.5, Z_PRESA - 0.15);
+    if (this.amarre) return vClone(this.amarre);
+    if (this.ropeNodes.length < 3) return v3(0, Y_SALIDA - 0.5, Z_PRESA - 0.15);
+    return vClone(this.ropeNodes[this.ropeNodes.length >> 1].pos);
+  }
+
+  /** Posición actual del amarre (el nudo donde los pies van atados).
+   *  T86 — DESLIZAMIENTO POR ALTURA DE SHERPAS (petición literal: «si un
+   *  sherpa sube mucho en relación al otro la cuerda hará que el ricachón se
+   *  acerque al sherpa que se encuentra más abajo porque deslizaría por la
+   *  cuerda hasta la posición baja»): la diferencia de altura MANDA — cuando
+   *  un sherpa supera al otro por NUDO_ALT_DIFF_M, el nudo desliza tramo a
+   *  tramo hacia el lado del sherpa más bajo (interpolado sobre la cuerda: se
+   *  VE deslizar). Con alturas parecidas el nudo se queda en el centro.
+   *  Nunca pasa de 2 tramos antes del cabo: el lastre no se cuela al sherpa. */
+  private static NUDO_ALT_DIFF_M = 0.3;
+  private static NUDO_PASO_S = 0.34;   // segundos por tramo deslizado
+  private nudoIdx = -1;                // nodo amarre actual (−1 = sin inicializar)
+  private nudoDesde: V3 | null = null; // posición de partida del deslizamiento
+  private nudoHacia = -1;              // nodo destino del deslizamiento en curso
+  private nudoT = 0;                   // progreso 0..1 del deslizamiento
+
+  private actualizaAmarre(dt: number, a: V3, b: V3): V3 {
+    const nds = this.ropeNodes;
+    if (nds.length < 3) return v3(0, Y_SALIDA - 0.5, Z_PRESA - 0.15);
+    if (this.nudoIdx < 0) this.nudoIdx = nds.length >> 1; // nace en el centro
+    const clampIdx = (i: number): number => Math.max(2, Math.min(nds.length - 3, i));
+    if (this.nudoHacia >= 0) {
+      // deslizamiento en curso: interpola a lo largo del tramo (sobre la cuerda)
+      this.nudoT = Math.min(1, this.nudoT + dt / ParedNivel.NUDO_PASO_S);
+      const k = this.nudoT * this.nudoT * (3 - 2 * this.nudoT); // smoothstep
+      const destino = nds[clampIdx(this.nudoHacia)].pos;
+      const desde = this.nudoDesde ?? nds[this.nudoIdx].pos;
+      if (this.nudoT >= 1) {
+        this.nudoIdx = clampIdx(this.nudoHacia);
+        this.nudoHacia = -1;
+        this.nudoDesde = null;
+        return vClone(destino);
+      }
+      return v3(desde.x + (destino.x - desde.x) * k, desde.y + (destino.y - desde.y) * k, desde.z + (destino.z - desde.z) * k);
+    }
+    // ¿un sherpa está claramente MÁS ARRIBA que el otro? el nudo se desplaza
+    // hacia el LADO del sherpa más bajo (la posición baja del arco)
+    const dif = a.y - b.y; // >0: A más alto → el nudo va hacia B (derecha)
+    if (dif > ParedNivel.NUDO_ALT_DIFF_M && this.nudoIdx < nds.length - 3) {
+      this.nudoHacia = this.nudoIdx + 1;
+      this.nudoDesde = vClone(nds[clampIdx(this.nudoIdx)].pos);
+      this.nudoT = 0;
+      return vClone(this.nudoDesde);
+    }
+    if (dif < -ParedNivel.NUDO_ALT_DIFF_M && this.nudoIdx > 2) {
+      this.nudoHacia = this.nudoIdx - 1;
+      this.nudoDesde = vClone(nds[clampIdx(this.nudoIdx)].pos);
+      this.nudoT = 0;
+      return vClone(this.nudoDesde);
+    }
+    return vClone(nds[clampIdx(this.nudoIdx)].pos);
   }
 
   /** Cuerda visual: UN paso del verlet puro con los parámetros del pack y la
@@ -1323,9 +1402,13 @@ export class ParedNivel {
     const damp = this.d.data.tuning.rope.nodeDamping ?? 0.975;
     const segLen = (this.ajuste.cuerdaMetros + 0.5) / (this.ropeNodes.length - 1);
     pasoCuerdaVerlet(this.ropeNodes, a, b, dt, segLen, g, damp);
-    // T122 — LASTRE: el ricachón (atado por los pies al nudo medio) hunde la V
-    // — comba acotada y tramos que no se estiran (8 pasadas PBD)
-    pasoLastreNudo(this.ropeNodes, segLen, dt, a, b, Math.min(a.y, b.y));
+    // T122 — LASTRE: el ricachón (atado por los pies al VALLE de la cuerda,
+    // T86) hunde la V — comba acotada y tramos que no se estiran (8 pasadas PBD).
+    // La V se forma EN EL AMARRE (nodo más cercano al punto suavizado): la
+    // cuerda cede donde cuelga el ricachón y desliza con él.
+    // T86 — el amarre desliza (UNA decisión por frame) y el lastre hunde SU nodo
+    this.amarre = this.actualizaAmarre(dt, a, b);
+    pasoLastreNudo(this.ropeNodes, segLen, dt, a, b, Math.min(a.y, b.y), undefined, this.nudoIdx);
   }
 
   private frame = (ms: number): void => {
@@ -1483,16 +1566,18 @@ export class ParedNivel {
     this.elMochilaWin = win;
     win.addEventListener("pointerleave", () => this.cierraMochila());
     // T123 B5 — BARRA DE FUERZA + FLECHA sobre la mochila mientras se tira
+    // T86 — MÁS GRANDE (petición literal: «la barra de fuerza más grande»):
+    // 16×112 px y flecha que crece hasta 44 px — se lee de lejos.
     const goma = document.createElement("div");
     goma.id = "pared-goma";
     goma.setAttribute("style", "position:absolute;display:none;pointer-events:none;z-index:25;");
     const barra = document.createElement("div");
-    barra.setAttribute("style", "position:absolute;left:-9px;top:-34px;width:11px;height:64px;background:rgba(8,14,11,.8);border:1px solid #57b17e;border-radius:6px;overflow:hidden;");
+    barra.setAttribute("style", "position:absolute;left:-14px;top:-58px;width:16px;height:112px;background:rgba(8,14,11,.8);border:2px solid #57b17e;border-radius:8px;overflow:hidden;");
     const relleno = document.createElement("div");
     relleno.setAttribute("style", "position:absolute;left:0;bottom:0;width:100%;height:0%;background:linear-gradient(0deg,#57b17e,#e8c15a 70%,#e2694f);");
     barra.appendChild(relleno);
     const flecha = document.createElement("div");
-    flecha.setAttribute("style", "position:absolute;left:0;top:0;transform-origin:0 100%;color:#9fe0b9;font:700 22px/1 system-ui,sans-serif;text-shadow:0 1px 3px rgba(0,0,0,.6);");
+    flecha.setAttribute("style", "position:absolute;left:0;top:0;transform-origin:0 100%;color:#9fe0b9;font:900 30px/1 system-ui,sans-serif;text-shadow:0 1px 4px rgba(0,0,0,.7);");
     flecha.textContent = "➤";
     goma.append(barra, flecha);
     root.appendChild(goma);
@@ -1595,7 +1680,7 @@ export class ParedNivel {
     // mundo tiene Y hacia ARRIBA y el CSS hacia ABAJO: el ángulo se invierte
     const ang = flechaLanzamiento(g.origen, g.puntero);
     this.elGomaFlecha.style.transform = `rotate(${(-ang).toFixed(3)}rad)`;
-    this.elGomaFlecha.style.fontSize = `${(12 + 14 * frac).toFixed(0)}px`;
+    this.elGomaFlecha.style.fontSize = `${(24 + 20 * frac).toFixed(0)}px`;
   }
 
   /** Aviso transitorio (2,4 s) en la parte baja del HUD. */
@@ -2032,19 +2117,28 @@ export class ParedNivel {
 
   /** T122: posición del nudo/cabeza del ricachón (referencia Y_SALIDA).
    *  T123: + estabilidad (desvío de la cabeza respecto al eje de la espina y
-   *  máxima desviación de longitud de hueso — «no se descoyunta»). */
-  private sondaRicachon(): { nudoY: number; comba: number; cabezaY: number; cabezaDesvio: number; maxEstir: number } | null {
+   *  máxima desviación de longitud de hueso — «no se descoyunta»).
+   *  T86: el amarre es el VALLE del arco (no el nudo medio): la sonda da el
+   *  nodo más bajo real de la cuerda y el punto de amarre suavizado + los
+   *  pies (tobillos colgando TIRANTE_M bajo el amarre). */
+  private sondaRicachon(): { nudoY: number; comba: number; cabezaY: number; cabezaDesvio: number; maxEstir: number; valleY: number; valleX: number; nudoX: number; piesY: number } | null {
     const mid = this.ropeNodes.length >> 1;
-    const nudo = this.ropeNodes[mid]?.pos;
+    const nudo = this.nudoCuerda();
     const cabeza = this.richi[0]?.pos; // RM.head = 0
-    if (!nudo || !cabeza) return null;
+    if (!this.ropeNodes[mid] || !cabeza) return null;
+    const valle = nudoValle(this.ropeNodes);
     const arriba = Math.max(this.sherpas[0].waist().y, this.sherpas[1].waist().y);
+    const pieL = this.richi[RM.footL]?.pos;
     return {
       nudoY: nudo.y - Y_SALIDA,
       comba: nudo.y - arriba,
       cabezaY: cabeza.y - Y_SALIDA,
       cabezaDesvio: desvioCabeza(this.richi),
       maxEstir: maxEstiramiento(this.richi),
+      valleY: valle.y - Y_SALIDA,
+      valleX: valle.x,
+      nudoX: nudo.x,
+      piesY: pieL ? pieL.y - Y_SALIDA : 0,
     };
   }
 
