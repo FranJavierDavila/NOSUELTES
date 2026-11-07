@@ -282,8 +282,9 @@ describe("T118 layout de la pared de bloques", () => {
 // ==================== T121 — los 5 detalles nuevos del jugador ====================
 
 import {
-  CUERDA_SEG, GOMA_EXTRA_M, LANZ_V_MAX, MAGNET_VUELO_M, PRESA_SALIENTE,
-  anclajeMasCercano, esFilaDestructible, velLanzamiento,
+  CARGA_COLGADO, CARGA_GOMA, CUERDA_SEG, GOMA_EXTRA_M, LANZ_V_MAX,
+  MUELLES_DEFAULT, PRESA_SALIENTE,
+  esColgado, esFilaDestructible, flechaLanzamiento, multCarga, velLanzamiento,
   velocidadesAnicos, zLocalPresa,
 } from "../../src/game/sherpas/gameplay/paredNivel";
 
@@ -442,14 +443,41 @@ describe("T121 B5 — mochila-chicle: lanzamiento balístico", () => {
     expect(Math.hypot(v.vx, v.vy)).toBeCloseTo(LANZ_V_MAX, 6);
   });
 
-  it("asistencia magnética: elige el anclaje más cercano dentro del radio", () => {
-    const holds = [
-      { id: "a", pos: v3(0, 5, 0) },
-      { id: "b", pos: v3(1, 5, 0) },
-      { id: "c", pos: v3(3, 5, 0) },
-    ];
-    expect(anclajeMasCercano({ x: 0.9, y: 5 }, holds, MAGNET_VUELO_M)?.id).toBe("b");
-    expect(anclajeMasCercano({ x: 2.9, y: 5 }, holds, 0.1)).toBeNull();
+  it("T123 — la flecha apunta a la dirección de lanzamiento (tirar abajo → arriba)", () => {
+    // tirar recto hacia abajo: flecha recta hacia arriba (π/2 en el plano de pared)
+    expect(flechaLanzamiento({ x: 0, y: 2 }, { x: 0, y: 0.6 })).toBeCloseTo(Math.PI / 2, 6);
+    // tirar abajo-izquierda: la flecha sale arriba-derecha
+    const ang = flechaLanzamiento({ x: 0, y: 2 }, { x: -0.8, y: 0.6 });
+    expect(ang).toBeGreaterThan(0);
+    expect(ang).toBeLessThan(Math.PI / 2);
+    // sin arrastre: recto arriba por defecto
+    expect(flechaLanzamiento({ x: 1, y: 1 }, { x: 1, y: 1 })).toBeCloseTo(Math.PI / 2, 6);
+  });
+
+  it("T123 — multCarga: el muelle aliva (×0,15) y el compañero colgado pesa (×2,6)", () => {
+    const colgado: [boolean, boolean] = [false, false];
+    const goma: [boolean, boolean] = [false, false];
+    expect(multCarga(0, colgado, goma)).toBe(1);
+    // el muelle sostiene al que tira: sus manos casi no se fatigan
+    expect(multCarga(0, colgado, [true, false])).toBe(CARGA_GOMA);
+    expect(multCarga(0, colgado, [true, false])).toBeLessThan(0.2);
+    // el compañero COLGADO de la cuerda carga en la espalda del anclado
+    expect(multCarga(0, [false, true], goma)).toBe(CARGA_COLGADO);
+    expect(multCarga(1, [true, false], goma)).toBe(CARGA_COLGADO);
+    // el muelle manda aunque el otro cuelgue (el muelle SOSTIENE al que tira)
+    expect(multCarga(0, [false, true], [true, false])).toBe(CARGA_GOMA);
+  });
+
+  it("T123 — esColgado: cuelga de la cuerda sin NINGÚN anclaje (caught/hauling)", () => {
+    expect(esColgado("caught", 0)).toBe(true);
+    expect(esColgado("hauling", 0)).toBe(true);
+    expect(esColgado("falling", 0)).toBe(false);   // cayendo aún no carga al compañero
+    expect(esColgado("caught", 2)).toBe(false);    // con anclajes ya no cuelga de la cuerda
+    expect(esColgado("climbing", 0)).toBe(false);
+  });
+
+  it("T123 — 3 muelles por sherpa por defecto (el interior de la mochila)", () => {
+    expect(MUELLES_DEFAULT).toBe(3);
   });
 });
 

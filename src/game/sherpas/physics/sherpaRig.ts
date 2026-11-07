@@ -53,9 +53,12 @@ const SPRING_K = 55;            // muelle hacia el objetivo (1/s²)
 const SPRING_C = 13;            // amortiguación (1/s) — ζ≈0.88: swing muere en ~0.6 s
 const MAX_ACC = 60;             // techo de aceleración del muelle (m/s²)
 const MAX_SPEED_HANG = 3.5;     // techo de velocidad colgado (m/s)
-const MAX_SPEED_FALL = 9;       // techo de velocidad en caída (m/s)
+// T123: techo de caída 9 → 22 m/s (el cuerpo tiene PESO REAL — a 9 m/s la
+// caída parecía flotar, petición del jugador) y DAMP_FALL ~1 (el aire no
+// amortigua; el freno real es el tirón de la cuerda, que ya existe).
+const MAX_SPEED_FALL = 22;      // techo de velocidad en caída (m/s)
 const DAMP_HANG = 0.94;         // factor verlet por paso colgado
-const DAMP_FALL = 0.988;        // factor verlet por paso en caída libre
+const DAMP_FALL = 0.998;        // factor verlet por paso en caída libre
 const TRAVEL_SPEED = 3.0;       // velocidad del viaje de extremidad (m/s)
 const TRAVEL_MIN_S = 0.2;
 const TRAVEL_MAX_S = 0.55;
@@ -531,6 +534,42 @@ export class SherpaRig {
     }
   }
 
+  /** T123 — RE-AGARRE AUTOMÁTICO (mochila-chicle y caídas, petición del
+   *  jugador: «el sherpa se tratará de agarrar al anclaje más alto que
+   *  encuentre de forma automática… y se deben poder anclar automáticamente
+   *  a algún agarre inferior»). mode "alto": la presa más ALTA de verdad
+   *  alcanzable por una MANO libre (vuelo balístico). mode "bajo": la presa
+   *  alcanzable (mano o pie) por DEBAJO de la cintura (caída: anclarse a lo
+   *  primero que pasa al alcance). Solo presas libres dentro de canReach —
+   *  nunca una extremidad fuera del anclaje. false si no hay nada. */
+  autoGripVuelo(mode: "alto" | "bajo"): boolean {
+    const cintura = this.rig.particles[P.pelvisC].pos;
+    let bestLimb: Limb | null = null;
+    let bestHold: HoldInstance | null = null;
+    let bestScore = -Infinity;
+    for (const limb of LIMBS) {
+      if (mode === "alto" && !isHand(limb)) continue; // el vuelo se agarra con las MANOS
+      if (this.dragging === limb) continue;
+      const st = this.states.get(limb)!;
+      if (st.anchored || st.traveling || st.lockedFor > 0) continue;
+      for (const hold of this.deps.anchorSystem.holds.values()) {
+        if (this.deps.anchorSystem.anchorAtHold(hold.id)) continue;
+        if (!this.canReach(limb, hold.pos)) continue;
+        if (mode === "bajo" && hold.pos.y > cintura.y + 0.15) continue;
+        // "alto": prima la ALTURA (la mano un poco por delante del pie);
+        // "bajo": prima lo más CERCANO por debajo (parar la caída ya)
+        const score = mode === "alto"
+          ? hold.pos.y * 10 - (isHand(limb) ? 0 : 2)
+          : -vLen(vSub(hold.pos, this.limbPt[limb]));
+        if (score > bestScore) { bestScore = score; bestHold = hold; bestLimb = limb; }
+      }
+    }
+    if (!bestHold || !bestLimb) return false;
+    this.gripWanted[bestLimb] = true;
+    this.startTravel(bestLimb, bestHold);
+    return true;
+  }
+
   // ---------- intenciones del jugador ----------
 
   setAim(p: V3): void { this.aim = v3(p.x, p.y, p.z); }
@@ -577,7 +616,17 @@ export class SherpaRig {
 
   /** Alcance visual máximo de la extremidad desde su raíz MIENTRAS ARRASTRA:
    *  reducido por la fatiga (coherente con el círculo que se dibuja). */
-  dragMaxReach(limb: Limb): number { return this.fatiguedReach(limb); }
+  /** T123 — ALCANCE REALISTA DEL ARRASTRE (petición: «NUNCA puede aparecer un
+   *  pie o una mano fuera del anclaje… si se estira mucho la mano apunta al
+   *  anclaje pero no lo tiene agarrado y eso no puede ser»): el seguimiento
+   *  del puntero se acota a la longitud ÓSEA EXACTA (sin el margen blando del
+   *  8%) — el brazo dibujado jamás pasa de su largo real; lo que quede fuera
+   *  no se permite (el imán/viaje usa el alcance de juego por encima). */
+  dragMaxReach(limb: Limb): number {
+    const loss = this.deps.tuning.limb.reachFatigueLoss ?? REACH_LOSS_AT_FULL_FATIGUE;
+    const f = TEST_MODE.enabled ? 0 : Math.min(1, Math.max(0, this.states.get(limb)!.fatigue));
+    return this.boneLen(limb) * (1 - loss * f) * TEST_MODE.reachMul;
+  }
 
   /** Busca el mejor hold libre para la extremidad cerca del apuntado y dentro del alcance. */
   private findHoldFor(limb: Limb): HoldInstance | null {

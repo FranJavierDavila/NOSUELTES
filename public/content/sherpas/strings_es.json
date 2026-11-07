@@ -378,8 +378,12 @@
     "mochila": {
       "manos": "Ancla las DOS manos para tirar de la mochila",
       "agotado": "Sin lanzamientos",
-      "vuelo": "¡Pulsa una presa para agarrarte!",
-      "rompe": "¡El bloque va a romperse!"
+      "rompe": "¡El bloque va a romperse!",
+      "interior": "Muelles de lanzamiento",
+      "selecciona": "Pulsa un muelle para armar el lanzamiento",
+      "usar": "Usar",
+      "armado": "Muelle armado: arrastra la mochila hacia abajo y suelta",
+      "vueloAuto": "¡Vuela! Buscará el anclaje más alto"
     },
     "ricachon": {
       "enfado": "¡Sacadme de aquí YA!",

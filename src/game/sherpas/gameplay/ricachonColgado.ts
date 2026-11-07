@@ -21,6 +21,16 @@
 // El nivel (paredNivel.ts) aporta rng, estado, mood y bocadillo; la escena
 // (syncRichMan + sayRichLine) solo pinta.
 
+// T123 — ESTABILIDAD (petición del jugador: «tiembla y se mueve como un
+// flan… la cabeza le da vueltas, los brazos se le dislocan… más predecible»):
+//  · DAMPING FUERTE (0,985 → 0,88): el verlet muere en 2-3 pasos — nada de
+//  gelatina; huesos 10 pasadas (antes 6): longitudes de reposo clavadas.
+//  · CABEZA RÍGIDA en el eje del cuerpo (proyección espina cada pasada):
+//  no gira independiente, sigue la línea pelvis→pecho — «la cabeza no da
+//  vueltas». Tampoco recibe fuerzas propias (solo pecho y pelvis).
+//  · BRACEO/VAIVÉN ×0,3 y más lentos: movimiento VISIBLE pero sutil y
+//  predecible; rabietas más espaciadas (pausa 10-18 s) y patada menor.
+
 import { v3, vAdd, vClone, vLen, vScale, vSub, type V3 } from "../../physics/pbd/math";
 import { RM, RM_PARTICLES } from "../physics/richMan";
 
@@ -33,9 +43,11 @@ export interface NodoVerlet { pos: V3; prev: V3; }
 // ---------- constantes ----------
 
 export const RICACHON_GRAVEDAD = 9.81;
-export const RICACHON_DAMP = 0.985;
+/** T123: damping FUERTE — el temblor tipo flan era el verlet casi sin
+ *  amortiguar (0,985). 0,88 mata la oscilación en 2-3 pasos. */
+export const RICACHON_DAMP = 0.88;
 /** Pasadas de relajación de los huesos del cuerpo por paso. */
-export const RICACHON_PASOS = 6;
+export const RICACHON_PASOS = 10;
 
 /** Lastre: hundimiento del NUDO (m/s) mientras el ricachón cuelga. */
 export const RICACHON_LASTRE_MPS = 0.8;
@@ -47,9 +59,10 @@ export const CUERDA_COMBA_MAX = 3.4;
 /** Pasadas PBD del lastre: con 2 los tramos se estiraban 2× (nudo a y −7). */
 export const RICACHON_RELAX = 8;
 
-/** RABIETAS: primera entre 6-10 s, pausa entre 8-15 s, 3 s trapezoidales. */
-export const RABIETA_PRIMERA_S: [number, number] = [6, 10];
-export const RABIETA_PAUSA_S: [number, number] = [8, 15];
+/** RABIETAS: primera entre 7-11 s, pausa entre 10-18 s (T123: más espaciadas
+ *  — «no cada dos por tres»), 3 s trapezoidales. */
+export const RABIETA_PRIMERA_S: [number, number] = [7, 11];
+export const RABIETA_PAUSA_S: [number, number] = [10, 18];
 export const RABIETA_DUR_S = 3.0;
 export const RABIETA_SUBIDA_S = 0.4;
 export const RABIETA_BAJADA_S = 0.6;
@@ -58,16 +71,24 @@ export const RABIETA_SACUDIDA = 2.2;
 /** Fatiga extra por extremidad anclada mientras la rabieta dura (s⁻¹). */
 export const RABIETA_FATIGA_POR_S = 0.012;
 
-/** Vaivén del cuerpo: PERIODO NATURAL del péndulo ~2,3 s — a 2,4 Hz el cuerpo
- *  apenas se movía (los tests lo certifican); 0,6 Hz se ve. */
-export const VAIVEN_HZ = 0.6;
-export const VAIVEN_ACC = 0.9;
+/** Vaivén del cuerpo: péndulo LENTO y sutil (T123: ×0,3 — el vaivén a 0,6 Hz
+ *  con acc 0,9 daba la sensación de flan; 0,45 Hz y 0,3 se mueve sin marear). */
+export const VAIVEN_HZ = 0.45;
+export const VAIVEN_ACC = 0.3;
 /** Patadas durante la rabieta: las RODILLAS se suben (los pies van atados). */
 export const PATADA_HZ = 1.6;
-export const PATADA_AMP_M = 0.13;
-/** Braceo ambiental (siempre, también sin rabieta). */
-export const BRACEO_HZ = 0.5;
-export const BRACEO_ACC = 0.35;
+export const PATADA_AMP_M = 0.1;
+/** Braceo ambiental (siempre, también sin rabieta): SUTIL y controlado. */
+export const BRACEO_HZ = 0.4;
+export const BRACEO_ACC = 0.12;
+/** Longitud del hueso cuello→cabeza: la cabeza se PROYECTA al eje de la
+ *  espina con esta longitud (T123: rígida, no gira ni se descoyunta). */
+export const RICACHON_CUELLO_M = 0.24;
+
+/** Braceo acotado (T123): la mano orbita el codo a RADIO FIJO y el ángulo
+ *  nunca sale de ±BRACEO_MAX_RAD (≈29°) — brazos que no se descoyuntan. */
+export const MANO_RADIO = 0.21;
+export const BRACEO_MAX_RAD = 0.5;
 
 /** Huesos [a, b, longitud de reposo] con los índices RM (11 cuerpos). */
 export const RICACHON_HUESOS: readonly [number, number, number][] = [
@@ -82,16 +103,21 @@ export const RICACHON_HUESOS: readonly [number, number, number][] = [
 const PIE_IDX: readonly number[] = [RM.footL, RM.footR];
 /** Separación de los pies alrededor del nudo (atado por LOS DOS tobillos). */
 const PIE_SEP_X = 0.06;
+/** T123: los tobillos cuelgan TIRANTE_M bajo el nudo — entre la cuerda y las
+ *  piernas quedan los tirantes visibles (se VE atado, no pegado por arte de
+ *  magia a la cuerda). */
+export const TIRANTE_M = 0.13;
 /** El cuerpo cuelga un pelín hacia cámara (no se mete en la línea de cuerda). */
 const Z_CUERPO = -0.06;
 
 // ---------- cuerpo (verlet, pies clavados al nudo) ----------
 
-/** Nace boca abajo colgando del nudo: pies ARRIBA (en el nudo), cabeza abajo. */
+/** Nace boca abajo colgando del nudo: pies ARRIBA (en los tirantes, bajo el
+ *  nudo), cabeza abajo. Todo el cuerpo cuelga TIRANTE_M por debajo del nudo. */
 export function ricachonReset(nudo: V3): CuerpoRicachon[] {
   const bodies: CuerpoRicachon[] = new Array(RM_PARTICLES);
   const put = (i: number, dx: number, dy: number): void => {
-    const pos = v3(nudo.x + dx, nudo.y + dy, nudo.z + Z_CUERPO);
+    const pos = v3(nudo.x + dx, nudo.y + dy - TIRANTE_M, nudo.z + Z_CUERPO);
     bodies[i] = { pos, prev: vClone(pos) };
   };
   put(RM.head, 0, -1.21);
@@ -109,12 +135,51 @@ export function ricachonReset(nudo: V3): CuerpoRicachon[] {
 }
 
 function clavaPies(bodies: CuerpoRicachon[], nudo: V3): void {
-  bodies[RM.footL].pos = v3(nudo.x - PIE_SEP_X, nudo.y, nudo.z + Z_CUERPO);
-  bodies[RM.footR].pos = v3(nudo.x + PIE_SEP_X, nudo.y, nudo.z + Z_CUERPO);
+  bodies[RM.footL].pos = v3(nudo.x - PIE_SEP_X, nudo.y - TIRANTE_M, nudo.z + Z_CUERPO);
+  bodies[RM.footR].pos = v3(nudo.x + PIE_SEP_X, nudo.y - TIRANTE_M, nudo.z + Z_CUERPO);
+}
+
+/** T123 — CABEZA RÍGIDA: la cabeza vive en el EJE de la espina (pelvis→pecho
+ *  prolongado) a longitud de cuello — no gira independiente («la cabeza le da
+ *  vueltas», petición del jugador). Mutación in situ de su pos (prev queda:
+ *  es una proyección geométrica, no velocidad). */
+function clavaCabeza(bodies: CuerpoRicachon[]): void {
+  const pelvis = bodies[RM.pelvis].pos;
+  const chest = bodies[RM.chest].pos;
+  const eje = vSub(chest, pelvis);
+  const d = vLen(eje);
+  if (d < 1e-5) return;
+  bodies[RM.head].pos = vAdd(chest, vScale(eje, RICACHON_CUELLO_M / d));
+}
+
+/** Desvío de la cabeza respecto al eje de la espina (m) — lo miden los tests
+ *  y la sonda E2E para certificar «la cabeza no da vueltas». */
+export function desvioCabeza(bodies: CuerpoRicachon[]): number {
+  if (bodies.length < RM_PARTICLES) return 0;
+  const pelvis = bodies[RM.pelvis].pos;
+  const chest = bodies[RM.chest].pos;
+  const head = bodies[RM.head].pos;
+  const eje = vSub(chest, pelvis);
+  const d = vLen(eje);
+  if (d < 1e-5) return vLen(vSub(head, chest)) ;
+  const sobreEje = vAdd(pelvis, vScale(eje, vLen(vSub(head, pelvis)) / d));
+  return vLen(vSub(head, sobreEje));
+}
+
+/** Máxima desviación de longitud de hueso respecto al reposo (m): los tests
+ *  y la sonda la usan para certificar «no se descoyunta». */
+export function maxEstiramiento(bodies: CuerpoRicachon[]): number {
+  let m = 0;
+  for (const [a, b, rest] of RICACHON_HUESOS) {
+    const d = vLen(vSub(bodies[b].pos, bodies[a].pos));
+    m = Math.max(m, Math.abs(d - rest));
+  }
+  return m;
 }
 
 /** Un paso del cuerpo: integración verlet (los pies NO integran: van clavados),
- *  fuerzas ambientales (braceo, vaivén, patadas) y relajación de huesos. */
+ *  fuerzas ambientales SUTILES (braceo, vaivén, patadas) y relajación de
+ *  huesos + cabeza rígida en el eje. */
 export function pasoRicachon(
   bodies: CuerpoRicachon[], nudo: V3, dt: number, t: number, rabietaAmp: number,
 ): void {
@@ -129,34 +194,51 @@ export function pasoRicachon(
     b.prev = vClone(b.pos);
     b.pos = v3(b.pos.x + vx, b.pos.y + vy - RICACHON_GRAVEDAD * dt * dt, b.pos.z + vz);
   }
-  // vaivén del cuerpo (péndulo lento) + braceo ambiental
+  // vaivén del cuerpo (péndulo lento): SOLO pecho y pelvis — la cabeza va en
+  // el eje (clavaCabeza), nunca recibe empujes propios
   const vaiven = Math.sin(t * 2 * Math.PI * VAIVEN_HZ) * VAIVEN_ACC * (0.25 + rabietaAmp)
-    + Math.sin(t * 2 * Math.PI * BRACEO_HZ) * BRACEO_ACC;
-  for (const i of [RM.head, RM.chest, RM.pelvis] as const) {
+    + Math.sin(t * 2 * Math.PI * BRACEO_HZ) * BRACEO_ACC * 0.5;
+  for (const i of [RM.chest, RM.pelvis] as const) {
     const b = bodies[i];
     b.pos = v3(b.pos.x + vaiven * dt * dt, b.pos.y, b.pos.z);
   }
-  const braceo = Math.sin(t * 2 * Math.PI * BRACEO_HZ * 1.7) * BRACEO_ACC * (0.5 + rabietaAmp);
-  bodies[RM.handL].pos = v3(bodies[RM.handL].pos.x - braceo * dt * dt, bodies[RM.handL].pos.y, bodies[RM.handL].pos.z);
-  bodies[RM.handR].pos = v3(bodies[RM.handR].pos.x + braceo * dt * dt, bodies[RM.handR].pos.y, bodies[RM.handR].pos.z);
+  // braceo ambiental acotado (T123): la mano orbita el codo a RADIO FIJO con
+  // un ángulo que es FUNCIÓN DIRECTA del tiempo (determinista, acotado a
+  // ±BRACEO_MAX_RAD) — los brazos se mecen, jamás se descoyuntan
+  const braceoAng = Math.sin(t * 2 * Math.PI * BRACEO_HZ * 1.7) * BRACEO_MAX_RAD * (0.3 + 0.7 * rabietaAmp);
+  for (const [mano, codo, signo] of [[RM.handL, RM.elbowL, -1], [RM.handR, RM.elbowR, 1]] as const) {
+    const c = bodies[codo].pos;
+    bodies[mano].pos = v3(
+      c.x + Math.sin(braceoAng) * MANO_RADIO * signo,
+      c.y - Math.cos(braceoAng) * MANO_RADIO,
+      bodies[mano].pos.z,
+    );
+  }
   // patadas: flexión ALTERNADA de rodillas (los pies van atados al nudo)
   if (rabietaAmp > 0.02) {
     const kick = Math.sin(t * 2 * Math.PI * PATADA_HZ) * PATADA_AMP_M * rabietaAmp;
     bodies[RM.kneeL].pos = v3(bodies[RM.kneeL].pos.x, bodies[RM.kneeL].pos.y + Math.max(0, kick), bodies[RM.kneeL].pos.z);
     bodies[RM.kneeR].pos = v3(bodies[RM.kneeR].pos.x, bodies[RM.kneeR].pos.y + Math.max(0, -kick), bodies[RM.kneeR].pos.z);
   }
+  // T123: los huesos se relajan DESDE LOS PIES (extremo CLAVADO) hacia
+  // arriba — en orden directo la cadena atenúa las correcciones y el torso
+  // acababa estirado +0,2 m en vivo (la gravedad mete más de lo que sale);
+  // corrección 0,65 (proyección casi dura) + 10 pasadas = huesos clavados.
   for (let pass = 0; pass < RICACHON_PASOS; pass++) {
     clavaPies(bodies, nudo);
-    for (const [a, b, rest] of RICACHON_HUESOS) {
+    for (let h = RICACHON_HUESOS.length - 1; h >= 0; h--) {
+      const [a, b, rest] = RICACHON_HUESOS[h];
       const pa = bodies[a], pb = bodies[b];
       const d = vLen(vSub(pb.pos, pa.pos));
       if (d < 1e-6) continue;
-      const fix = vScale(vSub(pb.pos, pa.pos), ((d - rest) / d) * 0.5);
+      const fix = vScale(vSub(pb.pos, pa.pos), ((d - rest) / d) * 0.65);
       if (!PIE_IDX.includes(a)) pa.pos = vAdd(pa.pos, fix);
       if (!PIE_IDX.includes(b)) pb.pos = vSub(pb.pos, fix);
     }
+    clavaCabeza(bodies);
   }
   clavaPies(bodies, nudo);
+  clavaCabeza(bodies);
 }
 
 // ---------- lastre sobre el nudo de la cuerda ----------

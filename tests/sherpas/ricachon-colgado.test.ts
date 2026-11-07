@@ -6,7 +6,7 @@ import { v3, vLen, vSub, type V3 } from "../../src/game/physics/pbd/math";
 import { RM, RM_PARTICLES } from "../../src/game/sherpas/physics/richMan";
 import {
   CUERDA_COMBA_MAX, pasoLastreNudo, pasoRabietas, pasoRicachon, RABIETA_DUR_S,
-  RABIETA_SACUDIDA, rabietasInicio, ricachonReset, sacudidaRabieta,
+  RABIETA_SACUDIDA, rabietasInicio, ricachonReset, sacudidaRabieta, TIRANTE_M
 } from "../../src/game/sherpas/gameplay/ricachonColgado";
 
 function mulberry(seed: number): () => number {
@@ -32,24 +32,24 @@ function cadena(a: V3, b: V3, nSeg: number, sag: number): { pos: V3; prev: V3 }[
   return nodes;
 }
 
-describe("ricachón colgado de la cuerda (T122)", () => {
-  it("nace BOCA ABAJO: 11 cuerpos, pies EN el nudo y cabeza por debajo de la cadera", () => {
+describe("ricachón colgado de la cuerda (T122, T123: atado con TIRANTES)", () => {
+  it("nace BOCA ABAJO: 11 cuerpos, pies TIRANTE_M bajo el nudo y cabeza por debajo de la cadera", () => {
     const b = ricachonReset(NUDO);
     expect(b).toHaveLength(RM_PARTICLES);
     expect(b[RM.head].pos.y).toBeLessThan(b[RM.pelvis].pos.y);
-    expect(b[RM.footL].pos.y).toBeCloseTo(NUDO.y, 5);
-    expect(b[RM.footR].pos.y).toBeCloseTo(NUDO.y, 5);
+    expect(b[RM.footL].pos.y).toBeCloseTo(NUDO.y - TIRANTE_M, 5);
+    expect(b[RM.footR].pos.y).toBeCloseTo(NUDO.y - TIRANTE_M, 5);
   });
 
-  it("verlet estable 900 pasos (con y sin rabieta): finito, acotado y pies SIEMPRE en el nudo", () => {
+  it("verlet estable 900 pasos (con y sin rabieta): finito, acotado y pies SIEMPRE colgados del tirante", () => {
     const b = ricachonReset(NUDO);
     for (let i = 0; i < 900; i++) pasoRicachon(b, NUDO, 1 / 60, i / 60, i > 300 ? 1 : 0);
     for (const c of b) {
       expect(Number.isFinite(c.pos.x + c.pos.y + c.pos.z)).toBe(true);
       expect(Math.abs(c.pos.y - NUDO.y)).toBeLessThan(6);
     }
-    expect(b[RM.footL].pos.y).toBeCloseTo(NUDO.y, 4);
-    expect(b[RM.footR].pos.y).toBeCloseTo(NUDO.y, 4);
+    expect(b[RM.footL].pos.y).toBeCloseTo(NUDO.y - TIRANTE_M, 4);
+    expect(b[RM.footR].pos.y).toBeCloseTo(NUDO.y - TIRANTE_M, 4);
   });
 
   it("LASTRE: el nudo se hunde SIN estirar los tramos (8 pasadas PBD)", () => {
@@ -81,7 +81,7 @@ describe("ricachón colgado de la cuerda (T122)", () => {
     expect(nodes[11].pos.y).toBeGreaterThanOrEqual(Math.min(a.y, abajo.y) - CUERDA_COMBA_MAX - 1e-6);
   });
 
-  it("rabietas deterministas: primera entre 6-10 s y pausas entre 8-15 s", () => {
+  it("rabietas deterministas: primera entre 7-11 s y pausas entre 10-18 s (T123 espaciadas)", () => {
     const est = rabietasInicio();
     const rng = mulberry(20261107);
     const arranques: number[] = [];
@@ -92,12 +92,12 @@ describe("ricachón colgado de la cuerda (T122)", () => {
       if (r.nueva) arranques.push(t);
     }
     expect(arranques.length).toBeGreaterThanOrEqual(10);
-    expect(arranques[0]).toBeGreaterThanOrEqual(6);
-    expect(arranques[0]).toBeLessThanOrEqual(10);
+    expect(arranques[0]).toBeGreaterThanOrEqual(7);
+    expect(arranques[0]).toBeLessThanOrEqual(11);
     for (let i = 1; i < arranques.length; i++) {
       const pausa = arranques[i] - (arranques[i - 1] + RABIETA_DUR_S);
-      expect(pausa).toBeGreaterThanOrEqual(8 - 1e-6);
-      expect(pausa).toBeLessThanOrEqual(15 + 1e-6);
+      expect(pausa).toBeGreaterThanOrEqual(10 - 1e-6);
+      expect(pausa).toBeLessThanOrEqual(18 + 1e-6);
     }
   });
 

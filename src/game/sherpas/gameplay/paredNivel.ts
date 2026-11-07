@@ -46,13 +46,25 @@
 //       (encaja en el pool de la escena: 24 por mitad) — parece una cuerda
 //       real y no 6 eslabones rígidos.
 //  B5 · MOCHILA-CHICLE: clic en la mochila (backpackAt de la escena, T101)
-//       muestra un badge de MUELLE con los lanzamientos restantes; arrastrar
-//       hacia ABAJO con las DOS manos ancladas suelta los pies y hunde el
-//       cuerpo hasta el DOBLE de colgao (goma, GOMA_EXTRA_M): al soltar sale
-//       disparado en la dirección mochila→puntero invertida (velLanzamiento),
-//       con alcance ~3 cuerpos (LANZ_V_MAX); en el vuelo balístico se pulsa
-//       una presa para agarrarse (asistencia magnética MAGNET_VUELO_M).
-//       Lanzamientos limitados (lanzamientosMax, default 3).
+//       abre el INTERIOR con los MUELLES de lanzamiento (3: cada uso gasta
+//       1); se PULSA un muelle para ARMAR el lanzamiento; arrastrar hacia
+//       ABAJO con las DOS manos ancladas estira SOLO los brazos como chicle
+//       (las manos quedan CLAVADAS a sus presas — el muelle sostiene el
+//       cuerpo y la fatiga de los brazos casi no corre) con BARRA DE FUERZA
+//       y FLECHA de dirección sobre la mochila; SOLO al soltar sale
+//       disparado en la dirección de la flecha (tope ≈ 3 cuerpos,
+//       LANZ_V_MAX) y en el vuelo se agarra AUTOMÁTICAMENTE al anclaje más
+//       alto que encuentre al alcance (sin clic).
+//  T123 · CAÍDAS CON PESO REAL: fuera el techo de velocidad de 9 m/s (22) y
+//       el amortiguado del aire; durante la caída se ANCLA AUTOMÁTICAMENTE
+//       a lo primero alcanzable POR DEBAJO (autoGripVuelo "bajo"); si no
+//       hay nada, la cuerda lo retiene y el compañero AGUANTA SU PESO
+//       (carga ×2,6 → fatiga mucho más rápida: «aguanta menos antes de
+//       caer» — y si cae, la cadena).  ·  RICACHÓN ESTABLE: damping fuerte,
+//       cabeza rígida en el eje de la espina, braceo acotado, tirantes
+//       visibles piernas↔cuerda.  ·  ALCANCES REALISTAS: el arrastre se
+//       acota a la longitud ósea exacta (dragMaxReach) — jamás una mano o
+//       un pie estirados fuera del anclaje.
 //
 // Aislamiento: el juego principal no se toca. Este módulo crea SU PROPIA
 // SherpaScene (patrón endGuestToMenu de mount.ts: un canvas = un motor) y
@@ -61,7 +73,8 @@
 // (misma receta generateChunk que ensureMassifRockMaterial).
 
 import {
-  Color3, Matrix, Mesh, MeshBuilder, PBRMaterial, RawTexture, Texture, TransformNode,
+  Color3, Matrix, Mesh, MeshBuilder, PBRMaterial, Quaternion, RawTexture,
+  StandardMaterial, Texture, TransformNode, Vector3,
 } from "@babylonjs/core";
 import { v3, vAdd, vClone, vLen, vScale, vSub, type V3 } from "../../physics/pbd/math";
 import {
@@ -88,10 +101,11 @@ import {
 } from "./paredAjuste"; // T119: panel de ajuste (modo dev)
 import { isTypingTarget } from "./devMode"; // T114: guard de campos de texto
 import {
-  pasoLastreNudo, pasoRabietas, pasoRicachon, rabietasInicio, ricachonReset,
-  sacudidaRabieta, RABIETA_FATIGA_POR_S,
+  desvioCabeza, maxEstiramiento, pasoLastreNudo, pasoRabietas, pasoRicachon,
+  rabietasInicio, ricachonReset, sacudidaRabieta, RABIETA_FATIGA_POR_S,
   type CuerpoRicachon, type EstadoRabietas,
 } from "./ricachonColgado"; // T122: ricachón de lastre colgado del nudo
+import { RM, RM_PARTICLES } from "../physics/richMan"; // T123: índices de los tobillos (tirantes)
 
 // ---------- geometría del nivel (calibrada con los huesos del rig) ----------
 // Alcances reales (sherpaRig.ts): brazo 0,88×1,08 ≈ 0,95 m; pierna 0,97×1,08 ≈ 1,05 m;
@@ -127,30 +141,31 @@ export const GOMA_EXTRA_M = 0.9;
 export const LANZ_V_MAX = 8.4;
 /** B5: velocidad mínima al soltar con estiramiento perceptible (m/s). */
 export const LANZ_V_MIN = 2.2;
-/** B5: radio de ASISTENCIA MAGNÉTICA del agarre durante el vuelo (m). */
-export const MAGNET_VUELO_M = 1.15;
 /** B3: ventana de aviso (temblor) antes de la rotura (s). */
 export const ROTURA_AVISO_S = 2.5;
-/** B5: umbral de píxeles que separa un CLIC (badge) de un ARRASTRE (tiro). */
+/** B5: umbral de píxeles que separa un CLIC (interior) de un ARRASTRE (tiro). */
 export const GOMA_UMBRAL_PX = 14;
 
-// T122 — arreglos del agarre en vuelo y de la goma (repro E2E: el clic
-// beginDrag+endDrag era inalcanzable en pleno vuelo y la goma no se sostenía)
-/** Imán de CUERPO durante el vuelo hacia la presa ELEGIDA (m/s²): curva el
- *  arco balístico — el imán del arrastre exige canReach EN el clic, imposible
- *  en vuelo. */
-export const IMAN_CUERPO_ACC = 6.5;
-/** Freno vertical cuando la presa elegida queda ARRIBA del arco (m/s²). */
-export const IMAN_FRENO_ARRIBA = 3.2;
-/** Distancia cintura→presa a la que la mano libre SALE SOLA (m). */
-export const AGARRE_VUELO_M = 1.55;
-/** Multiplicador del imán cuando la mano ya SALIÓ (fase de pinza): la mano no
- *  ancla si el cuerpo sigue cayendo más rápido de lo que el brazo alcanza —
- *  6,5 × 2,2 = 14,3 m/s² > gravedad: el cuerpo SUBE hacia la presa elegida. */
-export const IMAN_MANO_MULT = 2.2;
+// T123 — mochila-muelles, caídas con peso y vuelo con auto-agarre
+/** Muelles de lanzamiento por sherpa (el interior de la mochila muestra 3;
+ *  cada lanzamiento gasta 1 — el paralelo de los 10 anclajes del nivel
+ *  anterior). El panel dev sigue exponiendo lanzamientosMax. */
+export const MUELLES_DEFAULT = 3;
+/** El MUELLE sostiene el cuerpo mientras se tira de la mochila: las manos
+ *  NO se fatigan de colgar (carga ×0,15) — antes resbalaban de los anclajes
+ *  («se queda colgado de ambas manos pero las separa de los anclajes»). */
+export const CARGA_GOMA = 0.15;
+/** Carga EXTRA para el sherpa anclado mientras el compañero cuelga de la
+ *  cuerda (petición: «el esfuerzo… debe ser mayor, aguanta menos antes de
+ *  caer»): sus extremidades se fatigan ×2,6 — y si cae, cadena. */
+export const CARGA_COLGADO = 2.6;
+/** Velocidad vertical (m/s) bajo la cual el vuelo ya frena hacia el ápice y
+ *  el AGARRE AUTOMÁTICO busca el anclaje más alto alcanzable. */
+export const VUELO_GRAB_VY = 2.2;
 /** SERVO de la goma: el cuerpo se hunde/afloja hacia manosY − base − m.
  *  Solo el DELTA del arrastre no sostenía el estiramiento (el muelle del rig
- *  recuperaba el cuerpo en ~0,2 s). */
+ *  recuperaba el cuerpo en ~0,2 s). Las MANOS quedan clavadas a sus presas:
+ *  el servo mueve el CUERPO, nunca las manos (GOMA_CUERPO no las incluye). */
 export const COLGADO_BASE_M = 1.15;
 export const GOMA_SERVO_MPS = 5.4;
 
@@ -181,18 +196,35 @@ export function velLanzamiento(
   return { vx: (dx / len) * v, vy: (dy / len) * v };
 }
 
-/** B5 asistencia magnética: el anclaje más cercano al punto del clic dentro
- *  del radio (null si ninguno). */
-export function anclajeMasCercano<T extends { pos: V3; id: string }>(
-  p: { x: number; y: number }, holds: T[], radio: number,
-): T | null {
-  let best: T | null = null;
-  let bd = radio;
-  for (const h of holds) {
-    const d = Math.hypot(h.pos.x - p.x, h.pos.y - p.y);
-    if (d < bd) { bd = d; best = h; }
-  }
-  return best;
+/** T123 B5 — FLECHA de lanzamiento: ángulo (rad) de la dirección de tiro en
+ *  el plano de pared = vector puntero→mochila (tirar abajo → flecha arriba).
+ *  La FUERZA la da el estiramiento m (frac = m / GOMA_EXTRA_M, 0..1). */
+export function flechaLanzamiento(
+  origen: { x: number; y: number }, puntero: { x: number; y: number },
+): number {
+  const dx = origen.x - puntero.x;
+  const dy = origen.y - puntero.y;
+  if (Math.hypot(dx, dy) < 1e-4) return Math.PI / 2; // sin arrastre: recto arriba
+  return Math.atan2(dy, dx);
+}
+
+/** T123 — multiplicador de CARGA del sherpa pi ESTE tick (puro): el muelle
+ *  de la mochila sostiene el cuerpo (×CARGA_GOMA — las manos no se fatigan
+ *  colgando) y el compañero COLGADO de la cuerda pesa en la espalda del
+ *  anclado (×CARGA_COLGADO — «aguanta menos antes de caer»). */
+export function multCarga(
+  pi: 0 | 1,
+  colgado: readonly [boolean, boolean],
+  goma: readonly [boolean, boolean],
+): number {
+  if (goma[pi]) return CARGA_GOMA;
+  return colgado[1 - pi] ? CARGA_COLGADO : 1;
+}
+
+/** ¿Está este sherpa COLGANDO de la cuerda (caída capturada/rescate, sin
+ *  ningún anclaje)? Es quien carga en la espalda del compañero anclado. */
+export function esColgado(ropeState: string, anclajes: number): boolean {
+  return anclajes === 0 && (ropeState === "caught" || ropeState === "hauling");
 }
 
 /** B3 añicos: velocidades/espines deterministas por semilla del bloque. */
@@ -535,21 +567,26 @@ export class ParedNivel {
   private dragPlayer: 0 | 1 | null = null;
   private dragLimb: (typeof LIMBS)[number] | null = null;
   private dragCursor: V3 | null = null;
-  // T121 B5 — mochila-chicle
-  private gomaPendiente: { pi: 0 | 1; x0: number; y0: number } | null = null; // clic sin decidir
+  // T123 B5 — mochila-chicle con INTERIOR y MUELLES: pinchar la mochila abre
+  // el interior (3 muelles), pulsar uno lo ARMA (muelleActivo), arrastrar la
+  // mochila hacia abajo tira del muelle (goma) y al soltar: lanzamiento −1.
   private goma: { pi: 0 | 1; origen: V3; puntero: V3; m: number; mPrev: number } | null = null;
+  private muelles: [number, number] = [MUELLES_DEFAULT, MUELLES_DEFAULT];
+  private muelleActivo: [boolean, boolean] = [false, false];
+  private mochilaAbierta: 0 | 1 | null = null;
   private enVuelo: [boolean, boolean] = [false, false];
-  private lanzados: [number, number] = [3, 3]; // restantes (se ajusta al max del panel en start)
-  private vueloObjetivo: HoldInstance | null = null; // presa elegida durante el vuelo
-  private vueloJugador: 0 | 1 | null = null; // sherpa cuya presa elegida persigue el imán
   // T122 — ricachón de lastre colgado del nudo medio de la cuerda + rabietas
   private richi: CuerpoRicachon[] = [];
   private rabietas: EstadoRabietas = rabietasInicio();
   private rabRng = mulberry32(0x71c4a6d5);
   private rabietaAmp = 0;
-  // HUD del badge de lanzamientos (muelle) y avisos
-  private elMochila: HTMLElement | null = null;
-  private elMochilaN: HTMLElement | null = null;
+  // T123 — tirantes del atado (nudo→tobillos y banda entre tobillos)
+  private straps: Mesh[] = [];
+  // HUD del interior de la mochila, la barra/flecha de la goma y los avisos
+  private elMochilaWin: HTMLElement | null = null;
+  private elGoma: HTMLElement | null = null;
+  private elGomaBarra: HTMLElement | null = null;
+  private elGomaFlecha: HTMLElement | null = null;
   private elAviso: HTMLElement | null = null;
   private avisoT = 0;
   // cuerda visual: cadena verlet A→B
@@ -597,7 +634,10 @@ export class ParedNivel {
     this.construirSherpas();
     this.conectarDrag();
     this.crearHud();
-    this.lanzados = [this.ajuste.lanzamientosMax, this.ajuste.lanzamientosMax];
+    this.muelles = [this.ajuste.lanzamientosMax, this.ajuste.lanzamientosMax];
+    // T123 — tirantes del atado del ricachón (3 cilindros finos que se
+    // reposicionan cada frame entre el nudo y los tobillos)
+    this.crearStraps();
     // T122 — insignias de fatiga: bindPlayers crea los 8 nodos .lbadge que
     // setLimbBadges mueve cada frame (el nivel nunca los creaba: 0 insignias).
     this.d.hud.bindPlayers(
@@ -858,23 +898,22 @@ export class ParedNivel {
 
   private onDragDown(xCss: number, yCss: number): void {
     if (this.state !== "jugando") return;
-    // T121 B5: en vuelo balístico el clic ES el agarre (asistencia magnética)
-    if (this.enVuelo[0] || this.enVuelo[1]) {
-      const pf = this.puntoPlano(xCss, yCss);
-      if (pf) this.intentaAgarreVuelo(pf);
-      return;
-    }
-    // T121 B5: ¿clic en la mochila? → pendiente: clic seco = badge, arrastre = tiro
+    // T123: en vuelo el agarre es AUTOMÁTICO — los clics no hacen nada
+    if (this.enVuelo[0] || this.enVuelo[1]) return;
+    // T123 B5: ¿clic en la mochila? armado → tiro directo; sin armar → INTERIOR
     const pi = this.d.scene.backpackAt(xCss, yCss);
-    if (pi !== null && !this.goma && this.gomaPendiente === null) {
-      if (this.lanzados[pi] <= 0) {
-        this.muestraBadgeMochila(pi);
+    if (pi !== null && !this.goma) {
+      if (this.muelleActivo[pi]) {
+        this.arrancaGoma(pi, xCss, yCss);
+      } else if (this.muelles[pi] <= 0) {
+        this.abreMochila(pi);
         this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.mochila.agotado", "Sin lanzamientos"));
-        return;
+      } else {
+        this.abreMochila(pi);
       }
-      this.gomaPendiente = { pi, x0: xCss, y0: yCss };
       return;
     }
+    if (this.mochilaAbierta !== null) this.cierraMochila();
     const p = this.puntoPlano(xCss, yCss);
     if (!p) return;
     const cands: { player: 0 | 1; limb: (typeof LIMBS)[number]; d: number }[] = [];
@@ -899,16 +938,12 @@ export class ParedNivel {
 
   private onDragMove(xCss: number, yCss: number): void {
     // T121 B5: tirar de la mochila — el arrastre hacia abajo estira la goma
-    if (this.gomaPendiente) {
-      const g = this.gomaPendiente;
-      if (!this.goma && Math.hypot(xCss - g.x0, yCss - g.y0) > GOMA_UMBRAL_PX) this.arrancaGoma(g.pi, g.x0, g.y0);
-      if (this.goma) {
-        const p = this.puntoPlano(xCss, yCss);
-        if (p) {
-          this.goma.puntero = p;
-          // estira SOLO la componente descendente (tirar hacia abajo)
-          this.goma.m = Math.min(GOMA_EXTRA_M, Math.max(0, this.goma.origen.y - p.y));
-        }
+    if (this.goma) {
+      const p = this.puntoPlano(xCss, yCss);
+      if (p) {
+        this.goma.puntero = p;
+        // estira SOLO la componente descendente (tirar hacia abajo)
+        this.goma.m = Math.min(GOMA_EXTRA_M, Math.max(0, this.goma.origen.y - p.y));
       }
       return;
     }
@@ -920,13 +955,7 @@ export class ParedNivel {
   }
 
   private onDragUp(): void {
-    // T121 B5: clic SECO sobre la mochila → badge de muelle con lanzamientos
-    if (this.gomaPendiente) {
-      this.muestraBadgeMochila(this.gomaPendiente.pi);
-      this.gomaPendiente = null;
-      return;
-    }
-    // T121 B5: soltar la mochila estirada → LANZAMIENTO
+    // T121 B5: soltar la mochila estirada → LANZAMIENTO (T123: gasta 1 muelle)
     if (this.goma) {
       this.lanzaGoma();
       return;
@@ -935,18 +964,15 @@ export class ParedNivel {
     this.dragPlayer = null;
     this.dragLimb = null;
     this.dragCursor = null;
-    // T122: el objetivo de vuelo NO se limpia aquí — el clic down+up ELIGE la
-    // presa y el vuelo (en simTick) es quien la consume; matarla en el up
-    // cancelaba el agarre elegido un instante antes.
   }
 
-  /** T121 B5: arranca la goma — exige las DOS manos ancladas (petición);
-   *  suelta los pies para que el cuerpo cuelgue solo de los brazos. */
+  /** T121 B5 (T123): arranca la goma — exige las DOS manos ancladas y CLAVADAS
+   *  a sus presas (el servo mueve el cuerpo, jamás las manos); suelta los pies
+   *  para que el cuerpo cuelgue solo de los brazos estirados como chicle. */
   private arrancaGoma(pi: 0 | 1, x0: number, y0: number): void {
     const rig = this.sherpas[pi];
     const dosManos = (["hand_l", "hand_r"] as const).every((l) => rig.states.get(l)!.anchored);
     if (!dosManos) {
-      this.gomaPendiente = null;
       this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.mochila.manos", "Ancla las DOS manos para tirar de la mochila"));
       return;
     }
@@ -955,23 +981,26 @@ export class ParedNivel {
       if (rig.states.get(f)!.anchored) rig.forceRelease(f, 0, "player");
     }
     this.goma = { pi, origen, puntero: origen, m: 0, mPrev: 0 };
-    this.gomaPendiente = null;
+    this.cierraMochila();
+    this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.mochila.armado", "Muelle armado: arrastra hacia abajo y suelta"));
   }
 
-  /** T121 B5: soltar la mochila estirada → lanzamiento balístico (1 lanzamiento
-   *  menos). El destino lo decide el vector mochila→puntero antes de soltar. */
+  /** T121 B5: soltar la mochila estirada → lanzamiento balístico. T123: gasta
+   *  UN MUELLE (se desarma) y el vuelo busca el anclaje más alto SOLO. */
   private lanzaGoma(): void {
     const g = this.goma;
     this.goma = null;
-    if (!g || g.m <= 0.05) return; // estiramiento testimonial: sin tiro
+    this.ocultaGomaHud();
+    if (!g || g.m <= 0.05) return; // estiramiento testimonial: sin tiro (no gasta)
     const pi = g.pi;
     const rig = this.sherpas[pi];
     const v = velLanzamiento(g.origen, g.puntero, g.m);
     this.impulsoBalistico(rig, v);
-    this.lanzados[pi] = Math.max(0, this.lanzados[pi] - 1);
+    this.muelles[pi] = Math.max(0, this.muelles[pi] - 1);
+    this.muelleActivo[pi] = false;
     this.enVuelo[pi] = true;
-    this.muestraBadgeMochila(pi);
-    this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.mochila.vuelo", "¡Pulsa una presa para agarrarte!"));
+    if (this.mochilaAbierta === pi) this.refrescaMochila(pi);
+    this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.mochila.vueloAuto", "¡Vuela! Buscará el anclaje más alto"));
   }
 
   /** Inyecta la velocidad en TODAS las partículas (Verlet: prev = pos − v·dt)
@@ -985,32 +1014,6 @@ export class ParedNivel {
     for (const limb of LIMBS) {
       if (rig.states.get(limb)!.anchored) rig.forceRelease(limb, 0, "player");
     }
-  }
-
-  /** T122 B5-ARREGLO: durante el vuelo el clic ELIGE presa (y sherpa — el más
-   *  cercano a ella). T121 hacía beginDrag+endDrag en el clic y el imán del
-   *  arrastre exige canReach EN ese instante: imposible en pleno vuelo, el
-   *  agarre nunca salía. Ahora un imán de CUERPO curva el arco hacia la presa
-   *  y a AGARRE_VUELO_M la mano libre sale sola (simTick). */
-  private intentaAgarreVuelo(p: V3): void {
-    const libres: HoldInstance[] = [];
-    for (const b of this.bloques) {
-      if (b.destruido) continue;
-      for (const pr of b.presas) libres.push(pr.inst);
-    }
-    const objetivo = anclajeMasCercano({ x: p.x, y: p.y }, libres, MAGNET_VUELO_M);
-    if (!objetivo) return;
-    let mejor: 0 | 1 | null = null;
-    let bd = Infinity;
-    for (const pi of [0, 1] as const) {
-      if (!this.enVuelo[pi] || this.dragPlayer !== null) continue;
-      const w = this.sherpas[pi].waist();
-      const d = Math.hypot(w.x - objetivo.pos.x, w.y - objetivo.pos.y);
-      if (d < bd) { bd = d; mejor = pi; }
-    }
-    if (mejor === null) return;
-    this.vueloObjetivo = objetivo;
-    this.vueloJugador = mejor;
   }
 
   // ---------- simulación ----------
@@ -1036,56 +1039,42 @@ export class ParedNivel {
     // cuerda: límite de separación entre los dos sherpas (petición del jugador)
     this.aplicaCuerda();
 
-    // T122 B5 — imán de CUERPO hacia la presa ELEGIDA (ANTES del paso: el
-    // magnetismo del arrastre decide el agarre dentro de rig.step)
+    // T123 B5 — VUELO BALÍSTICO con AGARRE AUTOMÁTICO (sin clic): mientras
+    // sube rápido no agarra nada (busca el MÁS ALTO); cuando el arco frena
+    // hacia el ápice (vy ≤ VUELO_GRAB_VY) o ya cae, la mano libre viaja a la
+    // presa más ALTA de verdad alcanzable (canReach: nunca fuera del anclaje).
     for (const pi of [0, 1] as const) {
-      if (!this.enVuelo[pi] || this.vueloJugador !== pi || !this.vueloObjetivo) continue;
+      if (!this.enVuelo[pi]) continue;
       const rig = this.sherpas[pi];
+      if (rig.anchorsCount() > 0) continue;
       const cintura = rig.rig.particles[P.pelvisC];
-      const obj = this.vueloObjetivo.pos;
-      const dx = obj.x - cintura.pos.x;
-      const dy = obj.y - cintura.pos.y;
-      const d = Math.hypot(dx, dy) || 1e-4;
-      // aceleración de imán (verlet: prev sin tocar = gana velocidad);
-      // en fase de pinza (mano ya salida) el imán VENCE a la gravedad
-      const acc = IMAN_CUERPO_ACC * (this.dragPlayer === pi ? IMAN_MANO_MULT : 1);
-      cintura.pos = v3(
-        cintura.pos.x + (dx / d) * acc * dt * dt,
-        cintura.pos.y + (dy / d) * acc * dt * dt,
-        cintura.pos.z,
-      );
-      // freno vertical si la presa queda ARRIBA y el arco la pasa de largo
-      if (dy > 0.5 && cintura.pos.y > obj.y) {
-        cintura.pos = v3(cintura.pos.x, cintura.pos.y - IMAN_FRENO_ARRIBA * dt * dt, cintura.pos.z);
-      }
-      // a distancia de brazo: la mano libre SALE SOLA hacia la presa
-      if (d < AGARRE_VUELO_M && this.dragPlayer === null) {
-        const manos = (["hand_l", "hand_r"] as const)
-          .filter((l) => !rig.states.get(l)!.anchored)
-          .sort((a2, b2) => {
-            const pa = rig.limbPos(a2), pb = rig.limbPos(b2);
-            return Math.hypot(pa.x - obj.x, pa.y - obj.y) - Math.hypot(pb.x - obj.x, pb.y - obj.y);
-          });
-        for (const mano of manos) {
-          if (rig.beginDrag(mano)) {
-            this.dragPlayer = pi;
-            this.dragLimb = mano;
-            this.dragCursor = vClone(obj);
-            break;
-          }
-        }
-      }
-      // el imán del arrastre termina el trabajo: cursor CLAVADO a la presa
-      if (this.dragPlayer === pi) {
-        rig.moveDrag(obj);
-        this.dragCursor = vClone(obj);
-      }
+      const vy = (cintura.pos.y - cintura.prev.y) / Math.max(1e-4, dt);
+      if (vy <= VUELO_GRAB_VY) rig.autoGripVuelo("alto");
     }
+
+    // T123 — CAÍDA REAL con AUTO-ANCLAJE: en plena caída (y también colgado
+    // de la cuerda), la mano o el pie que tenga una presa POR DEBAJO al
+    // alcance se agarra sola — «se deben poder anclar automáticamente a
+    // algún agarre inferior». Si no hay nada, cuelga y el compañero aguanta.
+    for (const pi of [0, 1] as const) {
+      const rig = this.sherpas[pi];
+      if (rig.anchorsCount() > 0) continue;
+      if (rig.ropeState === "falling" || rig.ropeState === "caught") rig.autoGripVuelo("bajo");
+    }
+
+    // T123 — cargas del tick: el MUELLE sostiene al que tira de la mochila
+    // (manos sin fatiga) y el compañero COLGADO de la cuerda pesa ×2,6 en la
+    // espalda del anclado (fatiga acelerada → «aguanta menos antes de caer»).
+    const colgado: [boolean, boolean] = [
+      esColgado(this.sherpas[0].ropeState, this.sherpas[0].anchorsCount()),
+      esColgado(this.sherpas[1].ropeState, this.sherpas[1].anchorsCount()),
+    ];
+    const gomas: [boolean, boolean] = [this.goma?.pi === 0, this.goma?.pi === 1];
 
     for (const pi of [0, 1] as const) {
       const rig = this.sherpas[pi];
       rig.feedRopeMash(mash[pi], mash[1 - pi], this.sherpas[1 - pi].anchorsCount() > 0);
-      const info = rig.step(dt, 1);
+      const info = rig.step(dt, multCarga(pi, colgado, gomas));
       for (const g of info.gripped) this.alAgarrar(g.anchor.hold.id, pi);
       if (info.rope.tautNow) this.falls++;
       // carga del muelle = extremidades ancladas a cada bloque
@@ -1140,27 +1129,13 @@ export class ParedNivel {
       this.goma.mPrev = this.goma.m;
     }
 
-    // T121 B5 — fin del vuelo: agarró algo o la cuerda lo retiene
+    // T121 B5 — fin del vuelo: agarró algo (viaje completado) o la cuerda lo
+    // retiene (T123: el agarre ya es automático — no hay drag que limpiar)
     for (const pi of [0, 1] as const) {
       if (!this.enVuelo[pi]) continue;
       const rig = this.sherpas[pi];
-      if (rig.anchorsCount() > 0) {
+      if (rig.anchorsCount() > 0 || rig.ropeState === "caught" || rig.ropeState === "hauling" || rig.ropeState === "grounded") {
         this.enVuelo[pi] = false;
-        this.vueloObjetivo = null;
-        this.vueloJugador = null;
-        if (this.dragPlayer === pi) this.onDragUp();
-      } else if (rig.ropeState === "caught" || rig.ropeState === "hauling" || rig.ropeState === "grounded") {
-        this.enVuelo[pi] = false;
-        this.vueloObjetivo = null;
-        this.vueloJugador = null;
-        // la cuerda lo cogió con la mano fuera: soltar el drag (si no, la
-        // mano queda "arrastrando" una presa que nunca ancló)
-        if (this.dragPlayer === pi) {
-          this.sherpas[pi].endDrag();
-          this.dragPlayer = null;
-          this.dragLimb = null;
-          this.dragCursor = null;
-        }
       }
     }
 
@@ -1402,7 +1377,12 @@ export class ParedNivel {
         { bodies: this.richi, gesture: this.rabietaAmp > 0.02 ? "pataleando" : "ninguno" },
         this.alpha,
       );
+      // T123 — tirantes del atado nudo↔tobillos (se VE atado por los pies)
+      this.actualizaStraps();
     }
+    // T123 B5 — interior de la mochila que sigue al sherpa + barra/flecha
+    this.posicionaMochilaHud();
+    this.actualizaGomaHud();
     // T122 — INSIGNIAS DE FATIGA sobre las extremidades (mismo camino que
     // match.ts: proyección de cada extremidad → setLimbBadges cada frame)
     const badgeData: { p: 0 | 1; limb: Limb; sx: number; sy: number; tension: number; fatigue: number; anchored: boolean }[] = [];
@@ -1428,6 +1408,55 @@ export class ParedNivel {
     this.debug(wa, wb);
   }
 
+  // ---------- tirantes del atado del ricachón (T123) ----------
+
+  /** 3 cilindros finos: nudo→tobillo ×2 (los tirantes del atado) y banda
+   *  tobillo→tobillo. Se reposicionan cada frame (renderTick). */
+  private crearStraps(): void {
+    const scene = this.d.scene.scene;
+    const mat = new StandardMaterial("paredTiranteM", scene);
+    mat.diffuseColor = new Color3(0.42, 0.3, 0.2);
+    mat.specularColor = new Color3(0.05, 0.05, 0.05);
+    for (let i = 0; i < 3; i++) {
+      const m = MeshBuilder.CreateCylinder(`tirante_${i}`, { height: 1, diameter: 0.032, tessellation: 6 }, scene);
+      m.material = mat;
+      m.isVisible = true;
+      m.rotationQuaternion = Quaternion.Identity();
+      this.straps.push(m);
+    }
+  }
+
+  private colocaStrap(mesh: Mesh, a: V3, b: V3): void {
+    const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+    const len = Math.hypot(dx, dy, dz);
+    if (len < 1e-4) { mesh.isVisible = false; return; }
+    mesh.isVisible = true;
+    mesh.scaling.y = len;
+    mesh.position.set((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
+    // eje Y del cilindro → dirección a→b (Vector3.Up rotado por cuaternión)
+    const dir = new Vector3(dx / len, dy / len, dz / len);
+    if (Math.abs(dir.y) > 0.999) {
+      mesh.rotationQuaternion = Quaternion.Identity();
+    } else {
+      Quaternion.FromUnitVectorsToRef(Vector3.Up(), dir, mesh.rotationQuaternion!);
+    }
+  }
+
+  private actualizaStraps(): void {
+    if (this.straps.length < 3 || this.richi.length < RM_PARTICLES) return;
+    const nudo = this.nudoCuerda();
+    const pieL = this.richi[RM.footL].pos;
+    const pieR = this.richi[RM.footR].pos;
+    this.colocaStrap(this.straps[0], nudo, pieL);
+    this.colocaStrap(this.straps[1], nudo, pieR);
+    this.colocaStrap(this.straps[2], pieL, pieR);
+  }
+
+  private quitaStraps(): void {
+    for (const m of this.straps) m.dispose();
+    this.straps = [];
+  }
+
   // ---------- HUD propio del nivel ----------
 
   private crearHud(): void {
@@ -1441,27 +1470,132 @@ export class ParedNivel {
     };
     this.elAlt = mk("pared-alt", "position:absolute;top:10px;left:50%;transform:translateX(-50%);background:rgba(10,20,16,.72);color:#eaf4ec;border:1px solid #57b17e;border-radius:10px;padding:5px 14px;font:700 15px/1.3 system-ui,sans-serif;letter-spacing:.03em;pointer-events:none;");
     this.elFat = mk("pared-fat", "position:absolute;top:52px;left:50%;transform:translateX(-50%);background:rgba(80,18,10,.85);color:#ffd9d0;border:1px solid #e2694f;border-radius:10px;padding:5px 14px;font:700 14px/1.3 system-ui,sans-serif;pointer-events:none;display:none;");
-    // T121 B5: badge de LANZAMIENTOS (icono de muelle + nº restante) — aparece
-    // al pulsar una vez sobre la mochila (petición literal)
-    const mochila = document.createElement("div");
-    mochila.id = "pared-mochila";
-    mochila.setAttribute("style", "position:absolute;top:52px;right:12px;display:none;align-items:center;gap:7px;background:rgba(10,20,16,.78);color:#eaf4ec;border:1px solid #57b17e;border-radius:10px;padding:5px 11px;font:700 14px/1.3 system-ui,sans-serif;pointer-events:none;");
-    mochila.innerHTML = SPRING_SVG;
-    const nEl = document.createElement("b");
-    nEl.setAttribute("style", "color:#9fe0b9");
-    nEl.textContent = "×3";
-    mochila.appendChild(nEl);
-    this.elMochilaN = nEl;
-    root.appendChild(mochila);
-    this.elMochila = mochila;
+    // T123 B5 — INTERIOR DE LA MOCHILA (como el inventario del nivel anterior):
+    // ventana junto a la mochila con los MUELLES restantes; pulsar uno lo
+    // ARMA (activa la dinámica de lanzamiento). Se cierra al salir el puntero.
+    const win = document.createElement("div");
+    win.id = "pared-mochila-win";
+    win.setAttribute("style",
+      "position:absolute;display:none;flex-direction:column;gap:6px;min-width:150px;pointer-events:auto;" +
+      "background:rgba(14,22,16,.95);color:#eaf4ec;border:1px solid #57b17e;border-radius:12px;" +
+      "padding:10px 12px;font:600 12px/1.4 system-ui,sans-serif;box-shadow:0 6px 18px rgba(0,0,0,.45);z-index:30;");
+    root.appendChild(win);
+    this.elMochilaWin = win;
+    win.addEventListener("pointerleave", () => this.cierraMochila());
+    // T123 B5 — BARRA DE FUERZA + FLECHA sobre la mochila mientras se tira
+    const goma = document.createElement("div");
+    goma.id = "pared-goma";
+    goma.setAttribute("style", "position:absolute;display:none;pointer-events:none;z-index:25;");
+    const barra = document.createElement("div");
+    barra.setAttribute("style", "position:absolute;left:-9px;top:-34px;width:11px;height:64px;background:rgba(8,14,11,.8);border:1px solid #57b17e;border-radius:6px;overflow:hidden;");
+    const relleno = document.createElement("div");
+    relleno.setAttribute("style", "position:absolute;left:0;bottom:0;width:100%;height:0%;background:linear-gradient(0deg,#57b17e,#e8c15a 70%,#e2694f);");
+    barra.appendChild(relleno);
+    const flecha = document.createElement("div");
+    flecha.setAttribute("style", "position:absolute;left:0;top:0;transform-origin:0 100%;color:#9fe0b9;font:700 22px/1 system-ui,sans-serif;text-shadow:0 1px 3px rgba(0,0,0,.6);");
+    flecha.textContent = "➤";
+    goma.append(barra, flecha);
+    root.appendChild(goma);
+    this.elGoma = goma;
+    this.elGomaBarra = relleno;
+    this.elGomaFlecha = flecha;
     // avisos transitorios (manos, agotado, rotura, vuelo)
     this.elAviso = mk("pared-aviso", "position:absolute;bottom:64px;left:50%;transform:translateX(-50%);background:rgba(80,18,10,.85);color:#ffd9d0;border:1px solid #e2694f;border-radius:10px;padding:5px 14px;font:700 13px/1.3 system-ui,sans-serif;pointer-events:none;display:none;");
   }
 
-  /** T121 B5: enseña el badge del muelle con los lanzamientos del escalador. */
-  private muestraBadgeMochila(pi: 0 | 1): void {
-    if (this.elMochila) this.elMochila.style.display = "flex";
-    if (this.elMochilaN) this.elMochilaN.textContent = `×${this.lanzados[pi]}`;
+  /** T123 B5 — abre el INTERIOR de la mochila: los muelles restantes como
+   *  chips; pulsar uno disponible lo ARMA (highlight) y cierra la ventana. */
+  private abreMochila(pi: 0 | 1): void {
+    this.mochilaAbierta = pi;
+    this.refrescaMochila(pi);
+  }
+
+  private cierraMochila(): void {
+    this.mochilaAbierta = null;
+    if (this.elMochilaWin) this.elMochilaWin.style.display = "none";
+  }
+
+  /** Contenido de la ventana (título, pista y un chip por muelle). */
+  private refrescaMochila(pi: 0 | 1): void {
+    const win = this.elMochilaWin;
+    if (!win || this.mochilaAbierta !== pi) return;
+    const t = (p: string, f: string): string => txt(this.d.data.strings, this.d.hud.lang, p, f);
+    win.innerHTML = "";
+    const tit = document.createElement("div");
+    tit.setAttribute("style", "font:700 12px system-ui,sans-serif;color:#9fe0b9;letter-spacing:.04em");
+    tit.textContent = t("pared.mochila.interior", "Muelles de lanzamiento");
+    win.appendChild(tit);
+    const pista = document.createElement("div");
+    pista.setAttribute("style", "opacity:.72;font-size:11px");
+    pista.textContent = t("pared.mochila.selecciona", "Pulsa un muelle para armar el lanzamiento");
+    win.appendChild(pista);
+    for (let i = 0; i < this.ajuste.lanzamientosMax; i++) {
+      const usado = i >= this.muelles[pi];
+      const chip = document.createElement("div");
+      chip.setAttribute("style", `display:flex;align-items:center;gap:8px;border-radius:8px;padding:5px 8px;cursor:${usado ? "default" : "pointer"};border:1px solid ${usado ? "rgba(255,255,255,.12)" : "#57b17e"};background:${usado ? "rgba(255,255,255,.05)" : "rgba(87,177,126,.16)"};opacity:${usado ? 0.45 : 1}`);
+      chip.innerHTML = `${SPRING_SVG}<span style="font-size:11px">${usado ? "✕" : t("pared.mochila.usar", "Usar")}</span>`;
+      if (!usado) {
+        chip.onclick = (ev) => {
+          ev.stopPropagation();
+          this.muelleActivo[pi] = true;
+          this.cierraMochila();
+          this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.mochila.armado", "Muelle armado: arrastra la mochila hacia abajo y suelta"));
+        };
+      }
+      win.appendChild(chip);
+    }
+    win.style.display = "flex";
+  }
+
+  /** T123 B5 — reposiciona la ventana del interior cada frame (sigue a la
+   *  mochila del sherpa en pantalla; se ancla al borde si se sale). */
+  private posicionaMochilaHud(): void {
+    const pi = this.mochilaAbierta;
+    const win = this.elMochilaWin;
+    const cv = this.d.scene.engine.getRenderingCanvas();
+    if (pi === null || !win || !cv) return;
+    const bp = this.d.scene.backpackScreenPx(pi) ?? this.proyeccionPecho(pi);
+    if (!bp) { this.cierraMochila(); return; }
+    win.style.left = `${Math.min(cv.clientWidth - 170, Math.max(8, bp.x + 20)).toFixed(0)}px`;
+    win.style.top = `${Math.min(cv.clientHeight - 150, Math.max(8, bp.y - 46)).toFixed(0)}px`;
+  }
+
+  /** Pecho del sherpa proyectado a px CSS (fallback cuando la pieza «mochila»
+   *  del GLB aún no llegó — misma lógica que sondaMochilaPx). */
+  private proyeccionPecho(pi: 0 | 1): { x: number; y: number } | null {
+    const cv = this.d.scene.engine.getRenderingCanvas();
+    if (!cv || this.sherpas.length < 2) return null;
+    const c = this.sherpas[pi].rig.particles[P.chest];
+    const sp = this.d.scene.projectToScreenCss(v3(c.pos.x, c.pos.y, c.pos.z - 0.35));
+    return { x: (sp.x / 100) * cv.clientWidth, y: (sp.y / 100) * cv.clientHeight };
+  }
+
+  /** Apaga el overlay de fuerza/flecha. */
+  private ocultaGomaHud(): void {
+    if (this.elGoma) this.elGoma.style.display = "none";
+  }
+
+  /** T123 B5 — overlay de la goma: BARRA de fuerza (frac del estiramiento) y
+   *  FLECHA con la dirección de lanzamiento (vector puntero→mochila). */
+  private actualizaGomaHud(): void {
+    const g = this.goma;
+    const cv = this.d.scene.engine.getRenderingCanvas();
+    if (!g || !cv || !this.elGoma || !this.elGomaBarra || !this.elGomaFlecha) {
+      this.ocultaGomaHud();
+      return;
+    }
+    const bp = this.d.scene.backpackScreenPx(g.pi)
+      ?? this.proyeccionPecho(g.pi);
+    if (!bp) { this.ocultaGomaHud(); return; }
+    this.elGoma.style.display = "block";
+    this.elGoma.style.left = `${bp.x}px`;
+    this.elGoma.style.top = `${bp.y}px`;
+    const frac = Math.min(1, Math.max(0, g.m / GOMA_EXTRA_M));
+    this.elGomaBarra.style.height = `${(frac * 100).toFixed(0)}%`;
+    // mundo tiene Y hacia ARRIBA y el CSS hacia ABAJO: el ángulo se invierte
+    const ang = flechaLanzamiento(g.origen, g.puntero);
+    this.elGomaFlecha.style.transform = `rotate(${(-ang).toFixed(3)}rad)`;
+    this.elGomaFlecha.style.fontSize = `${(12 + 14 * frac).toFixed(0)}px`;
   }
 
   /** Aviso transitorio (2,4 s) en la parte baja del HUD. */
@@ -1593,17 +1727,17 @@ export class ParedNivel {
     this.simTime = 0;
     this.acc = 0;
     this.onDragUp();
-    // T121: reset de mochila/roturas/rescates
+    // T123: reset de mochila (muelles), roturas y vuelos
     this.goma = null;
-    this.gomaPendiente = null;
+    this.ocultaGomaHud();
     this.enVuelo = [false, false];
-    this.vueloObjetivo = null;
-    this.vueloJugador = null;
+    this.muelles = [this.ajuste.lanzamientosMax, this.ajuste.lanzamientosMax];
+    this.muelleActivo = [false, false];
+    this.cierraMochila();
     // T122: reinicio de rabietas + ricachón reenganchado al nudo
     this.rabietaAmp = 0;
     this.rabietas = rabietasInicio();
     this.richi = ricachonReset(this.nudoCuerda());
-    this.lanzados = [this.ajuste.lanzamientosMax, this.ajuste.lanzamientosMax];
     this.avisoT = 0;
     if (this.elAviso) this.elAviso.style.display = "none";
     this.aplicaAlturas();
@@ -1845,10 +1979,10 @@ export class ParedNivel {
     }
     this.onDragUp();
     this.goma = null;
-    this.gomaPendiente = null;
+    this.ocultaGomaHud();
     this.enVuelo = [false, false];
-    this.vueloObjetivo = null;
-    this.vueloJugador = null;
+    this.muelleActivo = [false, false];
+    this.cierraMochila();
     this.rabietaAmp = 0;
     this.rabietas = rabietasInicio();
     this.richi = ricachonReset(this.nudoCuerda());
@@ -1871,17 +2005,22 @@ export class ParedNivel {
         cuerda: this.ajuste.cuerdaMetros,
         paso: this.paso,
         ajuste: this.ajuste,
-        // T121: sondas de las mecánicas nuevas
-        lanzamientos: this.lanzados,
+        // T123: muelles/interior/goma/vuelo — y caídas con peso real
+        muelles: [...this.muelles],
+        muelleActivo: [...this.muelleActivo],
+        mochilaAbierta: this.mochilaAbierta,
         enVuelo: [...this.enVuelo],
         gomaM: this.goma?.m ?? null,
+        gomaFlecha: this.goma
+          ? { ang: flechaLanzamiento(this.goma.origen, this.goma.puntero), frac: Math.min(1, Math.max(0, this.goma.m / GOMA_EXTRA_M)) }
+          : null,
+        ropeStates: [this.sherpas[0].ropeState, this.sherpas[1].ropeState],
+        anclajes: [this.sherpas[0].anchorsCount(), this.sherpas[1].anchorsCount()],
+        fatigaMax: [0, 1].map((i) => Math.max(...[...this.sherpas[i as 0 | 1].states.values()].map((st) => st.fatigue))),
         roturas: this.bloques.filter((bb) => bb.spec.destructible)
           .map((bb) => ({ id: bb.spec.id, destruido: bb.destruido, roturaT: bb.roturaT })),
-        // T122: vuelo (sherpa/presa/mano), rabieta, ricachón y PROYECCIONES
-        // deterministas para el E2E (solo se calculan al LLAMAR la sonda)
-        vueloJugador: this.vueloJugador,
-        vueloObjetivo: this.vueloObjetivo?.id ?? null,
-        vueloMano: this.dragLimb,
+        // T122: rabieta, insignias, ricachón y PROYECCIONES deterministas
+        // (solo se calculan al LLAMAR la sonda)
         rabieta: this.rabietaAmp,
         insignias: this.d.hud.badgesVisibles(),
         ricachon: this.sondaRicachon(),
@@ -1891,14 +2030,29 @@ export class ParedNivel {
     }
   }
 
-  /** T122: posición del nudo/cabeza del ricachón (referencia Y_SALIDA). */
-  private sondaRicachon(): { nudoY: number; comba: number; cabezaY: number } | null {
+  /** T122: posición del nudo/cabeza del ricachón (referencia Y_SALIDA).
+   *  T123: + estabilidad (desvío de la cabeza respecto al eje de la espina y
+   *  máxima desviación de longitud de hueso — «no se descoyunta»). */
+  private sondaRicachon(): { nudoY: number; comba: number; cabezaY: number; cabezaDesvio: number; maxEstir: number } | null {
     const mid = this.ropeNodes.length >> 1;
     const nudo = this.ropeNodes[mid]?.pos;
     const cabeza = this.richi[0]?.pos; // RM.head = 0
     if (!nudo || !cabeza) return null;
     const arriba = Math.max(this.sherpas[0].waist().y, this.sherpas[1].waist().y);
-    return { nudoY: nudo.y - Y_SALIDA, comba: nudo.y - arriba, cabezaY: cabeza.y - Y_SALIDA };
+    return {
+      nudoY: nudo.y - Y_SALIDA,
+      comba: nudo.y - arriba,
+      cabezaY: cabeza.y - Y_SALIDA,
+      cabezaDesvio: desvioCabeza(this.richi),
+      maxEstir: maxEstiramiento(this.richi),
+    };
+  }
+
+  /** T123 — ajuste EN VIVO para el E2E (equivale a mover un slider del panel). */
+  setAjusteEnVivo(key: keyof ParedAjusteParams, v: number): void {
+    this.ajuste[key] = v;
+    saveAjuste(this.store, this.ajuste);
+    if (key === "lanzamientosMax") this.muelles = [v, v];
   }
 
   /** T122: mochila del sherpa EN PÍXEL CSS — el MISMO punto que usa el
@@ -1946,10 +2100,12 @@ export class ParedNivel {
     this.elAlt?.remove();
     this.elFat?.remove();
     this.elFin?.remove();
-    this.elMochila?.remove();
+    this.elMochilaWin?.remove();
+    this.elGoma?.remove();
     this.elAviso?.remove();
     this.elAlt = this.elFat = this.elFin = null;
-    this.elMochila = this.elMochilaN = this.elAviso = null;
+    this.elMochilaWin = this.elGoma = this.elGomaBarra = this.elGomaFlecha = this.elAviso = null;
+    this.quitaStraps();
     delete (window as unknown as { __PARED?: unknown }).__PARED;
     const scene = this.d.scene;
     scene.despawnSherpa(0);
