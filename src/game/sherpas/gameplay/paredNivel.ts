@@ -172,6 +172,18 @@ export const CARGA_COLGADO = 2.6;
  *  descenso por gravedad»): 0 = SOLO en el ápice o cayendo — durante la subida
  *  nada engancha (antes 2,2 agarraba todavía SUBIENDO, cortando el vuelo). */
 export const VUELO_GRAB_VY = 0;
+/** T87 — el agarre en vuelo ("alto") exige además un TIEMPO MÍNIMO de vuelo:
+ *  en los primeros ticks cualquier perturbación (cuerda tensa, servo residual,
+ *  colisión) puede dejar la vy del tick en ≤0 aunque el sherpa SIGA subiendo —
+ *  y agarraba entonces la presa cercana al punto de lanzamiento, matando el
+ *  vuelo libre. Pasado este tiempo, vy ≤ 0 SÍ es ápice real. */
+export const VUELO_T_MIN_S = 0.25;
+/** T87 — ¿toca ya buscar anclaje "alto" en el vuelo? Puro: solo cuando el
+ *  vuelo lleva suficiente tiempo (VUELO_T_MIN_S) Y la vy ya no sube (ápice o
+ *  descenso). Durante el ascenso NUNCA (petición del jugador). */
+export function puedeAgarrarVueloAlto(vueloT: number, vy: number): boolean {
+  return vueloT >= VUELO_T_MIN_S && vy <= VUELO_GRAB_VY;
+}
 /** SERVO de la goma: el cuerpo se hunde/afloja hacia manosY − base − m.
  *  Solo el DELTA del arrastre no sostenía el estiramiento (el muelle del rig
  *  recuperaba el cuerpo en ~0,2 s). Las MANOS quedan clavadas a sus presas:
@@ -585,6 +597,8 @@ export class ParedNivel {
   private muelleActivo: [boolean, boolean] = [false, false];
   private mochilaAbierta: 0 | 1 | null = null;
   private enVuelo: [boolean, boolean] = [false, false];
+  // T87 — segundos de vuelo por sherpa: el gate del agarre "alto" lo exige
+  private vueloT: [number, number] = [0, 0];
   // T122 — ricachón de lastre colgado del nudo medio de la cuerda + rabietas
   private richi: CuerpoRicachon[] = [];
   private rabietas: EstadoRabietas = rabietasInicio();
@@ -1011,6 +1025,7 @@ export class ParedNivel {
     this.muelles[pi] = Math.max(0, this.muelles[pi] - 1);
     this.muelleActivo[pi] = false;
     this.enVuelo[pi] = true;
+    this.vueloT[pi] = 0; // T87: el gate del agarre cuenta desde el lanzamiento
     if (this.mochilaAbierta === pi) this.refrescaMochila(pi);
     this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.mochila.vueloAuto", "¡Vuela! Buscará el anclaje más alto"));
   }
@@ -1063,17 +1078,26 @@ export class ParedNivel {
       if (!this.enVuelo[pi]) continue;
       const rig = this.sherpas[pi];
       if (rig.anchorsCount() > 0) continue;
+      this.vueloT[pi] += dt;
       const cintura = rig.rig.particles[P.pelvisC];
       const vy = (cintura.pos.y - cintura.prev.y) / Math.max(1e-4, dt);
-      if (vy <= VUELO_GRAB_VY) rig.autoGripVuelo("alto");
+      // T87 — puedeAgarrarVueloAlto: tiempo mínimo + vy ≤ 0 (ápice real).
+      if (puedeAgarrarVueloAlto(this.vueloT[pi], vy)) rig.autoGripVuelo("alto");
     }
 
     // T123 — CAÍDA REAL con AUTO-ANCLAJE: en plena caída (y también colgado
     // de la cuerda), la mano o el pie que tenga una presa POR DEBAJO al
     // alcance se agarra sola — «se deben poder anclar automáticamente a
     // algún agarre inferior». Si no hay nada, cuelga y el compañero aguanta.
+    // T87 (BUG del jugador: «se bloquea como si quedase enganchado en los
+    // anclajes próximos, no hay vuelo libre») — el vuelo de la mochila deja
+    // el rig SIN anclajes y por tanto ropeState "falling": este bucle le
+    // pegaba el auto-anclaje "bajo" DESDE EL PRIMER TICK y agarraba la presa
+    // cercana al despegue. El vuelo tiene SU propia regla (solo ápice/descenso
+    // con manos, arriba): aquí no entra jamás mientras dure el vuelo.
     for (const pi of [0, 1] as const) {
       const rig = this.sherpas[pi];
+      if (this.enVuelo[pi]) continue;
       if (rig.anchorsCount() > 0) continue;
       if (rig.ropeState === "falling" || rig.ropeState === "caught") rig.autoGripVuelo("bajo");
     }
@@ -1156,6 +1180,7 @@ export class ParedNivel {
       const rig = this.sherpas[pi];
       if (rig.anchorsCount() > 0 || rig.ropeState === "caught" || rig.ropeState === "hauling" || rig.ropeState === "grounded") {
         this.enVuelo[pi] = false;
+        this.vueloT[pi] = 0;
       }
     }
 
@@ -1252,6 +1277,11 @@ export class ParedNivel {
 
   /** Cuerda: corrige el exceso de separación — el anclado aguanta, el libre cae. */
   private aplicaCuerda(): void {
+    // T87 — cuerda HOLGADA durante el vuelo de la mochila: el muelle gastado
+    // da cuerda al compañero (petición: «vuelo libre»); si la separación
+    // superaba cuerdaMetros, el tirón de 0,35 m/tick mata la vy del vuelo en
+    // un tick y lo devolvía al punto de partida. Al acabar el vuelo, manda.
+    if (this.enVuelo[0] || this.enVuelo[1]) return;
     const A = this.sherpas[0].rig.particles[P.pelvisC];
     const B = this.sherpas[1].rig.particles[P.pelvisC];
     const ex = excesoCuerda(A.pos, B.pos, this.ajuste.cuerdaMetros);
@@ -1263,7 +1293,11 @@ export class ParedNivel {
     let fA = 0.5, fB = 0.5;
     if (wA > wB) { fA = 0.15; fB = 0.85; }
     else if (wB > wA) { fA = 0.85; fB = 0.15; }
+    // T87 — corrección PURA de posición (pos y prev juntos): mover solo pos
+    // fabricaba velocidad implícita (pos−prev) hasta 18 m/s hacia el compañero
+    A.prev = v3(A.prev.x + dir.x * corr * fA, A.prev.y + dir.y * corr * fA, A.prev.z + dir.z * corr * fA);
     A.pos = vAdd(A.pos, vScale(dir, corr * fA));
+    B.prev = v3(B.prev.x - dir.x * corr * fB, B.prev.y - dir.y * corr * fB, B.prev.z - dir.z * corr * fB);
     B.pos = vAdd(B.pos, vScale(dir, -corr * fB));
   }
 
@@ -1840,6 +1874,7 @@ export class ParedNivel {
     this.goma = null;
     this.ocultaGomaHud();
     this.enVuelo = [false, false];
+    this.vueloT = [0, 0];
     this.muelles = [this.ajuste.lanzamientosMax, this.ajuste.lanzamientosMax];
     this.muelleActivo = [false, false];
     this.cierraMochila();
@@ -2090,6 +2125,7 @@ export class ParedNivel {
     this.goma = null;
     this.ocultaGomaHud();
     this.enVuelo = [false, false];
+    this.vueloT = [0, 0];
     this.muelleActivo = [false, false];
     this.cierraMochila();
     this.rabietaAmp = 0;
@@ -2110,6 +2146,10 @@ export class ParedNivel {
         t: this.simTime,
         alt0: wa.y - Y_SALIDA,
         alt1: wb.y - Y_SALIDA,
+        // T87: X mundial de las cinturas — la E2E certifica la DIRECCIÓN
+        // del lanzamiento (la trayectoria sigue la flecha)
+        x0: wa.x,
+        x1: wb.x,
         bloques: this.bloques.length,
         cuerda: this.ajuste.cuerdaMetros,
         paso: this.paso,
