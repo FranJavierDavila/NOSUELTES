@@ -109,7 +109,7 @@ import {
 } from "./ricachonColgado"; // T122: ricachón de lastre colgado del valle (T86)
 import { RM, RM_PARTICLES } from "../physics/richMan"; // T123: índices de los tobillos (tirantes)
 import {
-  billeteCogible, billetesVivos, pasoBilletes, sacudidaBilletes,
+  billeteCogible, billetesVivos, pasoBilletes, sacudidaBilletes, rafagaFestiva,
   BILLETE_DINERO, type Billete, type ManoLibre,
 } from "./billetesAire"; // T88: billetes que vuelan de la bolsa al sacudirse la cuerda
 
@@ -615,6 +615,7 @@ export class ParedNivel {
   private bolsaNodo: TransformNode | null = null;
   private bolsaWrap: TransformNode | null = null;
   private bolsaTopY = 0.0; // del origen del wrap al TECHO de la bolsa (m, escalado)
+  private bolsaAltoM = 0.55; // alto ESCALADO de la bolsa (para POSARLA en el campa)
   private bolsaLista = false;
   // T88 — billetes en el aire: estado PURO (billetesAire.ts) + clones GLB
   private billetes: Billete[] = [];
@@ -630,6 +631,9 @@ export class ParedNivel {
   private bolsaPrevX = 0;
   private bolsaYaw = 0;
   private elEstrella: [HTMLElement | null, HTMLElement | null] = [null, null];
+  // T90 — ENTREGA DEL BOTÍN: arco de la bolsa hasta el campa + ráfaga final
+  private entrega: { t: number; dur: number; from: V3; ctrl: V3; to: V3; yaw0: number } | null = null;
+  private rafagaHecha = false;
   private estrellaHasta = [0, 0];
   // HUD del interior de la mochila, la barra/flecha de la goma y los avisos
   private elMochilaWin: HTMLElement | null = null;
@@ -1171,7 +1175,12 @@ export class ParedNivel {
     // física ya corrió este tick). Los billetes en subida SON cogibles
     // (petición: «que permita a los sherpas alcanzarlo en su ascenso»).
     // T89 — techo de PANTALLA: los billetes desaparecen por la parte alta
-    const techoPant = Math.max(this.sherpas[0].waist().y, this.sherpas[1].waist().y) + 6.5;
+    // T90 — tras GANAR el techo nunca baja de la cima: la ráfaga festiva
+    // nace en el campa (22,4 m) aunque algún sherpa resbale después
+    const techoPant = Math.max(
+      Math.max(this.sherpas[0].waist().y, this.sherpas[1].waist().y) + 6.5,
+      this.state === "ganado" ? this.yCima + 6.5 : 0,
+    );
     pasoBilletes(this.billetes, dt, -6, techoPant);
     this.aseguraMallasBilletes();
     const manos: ManoLibre[] = [];
@@ -1604,7 +1613,10 @@ export class ParedNivel {
     }
     // T88 — BOLSA DE DINERO: cuelga del amarre deslizando con la cuerda
     // (vaivén suave: la bolsa es blanda y el viento de la pared la mueve)
-    if (this.bolsaNodo) {
+    // T90 — salvo durante la ENTREGA: arco hasta el campa + ráfaga festiva
+    if (this.entrega) {
+      this.pasoEntrega(frameDt);
+    } else if (this.bolsaNodo) {
       const pto = this.amarre ?? this.nudoCuerda();
       // T89 — giro al DESLIZAR: el saco gira en torno a su cuello según la
       // velocidad del amarre (que corre siempre hacia la parte más baja de
@@ -1747,6 +1759,7 @@ export class ParedNivel {
         const bb = piece.getHierarchyBoundingVectors();
         const alto = Math.max(1e-3, bb.max.y - bb.min.y);
         const k = 0.55 / alto;
+        this.bolsaAltoM = alto * k; // T90: para posarla SOBRE la repisa del campa
         wrap.scaling.setAll(k);
         // el TECHO de la bolsa cuelga bajo el nudo: wrap sitúa el top en el origen
         this.bolsaTopY = bb.max.y * k;
@@ -1795,6 +1808,54 @@ export class ParedNivel {
     this.billetes.push(...s.billetes);
     while (this.billetes.length > 24) this.billetes.shift(); // techo de seguridad
     this.aseguraMallasBilletes();
+  }
+
+  /** T90 — ENTREGA DEL BOTÍN: al GANAR, la bolsa deja la cuerda y se POSA en
+   *  el campamento (techo del bloque central de la fila de cima) con un arco
+   *  y un giro festivo; al tocar la repisa EXPLOTA en una ráfaga de billetes.
+   *  La animación vive en renderTick (sigue tras el fin: el verlet ya no
+   *  manda el decorado) y se desactiva al reiniciar. */
+  private iniciaEntrega(): void {
+    if (!this.bolsaNodo || !this.bolsaLista) return;
+    const campa = this.bloques.find((b) => b.spec.id === "cima_1");
+    if (!campa) return;
+    // techo del bloque central en MUNDO (la mesh cuelga de un padre con el
+    // desfase de la pared: position local ≈ 0 — getAbsolutePosition manda)
+    const mp = campa.mesh.getAbsolutePosition();
+    const top = mp.y + campa.spec.h / 2;
+    const from = v3(this.bolsaNodo.position.x, this.bolsaNodo.position.y, this.bolsaNodo.position.z);
+    // el wrap sitúa el TECHO de la bolsa en el origen: para POSARLA, el
+    // origen va un alto de saco por encima de la repisa
+    const to = v3(mp.x, top + this.bolsaAltoM, campa.spec.z + 0.06);
+    const ctrl = v3((from.x + to.x) / 2, Math.max(from.y, to.y) + 1.1, (from.z + to.z) / 2 + 0.15);
+    this.entrega = { t: 0, dur: 1.5, from, ctrl, to, yaw0: this.bolsaYaw };
+    this.rafagaHecha = false;
+  }
+
+  /** Arco bezier (ease in-out) + vuelta y media + bamboleo amortiguado. */
+  private pasoEntrega(frameDt: number): void {
+    const e = this.entrega;
+    const nodo = this.bolsaNodo;
+    if (!e || !nodo) return;
+    e.t += frameDt;
+    const k = Math.min(1, e.t / e.dur);
+    const s = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+    const u = 1 - s;
+    nodo.position.set(
+      u * u * e.from.x + 2 * u * s * e.ctrl.x + s * s * e.to.x,
+      u * u * e.from.y + 2 * u * s * e.ctrl.y + s * s * e.to.y,
+      u * u * e.from.z + 2 * u * s * e.ctrl.z + s * s * e.to.z,
+    );
+    nodo.rotation.y = e.yaw0 + s * Math.PI * 3;
+    nodo.rotation.z = Math.sin(e.t * 9) * 0.18 * (1 - s);
+    if (k >= 1 && !this.rafagaHecha) {
+      this.rafagaHecha = true;
+      const boca = v3(e.to.x, e.to.y - this.bolsaAltoM + 0.12, e.to.z + 0.1);
+      const r = rafagaFestiva(this.billeteRng, this.billeteId, boca);
+      this.billeteId = r.idSiguiente;
+      this.billetes.push(...r.billetes);
+      this.aseguraMallasBilletes();
+    }
   }
 
   /** Un clon del dollar por billete vivo (los muertos esconden su malla). */
@@ -2052,7 +2113,9 @@ export class ParedNivel {
     if (this.elAlt) {
       const alt = Math.max(0, Math.max(wa.y, wb.y) - Y_SALIDA);
       const ambos = Math.min(wa.y, wb.y) - Y_SALIDA;
-      this.elAlt.textContent = `↑ ${alt.toFixed(1)} m / ~${(this.yCima - Y_SALIDA).toFixed(0)} m   ·   ambos: ${ambos.toFixed(1)} m`;
+      // T90 — el BOTÍN se ve en vivo durante toda la partida (los billetes
+      // cogidos ya no viven solo dentro de la mochila)
+      this.elAlt.textContent = `↑ ${alt.toFixed(1)} m / ~${(this.yCima - Y_SALIDA).toFixed(0)} m   ·   ambos: ${ambos.toFixed(1)} m   ·   💰$${this.dinero[0] + this.dinero[1]}`;
     }
     if (this.elFat) {
       // aviso de UNA MANO (peso entero sobre esa mano: fatiga ×2 — petición del jugador)
@@ -2140,6 +2203,7 @@ export class ParedNivel {
   private fin(won: boolean): void {
     if (this.state !== "jugando") return;
     this.state = won ? "ganado" : "fallado";
+    if (won) this.iniciaEntrega(); // T90: la bolsa se posa en el campa y celebra
     const root = this.d.hudRoot;
     const wrap = document.createElement("div");
     wrap.id = "pared-fin";
@@ -2148,7 +2212,8 @@ export class ParedNivel {
     wrap.innerHTML = `<div style="background:rgba(12,22,17,.94);border:1px solid #57b17e;border-radius:14px;padding:26px 34px;text-align:center;max-width:420px;font-family:system-ui,sans-serif;color:#eaf4ec">
       <h1 style="font-size:24px;margin:0 0 8px">${won ? "🎉 " : ""}${esc(t(won ? "pared.win" : "pared.fail", won ? "¡Prueba superada!" : "Caída en la prueba"))}</h1>
       <p style="margin:0 0 6px;font-size:14px;opacity:.85">${esc(t(won ? "pared.winSub" : "pared.failSub", won ? "Los sherpas alcanzan la cima de los bloques flotantes" : "El campamento sigue esperando… inténtalo de nuevo"))}</p>
-      <p style="margin:0 0 14px;font-size:13px;opacity:.7">${t("pared.finaleTime", "Tiempo")}: ${Math.floor(this.simTime / 60)}:${String(Math.floor(this.simTime % 60)).padStart(2, "0")} · ${t("pared.finaleFalls", "Caídas")}: ${this.falls}</p>
+      <p style="margin:0 0 4px;font-size:13px;opacity:.7">${t("pared.finaleTime", "Tiempo")}: ${Math.floor(this.simTime / 60)}:${String(Math.floor(this.simTime % 60)).padStart(2, "0")} · ${t("pared.finaleFalls", "Caídas")}: ${this.falls}</p>
+      ${won ? `<p style="margin:0 0 14px;font-size:15px;font-weight:700;color:#ffd76a">💰 ${esc(t("pared.finaleBotin", "Botín"))}: $${this.dinero[0] + this.dinero[1]} <span style="font-size:12px;font-weight:400;opacity:.75">· S1 $${this.dinero[0]} · S2 $${this.dinero[1]}</span></p>` : `<p style="margin:0 0 14px"></p>`}
       <button id="pared-retry" class="go" style="margin:4px">${esc(t("pared.retry", "Reintentar"))}</button>
       <button id="pared-exit" style="margin:4px;background:rgba(255,255,255,.08);border:1px solid #57b17e;color:#eaf4ec;border-radius:10px;padding:9px 22px;font:600 14px system-ui,sans-serif;cursor:pointer">${esc(t("pared.exit", "Menú"))}</button>
     </div>`;
@@ -2181,6 +2246,9 @@ export class ParedNivel {
     this.rabietaAmp = 0;
     this.rabietas = rabietasInicio();
     this.richi = ricachonReset(this.nudoCuerda());
+    // T90: la bolsa vuelve a la cuerda (la entrega del botín se cancela)
+    this.entrega = null;
+    this.rafagaHecha = false;
     this.avisoT = 0;
     if (this.elAviso) this.elAviso.style.display = "none";
     this.aplicaAlturas();
@@ -2490,7 +2558,27 @@ export class ParedNivel {
         billetesTotal: this.billetes.length,
         bolsa: this.bolsaLista,
         muellesBadge: [...this.muelles],
+        // T90 — entrega del botín: estado del arco de la bolsa + dónde está
+        entrega: this.entrega
+          ? { t: +this.entrega.t.toFixed(2), lista: this.rafagaHecha, x: this.bolsaNodo?.position.x ?? 0, y: this.bolsaNodo?.position.y ?? 0, z: this.bolsaNodo?.position.z ?? 0 }
+          : null,
+        yCimaEfectiva: this.yCima,
       });
+      (w as { forzarVictoria?: () => void }).forzarVictoria = () => {
+        // cheat de E2E: suelta TODO (las manos ancladas 17 m más abajo tirarían
+        // del cuerpo de vuelta), traslada el cuerpo RÍGIDO a la fila de campa y
+        // deja winT acumulado: el tick siguiente dispara fin(true) por el
+        // camino normal (no hay «estar de pie» sobre bloques — solo presas).
+        for (const rig of this.sherpas) {
+          for (const limb of LIMBS) rig.forceRelease(limb, 0, "player");
+          const dy = Math.max(this.winY + 0.4, this.yCima + 0.7) - rig.rig.particles[P.pelvisC].pos.y;
+          for (const pt of rig.rig.particles) {
+            pt.pos = v3(pt.pos.x, pt.pos.y + dy, pt.pos.z);
+            pt.prev = v3(pt.pos.x, pt.pos.y, pt.pos.z); // cae desde el reposo
+          }
+        }
+        this.winT = 1.25;
+      };
     }
   }
 

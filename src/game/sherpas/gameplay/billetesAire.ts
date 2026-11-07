@@ -130,3 +130,29 @@ export function billeteCogible(
 export function billetesVivos(lista: readonly Billete[]): number {
   return lista.reduce((n, b) => n + (b.vivo ? 1 : 0), 0);
 }
+
+/** T90 — RAFAGA FESTIVA: al POSARSE la bolsa en el campamento explota en
+ *  lluvia de billetes (no una sacudida de rabieta: es la fiesta del botín).
+ *  Salen RADIALMENTE hacia arriba desde la boca del saco — cono abierto con
+ *  vel x/z propias — y a partir de ahí manda pasoBilletes (corriente propia
+ *  + aleteo + subida sin parar), así que celebran subiendo hasta el techo. */
+export const RAFAGA_N = 12;
+export function rafagaFestiva(
+  rng: Rng, idBase: number, origen: V3,
+): { billetes: Billete[]; idSiguiente: number } {
+  const billetes: Billete[] = [];
+  let id = idBase;
+  for (let i = 0; i < RAFAGA_N; i++) {
+    const ang = rng() * Math.PI * 2;
+    const radio = 0.45 + rng() * 0.85; // cono: todos hacia arriba, ninguno cae
+    billetes.push({
+      id: id++,
+      pos: v3(origen.x + (rng() - 0.5) * 0.2, origen.y - 0.08 - rng() * 0.1, origen.z + (rng() - 0.5) * 0.16),
+      vel: v3(Math.cos(ang) * radio, 1.9 + rng() * 1.2, Math.sin(ang) * radio * 0.55),
+      fase: rng() * Math.PI * 2,
+      t: 0,
+      vivo: true,
+    });
+  }
+  return { billetes, idSiguiente: id };
+}
