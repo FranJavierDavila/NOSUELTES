@@ -66,6 +66,23 @@
 //       acota a la longitud ósea exacta (dragMaxReach) — jamás una mano o
 //       un pie estirados fuera del anclaje.
 //
+// T92 — CIRCUITO DE RECOMPENSAS (dictado del jugador): «la subida… el
+// trayecto sea el triple de largo del actual» (27 filas móviles, antes 9);
+// «más combinaciones diferentes» — lateral (se separan más hacia los lados),
+// profundo (se acercan y alejan de cámara) y tumbo (cabeceo) se suman a
+// vertical/horizontal/giro/giro180; «bloques de color verde que al subir a
+// ellos los sherpas comienzan a girar en un eje perpendicular a la cámara
+// haciendo que el sherpa pueda quedar boca abajo resbalando» (giro en el
+// eje Z — el perpendicular a la PANTALLA — mientras alguien agarra);
+// «bloques azules que al subirse se van alejando hacia los lados
+// separándose del centro, mientras un sherpa está sobre ellos»; «los
+// bloques podrán ser de distinto tamaño y forma pero no podrán tocarse»
+// (haySolape con peores casos de giro/deriva); «en determinadas alturas se
+// encontrarán otros bloques separados hacia los lados de formas geométricas
+// diversas y con agarres en todas sus caras y que tendrán colgadas con
+// cuerdas otros sacos de dinero que el sherpa podrá tratar de alcanzar y le
+// dará 200 $ a su mochila» — plataformas de bonificación con sacos (+200 $).
+//
 // Aislamiento: el juego principal no se toca. Este módulo crea SU PROPIA
 // SherpaScene (patrón endGuestToMenu de mount.ts: un canvas = un motor) y
 // reutiliza los sistemas reales: SherpaRig, AnchorSystem, PointerDrag,
@@ -122,10 +139,17 @@ import { cuelloDeSaco } from "./bolsaGeo"; // T91: el cuello estrecho del saco
 
 export const Y_SALIDA = 2.2;      // centro de los bloques de salida
 export const FILA_PASO = 1.9;     // distancia vertical entre filas (bloques móviles H_MOVIL → hueco 0,4 m)
-export const Y_CIMA = Y_SALIDA + FILA_PASO * 10; // 21.2 — fila de cima
-export const WIN_Y = 20.4;        // ambos sherpas por encima → prueba superada
+/** T92 — RUTA TRIPLE (dictado: «el trayecto sea el triple de largo del
+ *  actual»): 27 filas móviles (antes 9) + fila de cima en la 28. */
+export const FILAS_MOVILES = 27;
+export const Y_CIMA = Y_SALIDA + FILA_PASO * (FILAS_MOVILES + 1); // 55,4 — fila de cima
+export const WIN_Y = Y_CIMA - 0.8; // ambos sherpas por encima → prueba superada
 export const FAIL_Y = -1.4;       // caída al vacío → prueba fallada
 export const CUERDA_LEN = 5.0;    // separación máxima entre los dos sherpas (m)
+/** Altura de la fila de cima para un paso dado (panel de ajuste). */
+export function yCimaDe(paso: number): number {
+  return Y_SALIDA + paso * (FILAS_MOVILES + 1);
+}
 /** PLANO DE LA CARA de escalada: presas, arrastre y wallFrontZ del rig. El
  *  CUERPO del bloque ocupa z > Z_PRESA (detrás de la cara) — el escalador
  *  cuelga en z < wallFrontZ (convención del juego principal) sin quedar
@@ -155,6 +179,47 @@ export const LANZ_V_MIN = 2.2;
 export const ROTURA_AVISO_S = 2.5;
 /** B5: umbral de píxeles que separa un CLIC (interior) de un ARRASTRE (tiro). */
 export const GOMA_UMBRAL_PX = 14;
+
+// T92 — CIRCUITO DE RECOMPENSAS: verdes, azules, giro180 y plataformas
+/** Filas con bloque VERDE: al agarrarlo GIRA sin parar en el eje Z (el
+ *  perpendicular a la pantalla/cámara) hasta que lo sueltan — el sherpa
+ *  puede quedar boca abajo resbalando (dictado del jugador). */
+export const FILAS_VERDES = [4, 9, 15, 20, 25];
+/** Filas con bloque AZUL: mientras alguien está sobre él se ALEJA hacia los
+ *  lados, separándose del centro (deriva hacia fuera). */
+export const FILAS_AZULES = [3, 7, 12, 17, 21, 24];
+/** Filas con la caja GIRO180 (barrido ~160°, una por mitad de ruta). */
+export const FILAS_GIRO180 = [13, 23];
+/** Velocidad final del giro verde (rad/s) con su aceleración/frenado. */
+export const VERDE_SPIN_MPS = 0.55;
+export const VERDE_SPIN_ACC = 0.5;
+export const VERDE_SPIN_DEC = 0.8;
+/** Deriva azul (m/s) hacia fuera, tope de alejamiento y regreso al quedar
+ *  libre (siempre < 2,6−0,7−0,9 = 1,0: jamás alcanza la otra columna). */
+export const AZUL_DRIFT_MPS = 0.22;
+export const AZUL_DRIFT_MAX = 0.8;
+export const AZUL_DRIFT_RET = 0.35;
+/** Plataformas de bonificación: ALTURA en filas (centro entre dos filas),
+ *  lado (−1 izquierda / +1 derecha) y forma geométrica (dictado: «de formas
+ *  geométricas diversas y con agarres en todas sus caras»). */
+export const PLATAFORMAS: { fila: number; lado: -1 | 1; forma: "hex" | "cil" | "caja" }[] = [
+  { fila: 8.5, lado: -1, forma: "hex" },
+  { fila: 17.5, lado: 1, forma: "cil" },
+  { fila: 24.5, lado: -1, forma: "caja" },
+];
+/** X de las plataformas: separadas hacia los lados (|x| ≥ 3,6 > 1,52 de la
+ *  mezcla + 0,9 propio y > 2,8 del azul derivado: nunca se tocan). */
+export const PLATAFORMA_X = 4.15;
+/** Dinero del saco colgado en las plataformas (dictado: «le dará 200 $»). */
+export const BONUS_DINERO = 200;
+/** Radio de cogida del saco bonus con la mano libre (m). */
+export const RADIO_BOLSA_BONUS = 0.85;
+/** Longitud de la cuerda que cuelga el saco del techo de la plataforma (m). */
+export const CUERDA_BONUS_M = 0.72;
+
+export function esFilaVerde(r: number): boolean { return FILAS_VERDES.includes(r); }
+export function esFilaAzul(r: number): boolean { return FILAS_AZULES.includes(r); }
+export function esFilaGiro180(r: number): boolean { return FILAS_GIRO180.includes(r); }
 
 // T123 — mochila-muelles, caídas con peso y vuelo con auto-agarre
 /** Muelles de lanzamiento por sherpa (el interior de la mochila muestra 3;
@@ -202,10 +267,11 @@ export function zLocalPresa(d: number): number {
   return -d / 2 - PRESA_SALIENTE;
 }
 
-/** B3: filas destructibles (PARES 2-8): alternas por construcción — NUNCA dos
- *  bloques destructibles seguidos (petición literal del jugador). */
+/** B3: filas destructibles (cada 4 filas desde la 2: 2,6,10,18,22,26 —
+ *  NUNCA dos seguidas ni nunca verde/azul/giro180: petición literal). */
 export function esFilaDestructible(r: number): boolean {
-  return r >= 2 && r <= 8 && r % 2 === 0;
+  return r % 4 === 2 && r >= 2 && r <= FILAS_MOVILES
+    && !esFilaVerde(r) && !esFilaAzul(r) && !esFilaGiro180(r);
 }
 
 /** B5: velocidad de lanzamiento (m/s en el plano de pared) desde el arrastre:
@@ -276,12 +342,14 @@ export function velocidadesAnicos(seed: number, n: number): { vx: number; vy: nu
 
 // ---------- patrones de movimiento (puro, testeable) ----------
 
-export type Patron = "estatico" | "vertical" | "horizontal" | "giro" | "giro180";
+export type Patron = "estatico" | "vertical" | "horizontal" | "lateral" | "profundo" | "giro" | "giro180" | "tumbo";
 
-/** Desplazamiento (dx, dy) del bloque en el instante t (s). */
+/** Desplazamiento (dx, dy) del bloque en el instante t (s). T92: «lateral»
+ *  se separa MÁS hacia los lados (amplitud base alta, el CAP manda) y
+ *  «profundo» se acerca/aleja DE CÁMARA (dz, ver zoffPatron). */
 export function offsetPatron(p: Patron, amp: number, periodS: number, phase: number, t: number): { dx: number; dy: number } {
   if (p === "vertical") return { dx: 0, dy: amp * Math.sin((2 * Math.PI * t) / periodS + phase) };
-  if (p === "horizontal") return { dx: amp * Math.sin((2 * Math.PI * t) / periodS + phase), dy: 0 };
+  if (p === "horizontal" || p === "lateral") return { dx: amp * Math.sin((2 * Math.PI * t) / periodS + phase), dy: 0 };
   return { dx: 0, dy: 0 };
 }
 
@@ -290,6 +358,34 @@ export function offsetPatron(p: Patron, amp: number, periodS: number, phase: num
  *  barrido total cercano a los 180 grados del jugador) y periodo lento. */
 export function yawPatron(p: Patron, amp: number, periodS: number, phase: number, t: number): number {
   return p === "giro" || p === "giro180" ? amp * Math.sin((2 * Math.PI * t) / periodS + phase) : 0;
+}
+
+/** T92 — CABECEO (pitch, rad): el bloque se inclina adelante/atrás (eje X)
+ *  — el sherpa colgado de sus presas se balancea como en un puente levadizo. */
+export function pitchPatron(p: Patron, amp: number, periodS: number, phase: number, t: number): number {
+  return p === "tumbo" ? amp * Math.sin((2 * Math.PI * t) / periodS + phase) : 0;
+}
+
+/** T92 — PROFUNDIDAD (dz, m): el bloque se acerca y aleja DE CÁMARA (eje Z)
+ *  — las presas viajan con él y el escalador flota dentro y fuera del plano. */
+export function zoffPatron(p: Patron, amp: number, periodS: number, phase: number, t: number): number {
+  return p === "profundo" ? amp * Math.sin((2 * Math.PI * t) / periodS + phase) : 0;
+}
+
+/** T92 — paso del GIRO VERDE: acelera mientras hay agarre (el sherpa empieza
+ *  a girar con el bloque) hasta VERDE_SPIN_MPS y frena al quedar libre. */
+export function pasoGiroVerde(spinAng: number, spinVel: number, dt: number, ocupado: boolean, dir: number): [number, number] {
+  const v2 = ocupado
+    ? Math.min(VERDE_SPIN_MPS, Math.max(0, spinVel) + VERDE_SPIN_ACC * dt)
+    : Math.max(0, spinVel - VERDE_SPIN_DEC * dt);
+  return [spinAng + v2 * dir * dt, v2];
+}
+
+/** T92 — paso de la DERIVA AZUL: se aleja del centro mientras hay agarre
+ *  (hasta AZUL_DRIFT_MAX) y vuelve suave al quedar libre. */
+export function pasoDerivaAzul(drift: number, dt: number, ocupado: boolean): number {
+  if (ocupado) return Math.min(AZUL_DRIFT_MAX, drift + AZUL_DRIFT_MPS * dt);
+  return Math.max(0, drift - AZUL_DRIFT_RET * dt);
 }
 
 /** Muelle amortiguado de la basculación al agarrar: acc = −k·(sag−target) − c·vel. */
@@ -326,7 +422,8 @@ export const SAG_IMPULSO = 0.22;
 // completo cabe: radio máximo hipot(0,7, 0,75) del cubo 1,4×1,5 = 1,026 m
 // y 1,026+0,75+sag < 1,9 de paso (haySolape lo certifica en el tiempo).
 export const CAP_AMP: Record<Patron, number> = {
-  estatico: 0, vertical: 0.35, horizontal: 0.62, giro: 0.25, giro180: 1.45,
+  estatico: 0, vertical: 0.35, horizontal: 0.62, lateral: 0.62,
+  profundo: 0.28, giro: 0.25, giro180: 1.45, tumbo: 0.42,
 };
 
 /** Amplitud efectiva: amp·mult acotada al CAP del patrón. */
@@ -347,11 +444,23 @@ export interface BloqueSpec {
   /** T121 B3: caja rojiza que se rompe en añicos (segundosRotura desde el
    *  primer agarre) — el escalador cae a un bloque inferior intacto. */
   destructible?: boolean;
+  /** T92 — bloque VERDE: gira en el eje Z mientras alguien lo agarra. */
+  verde?: boolean;
+  /** T92 — bloque AZUL: deriva hacia los lados mientras alguien está encima. */
+  azul?: boolean;
+  /** T92 — PLATAFORMA DE BONIFICACIÓN: separada hacia los lados, forma
+   *  geométrica diversa, agarres en todas sus caras y saco de dinero +200 $. */
+  bono?: boolean;
+  forma?: "cubo" | "hex" | "cil" | "caja";
 }
 
-/** Ciclo de la columna «mixta»: estáticos intercalados (opción de anclaje
- *  tranquila) y nunca dos giros seguidos. */
-const CICLO_MIXTA: Patron[] = ["horizontal", "estatico", "giro", "estatico"];
+/** Ciclo de la columna «mixta» — T92 AMPLIADO (dictado: «más combinaciones
+ *  diferentes»): laterales más separados, bloques que se acercan/alejan de
+ *  cámara y cabeceos, con estáticos intercalados y nunca dos giros seguidos. */
+const CICLO_MIXTA: Patron[] = [
+  "horizontal", "estatico", "lateral", "giro", "estatico",
+  "profundo", "horizontal", "tumbo", "estatico",
+];
 
 /** Modulador del layout (panel de ajuste): el paso de filas fija las ALTURAS
  *  (requiere reconstruir bloques); velocidad/amplitud/fase se aplican EN VIVO
@@ -360,17 +469,24 @@ export interface ParedModLayout {
   filaPaso?: number;
 }
 
-/** Toda la pared: 2 bloques de salida + 9 filas móviles (una por columna) +
- *  fila de cima de 3 bloques horizontales estáticos. ~20 m de subida.
+/** Toda la pared: 2 bloques de salida + 27 filas móviles (TRIPLE del T118:
+ *  una por columna) + 3 plataformas de bonificación separadas hacia los
+ *  lados + fila de cima de 3 bloques horizontales estáticos.
  *
- *  T120 — SIN SOLAPES POR CONSTRUCCIÓN (antes: fase/amp aleatorias por BLOQUE
- *  y dos vecinos podían acercarse 2·amp con huecos de 0,8/0,1 m):
- *  · Una columna BAILA: vertical SINCRONIZADA — todos sus bloques comparten
- *    amplitud/periodo/fase, así que la distancia entre filas de esa columna
- *    es constante. Las filas 1 y 9 amortiguan ×0,3 frente a salida y cima.
- *  · La otra columna es MIXTA: horizontal (solo dx), estático y giro (solo
- *    yaw, cubo de 1,5 m) — sin dy de patrón, los huecos verticales quedan
- *    intactos. Giro nunca en la fila 1 (la esquina barrería la salida). */
+ *  T120/T92 — SIN SOLAPES POR CONSTRUCCIÓN:
+ *  · La pared vive en SEGMENTOS de 9 filas: en cada segmento una columna
+ *    BAILA (vertical SINCRONIZADA — amp/periodo/fase compartidos: la
+ *    distancia entre filas de esa columna es constante; filas 1 y 9 de cada
+ *    segmento amortiguadas ×0,3) y la otra es MIXTA (horizontal/lateral/
+ *    estático/giro/profundo/tumbo — sin dy, los huecos verticales quedan
+ *    intactos). La baila NUNCA deriva en X ni gira.
+ *  · VERDES y AZULES viven SIEMPRE en la columna mixta (el giro verde se
+ *    acota con la envolvente circular de su mitad-diagonal; el azul deriva
+ *    hacia FUERA, jamás hacia la otra columna).
+ *  · GIRO180 en las filas 13 y 23 (una por mitad de ruta); sus vecinas no
+ *    giran. Fila 1 nunca barre la salida.
+ *  · Plataformas a |x| = 4,15: la mezcla llega a 1,52 y el azul a 2,8 —
+ *    margen ≥ 0,45 (haySolape lo certifica con los peores casos). */
 export function layoutPared(seed: number, mod?: ParedModLayout): BloqueSpec[] {
   const paso = mod?.filaPaso && mod.filaPaso > 0 ? mod.filaPaso : FILA_PASO;
   const rng = mulberry32(seed >>> 0);
@@ -379,58 +495,128 @@ export function layoutPared(seed: number, mod?: ParedModLayout): BloqueSpec[] {
   for (const [i, x] of [-1.3, 1.3].entries()) {
     out.push({ id: `salida_${i}`, x, y: Y_SALIDA, z: zCara(0.5), w: 1.8, h: 1.8, d: 0.5, patron: "estatico", amp: 0, periodS: 1, phase: 0, salida: true });
   }
-  const colBaila = rng() < 0.5 ? 0 : 1;   // qué columna sube y baja (la otra es mixta)
-  // T121 B2 «movimiento más amplio»: base de vertical 0,24-0,32 (CAP 0,35) y
-  // de horizontal 0,42-0,60 (CAP 0,62) — más vaivén, más maniobra.
-  const ampCol = 0.24 + rng() * 0.08;     // ≤ 0,32 < CAP vertical 0,35
-  const perCol = 3.4 + rng() * 2.2;
-  const phCol = rng() * Math.PI * 2;
-  const ciclo = Math.floor(rng() * CICLO_MIXTA.length);
-  // T121 B2: la fila 5 de la columna mixta es el GIRO180 (una caja que barre
-  // ~160°). Sus vecinas 4 y 6 quedan en HORIZONTAL (sin yaw ni dy) para que
-  // el barrido del cubo no las toque (haySolape lo certifica).
-  const filaGiro180 = 5;
+  const baila0 = rng() < 0.5 ? 0 : 1;   // qué columna baila en el 1er segmento
+  // la vertical SINCRONIZADA se sortea POR SEGMENTO (T120: filas con la misma
+  // amp/periodo/fase → la distancia relativa entre filas es constante)
+  const segAmp: number[] = [], segPer: number[] = [], segPh: number[] = [];
+  for (let seg = 0; seg < 3; seg++) {
+    segAmp.push(0.24 + rng() * 0.08);   // ≤ 0,32 < CAP vertical 0,35
+    segPer.push(3.4 + rng() * 2.2);
+    segPh.push(rng() * Math.PI * 2);
+  }
   // las amplitudes se sortean SIEMPRE en el mismo orden → layout determinista
-  for (let r = 1; r <= 9; r++) {
-    const y = Y_SALIDA + paso + (r - 1) * paso;
-    const fade = r === 1 || r === 9 ? 0.3 : 1;
-    let patronMixto = CICLO_MIXTA[(r - 1 + ciclo) % CICLO_MIXTA.length];
-    if (r === 1 && patronMixto === "giro") patronMixto = "horizontal";
-    if (r === filaGiro180) patronMixto = "giro180";
-    else if ((r === filaGiro180 - 1 || r === filaGiro180 + 1) && patronMixto === "giro") patronMixto = "horizontal";
-    const esGiro = patronMixto === "giro";
+  for (let r = 1; r <= FILAS_MOVILES; r++) {
+    const seg = Math.floor((r - 1) / 9);              // 0,1,2 — segmentos de 9 filas
+    const colBaila = seg % 2 === 0 ? baila0 : 1 - baila0; // alterna por segmento
+    const y = Y_SALIDA + paso * r;
+    const filasSeg = ((r - 1) % 9) + 1;               // 1..9 dentro del segmento
+    const fade = filasSeg === 1 || filasSeg === 9 ? 0.3 : 1;
+    // — columna BAILA: vertical sincronizada del segmento (el fade ×0,3 de
+    //   las filas de borde mueve EN FASE: relativo ≤ 0,7·amp — haySolape) —
+    const ampBaila = segAmp[seg] * fade;
+    const perBaila = segPer[seg];
+    const phBaila = segPh[seg];
+    // — columna MIXTA: ciclo largo + especiales por fila —
+    const ciclo = Math.floor(rng() * CICLO_MIXTA.length);
+    let patronMixto = CICLO_MIXTA[(filasSeg - 1 + ciclo) % CICLO_MIXTA.length];
+    if (esFilaGiro180(r)) patronMixto = "giro180";
+    else if (esFilaVerde(r) || esFilaAzul(r)) patronMixto = "estatico";
+    // la fila 1 no barre la salida; los vecinos del giro180 tampoco giran
+    if (r === 1 && (patronMixto === "giro" || patronMixto === "tumbo" || patronMixto === "giro180")) patronMixto = "horizontal";
+    if ((esFilaGiro180(r - 1) || esFilaGiro180(r + 1)) && (patronMixto === "giro" || patronMixto === "tumbo")) patronMixto = "horizontal";
     const es180 = patronMixto === "giro180";
-    const ampMix = es180 ? 1.38 + rng() * 0.06 : esGiro ? 0.18 + rng() * 0.07 : 0.42 + rng() * 0.18;
-    const perMix = es180 ? 9 + rng() * 3 : esGiro ? 5.5 + rng() * 2.5 : 3.4 + rng() * 2.2;
+    const esGiro = patronMixto === "giro";
+    const esTumbo = patronMixto === "tumbo";
+    const ampMix = es180 ? 1.38 + rng() * 0.06
+      : esGiro ? 0.18 + rng() * 0.07
+      : esTumbo ? 0.3 + rng() * 0.12
+      : patronMixto === "profundo" ? 0.18 + rng() * 0.1
+      : patronMixto === "lateral" ? 0.5 + rng() * 0.12
+      : patronMixto === "estatico" ? 0
+      : 0.42 + rng() * 0.18;
+    const perMix = es180 ? 9 + rng() * 3 : esTumbo ? 6 + rng() * 3 : 3.4 + rng() * 2.2;
     const phMix = rng() * Math.PI * 2;
+    // T92 — distinto TAMAÑO: anchos variados entre las cajas normales
+    const anchoRnd = rng();
+    const ancho = es180 ? 1.4 : esGiro ? 1.5 : anchoRnd < 0.25 ? 1.2 : anchoRnd < 0.55 ? 1.8 : 1.6;
     const dest = esFilaDestructible(r);
     for (let c = 0; c < 2; c++) {
       const x = c === 0 ? -1.3 : 1.3;
       const suf = c === 0 ? "i" : "d";
       if (c === colBaila) {
-        out.push({ id: `f${r}_${suf}`, x, y, z: zCara(0.5), w: 1.8, h: H_MOVIL, d: 0.5, patron: "vertical", amp: ampCol * fade, periodS: perCol, phase: phCol, destructible: dest });
+        out.push({ id: `f${r}_${suf}`, x, y, z: zCara(0.5), w: 1.8, h: H_MOVIL, d: 0.5, patron: "vertical", amp: ampBaila, periodS: perBaila, phase: phBaila, destructible: dest });
       } else {
-        // estático: amp 0 (el sorteo de ampMix queda en el orden fijo aunque no se use)
-        const patron = patronMixto === "estatico" ? "estatico" : patronMixto;
-        out.push({ id: `f${r}_${suf}`, x, y, z: zCara(0.5), w: es180 ? 1.4 : esGiro ? 1.5 : 1.8, h: H_MOVIL, d: 0.5, patron, amp: patronMixto === "estatico" ? 0 : ampMix, periodS: perMix, phase: phMix, destructible: dest });
+        // verdes y azules SIEMPRE en la mixta (la baila jamás gira ni deriva)
+        const verde = esFilaVerde(r);
+        const azul = !verde && esFilaAzul(r);
+        const wFinal = verde ? 1.0 : azul ? 1.4 : ancho;
+        out.push({
+          id: `f${r}_${suf}`, x, y, z: zCara(0.5),
+          w: wFinal, h: verde ? 1.0 : azul ? 1.4 : H_MOVIL, d: 0.5,
+          patron: patronMixto, amp: ampMix, periodS: perMix, phase: phMix,
+          destructible: dest && !verde && !azul, verde, azul,
+        });
       }
     }
   }
+  // T92 — PLATAFORMAS DE BONIFICACIÓN: separadas hacia los lados, formas
+  // geométricas diversas, agarres en todas sus caras y saco de dinero
+  // colgado con cuerda (+200 $ al alcanzarlo con las manos).
+  for (const [i, pl] of PLATAFORMAS.entries()) {
+    const dims = pl.forma === "hex" ? { w: 1.8, h: 1.8, d: 0.55 }
+      : pl.forma === "cil" ? { w: 1.6, h: 1.0, d: 1.0 }
+      : { w: 1.6, h: 1.0, d: 0.9 };
+    out.push({
+      id: `bono_${i}`, x: pl.lado * PLATAFORMA_X, y: Y_SALIDA + paso * pl.fila,
+      z: zCara(dims.d), w: dims.w, h: dims.h, d: dims.d,
+      patron: "estatico", amp: 0, periodS: 1, phase: 0,
+      bono: true, forma: pl.forma,
+    });
+  }
   for (const [i, x] of [-1.35, 0, 1.35].entries()) {
-    out.push({ id: `cima_${i}`, x, y: Y_SALIDA + paso * 10, z: zCara(0.5), w: 1.25, h: 1.25, d: 0.5, patron: "estatico", amp: 0, periodS: 1, phase: 0, cima: true });
+    out.push({ id: `cima_${i}`, x, y: Y_SALIDA + paso * (FILAS_MOVILES + 1), z: zCara(0.5), w: 1.25, h: 1.25, d: 0.5, patron: "estatico", amp: 0, periodS: 1, phase: 0, cima: true });
+  }
+  // T92 — GARANTÍA DE VARIEDAD: los verdes/azules/giro180 se comen huecos del
+  // ciclo y podrían dejar fuera giro/tumbo/lateral/profundo. Si alguno quedó
+  // fuera, la primera mixta tranquila (fila > 1, sin especiales, sin vecino
+  // giro180) lo estrena con sus parámetros — determinista.
+  const filaDe = (s: BloqueSpec): number => Number(s.id.slice(1, s.id.indexOf("_")));
+  const elegible = (s: BloqueSpec): boolean =>
+    s.id.startsWith("f") && !s.verde && !s.azul && !s.bono && s.patron === "estatico"
+    && filaDe(s) > 1 && !esFilaGiro180(filaDe(s) - 1) && !esFilaGiro180(filaDe(s) + 1);
+  for (const patron of ["giro", "tumbo", "lateral", "profundo"] as const) {
+    if (out.some((s) => s.patron === patron)) continue;
+    const cand = out.find(elegible);
+    if (!cand) continue;
+    cand.patron = patron;
+    if (patron === "giro") { cand.amp = 0.18 + rng() * 0.07; cand.periodS = 5.5 + rng() * 2.5; cand.w = 1.5; }
+    else if (patron === "tumbo") { cand.amp = 0.3 + rng() * 0.12; cand.periodS = 6 + rng() * 3; }
+    else if (patron === "lateral") { cand.amp = 0.5 + rng() * 0.12; }
+    else { cand.amp = 0.18 + rng() * 0.1; }
   }
   return out;
 }
 
 // ---------- checker de solapes (puro: los tests lo barren en el tiempo) ----------
 
-export interface CajaSolape { x: number; y: number; w: number; h: number; yaw: number; }
+export interface CajaSolape { x: number; y: number; w: number; h: number; yaw: number; d?: number; pitch?: number; verde?: boolean; }
 
 /** Semi-extientes del AABB de la caja rotada (exacto en los ejes para yaw 0,
- *  conservador para el giro — sobredimensiona ≤ 2 cm con yaw ≤ 0,25 rad). */
+ *  conservador para el giro — sobredimensiona ≤ 2 cm con yaw ≤ 0,25 rad).
+ *  T92: el VERDE puede quedar en CUALQUIER ángulo (giro libre en Z) → su
+ *  envolvente es el círculo de la mitad-diagonal; el TUMBO (cabeceo) engorda
+ *  la Y con la profundidad; el AZUL deriva hacia FUERA (worst case). */
 function extAABB(c: CajaSolape): { ex: number; ey: number } {
+  if (c.verde) {
+    const r = Math.hypot(c.w, c.h) / 2;
+    return { ex: r, ey: r };
+  }
   const cy = Math.abs(Math.cos(c.yaw)), sy = Math.abs(Math.sin(c.yaw));
-  return { ex: (c.w / 2) * cy + (c.h / 2) * sy, ey: (c.w / 2) * sy + (c.h / 2) * cy };
+  const cp = Math.abs(Math.cos(c.pitch ?? 0)), sp = Math.abs(Math.sin(c.pitch ?? 0));
+  return {
+    ex: (c.w / 2) * cy + (c.h / 2) * sy,
+    ey: Math.max((c.h / 2) * cy + (c.w / 2) * sy, (c.h / 2) * cp + ((c.d ?? 0.5) / 2) * sp),
+  };
 }
 
 /** ¿Se tocan dos cajas? `sagM` extiende ambas hacia ABAJO: acota el peor caso
@@ -442,11 +628,20 @@ function solapan(a: CajaSolape, b: CajaSolape, sagM: number): boolean {
 }
 
 /** ¿Algún par de bloques se toca en el instante t (s)? Con el barrido temporal
- *  de los tests esto certifica «físicamente separados en todo momento». */
+ *  de los tests esto certifica «físicamente separados en todo momento».
+ *  T92: el AZUL cuenta con su deriva MÁXIMA hacia fuera y el VERDE con su
+ *  giro completo (envolvente circular). */
 export function haySolape(specs: BloqueSpec[], t: number, sagM = 0): boolean {
   const cajas: CajaSolape[] = specs.map((s) => {
     const off = offsetPatron(s.patron, s.amp, s.periodS, s.phase, t);
-    return { x: s.x + off.dx, y: s.y + off.dy, w: s.w, h: s.h, yaw: yawPatron(s.patron, s.amp, s.periodS, s.phase, t) };
+    return {
+      x: s.x + off.dx + (s.azul ? Math.sign(s.x) * AZUL_DRIFT_MAX : 0),
+      y: s.y + off.dy,
+      w: s.w, h: s.h, d: s.d,
+      yaw: yawPatron(s.patron, s.amp, s.periodS, s.phase, t),
+      pitch: pitchPatron(s.patron, s.amp, s.periodS, s.phase, t),
+      verde: s.verde === true,
+    };
   });
   for (let i = 0; i < cajas.length; i++) {
     for (let j = i + 1; j < cajas.length; j++) {
@@ -529,10 +724,18 @@ interface Bloque {
   sag: number;        // basculación al agarrar (m, negativo = hacia abajo)
   sagVel: number;
   carga: number;      // nº de extremidades ancladas al bloque (objetivo del muelle)
-  dx: number; dy: number; yaw: number; // última transformación aplicada
+  dx: number; dy: number; dz: number; yaw: number; pitch: number; roll: number; // última transformación aplicada
+  q: Quaternion;      // rotación compuesta (yaw·pitch·roll) compartida con el nodo
+  /** T92 — estado del GIRO VERDE (ángulo y velocidad, rad y rad/s). */
+  spinAng: number;
+  spinVel: number;
+  /** T92 — estado de la DERIVA AZUL (m hacia fuera). */
+  drift: number;
   destruido: boolean; // T121 B3
   roturaT: number | null; // cuenta atrás iniciada por el primer agarre (s)
   anicos: { mesh: Mesh; vel: V3; spin: number; t: number }[]; // T121 B3 añicos
+  /** T92 — saco de dinero colgado con cuerda en las plataformas (+200 $). */
+  bolsa: { vivo: boolean; nodo: TransformNode; cuerda: Mesh; fase: number; hang: V3 } | null;
 }
 
 export interface ParedDeps {
@@ -555,13 +758,88 @@ const HOLD_LOCALS_W18: [number, number][] = [
 const HOLD_LOCALS_W15: [number, number][] = [
   [-0.417, 0.55], [0.417, 0.55], [-0.375, 0.05], [0.375, 0.05], [-0.333, -0.5], [0.333, -0.5],
 ];
-/** Cubo de GIRO180 (1,4 m de cara, T121): mismas alturas, X escalada. */
+/** Cubos de GIRO180 (1,4 m) y AZULES (1,4 m, T92): mismas alturas, X escalada. */
 const HOLD_LOCALS_W14: [number, number][] = [
   [-0.389, 0.55], [0.389, 0.55], [-0.35, 0.05], [0.35, 0.05], [-0.311, -0.5], [0.311, -0.5],
+];
+/** T92 — cajas estrechas (1,6 / 1,2 m): mismas alturas, X escalada. */
+const HOLD_LOCALS_W16: [number, number][] = [
+  [-0.444, 0.55], [0.444, 0.55], [-0.4, 0.05], [0.4, 0.05], [-0.356, -0.5], [0.356, -0.5],
+];
+const HOLD_LOCALS_W12: [number, number][] = [
+  [-0.333, 0.55], [0.333, 0.55], [-0.3, 0.05], [0.3, 0.05], [-0.267, -0.5], [0.267, -0.5],
+];
+/** T92 — bloque VERDE (1,0 m): presas COMPRESAS (la cara es pequeña — el giro
+ *  las lleva en un círculo de radio ≤ 0,45 en torno al centro). */
+const HOLD_LOCALS_W10: [number, number][] = [
+  [-0.32, 0.3], [0.32, 0.3], [-0.28, 0.02], [0.28, 0.02], [-0.3, -0.33], [0.3, -0.33],
 ];
 const HOLD_LOCALS_CIMA: [number, number][] = [
   [-0.42, 0.5], [0.42, 0.5], [-0.38, 0], [0.38, 0], [-0.32, -0.45], [0.32, -0.45],
 ];
+
+/** T92 — AGARRES EN TODAS LAS CARAS de las plataformas de bonificación:
+ *  racimo en la cara frontal (z −), laterales (x ±), techo (y +), suelo
+ *  (y −) y cara trasera (z +). Coordenadas locales del nodo (la cara de
+ *  escalada frontal sigue en zLocalPresa(d)). */
+function localsDePlataforma(forma: "hex" | "cil" | "caja", d: number): V3[] {
+  const zf = zLocalPresa(d); // cara frontal
+  if (forma === "hex") {
+    // placa hexagonal Ø1,8 (cara frontal = hexágono en XY, grosor 0,55 en Z)
+    const ring: [number, number][] = [];
+    for (let k = 0; k < 6; k++) {
+      const a = (Math.PI / 3) * k;
+      ring.push([Math.cos(a) * 0.52, Math.sin(a) * 0.52]);
+    }
+    return [
+      ...ring.map(([lx, ly]): V3 => v3(lx, ly, zf)),
+      v3(0, 0.05, zf),                       // centro frontal
+      v3(0, 0.84, 0), v3(-0.73, -0.42, 0), v3(0.73, -0.42, 0), // bordes laterales
+      v3(0, -0.84, 0.08),                    // borde inferior
+      v3(0, 0, -zf - 0.12),                  // cara trasera (TODAS las caras)
+    ];
+  }
+  if (forma === "cil") {
+    // tambor tumbado (eje X, Ø1,0 × 1,6): arco frontal + tapas + techo + suelo
+    return [
+      v3(-0.5, 0.3, zf + 0.08), v3(0, 0.42, zf + 0.06), v3(0.5, 0.3, zf + 0.08),
+      v3(-0.5, -0.3, zf + 0.08), v3(0, -0.42, zf + 0.06), v3(0.5, -0.3, zf + 0.08),
+      v3(-0.82, 0.1, -0.15), v3(0.82, 0.1, -0.15),   // tapas laterales
+      v3(0, 0.52, 0),                                 // techo
+      v3(0, -0.52, 0.1),                              // suelo
+      v3(0, 0, -zf - 0.12),                           // cara trasera
+    ];
+  }
+  // caja (1,6 × 1,0 × 0,9)
+  return [
+    v3(-0.5, 0.3, zf), v3(0.5, 0.3, zf), v3(-0.45, 0.05, zf),
+    v3(0.45, 0.05, zf), v3(-0.4, -0.3, zf), v3(0.4, -0.3, zf),
+    v3(-0.85, 0.1, -0.1), v3(0.85, 0.1, -0.1),      // caras laterales
+    v3(0, 0.52, -0.1),                              // techo
+    v3(0, -0.52, 0),                                // suelo
+    v3(0, 0, -zf - 0.12),                           // cara trasera
+  ];
+}
+
+/** T92 — presas locales de un spec (6 en la cara frontal de los cubos,
+ *  10-11 repartidas por TODAS las caras de las plataformas). */
+function localsDeBloque(spec: BloqueSpec): V3[] {
+  if (spec.bono && (spec.forma === "hex" || spec.forma === "cil" || spec.forma === "caja")) {
+    return localsDePlataforma(spec.forma, spec.d);
+  }
+  const tabla = spec.cima ? HOLD_LOCALS_CIMA
+    : spec.w < 1.05 ? HOLD_LOCALS_W10
+    : spec.w < 1.3 ? HOLD_LOCALS_W12
+    : spec.w < 1.45 ? HOLD_LOCALS_W14
+    : spec.w < 1.7 ? HOLD_LOCALS_W16
+    : HOLD_LOCALS_W18;
+  return tabla.map(([lx, ly]): V3 => v3(lx, ly, zLocalPresa(spec.d)));
+}
+
+/** T92 — punto LOCAL (en el nodo) donde cuelga la cuerda del saco bonus. */
+function hangDePlataforma(forma: "hex" | "cil" | "caja" | "cubo" | undefined): number {
+  return forma === "hex" ? -0.84 : -0.52;
+}
 
 /** T121 B5: partículas del CUERPO que se hunden tirando de la mochila (todas
  *  menos las manos — esas permanecen PERFECTAMENTE ancladas). */
@@ -581,6 +859,8 @@ export class ParedNivel {
   private matBloque: PBRMaterial | null = null;
   private matPresa: PBRMaterial | null = null;
   private matRojizo: PBRMaterial | null = null;   // T121 B3 cajas destructibles
+  private matVerde: PBRMaterial | null = null;     // T92 bloques que giran al agarrarse
+  private matAzul: PBRMaterial | null = null;      // T92 bloques que derivan hacia los lados
   private masterPresa: Mesh | null = null;
   private pointerDrag: PointerDrag | null = null;
   private raf = 0;
@@ -625,6 +905,10 @@ export class ParedNivel {
   private bolsaLista = false;
   /** T91 — instrumentación del análisis del cuello (sonda E2E). */
   private bolsaGeo: { nMeshes: number; nPts: number; rawMinY: number; rawMaxY: number; bbMinY: number; bbMaxY: number; k: number; cuelloY: number; cuelloR: number; perfil: number[] } | null = null;
+  /** T92 — datos del prototipo para CLONAR sacos en las plataformas de
+   *  bonificación (cuello y caja cruda del GLB, en el frame del wrap). */
+  private bolsaProtoDatos: { cuelloY: number; cx: number; cz: number; alto: number } | null = null;
+  private matCuerda: StandardMaterial | null = null;
   // T88 — billetes en el aire: estado PURO (billetesAire.ts) + clones GLB
   private billetes: Billete[] = [];
   private billeteId = 1;
@@ -686,8 +970,8 @@ export class ParedNivel {
   /** Alturas dependientes del paso del panel (se recalculan al Reiniciar). */
   private aplicaAlturas(): void {
     this.paso = this.ajuste.filaPaso;
-    this.yCima = Y_SALIDA + this.paso * 10;
-    this.winY = this.yCima - 0.8; // el mismo margen del original (21,2 → 20,4)
+    this.yCima = yCimaDe(this.paso);
+    this.winY = this.yCima - 0.8; // el mismo margen del original
   }
 
   // ---------- construcción ----------
@@ -730,7 +1014,7 @@ export class ParedNivel {
     (window as unknown as { __PARED?: unknown }).__PARED = this;
   }
 
-  private ensureMaterials(): { bloque: PBRMaterial; presa: PBRMaterial; rojizo: PBRMaterial } {
+  private ensureMaterials(): { bloque: PBRMaterial; presa: PBRMaterial; rojizo: PBRMaterial; verde: PBRMaterial; azul: PBRMaterial } {
     const scene = this.d.scene.scene;
     if (!this.matBloque) {
       // MISMA RECETA que ensureMassifRockMaterial (scene.ts): el material EXACTO
@@ -796,7 +1080,44 @@ export class ParedNivel {
       r.backFaceCulling = false;
       this.matRojizo = r;
     }
-    return { bloque: this.matBloque, presa: this.matPresa, rojizo: this.matRojizo };
+    if (!this.matVerde) {
+      // T92: bloque VERDE — «que al subir a ellos los sherpas comienzan a
+      // girar» (se distingue a golpe de vista, misma textura de roca)
+      const base = this.matBloque;
+      const g = new PBRMaterial("paredBloqueVerdeM", scene);
+      g.albedoTexture = base.albedoTexture;
+      g.bumpTexture = base.bumpTexture;
+      const alb = g.albedoTexture as Texture;
+      alb.uScale = 1.2 / 6.4;
+      alb.vScale = 1.2 / 6.4;
+      const bmp = g.bumpTexture as Texture;
+      bmp.uScale = 1.2 / 6.4;
+      bmp.vScale = 1.2 / 6.4;
+      g.albedoColor = new Color3(0.36, 1.35, 0.5); // verde intenso
+      g.metallic = 0;
+      g.roughness = 0.85;
+      g.backFaceCulling = false;
+      this.matVerde = g;
+    }
+    if (!this.matAzul) {
+      // T92: bloque AZUL — «al subirse se van alejando hacia los lados»
+      const base = this.matBloque;
+      const a = new PBRMaterial("paredBloqueAzulM", scene);
+      a.albedoTexture = base.albedoTexture;
+      a.bumpTexture = base.bumpTexture;
+      const alb = a.albedoTexture as Texture;
+      alb.uScale = 1.4 / 6.4;
+      alb.vScale = 1.4 / 6.4;
+      const bmp = a.bumpTexture as Texture;
+      bmp.uScale = 1.4 / 6.4;
+      bmp.vScale = 1.4 / 6.4;
+      a.albedoColor = new Color3(0.34, 0.62, 1.45); // azul intenso
+      a.metallic = 0;
+      a.roughness = 0.85;
+      a.backFaceCulling = false;
+      this.matAzul = a;
+    }
+    return { bloque: this.matBloque, presa: this.matPresa, rojizo: this.matRojizo, verde: this.matVerde, azul: this.matAzul };
   }
 
   private construirBloques(): void {
@@ -823,38 +1144,56 @@ export class ParedNivel {
     for (const spec of specs) {
       const node = new TransformNode(`blk_${spec.id}`, scene);
       node.position.set(spec.x, spec.y, spec.z);
-      const mesh = MeshBuilder.CreateBox(`blkM_${spec.id}`, { width: spec.w, height: spec.h, depth: spec.d }, scene);
-      mesh.material = spec.destructible ? mats.rojizo : mats.bloque;
+      // T92 — FORMAS: las plataformas de bonificación no son cubos (hexágono,
+      // tambor tumbado, caja ancha); el resto son cubos como siempre
+      const mesh = spec.bono
+        ? (spec.forma === "hex"
+          ? MeshBuilder.CreateCylinder(`blkM_${spec.id}`, { diameter: 1.8, height: 0.55, tessellation: 6 }, scene)
+          : spec.forma === "cil"
+            ? MeshBuilder.CreateCylinder(`blkM_${spec.id}`, { diameter: 1.0, height: 1.6, tessellation: 24 }, scene)
+            : MeshBuilder.CreateBox(`blkM_${spec.id}`, { width: 1.6, height: 1.0, depth: 0.9 }, scene))
+        : MeshBuilder.CreateBox(`blkM_${spec.id}`, { width: spec.w, height: spec.h, depth: spec.d }, scene);
+      if (spec.bono && spec.forma === "hex") mesh.rotation.x = Math.PI / 2;   // cara hexagonal de frente
+      if (spec.bono && spec.forma === "cil") mesh.rotation.z = Math.PI / 2;   // tambor tumbado (eje X)
+      mesh.material = spec.verde ? mats.verde : spec.azul ? mats.azul : spec.destructible ? mats.rojizo : mats.bloque;
       mesh.parent = node;
-      const locals = spec.cima ? HOLD_LOCALS_CIMA
-        : spec.w < 1.45 ? HOLD_LOCALS_W14
-        : spec.w < 1.6 ? HOLD_LOCALS_W15
-        : HOLD_LOCALS_W18;
-      const bloque: Bloque = { spec, node, mesh, presas: [], sag: 0, sagVel: 0, carga: 0, dx: 0, dy: 0, yaw: 0, destruido: false, roturaT: null, anicos: [] };
-      for (const [k, [lx, ly]] of locals.entries()) {
+      const bloque: Bloque = {
+        spec, node, mesh, presas: [], sag: 0, sagVel: 0, carga: 0,
+        dx: 0, dy: 0, dz: 0, yaw: 0, pitch: 0, roll: 0, q: Quaternion.Identity(),
+        spinAng: 0, spinVel: 0, drift: 0,
+        destruido: false, roturaT: null, anicos: [], bolsa: null,
+      };
+      // la rotación la manda el cuaternión (yaw·pitch·roll compuestos —
+      // el giro verde vive en el roll)
+      node.rotationQuaternion = bloque.q;
+      const locals = localsDeBloque(spec);
+      for (const [k, lpos] of locals.entries()) {
         // presas EN LA CARA saliendo hacia FUERA (T121 B1): la física coincide
         // con el bulto visible y ambos quedan de cara a la cámara
-        const zCaraLocal = zLocalPresa(spec.d);
         const inst: HoldInstance = {
           id: `${spec.id}_h${k}`,
-          pos: v3(spec.x + lx, spec.y + ly, spec.z + zCaraLocal),
+          pos: v3(spec.x + lpos.x, spec.y + lpos.y, spec.z + lpos.z),
           radius: 0.16,
           type: "rock_firm",
           bandIndex: 0,
         };
         const pm = this.masterPresa.createInstance(`${spec.id}_m${k}`);
         pm.parent = node;
-        pm.position.set(lx, ly, zCaraLocal);
+        pm.position.copyFromFloats(lpos.x, lpos.y, lpos.z);
         pm.isVisible = true;
-        bloque.presas.push({ inst, local: v3(lx, ly, zCaraLocal), mesh: pm as unknown as Mesh, bloque });
+        bloque.presas.push({ inst, local: lpos, mesh: pm as unknown as Mesh, bloque });
         todas.push(inst);
       }
       this.bloques.push(bloque);
     }
     this.anchors.registerHolds(todas);
+    // T92 — sacos de dinero colgados de las plataformas (si el GLB ya cargó;
+    // si no, creaBolsa() los creará al terminar de cargar)
+    if (this.bolsaProtoDatos) this.creaBolsasBonus();
     // T120 minimapa: réplica ESTÁTICA en posiciones base (la capa dinámica
-    // —ocupación y escaladores— la alimenta minimapaTick a ~10 Hz)
-    const X_HALF = 2.3;
+    // —ocupación y escaladores— la alimenta minimapaTick a ~10 Hz). T92:
+    // X_HALF 5,0 — las plataformas viven en |x| = 4,15
+    const X_HALF = 5.0;
     const Y0 = Y_SALIDA - 1.1;
     const Y1 = this.yCima + 0.75;
     this.mmHolds = [];
@@ -920,8 +1259,9 @@ export class ParedNivel {
       character: this.d.character,
       tuning: this.rigTuning(),
       anchorSystem: this.anchors,
-      // el techo sigue a la cima efectiva (el panel puede subir el paso)
-      bounds: { minX: -3.4, maxX: 3.4, minY: -6, maxY: this.yCima + 6, minZ: Z_PRESA - 2.5, maxZ: Z_PRESA + 2.5 },
+      // T92 — el X se ensancha: las plataformas de bonificación viven en
+      // |x| = 4,15 y el vuelo/deriva azul deben alcanzarlas
+      bounds: { minX: -5.8, maxX: 5.8, minY: -6, maxY: this.yCima + 6, minZ: Z_PRESA - 2.5, maxZ: Z_PRESA + 2.5 },
       floorY: -6,
       wallFrontZ: Z_PRESA,
       rope: t.rope,
@@ -1089,6 +1429,10 @@ export class ParedNivel {
 
   private simTick(dt: number): void {
     this.simTime += dt;
+    // T92 — estados de los bloques especiales (giro verde, deriva azul):
+    // se integran ANTES de las transformaciones para que el render y las
+    // presas vean el estado del tick en curso
+    this.pasoEstadosBloques(dt);
     this.actualizaTransformaciones(dt);
 
     // T86 — la cuerda (verlet + lastre + amarre deslizante) es SIMULACIÓN:
@@ -1225,6 +1569,26 @@ export class ParedNivel {
     }
     if (this.billetes.some((b) => !b.vivo)) this.billetes = this.billetes.filter((b) => b.vivo);
 
+    // T92 — SACOS DE BONIFICACIÓN: una mano libre que alcanza el saco colgado
+    // de una plataforma lo vacía en SU mochila (+200 $ — dictado del jugador)
+    for (const b of this.bloques) {
+      const bb = b.bolsa;
+      if (!bb || !bb.vivo) continue;
+      const neck = this.posBolsaBonus(b);
+      for (const m of manos) {
+        if (vLen(vSub(m.pos, neck)) > RADIO_BOLSA_BONUS) continue;
+        bb.vivo = false;
+        bb.nodo.setEnabled(false);
+        bb.cuerda.isVisible = false;
+        this.dinero[m.pi] += BONUS_DINERO;
+        this.estrellaHasta[m.pi] = this.simTime + 3.0;
+        this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.dinero.bolsa",
+          `¡+${BONUS_DINERO} $! Saco del bono para el Sherpa ${m.pi + 1}`));
+        if (this.mochilaAbierta !== null) this.refrescaMochila(this.mochilaAbierta);
+        break;
+      }
+    }
+
     // descarga los bloques sin anclajes
     for (const b of this.bloques) {
       const n = [...(this.sherpas[0].states.values()), ...(this.sherpas[1].states.values())]
@@ -1329,6 +1693,37 @@ export class ParedNivel {
     b.sag -= 0.02;
   }
 
+  /** T92 — extremidades ancladas a un bloque (ocupación del giro verde / la
+   *  deriva azul). */
+  private ocupacionBloque(id: string): number {
+    let n = 0;
+    for (const rig of this.sherpas) {
+      for (const limb of LIMBS) {
+        const st = rig.states.get(limb)!;
+        if (st.anchored && st.holdId && bloqueDe(st.holdId) === id) n++;
+      }
+    }
+    return n;
+  }
+
+  /** T92 — estados de los bloques especiales del tick (antes de las
+   *  transformaciones): el VERDE acelera su giro mientras lo agarran (el
+   *  sherpa puede quedar boca abajo resbalando) y frena al quedar libre;
+   *  el AZUL deriva hacia fuera mientras hay alguien encima y vuelve suave. */
+  private pasoEstadosBloques(dt: number): void {
+    for (const b of this.bloques) {
+      if (b.spec.verde) {
+        const ocup = this.ocupacionBloque(b.spec.id) > 0;
+        const dir = b.spec.id.endsWith("_d") ? 1 : -1; // sentido determinista por lado
+        const [a2, v2] = pasoGiroVerde(b.spinAng, b.spinVel, dt, ocup, dir);
+        b.spinAng = a2;
+        b.spinVel = v2;
+      } else if (b.spec.azul) {
+        b.drift = pasoDerivaAzul(b.drift, dt, this.ocupacionBloque(b.spec.id) > 0);
+      }
+    }
+  }
+
   /** T121 B3: la caja roja se hace AÑICOS — fuera presas (soltando a quien
    *  agarraba), fuera malla, añicos con física propia y RESCATE en marcha. */
   private romperBloque(b: Bloque): void {
@@ -1408,7 +1803,10 @@ export class ParedNivel {
     B.pos = vAdd(B.pos, vScale(dir, -corr * fB));
   }
 
-  /** Transformaciones por bloque: patrón + muelle → nodo, presas visuales y físicas. */
+  /** Transformaciones por bloque: patrón + muelle + giro verde/deriva azul
+   *  → nodo (posición y CUATERNIÓN yaw·pitch·roll), presas visuales y
+   *  físicas — las presas viajan con la rotación COMPLETA (el giro verde las
+   *  orbita y el sherpa que las agarra gira con ellas). */
   private actualizaTransformaciones(_dt: number): void {
     for (const b of this.bloques) {
       const s = b.spec;
@@ -1420,8 +1818,10 @@ export class ParedNivel {
       const fase = s.phase + this.ajuste.faseOffset;
       const off = offsetPatron(s.patron, amp, per, fase, this.simTime);
       const yaw = yawPatron(s.patron, amp, per, fase, this.simTime);
-      b.dx = off.dx;
+      const pitch = pitchPatron(s.patron, amp, per, fase, this.simTime);
+      b.dx = off.dx + (s.azul ? Math.sign(s.x) * b.drift : 0);
       b.dy = off.dy + b.sag;
+      b.dz = zoffPatron(s.patron, amp, per, fase, this.simTime);
       // T121 B3: aviso físico de rotura — la caja TIEMBLA en la última ventana
       if (b.roturaT !== null && !b.destruido) {
         const restante = this.ajuste.segundosRotura - b.roturaT;
@@ -1432,16 +1832,32 @@ export class ParedNivel {
         }
       }
       b.yaw = yaw;
-      b.node.position.set(s.x + b.dx, s.y + b.dy, s.z);
-      b.node.rotation.y = yaw;
-      const cy = Math.cos(yaw), sy = Math.sin(yaw);
-      for (const p of b.presas) {
-        const wx = s.x + b.dx + (p.local.x * cy + p.local.z * sy);
-        const wz = s.z + (p.local.z * cy - p.local.x * sy);
-        p.inst.pos = v3(wx, s.y + b.dy + p.local.y, wz);
+      b.pitch = pitch;
+      b.roll = s.verde ? b.spinAng : 0;
+      // cuaternión compuesto (Babylon: Ry(yaw)·Rx(pitch)·Rz(roll)) — la MISMA
+      // receta transforma las presas abajo: visual y física NUNCA divergen
+      Quaternion.RotationYawPitchRollToRef(b.yaw, b.pitch, b.roll, b.q);
+      b.node.position.set(s.x + b.dx, s.y + b.dy, s.z + b.dz);
+      if (b.yaw !== 0 || b.pitch !== 0 || b.roll !== 0) {
+        Matrix.FromQuaternionToRef(b.q, this.tmpM);
+        for (const p of b.presas) {
+          Vector3.TransformCoordinatesToRef(
+            this.tmpV.set(p.local.x, p.local.y, p.local.z), this.tmpM, this.tmpV2,
+          );
+          p.inst.pos = v3(s.x + b.dx + this.tmpV2.x, s.y + b.dy + this.tmpV2.y, s.z + b.dz + this.tmpV2.z);
+        }
+      } else {
+        for (const p of b.presas) {
+          p.inst.pos = v3(s.x + b.dx + p.local.x, s.y + b.dy + p.local.y, s.z + b.dz + p.local.z);
+        }
       }
     }
   }
+
+  /** Temporales de transformación (sin churn de GC por frame). */
+  private tmpM = new Matrix();
+  private tmpV = new Vector3();
+  private tmpV2 = new Vector3();
 
   // ---------- cuerda visual (verlet A→B, cadena con comba) ----------
 
@@ -1657,6 +2073,15 @@ export class ParedNivel {
       m.rotation.y = b.fase + b.t * 2.1;
       m.rotation.z = Math.sin(b.t * 6 + b.fase) * 0.55; // aleteo de papel
     }
+    // T92 — sacos bonus: la bolsa cuelga del borde de SU plataforma y la
+    // cuerda los une (vaivén pendular suave)
+    for (const b of this.bloques) {
+      const bb = b.bolsa;
+      if (!bb || !bb.vivo) continue;
+      const neck = this.posBolsaBonus(b);
+      bb.nodo.position.copyFromFloats(neck.x, neck.y, neck.z);
+      this.colocaStrap(bb.cuerda, bb.hang, neck);
+    }
     // T123 B5 — interior de la mochila que sigue al sherpa + barra/flecha
     this.posicionaMochilaHud();
     this.posicionaMuelleBadges(); // T88: icono de muelle + numerito sobre cada mochila
@@ -1839,8 +2264,53 @@ export class ParedNivel {
         this.bolsaNodo.position.copyFrom(nodoPos);
         this.bolsaWrap = wrap;
         this.bolsaLista = true;
+        // T92 — prototipo para CLONAR los sacos de las plataformas de
+        // bonificación (mismo GLB, escala menor, cuello al origen)
+        this.bolsaProtoDatos = { cuelloY: cuello.y, cx: (bb.min.x + bb.max.x) / 2, cz: (bb.min.z + bb.max.z) / 2, alto };
+        this.creaBolsasBonus();
       })
       .catch((err) => console.error("[T88] bolsadinero.glb:", err));
+  }
+
+  /** T92 — SACOS DE BONIFICACIÓN: clona el prototipo de la bolsa y cuelga un
+   *  saco por cada plataforma (por el CUELLO, con cuerda fina hasta el borde
+   *  inferior). Al alcanzarlo una mano libre: +200 $ a SU mochila. */
+  private creaBolsasBonus(): void {
+    const esc = this.d.scene.scene;
+    const proto = this.bolsaProtoDatos;
+    const protoWrap = this.bolsaWrap;
+    if (!proto || !protoWrap) return;
+    const k2 = 0.45 / Math.max(1e-3, proto.alto);
+    if (!this.matCuerda) {
+      const m = new StandardMaterial("paredCuerdaBonoM", esc);
+      m.diffuseColor = new Color3(0.45, 0.33, 0.2);
+      m.specularColor = new Color3(0.05, 0.05, 0.05);
+      this.matCuerda = m;
+    }
+    for (const b of this.bloques) {
+      if (!b.spec.bono || b.bolsa) continue;
+      const nodo = new TransformNode(`bolsaBono_${b.spec.id}`, esc);
+      const wrap = protoWrap.clone(`bolsaBonoWrap_${b.spec.id}`, nodo);
+      if (!wrap) continue;
+      wrap.scaling.setAll(k2);
+      wrap.position.set(-proto.cx * k2, -proto.cuelloY * k2, -proto.cz * k2);
+      const cuerda = MeshBuilder.CreateCylinder(`cuerdaBono_${b.spec.id}`, { height: 1, diameter: 0.028, tessellation: 6 }, esc);
+      cuerda.material = this.matCuerda;
+      cuerda.rotationQuaternion = Quaternion.Identity();
+      const fase = ([...b.spec.id].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7) % 628) / 100;
+      b.bolsa = { vivo: true, nodo, cuerda, fase, hang: v3(b.spec.x, b.spec.y + hangDePlataforma(b.spec.forma), b.spec.z) };
+    }
+  }
+
+  /** T92 — cuello del saco bonus en MUNDO (vaivén pendular suave). */
+  private posBolsaBonus(b: Bloque): V3 {
+    const bb = b.bolsa!;
+    const a = Math.sin(this.simTime * 1.15 + bb.fase) * 0.18;
+    return v3(
+      bb.hang.x + Math.sin(a) * CUERDA_BONUS_M,
+      bb.hang.y - Math.cos(a) * CUERDA_BONUS_M,
+      bb.hang.z,
+    );
   }
 
   /** Prototipo del billete (dollar.glb): se carga UNA vez y se clona por
@@ -2221,7 +2691,7 @@ export class ParedNivel {
         }
       }
     }
-    const X_HALF = 2.3;
+    const X_HALF = 5.0;
     const Y0 = Y_SALIDA - 1.1;
     const Y1 = this.yCima + 0.75;
     const frac = (y: number): number => Math.min(1, Math.max(0, (y - Y0) / (Y1 - Y0)));
@@ -2325,9 +2795,15 @@ export class ParedNivel {
     this.elFin = null;
   }
 
-  /** Disposición de bloques/presas/añicos SIN tocar materiales ni master compartido. */
+  /** Disposición de bloques/presas/añicos/sacos bonus SIN tocar materiales ni
+   *  master compartido. */
   private limpiaBloques(): void {
     for (const b of this.bloques) {
+      if (b.bolsa) {
+        b.bolsa.nodo.dispose();
+        b.bolsa.cuerda.dispose();
+        b.bolsa = null;
+      }
       b.mesh.dispose();
       for (const a of b.anicos) a.mesh.dispose();
       for (const p of b.presas) p.mesh.dispose();
@@ -2484,7 +2960,7 @@ export class ParedNivel {
       btns.appendChild(b);
     };
     btn(t("reiniciar", "Reiniciar"), () => this.restart(), true);
-    btn(t("cima", "↑ Cima"), () => this.saltarAFila(10));
+    btn(t("cima", "↑ Cima"), () => this.saltarAFila(FILAS_MOVILES + 1));
     btn(t("defecto", "Por defecto"), () => {
       this.ajuste = resetAjuste();
       saveAjuste(this.store, this.ajuste);
@@ -2501,7 +2977,7 @@ export class ParedNivel {
     const numFila = document.createElement("input");
     numFila.type = "number";
     numFila.min = "1";
-    numFila.max = "10";
+    numFila.max = String(FILAS_MOVILES + 1);
     numFila.value = "1";
     numFila.setAttribute("style", "width:56px;background:rgba(0,0,0,.4);color:#dfeee4;border:1px solid #57b17e;border-radius:6px;padding:4px 6px;font:12px system-ui,sans-serif");
     const btnIr = document.createElement("button");
@@ -2528,12 +3004,13 @@ export class ParedNivel {
   }
 
   /** Panel: recoloca a los DOS sherpas con rigs NUEVOS anclados a la fila dada
-   *  (1-9) o a la cima (≥10, desde donde la prueba se gana sola) — el mismo
-   *  camino de construcción que el inicio, sin tocar partículas a mano. */
+   *  (1-FILAS_MOVILES) o a la cima (≥ FILAS_MOVILES+1, desde donde la prueba
+   *  se gana sola) — el mismo camino de construcción que el inicio, sin tocar
+   *  partículas a mano. */
   saltarAFila(r: number): void {
-    const fila = Math.max(1, Math.min(10, Math.round(r)));
+    const fila = Math.max(1, Math.min(FILAS_MOVILES + 1, Math.round(r)));
     let idA: string | undefined, idB: string | undefined;
-    if (fila >= 10) {
+    if (fila >= FILAS_MOVILES + 1) {
       idA = "cima_1";
       idB = "cima_0";
     } else {
@@ -2622,6 +3099,19 @@ export class ParedNivel {
         billetesCogidos: [...this.billetesCogidos],
         billetes: billetesVivos(this.billetes),
         billetesTotal: this.billetes.length,
+        // T92 — FUEGOS ARTIFICIALES: altura actual y máxima del papel vivo
+        billetesAlt: this.billetes.filter((b) => b.vivo).reduce((m, b) => Math.max(m, b.pos.y), -99),
+        billetesAltMax: this.billetes.reduce((m, b) => Math.max(m, b.pos.y), -99),
+        // T92 — circuito de recompensas: verdes (giro), azules (deriva),
+        // plataformas y sacos bonus
+        verdes: this.bloques.filter((b) => b.spec.verde)
+          .map((b) => ({ id: b.spec.id, ang: +b.spinAng.toFixed(3), vel: +b.spinVel.toFixed(3) })),
+        azules: this.bloques.filter((b) => b.spec.azul)
+          .map((b) => ({ id: b.spec.id, drift: +b.drift.toFixed(3) })),
+        plataformas: this.bloques.filter((b) => b.spec.bono)
+          .map((b) => ({ id: b.spec.id, forma: b.spec.forma, x: b.spec.x, y: +b.spec.y.toFixed(2) })),
+        bolsasBonus: this.bloques.filter((b) => b.bolsa)
+          .map((b) => ({ id: b.spec.id, vivo: b.bolsa!.vivo, y: +this.posBolsaBonus(b).y.toFixed(2) })),
         bolsa: this.bolsaLista,
         muellesBadge: [...this.muelles],
         // T90 — entrega del botín: estado del arco de la bolsa + dónde está
@@ -2752,7 +3242,13 @@ export class ParedNivel {
     this.matBloque?.dispose();
     this.matPresa?.dispose();
     this.matRojizo?.dispose();
+    this.matVerde?.dispose();
+    this.matAzul?.dispose();
+    this.matCuerda?.dispose();
     this.matBloque = this.matPresa = this.matRojizo = null;
+    this.matVerde = this.matAzul = null;
+    this.matCuerda = null;
+    this.bolsaProtoDatos = null;
   }
 }
 

@@ -29,8 +29,21 @@ export const BILLETE_SUBIDA_MPS = 1.45;
  *  hoja en una columna de aire caliente (dictado: «vuelan hacia arriba
  *  empujados por corrientes de aire»), no a velocidad constante. */
 export const BILLETE_EMPUJE_MPS2 = 1.9;
-/** T91 — tope de subida (m/s): la resistencia del aire al papel. */
-export const BILLETE_TOPE_MPS = 2.6;
+/** T92 — FUEGOS ARTIFICIALES (dictado: «deben salir disparados hacia arriba
+ *  como si fuesen fuegos artificiales varios bloques por encima de la
+ *  posición del saco y deben verse caer o volar esparcidos por el aire»):
+ *  el térmico ARDE durante SUBIDA_S (la pólvora del cohete), el papel sigue
+ *  subiendo por inercia, CRUZA el ápice y CAE de forma visible (hoja al
+ *  viento) hasta que la corriente del suelo lo recoge y lo relanza. */
+export const BILLETE_SUBIDA_S = 3.0;
+/** T92 — gravedad del papel cuando la pólvora se agotó (m/s²): caída lenta,
+ *  de hoja — el descenso dura varios segundos y se VE. */
+export const BILLETE_G_MPS2 = 3.2;
+/** T92 — velocidad terminal de CAÍDA (m/s): la resistencia al papel. */
+export const BILLETE_CAIDA_MPS = 1.6;
+/** T92 — tope de subida (m/s): la resistencia del aire al papel. T91 2,6 →
+ *  3,4: el disparo de los fuegos alcanza ~4 bloques sobre el saco. */
+export const BILLETE_TOPE_MPS = 3.4;
 /** T91 — velocidad del REMOLINO (m/s): cada billete gira en torno a la
  *  columna de corriente (corkscrew con fase y sentido propios). */
 export const BILLETE_REMOLINO_MPS = 0.55;
@@ -57,6 +70,10 @@ export interface Billete {
    *  mano sin remolino y el paso usa valores por defecto). */
   orbAng?: number;
   orbW?: number;
+  /** T92 — «pólvora quemada» (s): tiempo desde el último LANZAMIENTO (nacer
+   *  o ser recogido junto al suelo); pasado BILLETE_SUBIDA_S el térmico muere
+   *  y el papel CAE (fuegos artificiales). Opcional: por defecto b.t. */
+  aire?: number;
   /** t de vida del billete (s). */
   t: number;
   vivo: boolean;
@@ -93,29 +110,40 @@ export function sacudidaBilletes(
   return { billetes, idSiguiente: id };
 }
 
-/** Paso de física de papel — T91 CORRIENTE DE AIRE: el billete es una hoja
- *  en una columna de aire caliente que sube desde la bolsa. El EMPUJE lo
- *  ACELERA hacia arriba (con RACHAS lentas que engordan y aflojan el
- *  térmico) hasta el tope de la resistencia del aire; el REMOLINO lo hace
- *  girar en espiral alrededor de la columna; el aleteo de hoja sigue. Cerca
- *  del suelo la corriente es MÁS FUERTE: recoge el papel caído y lo levanta
- *  (un billete NUNCA se queda tumbado — dictado del jugador). Muere solo al
- *  cruzar `techoY` (la parte alta de la PANTALLA) o por vida de seguridad.
- *  Determinista (todo es sin/cos). */
+/** Paso de física de papel — T92 FUEGOS ARTIFICIALES: el billete SALE
+ *  DISPARADO hacia arriba (empuje térmico que ACELERA con RACHAS lentas
+ *  hasta el tope del aire) mientras arde la pólvora (BILLETE_SUBIDA_S);
+ *  luego cruza el ápice y CAE de forma visible (gravedad de hoja con
+ *  velocidad terminal), ESparcido por el remolino y el aleteo, hasta que la
+ *  corriente de suelo lo RECoge (y ≤ floorY+0,6): la pólvora se reenciende
+ *  (aire = 0) y el ciclo de fuegos vuelve a empezar. Un billete NUNCA queda
+ *  tumbado ni desaparece por abajo: muere solo al cruzar `techoY` (la parte
+ *  alta de la PANTALLA) o por vida de seguridad. Determinista. */
 export function pasoBilletes(
   lista: Billete[], dt: number, floorY: number, techoY: number = Infinity,
 ): void {
   for (const b of lista) {
     if (!b.vivo) continue;
     b.t += dt;
+    b.aire = (b.aire ?? b.t) + dt;
     // la corriente se afloja en lo alto (el papel casi flota al salir)
     const decay = Math.max(0.55, 1 - Math.max(0, b.pos.y - floorY - 6) * 0.04);
+    // T92 — pólvora: el empuje ARDE un tiempo y luego muere linealmente
+    const polvora = Math.max(0, 1 - b.aire / BILLETE_SUBIDA_S);
     // racha lenta del térmico + empuje: ACELERA sin frenar nunca la subida
     const racha = 0.78 + 0.32 * Math.sin(b.t * BILLETE_RACHA_OMEGA + b.fase * 1.7);
-    const objetivo = Math.min(BILLETE_TOPE_MPS, b.vel.y + BILLETE_EMPUJE_MPS2 * racha * decay * dt);
-    b.vel.y = Math.max(b.vel.y, objetivo);
-    // junto al suelo el empuje es MÁXIMO: la corriente lo recoge y lo lleva
-    if (b.pos.y <= floorY + 0.5) b.vel.y = Math.max(b.vel.y, BILLETE_SUBIDA_MPS);
+    if (polvora > 0) {
+      const objetivo = Math.min(BILLETE_TOPE_MPS, b.vel.y + BILLETE_EMPUJE_MPS2 * racha * decay * polvora * dt);
+      b.vel.y = Math.max(b.vel.y, objetivo);
+    } else {
+      // pólvora agotada: gravedad de HOJA — cae lenta y visiblemente
+      b.vel.y = Math.max(-BILLETE_CAIDA_MPS, b.vel.y - BILLETE_G_MPS2 * dt);
+    }
+    // junto al suelo la corriente lo RECoge: pólvora nueva (nuevo disparo)
+    if (b.pos.y <= floorY + 0.6) {
+      b.vel.y = Math.max(b.vel.y, BILLETE_SUBIDA_MPS);
+      b.aire = 0;
+    }
     // remolino propio en torno a la columna (corkscrew) + aleteo de hoja
     b.orbAng = (b.orbAng ?? 0) + (b.orbW ?? 2.6) * dt;
     const vx = b.vel.x + Math.cos(b.orbAng) * BILLETE_REMOLINO_MPS
@@ -165,8 +193,9 @@ export function billetesVivos(lista: readonly Billete[]): number {
 /** T90 — RAFAGA FESTIVA: al POSARSE la bolsa en el campamento explota en
  *  lluvia de billetes (no una sacudida de rabieta: es la fiesta del botín).
  *  Salen RADIALMENTE hacia arriba desde la boca del saco — cono abierto con
- *  vel x/z propias — y a partir de ahí manda pasoBilletes (corriente propia
- *  + aleteo + subida sin parar), así que celebran subiendo hasta el techo. */
+ *  vel x/z propias — y a partir de ahí manda pasoBilletes (fuegos
+ *  artificiales: suben disparados, se ven CAER esparcidos y la corriente de
+ *  suelo los relanza). */
 export const RAFAGA_N = 12;
 export function rafagaFestiva(
   rng: Rng, idBase: number, origen: V3,

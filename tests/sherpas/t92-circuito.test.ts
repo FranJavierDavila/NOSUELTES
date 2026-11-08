@@ -1,0 +1,321 @@
+// T92 — CIRCUITO DE RECOMPENSAS del nivel «Prueba del Campamento»:
+//  · BILLETES FUEGOS ARTIFICIALES: salen DISPARADOS hacia arriba (varios
+//    bloques por encima del saco), se VEN CAER esparcidos y la corriente de
+//    suelo los recoge (nunca quedan tumbados).
+//  · RUTA TRIPLE: 27 filas móviles (antes 9) + más combinaciones de
+//    movimiento (lateral / profundo / tumbo se suman a los existentes).
+//  · BLOQUES VERDES: giran en el eje Z (perpendicular a la cámara) mientras
+//    alguien los agarra — el sherpa puede quedar boca abajo resbalando.
+//  · BLOQUES AZULES: derivan hacia los lados, separándose del centro,
+//    mientras hay un sherpa sobre ellos.
+//  · PLATAFORMAS DE BONIFICACIÓN: separadas hacia los lados, formas
+//    geométricas diversas, agarres en todas sus caras y sacos de dinero
+//    colgados con cuerdas: alcanzarlos da +200 $ a la mochila.
+//  · TAMAÑOS Y FORMAS variados SIN tocarse nunca (haySolape con peores casos).
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import {
+  AZUL_DRIFT_MAX, AZUL_DRIFT_MPS, AZUL_DRIFT_RET, BONUS_DINERO, CUERDA_BONUS_M,
+  FILAS_AZULES, FILAS_GIRO180, FILAS_MOVILES, FILAS_VERDES, FILA_PASO, PLATAFORMA_X,
+  PLATAFORMAS, RADIO_BOLSA_BONUS, VERDE_SPIN_ACC, VERDE_SPIN_DEC, VERDE_SPIN_MPS,
+  Y_CIMA, Y_SALIDA, Z_PRESA,
+  esFilaAzul, esFilaVerde, haySolape, layoutPared, pasoDerivaAzul, pasoGiroVerde,
+} from "../../src/game/sherpas/gameplay/paredNivel";
+import {
+  BILLETE_CAIDA_MPS, BILLETE_G_MPS2, BILLETE_SUBIDA_S, BILLETE_TOPE_MPS,
+  pasoBilletes, rafagaFestiva, sacudidaBilletes, type Billete,
+} from "../../src/game/sherpas/gameplay/billetesAire";
+import { v3 } from "../../src/game/physics/pbd/math";
+import { mulberry32 } from "../../src/game/sherpas/core/rng";
+
+// ---------- 1) BILLETES FUEGOS ARTIFICIALES ----------
+
+describe("T92 · billetes fuegos artificiales (suben disparados y se ven caer)", () => {
+  it("el papel ACELERA hacia arriba (empuje del térmico) hasta el tope del aire", () => {
+    const { billetes } = sacudidaBilletes(mulberry32(9), 1, v3(0, 2, 0));
+    const b = billetes[0];
+    const vy0 = b.vel.y;
+    for (let i = 0; i < 120; i++) pasoBilletes(billetes, 1 / 60, -6, 99);
+    expect(b.vel.y).toBeGreaterThan(vy0);        // la corriente lo ACELERA
+    expect(b.vel.y).toBeLessThanOrEqual(BILLETE_TOPE_MPS + 1e-9);
+    expect(b.pos.y).toBeGreaterThan(2 + 1.5);    // y sube claramente más rápido
+  });
+
+  it("el disparo alcanza VARIOS BLOQUES por encima del saco (ápice > 4 m sobre el nacimiento)", () => {
+    const { billetes } = sacudidaBilletes(mulberry32(11), 1, v3(0, 5, 0));
+    let yMax = -99;
+    for (let i = 0; i < 60 * 8; i++) {
+      pasoBilletes(billetes, 1 / 60, 0, 999);
+      yMax = Math.max(yMax, ...billetes.map((b) => (b.vivo ? b.pos.y : -99)));
+    }
+    expect(yMax - 5).toBeGreaterThan(4);         // «varios bloques por encima»
+  });
+
+  it("después del ápice el billete CAE de forma VISIBLE (gravedad de hoja, velocidad terminal)", () => {
+    const { billetes } = sacudidaBilletes(mulberry32(13), 1, v3(0, 40, 0)); // lejos: sin recogida de suelo
+    const b = billetes[0];
+    b.pos = v3(6, 30, 0);                        // alto: la pólvora ya ardió lejos del suelo
+    b.vel = v3(0, BILLETE_TOPE_MPS, 0);
+    b.aire = BILLETE_SUBIDA_S + 0.01;            // pólvora agotada AHORA
+    let cayo = false;
+    let yMax = b.pos.y;
+    for (let i = 0; i < 60 * 4; i++) {
+      pasoBilletes(billetes, 1 / 60, -50, 999);  // suelo imposible: solo cae
+      yMax = Math.max(yMax, b.pos.y);
+      if (b.pos.y < yMax - 1.5) cayo = true;     // descenso de más de 1,5 m: SE VE
+    }
+    expect(cayo).toBe(true);                     // se VE caer
+    expect(b.vel.y).toBeLessThanOrEqual(-1);     // caída real, no flotación
+    expect(b.vel.y).toBeGreaterThanOrEqual(-BILLETE_CAIDA_MPS - 1e-9); // terminal de hoja
+  });
+
+  it("la corriente del suelo RECOGE el papel caído y reenciende la pólvora (nunca queda tumbado)", () => {
+    const { billetes } = sacudidaBilletes(mulberry32(4), 1, v3(3, 30, 0)); // lejos: ninguno cerca
+    const caido = billetes[0];
+    caido.pos = v3(0.5, 0.1, 0);                 // tumbado junto al suelo (suelo y=0)
+    caido.vel = v3(0, 0, 0);
+    caido.aire = BILLETE_SUBIDA_S + 5;           // pólvora agotada
+    pasoBilletes(billetes, 1 / 60, 0, 99);
+    expect(caido.vel.y).toBeGreaterThanOrEqual(1.45); // la corriente lo levanta
+    expect(caido.aire).toBe(0);                  // pólvora REenciendida (aire a cero)
+    const y1 = caido.pos.y;
+    for (let i = 0; i < 60; i++) pasoBilletes(billetes, 1 / 60, 0, 99);
+    expect(caido.pos.y).toBeGreaterThan(y1 + 0.8); // despega y sube
+    expect(caido.vivo).toBe(true);
+  });
+
+  it("el ciclo de fuegos: sube, CAE y vuelve a subir (la caída es visible y repetida)", () => {
+    const { billetes } = sacudidaBilletes(mulberry32(17), 1, v3(0, 3, 0));
+    const b = billetes[0];
+    let subidas = 0, caidas = 0;
+    let vyPrev = b.vel.y;
+    for (let i = 0; i < 60 * 14; i++) {
+      pasoBilletes(billetes, 1 / 60, 0, 999);
+      if (b.vel.y > 0.2 && vyPrev <= 0.2) subidas++;
+      if (b.vel.y < -0.2 && vyPrev >= -0.2) caidas++;
+      vyPrev = b.vel.y;
+    }
+    expect(caidas).toBeGreaterThanOrEqual(1);    // al MENOS una caída visible
+    expect(subidas).toBeGreaterThanOrEqual(1);   // y un relanzamiento
+  });
+
+  it("los billetes a mano (tests viejos) siguen vivos sin remolino ni pólvora definidos", () => {
+    const bs: Billete[] = [{ id: 1, pos: v3(0, 0, 0), vel: v3(0, 0, 0), fase: 0, t: 0, vivo: true }];
+    pasoBilletes(bs, 1 / 60, -6, 99);
+    expect(bs[0].vivo).toBe(true);
+    expect(bs[0].vel.y).toBeGreaterThan(0);      // el térmico lo empuja
+  });
+
+  it("la RAFAGA FESTIVA también dispara fuegos (radial hacia arriba y luego CAEN al menos 1,5 m)", () => {
+    const r = rafagaFestiva(mulberry32(23), 1, v3(0, 22.4, 0));
+    expect(r.billetes.length).toBe(12);
+    for (const b of r.billetes) expect(b.vel.y).toBeGreaterThan(0);
+    let cayo = false;
+    const yMax = new Map<number, number>();
+    for (let i = 0; i < 60 * 12 && !cayo; i++) {
+      pasoBilletes(r.billetes, 1 / 60, 20.0, 999); // recogida SOLO a ras del suelo bajo
+      for (const b of r.billetes) {
+        if (!b.vivo) continue;
+        const m = Math.max(yMax.get(b.id) ?? b.pos.y, b.pos.y);
+        yMax.set(b.id, m);
+        if (b.pos.y < m - 1.5) cayo = true;      // descenso visible de 1,5 m
+      }
+    }
+    expect(cayo).toBe(true);                     // la fiesta también CAE al final
+  });
+});
+
+// ---------- 2) RUTA TRIPLE + VERDES + AZULES + PLATAFORMAS ----------
+
+describe("T92 · ruta TRIPLE (27 filas) con verdes, azules y plataformas", () => {
+  const specs = layoutPared(20261106);
+
+  it("27 filas móviles (TRIPLE de las 9 originales) y cima en la 28", () => {
+    expect(FILAS_MOVILES).toBe(27);
+    const filas = new Set(specs.filter((s) => s.id.startsWith("f")).map((s) => Number(s.id.slice(1, s.id.indexOf("_")))));
+    expect(filas.size).toBe(27);
+    expect(Y_CIMA).toBeCloseTo(Y_SALIDA + FILA_PASO * 28, 9);
+  });
+
+  it("bloques VERDES: 5 repartidos, pequeños (1,0 m), estáticos y JAMÁS destructibles", () => {
+    const verdes = specs.filter((s) => s.verde);
+    expect(verdes.length).toBe(FILAS_VERDES.length);
+    for (const s of verdes) {
+      const r = Number(s.id.slice(1, s.id.indexOf("_")));
+      expect(esFilaVerde(r)).toBe(true);
+      expect(s.w).toBeCloseTo(1.0, 9);
+      expect(s.h).toBeCloseTo(1.0, 9);
+      expect(s.patron).toBe("estatico");         // el giro es ESTADO, no patrón
+      expect(s.destructible ?? false).toBe(false);
+      // siempre en la columna mixta: la baila jamás gira
+      expect(s.patron).not.toBe("vertical");
+    }
+    expect(new Set(verdes.map((s) => s.id.slice(1, s.id.indexOf("_")))).size).toBe(5);
+  });
+
+  it("bloques AZULES: 6 repartidos (1,4 m), estáticos y JAMÁS destructibles", () => {
+    const azules = specs.filter((s) => s.azul);
+    expect(azules.length).toBe(FILAS_AZULES.length);
+    for (const s of azules) {
+      const r = Number(s.id.slice(1, s.id.indexOf("_")));
+      expect(esFilaAzul(r)).toBe(true);
+      expect(s.w).toBeCloseTo(1.4, 9);
+      expect(s.h).toBeCloseTo(1.4, 9);
+      expect(s.patron).toBe("estatico");
+      expect(s.destructible ?? false).toBe(false);
+      expect(s.patron).not.toBe("vertical");
+    }
+  });
+
+  it("verdes y azules nunca coinciden en la misma fila ni son giro180", () => {
+    for (const r of FILAS_VERDES) {
+      expect(esFilaAzul(r)).toBe(false);
+      expect(FILAS_GIRO180.includes(r)).toBe(false);
+    }
+    for (const r of FILAS_AZULES) {
+      expect(FILAS_VERDES.includes(r)).toBe(false);
+      expect(FILAS_GIRO180.includes(r)).toBe(false);
+    }
+  });
+
+  it("GIRO180: dos filas (una por mitad de ruta) sin tocar verdes/azules", () => {
+    expect(FILAS_GIRO180).toEqual([13, 23]);
+    for (const r of FILAS_GIRO180) {
+      expect(esFilaVerde(r)).toBe(false);
+      expect(esFilaAzul(r)).toBe(false);
+    }
+  });
+
+  it("plataformas de bonificación: separadas hacia los lados (|x| ≥ 3,6), formas DIVERSAS, cara en Z_PRESA", () => {
+    const bonos = specs.filter((s) => s.bono);
+    expect(bonos.length).toBe(PLATAFORMAS.length);
+    expect(PLATAFORMAS.length).toBeGreaterThanOrEqual(3);
+    const formas = new Set(PLATAFORMAS.map((p) => p.forma));
+    expect(formas.size).toBe(PLATAFORMAS.length); // hex, cil, caja: todas distintas
+    for (const s of bonos) {
+      expect(Math.abs(s.x)).toBeGreaterThanOrEqual(3.6);
+      expect(s.x).toBeCloseTo(PLATAFORMA_X * Math.sign(s.x), 9);
+      expect(s.z - s.d / 2).toBeCloseTo(Z_PRESA, 9);
+      expect(s.destructible ?? false).toBe(false);
+      expect(s.verde ?? false).toBe(false);
+      expect(s.azul ?? false).toBe(false);
+      // a media fila: nunca coinciden con la altura de una fila de columnas
+      const filaFloat = (s.y - Y_SALIDA) / FILA_PASO;
+      expect(filaFloat % 1).toBeGreaterThan(0.4); // .5 → entre filas
+    }
+  });
+
+  it("TAMAÑOS variados: al menos 3 anchos distintos entre los bloques normales", () => {
+    const anchos = new Set(
+      specs.filter((s) => s.id.startsWith("f") && !s.verde && !s.azul).map((s) => s.w),
+    );
+    expect(anchos.size).toBeGreaterThanOrEqual(3);
+  });
+
+  it("más COMBINACIONES: lateral, profundo y tumbo presentes en la pared", () => {
+    const usados = new Set(specs.filter((s) => s.id.startsWith("f")).map((s) => s.patron));
+    expect(usados.has("lateral")).toBe(true);
+    expect(usados.has("profundo")).toBe(true);
+    expect(usados.has("tumbo")).toBe(true);
+    expect(usados.has("giro180")).toBe(true);
+  });
+
+  it("peores casos de verde/azul/plataforma en el checker (controles)", () => {
+    const cubo = (x: number, y: number, extra: Partial<(typeof specs)[number]> = {}): (typeof specs)[number] => ({
+      id: "x", x, y, z: Z_PRESA + 0.25, w: 1.5, h: 1.5, d: 0.5,
+      patron: "estatico", amp: 0, periodS: 1, phase: 0, ...extra,
+    });
+    // el giro verde REAL (1,0 m → envolvente circular 0,707) toca a un vecino
+    // (1,5 m de cara) a 1,35 m pero no a 1,52 m
+    expect(haySolape([cubo(0, 0, { verde: true, w: 1.0, h: 1.0 }), cubo(1.35, 0)], 0)).toBe(true);
+    expect(haySolape([cubo(0, 0, { verde: true, w: 1.0, h: 1.0 }), cubo(1.52, 0)], 0)).toBe(false);
+    // la deriva azul (0,8 hacia fuera desde x=1,3 → borde a 2,85) alcanza un
+    // bloque a 3,4 m pero no a 3,7 m (la plataforma vive en 4,15 − 0,9 = 3,25…)
+    expect(haySolape([cubo(1.3, 0, { azul: true, w: 1.4, h: 1.4 }), cubo(3.4, 0)], 0)).toBe(true);
+    expect(haySolape([cubo(1.3, 0, { azul: true, w: 1.4, h: 1.4 }), cubo(3.7, 0)], 0)).toBe(false);
+  });
+
+  it("el circuito completo NUNCA se toca (barrido 120 s con verdes girando y azules derivando)", () => {
+    for (const seed of [20261106, 1, 7, 424242, 987654321, 20261107]) {
+      const sp = layoutPared(seed);
+      for (let t = 0; t < 120; t += 0.05) expect(haySolape(sp, t, 0.095)).toBe(false);
+    }
+  });
+});
+
+// ---------- 3) ESTADOS: giro verde y deriva azul ----------
+
+describe("T92 · el verde GIRA al agarrarse y el azul SE ALEJA", () => {
+  it("pasoGiroVerde: acelera mientras hay agarre hasta VERDE_SPIN_MPS y frena al soltar", () => {
+    let ang = 0, vel = 0;
+    for (let i = 0; i < 120; i++) [ang, vel] = pasoGiroVerde(ang, vel, 1 / 60, true, 1);
+    expect(vel).toBeCloseTo(VERDE_SPIN_MPS, 9);
+    expect(ang).toBeGreaterThan(0.5);            // ha girado de verdad
+    const ang2 = ang;
+    for (let i = 0; i < 120; i++) [ang, vel] = pasoGiroVerde(ang, vel, 1 / 60, false, 1);
+    expect(vel).toBeCloseTo(0, 9);               // frena al quedar libre
+    expect(ang).toBeGreaterThan(ang2);           // pero no retrocede
+    // sentido determinista: dir −1 gira al otro lado
+    let a2 = 0, v2 = 0;
+    for (let i = 0; i < 60; i++) [a2, v2] = pasoGiroVerde(a2, v2, 1 / 60, true, -1);
+    expect(a2).toBeLessThan(0);
+    expect(v2).toBeGreaterThan(0);
+  });
+
+  it("pasoDerivaAzul: crece mientras hay agarre (tope 0,8) y vuelve suave al quedar libre", () => {
+    let drift = 0;
+    for (let i = 0; i < 60 * 5; i++) drift = pasoDerivaAzul(drift, 1 / 60, true);
+    expect(drift).toBeCloseTo(AZUL_DRIFT_MAX, 9);
+    expect(AZUL_DRIFT_MPS).toBeGreaterThan(0.1);  // se VE alejarse
+    expect(AZUL_DRIFT_MAX).toBeLessThan(1.0);     // jamás alcanza la otra columna
+    let t = 0;
+    while (drift > 0 && t < 60 * 10) { drift = pasoDerivaAzul(drift, 1 / 60, false); t++; }
+    expect(drift).toBe(0);                        // regresa al quedar libre
+    expect(AZUL_DRIFT_RET).toBeGreaterThan(0);
+  });
+
+  it("el nivel integra el giro verde con sentido por lado y el azul hacia FUERA (fuente)", () => {
+    const src = readFileSync(join(__dirname, "../../src/game/sherpas/gameplay/paredNivel.ts"), "utf8");
+    expect(src).toContain("pasoGiroVerde(b.spinAng, b.spinVel, dt, ocup, dir)");
+    expect(src).toContain("pasoDerivaAzul(b.drift, dt, this.ocupacionBloque(b.spec.id) > 0)");
+    expect(src).toContain("Math.sign(s.x) * b.drift"); // deriva hacia fuera
+    expect(src).toContain("Quaternion.RotationYawPitchRollToRef"); // rotación compuesta
+    expect(src).toContain("p.inst.pos = v3(s.x + b.dx + this.tmpV2.x"); // presas viajan con la rotación
+  });
+});
+
+// ---------- 4) SACOS DE DINERO EN LAS PLATAFORMAS (+200 $) ----------
+
+describe("T92 · sacos de dinero colgados de las plataformas (+200 $)", () => {
+  it("constantes del bono (dictado: «le dará 200 $ a su mochila»)", () => {
+    expect(BONUS_DINERO).toBe(200);
+    expect(RADIO_BOLSA_BONUS).toBeGreaterThan(0.5);
+    expect(RADIO_BOLSA_BONUS).toBeLessThan(1.2);
+    expect(CUERDA_BONUS_M).toBeGreaterThan(0.4);
+    expect(CUERDA_BONUS_M).toBeLessThan(1.2);
+  });
+
+  it("el nivel clona el saco por el CUELLO y lo cuelga con cuerda de cada plataforma (fuente)", () => {
+    const src = readFileSync(join(__dirname, "../../src/game/sherpas/gameplay/paredNivel.ts"), "utf8");
+    expect(src).toContain("creaBolsasBonus()");
+    expect(src).toContain("posBolsaBonus(b)");
+    expect(src).toContain("RADIO_BOLSA_BONUS) continue");
+    expect(src).toContain("this.dinero[m.pi] += BONUS_DINERO");
+    expect(src).toContain("pared.dinero.bolsa");
+    expect(src).toContain("colocaStrap(bb.cuerda, bb.hang, neck)"); // la cuerda une hang→cuello
+  });
+});
+
+// ---------- 5) i18n ----------
+
+describe("T92 · claves i18n del circuito (es/en)", () => {
+  for (const lang of ["es", "en"] as const) {
+    it(`strings_${lang}.json trae pared.dinero.bolsa y dinero.titulo`, () => {
+      const raw = JSON.parse(readFileSync(join(__dirname, `../../public/content/sherpas/strings_${lang}.json`), "utf8"));
+      const pared = (raw[lang] ?? raw).pared;
+      expect(pared.dinero.bolsa).toBeTruthy();
+      expect(pared.dinero.titulo).toBeTruthy();
+    });
+  }
+});

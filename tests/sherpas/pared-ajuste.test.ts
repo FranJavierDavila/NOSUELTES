@@ -127,16 +127,16 @@ describe("T119 activación oculta (?dev=1 / F3)", () => {
 });
 
 describe("T119 aplicación a la simulación", () => {
-  it("layoutPared honra el paso de filas del panel (filas y cima suben juntas)", () => {
+  it("layoutPared honra el paso de filas del panel (filas y cima suben juntas; T92: 27 filas)", () => {
     const specs = layoutPared(20261106, { filaPaso: 2.5 });
     const fila3 = specs.find((s) => s.id === "f3_i")!;
     const cima = specs.find((s) => s.id === "cima_0")!;
     expect(fila3.y).toBeCloseTo(Y_SALIDA + 2.5 * 3, 9);
-    expect(cima.y).toBeCloseTo(Y_SALIDA + 2.5 * 10, 9);
+    expect(cima.y).toBeCloseTo(Y_SALIDA + 2.5 * 28, 9);
     // sin mod: exactamente el layout original (regresión cero)
     const base = layoutPared(20261106);
     expect(base.find((s) => s.id === "f3_i")!.y).toBeCloseTo(Y_SALIDA + FILA_PASO * 3, 9);
-    expect(base.find((s) => s.id === "cima_1")!.y).toBeCloseTo(Y_SALIDA + FILA_PASO * 10, 9);
+    expect(base.find((s) => s.id === "cima_1")!.y).toBeCloseTo(Y_SALIDA + FILA_PASO * 28, 9);
   });
 
   it("layoutPared sigue siendo determinista con el mismo seed y mod", () => {

@@ -1,11 +1,13 @@
 // T118 — tests del NIVEL "Prueba del Campamento" (pared de bloques flotantes).
 // Lógica PURA (sin Babylon): patrones de movimiento, muelle de basculación,
 // cuerda, layout alcanzable y condiciones de fin.
+// T92 — contratos actualizados a la RUTA TRIPLE (27 filas) con verdes,
+// azules, plataformas de bonificación y las formas/tamaños nuevos.
 import { describe, expect, it } from "vitest";
 import {
-  CAP_AMP, CUERDA_LEN, FAIL_Y, FILA_PASO, H_MOVIL, SAG_IMPULSO, SAG_MAX, SAG_POR_CARGA,
+  CAP_AMP, CUERDA_LEN, FAIL_Y, FILAS_MOVILES, FILA_PASO, H_MOVIL, SAG_IMPULSO, SAG_MAX, SAG_POR_CARGA,
   WIN_Y, Y_CIMA, Y_SALIDA, Z_PRESA,
-  ampEfectiva, excesoCuerda, haySolape, layoutPared, offsetPatron, pasoCuerdaVerlet, pasoMuelle, yawPatron,
+  ampEfectiva, esFilaGiro180, excesoCuerda, haySolape, layoutPared, offsetPatron, pasoCuerdaVerlet, pasoMuelle, yawPatron,
   type BloqueSpec, type NodoCuerda,
 } from "../../src/game/sherpas/gameplay/paredNivel";
 import { v3, vLen } from "../../src/game/physics/pbd/math";
@@ -148,17 +150,21 @@ describe("T118 cuerda entre los dos sherpas", () => {
 describe("T118 layout de la pared de bloques", () => {
   const specs = layoutPared(20261106);
 
-  it("tiene 2 bloques de salida, 9 filas móviles de 2 bloques y 3 de cima", () => {
+  it("tiene 2 bloques de salida, 27 filas móviles de 2 bloques, 3 plataformas bono y 3 de cima (T92: TRIPLE)", () => {
     expect(specs.filter((s) => s.salida).length).toBe(2);
     expect(specs.filter((s) => s.cima).length).toBe(3);
-    expect(specs.length).toBe(2 + 18 + 3);
+    expect(specs.filter((s) => s.bono).length).toBe(3);
+    expect(specs.filter((s) => !s.salida && !s.cima && !s.bono).length).toBe(FILAS_MOVILES * 2);
+    expect(specs.length).toBe(2 + FILAS_MOVILES * 2 + 3 + 3);
   });
 
-  it("la subida total ronda los 20 metros", () => {
+  it("T92: la subida es el TRIPLE de la anterior (27 filas = 3 × 9; ~54,7 m)", () => {
     const base = Y_SALIDA - 0.9;   // borde inferior de los bloques de salida
     const top = Y_CIMA + 0.625;    // borde superior de la fila de cima
-    expect(top - base).toBeGreaterThan(19);
-    expect(top - base).toBeLessThan(22);
+    expect(top - base).toBeGreaterThan(52);
+    expect(top - base).toBeLessThan(57);
+    // el TRIPLE exacto del trayecto original: 27 filas de paso 1,9 = 3 × (9 × 1,9)
+    expect(FILA_PASO * FILAS_MOVILES).toBeCloseTo(3 * FILA_PASO * 9, 9);
   });
 
   it("T120: la cara de escalada de TODOS los bloques está en Z_PRESA (cuerpo del bloque detrás)", () => {
@@ -167,16 +173,16 @@ describe("T118 layout de la pared de bloques", () => {
     for (const s of specs) expect(s.z - s.d / 2).toBeCloseTo(Z_PRESA, 9);
   });
 
-  it("T120: NUNCA se solapan — barrido de 80 s a 20 Hz con el sag peor caso", () => {
-    for (let t = 0; t < 80; t += 0.05) {
+  it("T120/T92: NUNCA se solapan — barrido de 120 s a 20 Hz con el sag peor caso", () => {
+    for (let t = 0; t < 120; t += 0.05) {
       expect(haySolape(specs, t, SAG_MAX)).toBe(false);
     }
   });
 
-  it("T120: varios seeds también quedan limpios (colBaila a izquierda y derecha)", () => {
+  it("T120/T92: varios seeds también quedan limpios (colBaila a izquierda y derecha)", () => {
     for (const seed of [1, 7, 424242, 987654321, 20261107]) {
       const sp = layoutPared(seed);
-      for (let t = 0; t < 40; t += 0.1) expect(haySolape(sp, t, SAG_MAX)).toBe(false);
+      for (let t = 0; t < 120; t += 0.1) expect(haySolape(sp, t, SAG_MAX)).toBe(false);
     }
   });
 
@@ -202,55 +208,85 @@ describe("T118 layout de la pared de bloques", () => {
     expect(ampEfectiva("vertical", 0.2, 1)).toBeCloseTo(0.2, 12); // bajo el CAP: intacta
   });
 
-  it("T120: la columna baila está SINCRONIZADA y amortigua las filas 1 y 9", () => {
+  it("T120/T92: las columnas baila están SINCRONIZADAS POR SEGMENTO y amortiguan las filas de borde", () => {
     const ver = specs.filter((s) => s.patron === "vertical");
-    expect(ver.length).toBe(9); // una columna entera
-    expect(new Set(ver.map((s) => s.periodS)).size).toBe(1);
-    expect(new Set(ver.map((s) => s.phase)).size).toBe(1);
-    const ampBase = Math.max(...ver.map((s) => s.amp));
-    const primera = ver.find((s) => s.id.startsWith("f1_"))!;
-    const novena = ver.find((s) => s.id.startsWith("f9_"))!;
-    expect(primera.amp).toBeCloseTo(ampBase * 0.3, 9);
-    expect(novena.amp).toBeCloseTo(ampBase * 0.3, 9);
+    expect(ver.length).toBe(FILAS_MOVILES); // una columna baila por segmento (3×9)
+    // 3 grupos de sincronía (uno por segmento de 9 filas)
+    expect(new Set(ver.map((s) => s.periodS)).size).toBe(3);
+    expect(new Set(ver.map((s) => s.phase)).size).toBe(3);
     for (const s of ver) {
-      if (s !== primera && s !== novena) expect(s.amp).toBeCloseTo(ampBase, 9);
+      const fila = Number(s.id.slice(1, s.id.indexOf("_")));
+      const filasSeg = ((fila - 1) % 9) + 1;
+      const grupo = ver.filter((v) => v.periodS === s.periodS && v.phase === s.phase);
+      expect(grupo.length).toBe(9); // las 9 filas del segmento comparten sincronía
+      if (filasSeg === 1 || filasSeg === 9) {
+        // borde del segmento: amplitud ×0,3 respecto a las filas completas
+        const maxAmp = Math.max(...grupo.map((g) => g.amp));
+        expect(s.amp).toBeCloseTo(maxAmp * 0.3, 9);
+      } else {
+        const full = grupo.filter((g) => {
+          const f = Number(g.id.slice(1, g.id.indexOf("_")));
+          const fs = ((f - 1) % 9) + 1;
+          return fs !== 1 && fs !== 9;
+        });
+        expect(full.length).toBe(7);
+        expect(s.amp).toBeCloseTo(full[0].amp, 9);
+      }
     }
   });
 
-  it("T120: la columna mixta deja filas estáticas y nunca arranca con giro", () => {
-    const mixta = specs.filter((s) => !s.salida && !s.cima && s.patron !== "vertical");
-    expect(mixta.length).toBe(9);
+  it("T120/T92: la columna mixta deja filas estáticas y nunca arranca con giro ni tumbo", () => {
+    const mixta = specs.filter((s) => !s.salida && !s.cima && !s.bono && s.patron !== "vertical");
+    expect(mixta.length).toBe(FILAS_MOVILES);
     expect(mixta.filter((s) => s.patron === "estatico").length).toBeGreaterThanOrEqual(2);
     expect(mixta.find((s) => s.id.startsWith("f1_"))!.patron).not.toBe("giro");
+    expect(mixta.find((s) => s.id.startsWith("f1_"))!.patron).not.toBe("tumbo");
     // los cubos de giro son más pequeños: la esquina barrida cabe en el hueco
     for (const s of mixta) if (s.patron === "giro") expect(s.w).toBeCloseTo(1.5, 9);
   });
 
-  it("T120: los bloques móviles miden H_MOVIL de alto (hueco 0,4 m entre filas)", () => {
-    for (const s of specs.filter((x) => !x.salida && !x.cima)) expect(s.h).toBe(H_MOVIL);
+  it("T120/T92: alturas de los bloques móviles (H_MOVIL; verde 1,0; azul 1,4)", () => {
+    for (const s of specs.filter((x) => !x.salida && !x.cima && !x.bono)) {
+      if (s.verde) expect(s.h).toBe(1.0);
+      else if (s.azul) expect(s.h).toBe(1.4);
+      else expect(s.h).toBe(H_MOVIL);
+    }
     expect(FILA_PASO - H_MOVIL).toBeGreaterThan(0.35); // hueco vertical real
   });
 
-  it("T120: el salto entre filas sigue siendo alcanzable (presa baja del superior ≤ 1,3 m sobre las manos)", () => {
-    // manos en la presa alta de la fila r (ly +0,55); objetivo: presa baja de
-    // r+1 (ly −0,5). Desfase vertical relativo peor caso: |amp_a − amp_b| entre
-    // verticales (MISMA fase por columna) o suma de dy si hay fase libre.
-    const dyAmp = (s: BloqueSpec): number => (s.patron === "vertical" ? s.amp : 0);
-    let maxRel = 0;
+  it("T120/T92: el salto entre filas sigue siendo alcanzable (presa baja del superior ≤ 1,3 m sobre las manos)", () => {
+    // manos en la presa alta de la fila r; objetivo: presa baja de r+1.
+    // T92: los VERDES tienen presas comprimidas (manos +0,30 / bajas −0,33);
+    // el resto usa las alturas estándar (+0,55 / −0,5). Desfase relativo peor
+    // caso: |amp_a − amp_b| dentro del segmento (MISMA fase) o suma en la
+    // frontera de segmentos (fases libres).
+    const manos = (s: BloqueSpec): number => (s.w < 1.05 ? 0.3 : 0.55);
+    const baja = (s: BloqueSpec): number => (s.w < 1.05 ? -0.33 : -0.5);
+    const dyAmp = (a: BloqueSpec, b: BloqueSpec): number => {
+      if (a.patron !== "vertical" || b.patron !== "vertical") {
+        return (a.patron === "vertical" ? a.amp : 0) + (b.patron === "vertical" ? b.amp : 0);
+      }
+      const ra = Number(a.id.slice(1, a.id.indexOf("_")));
+      const rb = Number(b.id.slice(1, b.id.indexOf("_")));
+      // frontera de segmentos: fases libres → suma; dentro: misma fase → resta
+      return Math.floor((ra - 1) / 9) === Math.floor((rb - 1) / 9)
+        ? Math.abs(a.amp - b.amp)
+        : a.amp + b.amp;
+    };
+    let maxAlc = 0;
     const fila = (r: number): BloqueSpec[] => specs.filter((s) => s.id.startsWith(`f${r}_`));
-    for (let r = 1; r < 9; r++) {
+    for (let r = 1; r < FILAS_MOVILES; r++) {
       for (const a of fila(r)) {
         for (const b of fila(r + 1)) {
-          maxRel = Math.max(maxRel,
-            a.patron === "vertical" && b.patron === "vertical"
-              ? Math.abs(a.amp - b.amp)
-              : dyAmp(a) + dyAmp(b));
+          // el salto de la ruta es DENTRO de la misma columna (misma x): los
+          // pares cruzados separan 2,6 m y no son el camino de subida
+          if (a.id.endsWith("_i") !== b.id.endsWith("_i")) continue;
+          maxAlc = Math.max(maxAlc, FILA_PASO + baja(b) - manos(a) + dyAmp(a, b));
         }
       }
     }
-    const alcance = FILA_PASO - 0.5 - 0.55 + maxRel;
-    expect(alcance).toBeLessThan(1.3);
-    expect(alcance).toBeGreaterThan(0.3); // y sigue siendo un salto, no un pegado
+    expect(maxAlc).toBeLessThan(1.3);
+    expect(maxAlc).toBeGreaterThan(0.3); // y sigue siendo un salto, no un pegado
   });
 
   it("los patrones de las filas son VARIADOS (sube/baja, izquierda-derecha y giro presentes)", () => {
@@ -272,7 +308,7 @@ describe("T118 layout de la pared de bloques", () => {
   });
 
   it("la condición de victoria está por encima de la última fila y la de fallo por debajo de la salida", () => {
-    const ultimaFilaY = Y_SALIDA + FILA_PASO * 9;
+    const ultimaFilaY = Y_SALIDA + FILA_PASO * FILAS_MOVILES;
     expect(WIN_Y).toBeGreaterThan(ultimaFilaY);
     expect(WIN_Y).toBeLessThan(Y_CIMA);
     expect(FAIL_Y).toBeLessThan(Y_SALIDA - 2);
@@ -288,26 +324,31 @@ import {
   velocidadesAnicos, zLocalPresa,
 } from "../../src/game/sherpas/gameplay/paredNivel";
 
-describe("T121 B2 — la caja «giro180» (gira cerca de 180 grados)", () => {
+describe("T121 B2 — las cajas «giro180» (giran cerca de 180 grados; T92: dos, una por mitad)", () => {
   const specs = layoutPared(20261106);
 
-  it("hay EXACTAMENTE una caja giro180, de 1,4 m y amplitud ~±1,4 rad", () => {
+  it("hay EXACTAMENTE DOS cajas giro180 (filas 13 y 23), de 1,4 m y amplitud ~±1,4 rad", () => {
     const g = specs.filter((s) => s.patron === "giro180");
-    expect(g.length).toBe(1);
-    expect(g[0].w).toBeCloseTo(1.4, 9);
-    expect(g[0].amp).toBeGreaterThan(1.3);
-    expect(g[0].amp).toBeLessThanOrEqual(CAP_AMP.giro180 + 1e-9);
-    // lenta: el barrido de ~160° tarda ~9-12 s
-    expect(g[0].periodS).toBeGreaterThanOrEqual(9);
-    // la fila 5: el centro de la pared
-    expect(g[0].id).toContain("f5_");
+    expect(g.length).toBe(2);
+    for (const s of g) {
+      expect(s.w).toBeCloseTo(1.4, 9);
+      expect(s.amp).toBeGreaterThan(1.3);
+      expect(s.amp).toBeLessThanOrEqual(CAP_AMP.giro180 + 1e-9);
+      // lenta: el barrido de ~160° tarda ~9-12 s
+      expect(s.periodS).toBeGreaterThanOrEqual(9);
+      expect(esFilaGiro180(Number(s.id.slice(1, s.id.indexOf("_"))))).toBe(true);
+    }
+    expect(g.map((s) => s.id).sort()).toEqual([
+      expect.stringMatching(/^f13_[id]$/),
+      expect.stringMatching(/^f23_[id]$/),
+    ]);
   });
 
-  it("sus vecinas de fila (4 y 6) NO giran: el barrido no las toca", () => {
+  it("sus vecinas de fila NO giran: el barrido no las toca", () => {
     const fila = (r: number): BloqueSpec[] => specs.filter((s) => s.id.startsWith(`f${r}_`));
-    for (const r of [4, 6]) {
+    for (const r of [12, 14, 22, 24]) {
       for (const s of fila(r)) {
-        expect(s.patron === "estatico" || s.patron === "horizontal" || s.patron === "vertical").toBe(true);
+        expect(["estatico", "horizontal", "vertical", "lateral", "profundo"]).toContain(s.patron);
       }
     }
   });
@@ -339,25 +380,23 @@ describe("T121 B2 — la caja «giro180» (gira cerca de 180 grados)", () => {
 describe("T121 B3 — cajas destructibles (rojizas, 10 s, nunca dos seguidas)", () => {
   const specs = layoutPared(20261106);
 
-  it("las filas pares 2-8 son destructibles; salida, cima e impares NO", () => {
+  it("las filas 2,6,10,14,18,22,26 son destructibles; salida, cima, bono, impares y especiales NO", () => {
     for (const s of specs) {
       const m = s.id.match(/^f(\d+)_/);
       if (!m) {
-        expect(s.destructible ?? false).toBe(false); // salida y cima intactas
+        expect(s.destructible ?? false).toBe(false); // salida, cima y bono intactas
         continue;
       }
       expect(s.destructible === true).toBe(esFilaDestructible(Number(m[1])));
     }
-    expect(esFilaDestructible(2)).toBe(true);
-    expect(esFilaDestructible(8)).toBe(true);
-    expect(esFilaDestructible(1)).toBe(false);
-    expect(esFilaDestructible(9)).toBe(false);
+    for (const r of [2, 6, 10, 14, 18, 22, 26]) expect(esFilaDestructible(r)).toBe(true);
+    for (const r of [1, 3, 4, 9, 13, 15, 23, 24, 25, 27]) expect(esFilaDestructible(r)).toBe(false);
     expect(esFilaDestructible(0)).toBe(false);
-    expect(esFilaDestructible(10)).toBe(false);
+    expect(esFilaDestructible(28)).toBe(false);
   });
 
   it("NUNCA hay dos filas destructibles consecutivas (regla dura del jugador)", () => {
-    for (let r = 1; r < 9; r++) {
+    for (let r = 1; r < FILAS_MOVILES; r++) {
       const fila = specs.filter((s) => s.id.startsWith(`f${r}_`) && s.destructible);
       const arriba = specs.filter((s) => s.id.startsWith(`f${r + 1}_`) && s.destructible);
       if (fila.length > 0) expect(arriba.length).toBe(0);

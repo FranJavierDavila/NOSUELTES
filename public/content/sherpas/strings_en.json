@@ -390,6 +390,11 @@
       "enfado": "Get me out of here NOW!",
       "furia": "Who TIED me down here?!"
     },
-    "finaleBotin": "Loot"
+    "finaleBotin": "Loot",
+    "dinero": {
+      "titulo": "Money",
+      "cogido": "+10 $! Bill for Sherpa {n}",
+      "bolsa": "+200 $! Bonus bag for Sherpa {n}"
+    }
   }
 }

@@ -390,6 +390,11 @@
       "enfado": "¡Sacadme de aquí YA!",
       "furia": "¡¿Quién me ha ATADO aquí abajo?!"
     },
-    "finaleBotin": "Botín"
+    "finaleBotin": "Botín",
+    "dinero": {
+      "titulo": "Dinero",
+      "cogido": "¡+10 $! Billete para el Sherpa {n}",
+      "bolsa": "¡+200 $! Saco del bono para el Sherpa {n}"
+    }
   }
 }
