@@ -3260,6 +3260,7 @@ export class ParedNivel {
         // (ningún billete por debajo del suelo+0,1: la recogida MURIÓ)
         sacudidaOrigen: this.ultimaSacudida,
         billetesYMin: this.billetes.filter((b) => b.vivo).reduce((m, b) => Math.min(m, b.pos.y), 99),
+        simT: +this.simTime.toFixed(2),
         amarre: (() => {
           const am = this.amarre ?? this.nudoCuerda();
           return { x: +am.x.toFixed(3), y: +(am.y - Y_SALIDA).toFixed(3) };

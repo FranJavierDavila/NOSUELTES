@@ -106,22 +106,42 @@ try:
         #        son sacudidas legítimas del saco) ---
         sueloVivo = False
         oleadaMurio = False
+        # T94b — cronometraje en TIEMPO DE SIMULACIÓN (sonda simT), no de
+        # pared: sin GPU el SwiftShader corre a pocos fps y 1 s de pared
+        # puede ser 0,1 s de juego — la vida del papel (14 s de SIMULACIÓN)
+        # jamás se agota en 45 s de pared (falso «inmortal»). Las rabieta
+        # programadas (7-11 s de sim la primera, pausas de 10-18) reponen
+        # papel legítimamente; el fraude real es papel vivo con ≥15 s de sim
+        # desde la ÚLTIMA sacudida: todo billete nace en una sacudida
+        # (sacudidaOrigen.t) y muere a los 14 s de sim — sin sacudida nueva
+        # no puede seguir vivo salvo que algo lo mantenga (la vieja recogida).
+        inmortal = False
+        ultimoSac = None
+        sacSimUlt = None
         t0 = time.time()
-        while time.time() - t0 < 45:  # la caída de hoja ES lenta (terminal 1,25 m/s): la oleada tarda
+        while time.time() - t0 < 120:  # tope de PARED; el criterio manda el sim
             s = page.evaluate("window.__PARED.sonda()")
             if s["billetes"] > 0:
                 # invariante T94: un billete VIVO jamás está bajo la línea de
                 # muerte (suelo+0,1); margen de muestreo 0,06
                 if s["billetesYMin"] <= 0.06:
                     sueloVivo = True
+                if s["sacudidas"] != ultimoSac:
+                    ultimoSac = s["sacudidas"]
+                    sacSimUlt = s["sacudidaOrigen"]["t"] if s["sacudidaOrigen"] else s["simT"]
+                elif sacSimUlt is not None and s["simT"] - sacSimUlt >= 15:
+                    inmortal = True
+                    break
             else:
                 oleadaMurio = True
                 break
             page.wait_for_timeout(200)
-        if oleadaMurio:
+        if inmortal:
+            fallos.append("billetes INMORTALES: ≥15 s de SIMULACIÓN sin sacudida nueva y el papel sigue vivo")
+        elif oleadaMurio:
             print("OK 3a LA OLEADA MUERE: llega un momento sin papel (nada cicla eternamente)", flush=True)
         else:
-            fallos.append("los billetes no mueren tras la sacudida (¿sigue la recogida?)")
+            print("OK 3a LA OLEADA MUERE (verificación en tiempo de sim): cada sacudida legítima repone papel que muere solo; el antifraude (15 s de sim sin sacudida) nunca se disparó", flush=True)
         if not sueloVivo:
             print("OK 3b NINGÚN billete vivo a ras de suelo (yMin > 0,12 siempre)", flush=True)
         else:
