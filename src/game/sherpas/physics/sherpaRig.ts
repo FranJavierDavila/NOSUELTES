@@ -328,6 +328,11 @@ export class SherpaRig {
   private ropeHaulStartNow = false;
   private dangleSettleT = 0;
   private haulDone = false;
+  /** T93 — lado del DESPLOME del colgado (boceto del jugador: tras una
+   *  caída el cuerpo queda abandonado, casi horizontal): se fija al entrar
+   *  en "caught" con el signo de la velocidad horizontal (por defecto, hacia
+   *  fuera según jugador). */
+  private desplomeLado = -1;
   /** T58-E: borde — este tick la cuerda se AGOTÓ y soltó al colgado. */
   private ropeReleasedNow = false;
   // T58-E — TREPAR A PULSO: la recuperación ya no es automática: la fuerza la
@@ -475,6 +480,33 @@ export class SherpaRig {
    *  holgura normal (ropeSlackM) o el seguro CORTO si el compañero está
    *  anclado (el match lo fija cada tick antes de step). */
   setBelayCatch(dropM: number): void { this.belayCatchDropM = Math.max(0.4, dropM); }
+
+  /** T93 — TIRÓN BRUSCO de la cuerda cuando la CAÍDA DEL COMPAÑERO se
+   *  captura (dictado: «dando un tirón brusco al sherpa que esté anclado
+   *  más arriba, que deberá tener ancladas las 4 extremidades para soportar
+   *  el tirón de la caída»). Con las 4 extremidades ancladas: golpe seco
+   *  hacia abajo + fatiga extra (aguanta el chicote). Con MENOS de 4: el
+   *  tirón lo ARRANCA de sus agarres (cae también — cadena). Solo pega en
+   *  "climbing" con anclajes: colgado/grounded/vuelo no reciben nada. */
+  tironCaptura(dt: number): void {
+    if (dt <= 0 || this.ropeState !== "climbing" || this.anchorsCount() === 0) return;
+    const body = this.rig.particles[P.pelvisC];
+    // impulso HACIA ABAJO (verlet: prev más alto = velocidad descendente)
+    body.prev = v3(body.prev.x, body.prev.y + 1.8 * dt, body.prev.z);
+    if (this.anchorsCount() >= 4) {
+      // aguanta el tirón: golpe de fatiga repartido en las 4 extremidades
+      for (const limb of LIMBS) {
+        const st = this.states.get(limb)!;
+        if (st.anchored) st.fatigue = Math.min(1, st.fatigue + 0.1);
+      }
+      return;
+    }
+    // menos de 4 extremidades: el chicote lo arranca (cae en cadena)
+    for (const limb of LIMBS) {
+      const st = this.states.get(limb)!;
+      if (st.anchored) this.forceRelease(limb, 0.3, "overload");
+    }
+  }
 
   /** Alternar el ANCLA de seguro (el match valida agarres/estado y avisa). */
   setBelayAnchor(active: boolean): void { this.belaying = active; }
@@ -1185,10 +1217,15 @@ export class SherpaRig {
           this.ropeState = "caught";
           this.ropeTautNow = true; // evento de borde: el match suena/avisa
           this.dangleSettleT = 0;
+          // T93 — lado del desplome: hacia donde llevaba la velocidad
+          // (el cuerpo se abandona en la dirección de la caída)
+          const vx = body.pos.x - body.prev.x;
+          this.desplomeLado = Math.abs(vx) > 1e-4 ? Math.sign(vx) : (this.player === 0 ? -1 : 1);
           // EL CHICOTE absorbe energía EN el tirón (parada seca, lectura de
-          // juego: la cuerda AGARRA, no se estira un metro de más). Queda un
-          // 35% de la velocidad para el muelle: un rebote corto y cuelga.
-          vel = v3(vel.x * 0.6, vel.y * 0.35, vel.z * 0.6);
+          // juego: la cuerda AGARRA, no se estira un metro de más). T93 —
+          // tirón MÁS BRUSCO (dictado: «dando un tirón brusco»): queda aún
+          // menos velocidad viva para el muelle.
+          vel = v3(vel.x * 0.5, vel.y * 0.22, vel.z * 0.5);
           if (!this.ropeTautDone) {
             // EL CHICOTAZO: la parada se paga en las manos (re-agarrar cuesta).
             const shock = fT?.catchFatiguePct ?? 0.16;
@@ -1652,8 +1689,28 @@ export class SherpaRig {
 
     const set = (i: number, p: V3): void => { ps[i].prev = vClone(ps[i].pos); ps[i].pos = p; };
     const waist = body.pos;
-    const chest = v3(waist.x + lean * 0.4, waist.y + CHEST_H, waist.z + 0.02);
-    const head = v3(waist.x + lean, waist.y + HEAD_H, waist.z + 0.04);
+    // T93 — DESPLOME del colgado (boceto del jugador: tras una caída el
+    // cuerpo queda abandonado, CASI HORIZONTAL, con las extremidades
+    // colgando por gravedad — el dangleTarget ya las cuelga desde sus
+    // raíces, que viajan con la espina). Solo en "caught" (al rescatarse se
+    // incorpora); asienta en ~0,6 s con dangleSettleT. La dirección la da
+    // desplomeLado (el signo de la velocidad al ser capturado).
+    const desplome = this.ropeState === "caught"
+      ? Math.min(1, this.dangleSettleT / 0.6) * 1.22 // rad (~70°)
+      : 0;
+    const despFrac = desplome / 1.22;
+    const despX = Math.sin(desplome) * this.desplomeLado;
+    const despY = Math.cos(desplome);
+    const chest = v3(
+      waist.x + despX * CHEST_H + lean * 0.4 * (1 - despFrac),
+      waist.y + despY * CHEST_H,
+      waist.z + 0.02,
+    );
+    const head = v3(
+      waist.x + despX * HEAD_H + lean * (1 - despFrac),
+      waist.y + despY * HEAD_H,
+      waist.z + 0.04,
+    );
     const shL = v3(chest.x - SH_X, chest.y - 0.04, chest.z);
     const shR = v3(chest.x + SH_X, chest.y - 0.04, chest.z);
     const hipL = v3(waist.x - HIP_X, waist.y - 0.02, waist.z);

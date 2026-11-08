@@ -2,7 +2,7 @@
 // La comunicación hacia arriba es SIEMPRE por EventBus (doc 3.1).
 
 export type Limb = "hand_l" | "hand_r" | "foot_l" | "foot_r";
-export type ReleaseCause = "overload" | "exhaustion" | "bird" | "trash" | "player" | "broken_anchor" | "transfer" | "slip";
+export type ReleaseCause = "overload" | "exhaustion" | "bird" | "trash" | "player" | "broken_anchor" | "transfer" | "slip" | "cruce";
 export type AnchorTypeId = "rock_firm" | "rock_loose" | "ice" | "ice_thin" | "snow" | "ice_urine" | string;
 
 export interface SherpasEvents {

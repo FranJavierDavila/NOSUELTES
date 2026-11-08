@@ -36,8 +36,8 @@ describe("T90 · ráfaga festiva del botín", () => {
     const rng = mulberry32(42);
     const s = rafagaFestiva(rng, 0, v3(0, 21.8, 0.3));
     for (const b of s.billetes) {
-      expect(b.vel.y).toBeGreaterThan(1.8);   // subida festiva garantizada
-      expect(b.vel.y).toBeLessThan(3.2);
+      expect(b.vel.y).toBeGreaterThan(4.4);   // T93: la fiesta también DISPARA (fuegos)
+      expect(b.vel.y).toBeLessThan(6.8);
       // cono radial: cada billete lleva VELOCIDAD LATERAL (vx o vz), ninguno
       // sale como geyser recto (mín del generador: 0,55·0,45 ≈ 0,25)
       expect(Math.hypot(b.vel.x, b.vel.z)).toBeGreaterThan(0.22);

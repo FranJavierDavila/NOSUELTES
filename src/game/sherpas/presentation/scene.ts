@@ -3842,6 +3842,15 @@ export class SherpaScene {
     setChain(this.ropeSegs[1], nodesB);
   }
 
+  /** T93 — MATERIAL DE LA CUERDA (el mismo del puente visual verlet: cáñamo
+   *  con bandas negras de ropeTexture.ts) para los amarres del nivel — el
+   *  lazo del saco de dinero se ata «con el mismo material de la cuerda que
+   *  ya tenemos» (dictado del jugador). */
+  ropeMaterial(): PBRMaterial {
+    this.ensureRopeLines();
+    return this.ropeMat!;
+  }
+
   /** Coloca un segmento de cuerda ENTRE dos puntos (sin el mínimo de escala de
    *  orientCapsule: los tramos son cortos y deben medir exactamente su largo). */
   private orientRopeSeg(mesh: Mesh | InstancedMesh, a: V3, b: V3): void {

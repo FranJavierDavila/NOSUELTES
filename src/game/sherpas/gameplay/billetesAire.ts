@@ -17,8 +17,10 @@ export const BILLETES_MIN = 3;
 export const BILLETES_MAX = 6;
 /** Dinero por billete cogido (petición: «cada billete cogido son 10 $»). */
 export const BILLETE_DINERO = 10;
-/** Radio de cogida con la mano libre (m) — generoso: es un premio, no un reto. */
-export const BILLETE_RADIO_COGIDA = 0.75;
+/** Radio de cogida con la mano libre (m). T93 — dictado: «SOLO ganan dinero
+ *  si son ellos los que con su mano TOCAN un billete»: radio estrecho de
+ *  contacto (el billete mide ~28 cm), ya no se cobra a distancia. */
+export const BILLETE_RADIO_COGIDA = 0.42;
 /** T89 (dictado): los billetes SUBEN sin parar hasta desaparecer por la parte
  *  alta de la PANTALLA (techoY lo da el nivel) — el final del vuelo es salir
  *  por arriba, no un temporizador. Vida de seguridad muy larga (14 s). */
@@ -35,12 +37,19 @@ export const BILLETE_EMPUJE_MPS2 = 1.9;
  *  el térmico ARDE durante SUBIDA_S (la pólvora del cohete), el papel sigue
  *  subiendo por inercia, CRUZA el ápice y CAE de forma visible (hoja al
  *  viento) hasta que la corriente del suelo lo recoge y lo relanza. */
-export const BILLETE_SUBIDA_S = 3.0;
+export const BILLETE_SUBIDA_S = 0.8;
+/** T93 — VELOCIDAD DEL DISPARO (m/s): el billete NACE DENTRO de la boca del
+ *  saco y SALE DISPARADO como un cohete (dictado T93: «que nazcan desde el
+ *  propio saco, se lancen hacia arriba como fuegos artificiales»): con
+ *  v²/2g_leaf el disparo alcanza ~4-6 bloques antes del ápice. */
+export const BILLETE_LANZ_MPS = 5.2;
 /** T92 — gravedad del papel cuando la pólvora se agotó (m/s²): caída lenta,
  *  de hoja — el descenso dura varios segundos y se VE. */
 export const BILLETE_G_MPS2 = 3.2;
-/** T92 — velocidad terminal de CAÍDA (m/s): la resistencia al papel. */
-export const BILLETE_CAIDA_MPS = 1.6;
+/** T93 — velocidad terminal de CAÍDA (m/s): la resistencia al papel. Bajada
+ *  de 1,6: «caigan lentamente con movimientos caóticos lentos como de hoja
+ *  al viento» — el descenso se queda en un planear perezoso. */
+export const BILLETE_CAIDA_MPS = 1.25;
 /** T92 — tope de subida (m/s): la resistencia del aire al papel. T91 2,6 →
  *  3,4: el disparo de los fuegos alcanza ~4 bloques sobre el saco. */
 export const BILLETE_TOPE_MPS = 3.4;
@@ -54,9 +63,10 @@ export const BILLETE_RACHA_OMEGA = 0.9;
  *  que DIVERGEN (dictado: «suben todos con movimientos diferentes»). */
 export const BILLETE_DERIVA_MPS = 0.7;
 /** Velocidad lateral del aleteo (m/s) y frecuencia (rad/s): agitado por el
- *  viento «como hojas de un árbol» (dictado). */
+ *  viento «como hojas de un árbol» (dictado). T93: aleteo MÁS LENTO — los
+ *  billetes se quedan «mecidos por el viento», no vibrando. */
 export const BILLETE_OSC_MPS = 0.5;
-export const BILLETE_OSC_OMEGA = 3.1;
+export const BILLETE_OSC_OMEGA = 2.2;
 
 export interface Billete {
   id: number;
@@ -74,6 +84,14 @@ export interface Billete {
    *  o ser recogido junto al suelo); pasado BILLETE_SUBIDA_S el térmico muere
    *  y el papel CAE (fuegos artificiales). Opcional: por defecto b.t. */
   aire?: number;
+  /** T93 — GIRO PROPIO (dictado: «los billetes rotan, tienen un spin propio
+   *  cada uno de ellos para que parezca natural»): eje unitario del tumbo,
+   *  velocidad angular (rad/s, con sentido) y ángulo integrado. Opcionales:
+   *  los tests crean billetes a mano y el paso/render usan valores por
+   *  defecto. */
+  spinAxis?: V3;
+  spinW?: number;
+  spinAng?: number;
   /** t de vida del billete (s). */
   t: number;
   vivo: boolean;
@@ -81,8 +99,20 @@ export interface Billete {
 
 export type Rng = () => number;
 
-/** SACUDIDA → billetes: n entre BILLETES_MIN y MAX según el rng, nacidos en
- *  la bolsa (origen) con dispersión pequeña y fases distintas. */
+/** T93 — eje de tumbo de un billete: unitario por construcción (esféricas),
+ *  con la inclinación a cámara limitada a ±0,4 rad para que el giro SE VEA
+ *  de frente (un eje casi ∥ Z haría el tumbo invisible para la cámara). */
+export function ejeSpin(rng: Rng): V3 {
+  const ang = rng() * Math.PI * 2;      // dirección del tumbo en el plano
+  const tilt = (rng() - 0.5) * 0.8;     // inclinación a cámara acotada
+  const r = Math.cos(tilt);
+  return v3(Math.cos(ang) * r, Math.sin(ang) * r, Math.sin(tilt));
+}
+
+/** SACUDIDA → billetes: n entre BILLETES_MIN y MAX según el rng, nacidos
+ *  DENTRO de la boca del saco (dictado T93: «que nazcan desde el propio
+ *  saco») y LANZADOS hacia arriba como fuegos artificiales, cada uno con su
+ *  deriva y su GIRO propio (divergen y tumban distinto). */
 export function sacudidaBilletes(
   rng: Rng, idBase: number, origen: V3,
 ): { billetes: Billete[]; idSiguiente: number } {
@@ -92,17 +122,22 @@ export function sacudidaBilletes(
   for (let i = 0; i < n; i++) {
     billetes.push({
       id: id++,
-      // nacen en la BOCA del saco (justo bajo el amarre que ata el cuello)
-      pos: v3(origen.x + (rng() - 0.5) * 0.16, origen.y - 0.05 - rng() * 0.12, origen.z + (rng() - 0.5) * 0.14),
-      // corriente propia: sube y DIVERGE (cada billete con su deriva)
+      // nacen DENTRO de la boca del saco (bajo el cinchado del cuello: la
+      // boca está entre el collar y el vientre) y salen disparados de él
+      pos: v3(origen.x + (rng() - 0.5) * 0.16, origen.y - 0.1 - rng() * 0.09, origen.z + (rng() - 0.5) * 0.14),
+      // FUEGO ARTIFICIAL: disparo vertical fuerte con cono pequeño + deriva
+      // propia (cada billete diverge)
       vel: v3(
-        (rng() - 0.5) * 2 * BILLETE_DERIVA_MPS,
-        BILLETE_SUBIDA_MPS * (0.8 + rng() * 0.45),
-        (rng() - 0.5) * BILLETE_DERIVA_MPS * 0.6,
+        (rng() - 0.5) * 1.6,
+        BILLETE_LANZ_MPS * (0.85 + rng() * 0.3),
+        (rng() - 0.5) * 0.8,
       ),
       fase: rng() * Math.PI * 2,
       orbAng: rng() * Math.PI * 2,
       orbW: (rng() < 0.5 ? -1 : 1) * (2.0 + rng() * 1.6),
+      spinAxis: ejeSpin(rng),
+      spinW: (rng() < 0.5 ? -1 : 1) * (2.5 + rng() * 3.5),
+      spinAng: rng() * Math.PI * 2,
       t: 0,
       vivo: true,
     });
@@ -146,6 +181,9 @@ export function pasoBilletes(
     }
     // remolino propio en torno a la columna (corkscrew) + aleteo de hoja
     b.orbAng = (b.orbAng ?? 0) + (b.orbW ?? 2.6) * dt;
+    // T93 — GIRO PROPIO: cada billete tumba sobre SU eje a SU ritmo (el
+    // render lo aplica como cuaternión; aquí solo se integra el ángulo)
+    b.spinAng = (b.spinAng ?? 0) + (b.spinW ?? 2.8) * dt;
     const vx = b.vel.x + Math.cos(b.orbAng) * BILLETE_REMOLINO_MPS
       + Math.sin(b.t * BILLETE_OSC_OMEGA + b.fase) * BILLETE_OSC_MPS;
     const vz = b.vel.z + Math.sin(b.orbAng) * BILLETE_REMOLINO_MPS * 0.6
@@ -208,10 +246,15 @@ export function rafagaFestiva(
     billetes.push({
       id: id++,
       pos: v3(origen.x + (rng() - 0.5) * 0.2, origen.y - 0.08 - rng() * 0.1, origen.z + (rng() - 0.5) * 0.16),
-      vel: v3(Math.cos(ang) * radio, 1.9 + rng() * 1.2, Math.sin(ang) * radio * 0.55),
+      // T93 — también FUEGO ARTIFICIAL: la fiesta del botín dispara el papel
+      // con la misma fuerza que una sacudida (antes salía a flotar)
+      vel: v3(Math.cos(ang) * radio, 4.6 + rng() * 2.0, Math.sin(ang) * radio * 0.55),
       fase: rng() * Math.PI * 2,
       orbAng: rng() * Math.PI * 2,
       orbW: (rng() < 0.5 ? -1 : 1) * (2.0 + rng() * 1.6),
+      spinAxis: ejeSpin(rng),
+      spinW: (rng() < 0.5 ? -1 : 1) * (2.5 + rng() * 3.5),
+      spinAng: rng() * Math.PI * 2,
       t: 0,
       vivo: true,
     });

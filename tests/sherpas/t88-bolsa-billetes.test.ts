@@ -58,17 +58,21 @@ describe("T88 · sacudida de la bolsa → billetes", () => {
     expect(oscilo).toBeGreaterThan(5); // NO sube en línea recta
   });
 
-  it("T89: suben SIN PARAR hasta el techo de pantalla y mueren al cruzarlo", () => {
+  it("T89/T93: suben DISPARADOS varios bloques y el techo de pantalla sigue matando", () => {
     const { billetes } = sacudidaBilletes(mulberry32(11), 1, v3(0, 2, 0));
     const b = billetes[0];
     let yMax = -99;
     for (let i = 0; i < 600 && b.vivo; i++) {
-      pasoBilletes(billetes, 1 / 30, -6, 9); // techo de pantalla a y=9
+      pasoBilletes(billetes, 1 / 30, -6, 999); // techo imposible: solo el ciclo
       yMax = Math.max(yMax, b.pos.y);
     }
-    expect(b.vivo).toBe(false);                 // desapareció
-    expect(yMax).toBeGreaterThan(8.4);          // cruzó el techo por ARRIBA
-    expect(yMax).toBeLessThan(9.6);             // apenas lo cruzó (sale en pantalla alta)
+    expect(yMax - 2).toBeGreaterThan(4);        // el disparo alcanza varios bloques
+    // el techo de PANTALLA (T89) sigue siendo muerte al cruzarlo: naciendo
+    // ya en lo alto, el papel sale por arriba en los primeros ticks
+    const alto = sacudidaBilletes(mulberry32(11), 50, v3(0, 8.9, 0));
+    const b2 = alto.billetes[0];
+    for (let i = 0; i < 600 && b2.vivo; i++) pasoBilletes(alto.billetes, 1 / 30, -6, 9);
+    expect(b2.vivo).toBe(false);                // cruzó el techo de pantalla
   });
 
   it("T89: los billetes DIVERGEN (x de dos billetes se separa con el tiempo)", () => {
@@ -196,10 +200,8 @@ describe("T88 · el agarre automático en vuelo sigue siendo SOLO de manos", () 
     expect(alto).not.toContain("foot_r");
   });
 
-  it("el bucle «bajo» de caídas sigue sin entrar durante el vuelo (T87)", () => {
+  it("T93: el bucle «bajo» de caídas YA NO EXISTE — nada engancha presas en caída", () => {
     const src = readFileSync(NIVEL, "utf8");
-    const iBajo = src.indexOf("CAÍDA REAL con AUTO-ANCLAJE");
-    const bloque = src.slice(iBajo, iBajo + 1400);
-    expect(bloque).toContain("if (this.enVuelo[pi]) continue;");
+    expect(src).not.toContain('autoGripVuelo("bajo")'); // caída honesta: solo la cuerda frena
   });
 });

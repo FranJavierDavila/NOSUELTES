@@ -27,7 +27,7 @@ import { v3, vLen, vSub } from "../../src/game/physics/pbd/math";
 import { cuelloDeSaco, type PtGeo } from "../../src/game/sherpas/gameplay/bolsaGeo";
 import {
   sacudidaBilletes, pasoBilletes, billetesVivos,
-  BILLETE_SUBIDA_MPS, BILLETE_TOPE_MPS,
+  BILLETE_LANZ_MPS, BILLETE_SUBIDA_MPS,
 } from "../../src/game/sherpas/gameplay/billetesAire";
 import { mulberry32 } from "../../src/game/sherpas/core/rng";
 
@@ -113,14 +113,14 @@ describe("T91 · la bolsa se amarra por su zona estrecha (el cuello)", () => {
 // ---------- 2) BILLETES EMPUJADOS POR CORRIENTES DE AIRE ----------
 
 describe("T91 · billetes empujados por corrientes de aire", () => {
-  it("el papel ACELERA hacia arriba (empuje del térmico) hasta el tope del aire", () => {
+  it("T93 — el disparo de fuegos NACE fuerte y la corriente mantiene la subida", () => {
     const { billetes } = sacudidaBilletes(mulberry32(9), 1, v3(0, 2, 0));
     const b = billetes[0];
     const vy0 = b.vel.y;
+    expect(vy0).toBeGreaterThanOrEqual(BILLETE_LANZ_MPS * 0.8); // lanzamiento
     for (let i = 0; i < 120; i++) pasoBilletes(billetes, 1 / 60, -6, 99);
-    expect(b.vel.y).toBeGreaterThan(vy0);        // la corriente lo ACELERA
-    expect(b.vel.y).toBeLessThanOrEqual(BILLETE_TOPE_MPS + 1e-9);
-    expect(b.pos.y).toBeGreaterThan(2 + 1.5);    // y sube claramente más rápido
+    expect(b.vel.y).toBeLessThanOrEqual(BILLETE_LANZ_MPS * 1.2 + 1e-9);
+    expect(b.pos.y).toBeGreaterThan(2 + 1.5);    // y sube claramente
   });
 
   it("un billete CAÍDO junto al suelo lo recoge la corriente (nunca queda tumbado)", () => {

@@ -54,15 +54,10 @@ describe("T87 · gate del agarre en vuelo (puedeAgarrarVueloAlto)", () => {
 });
 
 describe("T87 · regla del nivel: el auto-anclaje \"bajo\" no entra en vuelo", () => {
-  it("el guard de enVuelo está ANTES del chequeo de ropeState en el bucle \"bajo\"", () => {
+  it("T93: el bucle «bajo» YA NO EXISTE — el vuelo libre no puede enganchar presas bajas", () => {
     const src = readFileSync(NIVEL, "utf8");
-    const iBajo = src.indexOf("CAÍDA REAL con AUTO-ANCLAJE");
-    expect(iBajo).toBeGreaterThan(0);
-    const bloque = src.slice(iBajo, iBajo + 1400);
-    const iGuard = bloque.indexOf("if (this.enVuelo[pi]) continue;");
-    const iRope = bloque.indexOf('rig.ropeState === "falling"');
-    expect(iGuard).toBeGreaterThan(0);
-    expect(iRope).toBeGreaterThan(iGuard);
+    expect(src).not.toContain('autoGripVuelo("bajo")');
+    expect(src).not.toContain("CAÍDA REAL con AUTO-ANCLAJE");
   });
 
   it("el bucle \"alto\" usa el gate compuesto (tiempo + vy), no la vy sola", () => {

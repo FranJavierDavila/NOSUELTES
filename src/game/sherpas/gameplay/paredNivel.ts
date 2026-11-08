@@ -127,7 +127,7 @@ import {
 import { RM, RM_PARTICLES } from "../physics/richMan"; // T123: índices de los tobillos (tirantes)
 import {
   billeteCogible, billetesVivos, pasoBilletes, sacudidaBilletes, rafagaFestiva,
-  BILLETE_DINERO, type Billete, type ManoLibre,
+  BILLETE_DINERO, BILLETE_OSC_OMEGA, type Billete, type ManoLibre,
 } from "./billetesAire"; // T88: billetes que vuelan de la bolsa al sacudirse la cuerda
 import { cuelloDeSaco } from "./bolsaGeo"; // T91: el cuello estrecho del saco
 
@@ -212,8 +212,10 @@ export const PLATAFORMAS: { fila: number; lado: -1 | 1; forma: "hex" | "cil" | "
 export const PLATAFORMA_X = 4.15;
 /** Dinero del saco colgado en las plataformas (dictado: «le dará 200 $»). */
 export const BONUS_DINERO = 200;
-/** Radio de cogida del saco bonus con la mano libre (m). */
-export const RADIO_BOLSA_BONUS = 0.85;
+/** Radio de cogida del saco bonus con la mano libre (m). T93 — dictado:
+ *  «SOLO ganan dinero si son ellos los que con su mano... cogen un saco»:
+ *  hay que tocarlo/agarrarlo, no basta pasar cerca (antes 0,85). */
+export const RADIO_BOLSA_BONUS = 0.55;
 /** Longitud de la cuerda que cuelga el saco del techo de la plataforma (m). */
 export const CUERDA_BONUS_M = 0.72;
 
@@ -318,6 +320,24 @@ export function multCarga(
  *  ningún anclaje)? Es quien carga en la espalda del compañero anclado. */
 export function esColgado(ropeState: string, anclajes: number): boolean {
   return anclajes === 0 && (ropeState === "caught" || ropeState === "hauling");
+}
+
+/** T93 — ¿AGARRES CRUZADOS? (dictado: «el sherpa no puede cruzar los brazos
+ *  de forma antinatural, como ocurre cuando está colgado en un bloque verde
+ *  que gira sobre su eje y obliga a cruzar los brazos; si se alcanza un giro
+ *  de los brazos deberá liberar uno de los agarres»): las presas orbitan con
+ *  el bloque y la mano IZQUIERDA puede acabar a la DERECHA de la derecha.
+ *  Puro: hombros (marco del cuerpo) y presas en mundo. Devuelve el agarre
+ *  INTRUSO que debe soltarse (histeresis para no dispararse con el vaivén)
+ *  o null si el orden es anatómico. La "derecha" del cuerpo en X la da
+ *  shR−shL (se invierte si el cuerpo mira al revés). */
+export function agarreCruzado(
+  shL: V3, shR: V3, holdL: V3, holdR: V3, histeresis = 0.03,
+): "L" | "R" | null {
+  const s = Math.sign(shR.x - shL.x) || 1;
+  const cruce = (holdL.x - holdR.x) * s; // >0: la izquierda acabó al otro lado
+  if (cruce > histeresis) return "L";
+  return null;
 }
 
 /** B3 añicos: velocidades/espines deterministas por semilla del bloque. */
@@ -922,6 +942,13 @@ export class ParedNivel {
   // T89 — giro de la bolsa al deslizar + ESTRELLA DE ORO al coger billete
   private bolsaPrevX = 0;
   private bolsaYaw = 0;
+  // T93 — LAZO del saco (dictado: «no parece que esté atado a la cuerda,
+  // hay que ponerle una cuerdita con una especie de lazo que queda anclado
+  // al propio saco, con el mismo material de la cuerda»): anillo + dos orejas
+  // + dos chicotes, hijos del nodo de la bolsa (siguen vaivén/deslizamiento).
+  private lazo: Mesh[] = [];
+  /** T93 — número de sacudidas (sonda E2E). */
+  private sacudidasCont = 0;
   private elEstrella: [HTMLElement | null, HTMLElement | null] = [null, null];
   // T90 — ENTREGA DEL BOTÍN: arco de la bolsa hasta el campa + ráfaga final
   private entrega: { t: number; dur: number; from: V3; ctrl: V3; to: V3; yaw0: number } | null = null;
@@ -1480,21 +1507,33 @@ export class ParedNivel {
       }
     }
 
-    // T123 — CAÍDA REAL con AUTO-ANCLAJE: en plena caída (y también colgado
-    // de la cuerda), la mano o el pie que tenga una presa POR DEBAJO al
-    // alcance se agarra sola — «se deben poder anclar automáticamente a
-    // algún agarre inferior». Si no hay nada, cuelga y el compañero aguanta.
-    // T87 (BUG del jugador: «se bloquea como si quedase enganchado en los
-    // anclajes próximos, no hay vuelo libre») — el vuelo de la mochila deja
-    // el rig SIN anclajes y por tanto ropeState "falling": este bucle le
-    // pegaba el auto-anclaje "bajo" DESDE EL PRIMER TICK y agarraba la presa
-    // cercana al despegue. El vuelo tiene SU propia regla (solo ápice/descenso
-    // con manos, arriba): aquí no entra jamás mientras dure el vuelo.
+    // T93 — CAÍDA HONESTA (dictado: «cuando un sherpa cae NO puede quedar
+    // medio flotando en el aire o descendiendo lentamente, debe caer con la
+    // fuerza de la gravedad de manera natural hasta quedar completamente
+    // estirada la cuerda»): FUERA el auto-agarre "bajo" de T123 en caída/
+    // colgado — nada frena una caída salvo la cuerda (captura a
+    // ropeSlackM, chicote incluido). El VUELO de la mochila conserva SU
+    // regla propia (ápice/descenso con manos + ajuste T91) arriba.
+    //
+    // T93 — BRAZOS CRUZADOS (dictado: «si se alcanza un giro de los brazos
+    // deberá liberar uno de los agarres»): dos manos ancladas al MISMO
+    // bloque en movimiento (verde girando, giro180…) pueden acabar con la
+    // presa de la izquierda a la derecha de la otra: se suelta el agarre
+    // INTRUSO y el cuerpo se recoloca solo (muelle de colgado + servo).
     for (const pi of [0, 1] as const) {
       const rig = this.sherpas[pi];
-      if (this.enVuelo[pi]) continue;
-      if (rig.anchorsCount() > 0) continue;
-      if (rig.ropeState === "falling" || rig.ropeState === "caught") rig.autoGripVuelo("bajo");
+      const stL = rig.states.get("hand_l")!;
+      const stR = rig.states.get("hand_r")!;
+      if (!stL.anchored || !stR.anchored || !stL.holdId || !stR.holdId) continue;
+      if (bloqueDe(stL.holdId) !== bloqueDe(stR.holdId)) continue;
+      const holdL = this.anchors.holds.get(stL.holdId);
+      const holdR = this.anchors.holds.get(stR.holdId);
+      if (!holdL || !holdR) continue;
+      const intruso = agarreCruzado(
+        rig.rig.particles[P.shL].pos, rig.rig.particles[P.shR].pos,
+        holdL.pos, holdR.pos,
+      );
+      if (intruso === "L") rig.forceRelease("hand_l", 0.35, "cruce");
     }
 
     // T123 — cargas del tick: el MUELLE sostiene al que tira de la mochila
@@ -1515,6 +1554,14 @@ export class ParedNivel {
         this.falls++;
         // T88 — el TIRÓN de la cuerda (captura de caída) sacude la bolsa
         this.sacudidaBolsa();
+        // T93 — TIRÓN BRUSCO en el compañero anclado MÁS ARRIBA (dictado:
+        // «dando un tirón brusco al sherpa que esté anclado más arriba, que
+        // deberá tener ancladas las 4 extremidades para soportar el tirón de
+        // la caída»): el rig compañero recibe el golpe y, si no tiene las 4
+        // extremidades ancladas, el tirón lo arranca y cae también.
+        if (this.sherpas[1 - pi].waist().y > rig.waist().y + 0.15) {
+          this.sherpas[1 - pi].tironCaptura(dt);
+        }
       }
       // carga del muelle = extremidades ancladas a cada bloque
       const cargaPorBloque = new Map<string, number>();
@@ -1562,8 +1609,9 @@ export class ParedNivel {
         this.aseguraMallasBilletes();
         this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.dinero.cogido",
           `¡+${BILLETE_DINERO} $! Billete para el Sherpa ${cogida.pi + 1}`));
-        // T89 — ESTRELLA DE ORO girando sobre SU mochila: el contenido cambió
-        this.estrellaHasta[cogida.pi] = this.simTime + 3.0;
+        // T89/T93 — ESTRELLA DE ORO girando sobre SU mochila (el contenido
+        // cambió): dictado T93 «este efecto dura 5 segundos y desaparece»
+        this.estrellaHasta[cogida.pi] = this.simTime + 5.0;
         if (this.mochilaAbierta !== null) this.refrescaMochila(this.mochilaAbierta);
       }
     }
@@ -1581,7 +1629,7 @@ export class ParedNivel {
         bb.nodo.setEnabled(false);
         bb.cuerda.isVisible = false;
         this.dinero[m.pi] += BONUS_DINERO;
-        this.estrellaHasta[m.pi] = this.simTime + 3.0;
+        this.estrellaHasta[m.pi] = this.simTime + 5.0; // T93: 5 s el efecto
         this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.dinero.bolsa",
           `¡+${BONUS_DINERO} $! Saco del bono para el Sherpa ${m.pi + 1}`));
         if (this.mochilaAbierta !== null) this.refrescaMochila(this.mochilaAbierta);
@@ -2063,15 +2111,25 @@ export class ParedNivel {
         this.bolsaNodo.rotation.z = Math.sin(this.simTime * 1.3 + 0.7) * 0.05;
       }
     }
-    // T88 — billetes: mallas siguiendo la física de papel (giro + aleteo;
-    // los clones heredan la escala del proto en clone(), nada que reponer)
+    // T88 — billetes: mallas siguiendo la física de papel. T93 — GIRO
+    // PROPIO: cada billete TUMBA sobre su eje (spinAxis/spinAng del módulo
+    // puro) + vaivén de papel — cuaternión por billete (los Euler de T88 no
+    // se aplicaban: el clon nacía con rotationQuaternion y Babylon los
+    // ignora — por eso el papel se veía rígido/artificial).
+    const axSpin = new Vector3();
+    const ejeZ = new Vector3(0, 0, 1);
+    const qSpin = new Quaternion();
+    const qAleteo = new Quaternion();
     for (const b of this.billetes) {
       if (!b.vivo) continue;
       const m = this.billeteMallas.get(b.id);
       if (!m) continue;
       m.position.set(b.pos.x, b.pos.y, b.pos.z);
-      m.rotation.y = b.fase + b.t * 2.1;
-      m.rotation.z = Math.sin(b.t * 6 + b.fase) * 0.55; // aleteo de papel
+      const ax = b.spinAxis;
+      if (ax) axSpin.set(ax.x, ax.y, ax.z); else axSpin.set(0.2, 0.95, 0.2);
+      Quaternion.RotationAxisToRef(axSpin, b.spinAng ?? b.t * 2.1, qSpin);
+      Quaternion.RotationAxisToRef(ejeZ, Math.sin(b.t * BILLETE_OSC_OMEGA + b.fase) * 0.45, qAleteo);
+      qAleteo.multiplyToRef(qSpin, m.rotationQuaternion ?? (m.rotationQuaternion = new Quaternion()));
     }
     // T92 — sacos bonus: la bolsa cuelga del borde de SU plataforma y la
     // cuerda los une (vaivén pendular suave)
@@ -2169,6 +2227,54 @@ export class ParedNivel {
     this.straps = [];
   }
 
+  /** T93 — LAZO DEL SACO (dictado: «no parece que esté atado a la cuerda;
+   *  hay que ponerle una cuerdita atada con una especie de lazo que queda
+   *  anclado al propio saco, con el mismo material de la cuerda que ya
+   *  tenemos»): anillo que abraza el cinchado del cuello + dos OREJAS de nudo
+   *  + dos chicotes colgando — TODO con el material de la cuerda del puente
+   *  (scene.ropeMaterial()) y colgado del nodo de la bolsa, así el lazo viaja
+   *  con ella (deslizamiento por la cuerda, vaivén, giro) sin código extra. */
+  private creaLazoSaco(): void {
+    const nodo = this.bolsaNodo;
+    if (!nodo || this.lazo.length > 0) return;
+    const esc = this.d.scene.scene;
+    const mat = this.d.scene.ropeMaterial();
+    const rC = Math.max(0.045, this.bolsaCuelloR);
+    const push = (mesh: Mesh): void => {
+      mesh.material = mat;
+      mesh.parent = nodo;
+      mesh.isPickable = false;
+      this.lazo.push(mesh);
+    };
+    // 1) anillo que abraza el cuello (el cinchado vive EN el origen del nodo:
+    //    la cuerda del puente pasa exactamente por ahí)
+    const anillo = MeshBuilder.CreateTorus("lazoAnillo",
+      { diameter: 2 * (rC + 0.018), thickness: 0.018, tessellation: 14 }, esc);
+    anillo.position.set(0, 0.008, 0);
+    push(anillo);
+    // 2) dos OREJAS del lazo (los bucles del nudo, asomando hacia arriba y
+    //    abriéndose hacia fuera como en la captura — GRANDES: el nudo se lee
+    //    a distancia, ~40 % del alto del saco como en el boceto)
+    const ejeZ = new Vector3(0, 0, 1);
+    const ejeX = new Vector3(1, 0, 0);
+    for (const lado of [-1, 1] as const) {
+      const oreja = MeshBuilder.CreateTorus(`lazoOreja${lado < 0 ? "L" : "R"}`,
+        { diameter: 0.13, thickness: 0.016, tessellation: 12 }, esc);
+      oreja.position.set(lado * 0.05, 0.085, 0.006);
+      // primero el aro se YERGA hacia cámara (Rx π/2) y luego se INCLINA
+      // hacia fuera (Rz) — la oreja se lee como cinta del nudo
+      oreja.rotationQuaternion = Quaternion.RotationAxis(ejeZ, lado * 0.62)
+        .multiply(Quaternion.RotationAxis(ejeX, Math.PI / 2));
+      push(oreja);
+      // 3) chicote colgando del nudo (el extremo suelto de la cinta)
+      const chicote = MeshBuilder.CreateCylinder(`lazoChicote${lado < 0 ? "L" : "R"}`,
+        { height: 0.19, diameter: 0.024, tessellation: 6 }, esc);
+      chicote.position.set(lado * 0.032, -0.095, 0.008);
+      chicote.rotation.z = lado * 0.16;
+      push(chicote);
+    }
+  }
+
   // ---------- T88: bolsa de dinero, billetes y HUD de muelles/dinero ----------
 
   /** La BOLSA DE DINERO (bolsadinero.glb): se cuelga del amarre (el punto
@@ -2264,6 +2370,8 @@ export class ParedNivel {
         this.bolsaNodo.position.copyFrom(nodoPos);
         this.bolsaWrap = wrap;
         this.bolsaLista = true;
+        // T93 — la cuerda del lazo se VE atada al cuello del saco
+        this.creaLazoSaco();
         // T92 — prototipo para CLONAR los sacos de las plataformas de
         // bonificación (mismo GLB, escala menor, cuello al origen)
         this.bolsaProtoDatos = { cuelloY: cuello.y, cx: (bb.min.x + bb.max.x) / 2, cz: (bb.min.z + bb.max.z) / 2, alto };
@@ -2297,6 +2405,14 @@ export class ParedNivel {
       const cuerda = MeshBuilder.CreateCylinder(`cuerdaBono_${b.spec.id}`, { height: 1, diameter: 0.028, tessellation: 6 }, esc);
       cuerda.material = this.matCuerda;
       cuerda.rotationQuaternion = Quaternion.Identity();
+      // T93 — el saco bonus también se VE ATADO: anillo de cuerda (mismo
+      // material que el puente) abrazando SU cuello, donde ata su cuerda
+      const anillo = MeshBuilder.CreateTorus(`lazoBono_${b.spec.id}`,
+        { diameter: 2 * (Math.max(0.024, this.bolsaCuelloR * k2) + 0.011), thickness: 0.011, tessellation: 12 }, esc);
+      anillo.material = this.d.scene.ropeMaterial();
+      anillo.parent = nodo;
+      anillo.position.set(0, 0.004, 0);
+      anillo.isPickable = false;
       const fase = ([...b.spec.id].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7) % 628) / 100;
       b.bolsa = { vivo: true, nodo, cuerda, fase, hang: v3(b.spec.x, b.spec.y + hangDePlataforma(b.spec.forma), b.spec.z) };
     }
@@ -2343,9 +2459,18 @@ export class ParedNivel {
   }
 
   /** SACUDIDA DE LA CUERDA → la bolsa suelta 3-6 billetes (rabieta del
-   *  lastre, tirón de la cuerda al capturar una caída o rotura de bloque). */
+   *  lastre, tirón de la cuerda al capturar una caída o rotura de bloque).
+   *  T93 — dictado: «no salen del propio saco sino que nacen como 1 metro por
+   *  encima»: ahora el origen es LA PROPIA BOLSA (su nodo cuelga con el
+   *  cuello en el origen; los billetes nacen dentro de la boca, justo bajo
+   *  el cinchado) y el lanzamiento es el fuego artificial de sacudidaBilletes. */
   private sacudidaBolsa(): void {
-    const origen = this.amarre ?? this.nudoCuerda();
+    this.sacudidasCont++; // T93: sonda E2E
+    const n = this.bolsaNodo;
+    const amarre = this.amarre ?? this.nudoCuerda();
+    const origen = n
+      ? v3(n.position.x, n.position.y, n.position.z)
+      : amarre;
     const s = sacudidaBilletes(this.billeteRng, this.billeteId, origen);
     this.billeteId = s.idSiguiente;
     this.billetes.push(...s.billetes);
@@ -2439,8 +2564,11 @@ export class ParedNivel {
     for (const pi of [0, 1] as const) {
       const st = document.createElement("div");
       st.id = `pared-estrella-${pi}`;
+      // T93 — CENTRADA EN LA MOCHILA (dictado: «no a la altura de la cabeza
+      // sino centrada en la mochila»): translate(-50%,-50%) clava el centro
+      // de la estrella al punto proyectado de la mochila.
       st.setAttribute("style",
-        "position:absolute;display:none;pointer-events:none;z-index:26;transform:translate(-50%,-130%);" +
+        "position:absolute;display:none;pointer-events:none;z-index:26;transform:translate(-50%,-50%);" +
         "filter:drop-shadow(0 0 6px rgba(232,193,90,.9));");
       st.innerHTML = '<span style="display:block;width:34px;height:34px;animation:paredGirar 1.1s linear infinite">' +
         '<svg viewBox="0 0 24 24" width="34" height="34"><path d="M12 2l2.9 6.3 6.9.7-5.2 4.6 1.5 6.8L12 16.9 5.9 20.4l1.5-6.8L2.2 9l6.9-.7z" ' +
@@ -2458,7 +2586,7 @@ export class ParedNivel {
     const cv = this.d.scene.engine.getRenderingCanvas();
     if (!cv) return;
     // T91 — fuera el badge de muelle del mapa (solo en la mochila); queda la
-    // T89 — estrella de oro: visible 3 s desde la cogida, sobre la mochila
+    // T89 — estrella de oro: visible 5 s (T93) CENTRADA en la mochila
     for (const pi of [0, 1] as const) {
       const st = this.elEstrella[pi];
       if (!st) continue;
@@ -2467,7 +2595,7 @@ export class ParedNivel {
       if (!activa || !bpa) { st.style.display = "none"; continue; }
       st.style.display = "block";
       st.style.left = `${bpa.x.toFixed(0)}px`;
-      st.style.top = `${(bpa.y - 40).toFixed(0)}px`;
+      st.style.top = `${bpa.y.toFixed(0)}px`; // T93: centro EXACTO de la mochila
     }
   }
 
@@ -3114,6 +3242,20 @@ export class ParedNivel {
           .map((b) => ({ id: b.spec.id, vivo: b.bolsa!.vivo, y: +this.posBolsaBonus(b).y.toFixed(2) })),
         bolsa: this.bolsaLista,
         muellesBadge: [...this.muelles],
+        // T93 — verificación E2E de la oleada de feedback
+        lazo: this.lazo.length,
+        billetesVy: (() => {
+          const vivos = this.billetes.filter((b) => b.vivo);
+          if (vivos.length === 0) return null;
+          return [Math.min(...vivos.map((b) => b.vel.y)), Math.max(...vivos.map((b) => b.vel.y))].map((v) => +v.toFixed(2));
+        })(),
+        billetesSpin: this.billetes.filter((b) => b.vivo && b.spinAxis).length,
+        estrellas: [0, 1].map((pi) => this.simTime < this.estrellaHasta[pi as 0 | 1]),
+        desplome: [0, 1].map((pi) => {
+          const ps = this.sherpas[pi as 0 | 1].rig.particles;
+          return +(ps[P.chest].pos.x - ps[P.pelvisC].pos.x).toFixed(3);
+        }),
+        sacudidas: this.sacudidasCont,
         // T90 — entrega del botín: estado del arco de la bolsa + dónde está
         entrega: this.entrega
           ? { t: +this.entrega.t.toFixed(2), lista: this.rafagaHecha, x: this.bolsaNodo?.position.x ?? 0, y: this.bolsaNodo?.position.y ?? 0, z: this.bolsaNodo?.position.z ?? 0 }
@@ -3134,6 +3276,11 @@ export class ParedNivel {
           }
         }
         this.winT = 1.25;
+      };
+      // T93 — cheat de E2E: suelta las 4 extremidades de UN sherpa (caída
+      // honesta: la cuerda debe capturarlo, sin auto-agarre por el camino).
+      (w as { sueltaSherpa?: (pi: 0 | 1) => void }).sueltaSherpa = (pi: 0 | 1) => {
+        for (const limb of LIMBS) this.sherpas[pi].forceRelease(limb, 0, "player");
       };
     }
   }
@@ -3232,6 +3379,8 @@ export class ParedNivel {
     this.elAlt = this.elFat = this.elFin = null;
     this.elMochilaWin = this.elGoma = this.elGomaBarra = this.elGomaFlecha = this.elAviso = null;
     this.quitaStraps();
+    for (const m of this.lazo) m.dispose(); // T93: lazo del saco fuera
+    this.lazo = [];
     delete (window as unknown as { __PARED?: unknown }).__PARED;
     const scene = this.d.scene;
     scene.despawnSherpa(0);

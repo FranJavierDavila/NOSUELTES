@@ -23,7 +23,7 @@ import {
   esFilaAzul, esFilaVerde, haySolape, layoutPared, pasoDerivaAzul, pasoGiroVerde,
 } from "../../src/game/sherpas/gameplay/paredNivel";
 import {
-  BILLETE_CAIDA_MPS, BILLETE_G_MPS2, BILLETE_SUBIDA_S, BILLETE_TOPE_MPS,
+  BILLETE_CAIDA_MPS, BILLETE_G_MPS2, BILLETE_LANZ_MPS, BILLETE_SUBIDA_S, BILLETE_TOPE_MPS,
   pasoBilletes, rafagaFestiva, sacudidaBilletes, type Billete,
 } from "../../src/game/sherpas/gameplay/billetesAire";
 import { v3 } from "../../src/game/physics/pbd/math";
@@ -32,14 +32,16 @@ import { mulberry32 } from "../../src/game/sherpas/core/rng";
 // ---------- 1) BILLETES FUEGOS ARTIFICIALES ----------
 
 describe("T92 · billetes fuegos artificiales (suben disparados y se ven caer)", () => {
-  it("el papel ACELERA hacia arriba (empuje del térmico) hasta el tope del aire", () => {
+  it("T93 — el billete NACE DISPARADO desde el saco (lanzamiento de fuegos) y nunca supera el disparo", () => {
     const { billetes } = sacudidaBilletes(mulberry32(9), 1, v3(0, 2, 0));
     const b = billetes[0];
     const vy0 = b.vel.y;
+    expect(vy0).toBeGreaterThanOrEqual(BILLETE_LANZ_MPS * 0.8); // SALE DISPARADO
+    expect(vy0).toBeLessThanOrEqual(BILLETE_LANZ_MPS * 1.2);
+    expect(b.pos.y).toBeLessThan(2);               // nace DENTRO de la boca del saco
     for (let i = 0; i < 120; i++) pasoBilletes(billetes, 1 / 60, -6, 99);
-    expect(b.vel.y).toBeGreaterThan(vy0);        // la corriente lo ACELERA
-    expect(b.vel.y).toBeLessThanOrEqual(BILLETE_TOPE_MPS + 1e-9);
-    expect(b.pos.y).toBeGreaterThan(2 + 1.5);    // y sube claramente más rápido
+    expect(b.vel.y).toBeLessThanOrEqual(BILLETE_LANZ_MPS * 1.2 + 1e-9);
+    expect(b.pos.y).toBeGreaterThan(2 + 1.5);      // y ha subido claramente
   });
 
   it("el disparo alcanza VARIOS BLOQUES por encima del saco (ápice > 4 m sobre el nacimiento)", () => {
