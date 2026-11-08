@@ -25,8 +25,6 @@ export const BILLETE_RADIO_COGIDA = 0.42;
  *  alta de la PANTALLA (techoY lo da el nivel) — el final del vuelo es salir
  *  por arriba, no un temporizador. Vida de seguridad muy larga (14 s). */
 export const BILLETE_VIDA_S = 14.0;
-/** Velocidad de subida por la corriente (m/s): papel empujado, alcanzable. */
-export const BILLETE_SUBIDA_MPS = 1.45;
 /** T91 — EMPUJE de la corriente (m/s²): el papel ACELERA hacia arriba como
  *  hoja en una columna de aire caliente (dictado: «vuelan hacia arriba
  *  empujados por corrientes de aire»), no a velocidad constante. */
@@ -122,9 +120,11 @@ export function sacudidaBilletes(
   for (let i = 0; i < n; i++) {
     billetes.push({
       id: id++,
-      // nacen DENTRO de la boca del saco (bajo el cinchado del cuello: la
-      // boca está entre el collar y el vientre) y salen disparados de él
-      pos: v3(origen.x + (rng() - 0.5) * 0.16, origen.y - 0.1 - rng() * 0.09, origen.z + (rng() - 0.5) * 0.14),
+      // T94 — nacen DENTRO de la boca del saco, justo bajo el cinchado (la
+      // boca está entre el collar y el vientre) y SUBEN por la garganta del
+      // cuello: banda estrecha (el cuello mide ~4 cm) para que el disparo se
+      // LEA como un fuego artificial saliendo DEL saco, no de su alrededor
+      pos: v3(origen.x + (rng() - 0.5) * 0.1, origen.y - 0.05 - rng() * 0.07, origen.z + (rng() - 0.5) * 0.09),
       // FUEGO ARTIFICIAL: disparo vertical fuerte con cono pequeño + deriva
       // propia (cada billete diverge)
       vel: v3(
@@ -149,11 +149,14 @@ export function sacudidaBilletes(
  *  DISPARADO hacia arriba (empuje térmico que ACELERA con RACHAS lentas
  *  hasta el tope del aire) mientras arde la pólvora (BILLETE_SUBIDA_S);
  *  luego cruza el ápice y CAE de forma visible (gravedad de hoja con
- *  velocidad terminal), ESparcido por el remolino y el aleteo, hasta que la
- *  corriente de suelo lo RECoge (y ≤ floorY+0,6): la pólvora se reenciende
- *  (aire = 0) y el ciclo de fuegos vuelve a empezar. Un billete NUNCA queda
- *  tumbado ni desaparece por abajo: muere solo al cruzar `techoY` (la parte
- *  alta de la PANTALLA) o por vida de seguridad. Determinista. */
+ *  velocidad terminal), esparcido por el remolino y el aleteo.
+ *  T94 — FIN DE LA RECOGIDA DE SUELO: el billete que llega abajo MUERE
+ *  (dictado: «no veo que salgan del saco» — la corriente que relanzaba el
+ *  papel desde y≈0,6 hacía NACER billetes junto al suelo, lejos del saco, y
+ *  ese es el papel circulado en rojo de la captura). Todo billete en el aire
+ *  SALIÓ DEL SACO: al rozar el suelo desaparece (nunca queda tumbado ni
+ *  renace) y solo muere además al cruzar `techoY` (la parte alta de la
+ *  PANTALLA) o por vida de seguridad. Determinista. */
 export function pasoBilletes(
   lista: Billete[], dt: number, floorY: number, techoY: number = Infinity,
 ): void {
@@ -174,11 +177,6 @@ export function pasoBilletes(
       // pólvora agotada: gravedad de HOJA — cae lenta y visiblemente
       b.vel.y = Math.max(-BILLETE_CAIDA_MPS, b.vel.y - BILLETE_G_MPS2 * dt);
     }
-    // junto al suelo la corriente lo RECoge: pólvora nueva (nuevo disparo)
-    if (b.pos.y <= floorY + 0.6) {
-      b.vel.y = Math.max(b.vel.y, BILLETE_SUBIDA_MPS);
-      b.aire = 0;
-    }
     // remolino propio en torno a la columna (corkscrew) + aleteo de hoja
     b.orbAng = (b.orbAng ?? 0) + (b.orbW ?? 2.6) * dt;
     // T93 — GIRO PROPIO: cada billete tumba sobre SU eje a SU ritmo (el
@@ -189,6 +187,10 @@ export function pasoBilletes(
     const vz = b.vel.z + Math.sin(b.orbAng) * BILLETE_REMOLINO_MPS * 0.6
       + Math.cos(b.t * BILLETE_OSC_OMEGA * 0.83 + b.fase) * BILLETE_OSC_MPS * 0.5;
     b.pos = v3(b.pos.x + vx * dt, b.pos.y + b.vel.y * decay * dt, b.pos.z + vz * dt);
+    // T94 — al rozar el suelo MUERE (comprobado TRAS integrar: ningún billete
+    // vivo queda jamás a ras de suelo, ni un paso — el origen de todo papel
+    // en el aire es LA BOCA DEL SACO)
+    if (b.pos.y <= floorY + 0.1) { b.vivo = false; continue; }
     if (b.pos.y > techoY || b.t >= BILLETE_VIDA_S) b.vivo = false;
   }
 }

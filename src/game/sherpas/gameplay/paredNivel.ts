@@ -121,9 +121,9 @@ import {
 import { isTypingTarget } from "./devMode"; // T114: guard de campos de texto
 import {
   CUERDA_COMBA_MAX, desvioCabeza, maxEstiramiento, nudoValle, pasoLastreNudo, pasoRabietas, pasoRicachon,
-  rabietasInicio, ricachonReset, sacudidaRabieta, RABIETA_FATIGA_POR_S,
+  rabietasInicio, ricachonReset, sacudidaRabieta, valleDeCuerda, RABIETA_FATIGA_POR_S,
   type CuerpoRicachon, type EstadoRabietas,
-} from "./ricachonColgado"; // T122: ricachón de lastre colgado del valle (T86)
+} from "./ricachonColgado"; // T122: ricachón de lastre colgado del valle (T86); T94: valle REAL
 import { RM, RM_PARTICLES } from "../physics/richMan"; // T123: índices de los tobillos (tirantes)
 import {
   billeteCogible, billetesVivos, pasoBilletes, sacudidaBilletes, rafagaFestiva,
@@ -949,6 +949,9 @@ export class ParedNivel {
   private lazo: Mesh[] = [];
   /** T93 — número de sacudidas (sonda E2E). */
   private sacudidasCont = 0;
+  /** T94 — origen de la ÚLTIMA sacudida (sonda E2E: certifica que los
+   *  billetes nacen EN la boca del saco). */
+  private ultimaSacudida: { x: number; y: number; z: number; t: number } | null = null;
   private elEstrella: [HTMLElement | null, HTMLElement | null] = [null, null];
   // T90 — ENTREGA DEL BOTÍN: arco de la bolsa hasta el campa + ráfaga final
   private entrega: { t: number; dur: number; from: V3; ctrl: V3; to: V3; yaw0: number } | null = null;
@@ -1919,7 +1922,7 @@ export class ParedNivel {
     this.amarre = null;
     const mid = v3(
       (a.x + b.x) / 2,
-      Math.min(a.y, b.y) - Math.min(CUERDA_COMBA_MAX - 0.4, 3.0),
+      Math.max(0.3, Math.min(a.y, b.y) - Math.min(CUERDA_COMBA_MAX - 0.4, 3.0)), // T94: nunca bajo el suelo
       (a.z + b.z) / 2 - 0.04,
     );
     for (let i = 0; i <= nSeg; i++) {
@@ -1956,20 +1959,17 @@ export class ParedNivel {
 
   /** Posición actual del amarre (el nudo donde los pies van atados).
    *  T86 — DESLIZAMIENTO POR EL ARCO (petición literal: «es preciso calcular
-   *  siempre la parte más baja del arco de la cuerda para situar en esa zona
-   *  colgado al Ricachón... si un sherpa sube mucho en relación al otro la
-   *  cuerda hará que el ricachón se acerque al sherpa que se encuentra más
-   *  abajo porque deslizaría por la cuerda hasta la posición baja»):
-   *  · el VALLE IDEAL de la catenaria se desplaza hacia el sherpa más bajo
-   *    proporcionalmente al desnivel (acotado — nunca se cuela en su cintura);
+   *  siempre la parte más baja del arco de la cuerda... deslizaría por la
+   *  cuerda hasta la posición baja»):
+   *  · T94 — el valle lo CALCULA valleDeCuerda del arco real (comba medida
+   *    sin la V del propio saco): el fondo del arco, no una regla lineal por
+   *    desnivel que lo dejaba EN LA RAMPA junto al sherpa bajo;
    *  · el nudo DESLIZA en X hacia ese valle (velocidad limitada: se VE
    *    deslizar por la cuerda) y su Y queda PEGADA a la superficie de la
    *  cuerda en esa X (los tobillos jamás se separan de la cuerda);
    *  · el lastre hunde el nodo más cercano al nudo: la V se forma DONDE
    *    cuelga el ricachón y le sigue. */
-  private static NUDO_ALT_SHIFT = 0.22;  // fracción del vano por metro de desnivel
-  private static NUDO_SHIFT_MAX = 0.45;  // tope del desplazamiento (fracción del vano)
-  private static NUDO_SLIDE_MPS = 0.9;   // velocidad de deslizamiento del nudo (m/s)
+  private static NUDO_SLIDE_MPS = 1.2;   // velocidad de deslizamiento del nudo (m/s)
   private nudoX: number | null = null;   // X actual del nudo (desliza)
   private nudoIdx = -1;                  // nodo más cercano al nudo (el lastre hunde este)
 
@@ -1977,13 +1977,13 @@ export class ParedNivel {
     const nds = this.ropeNodes;
     if (nds.length < 3) { this.amarre = v3(0, Y_SALIDA - 0.5, Z_PRESA - 0.15); return; }
     const xa = nds[0].pos.x, xb = nds[nds.length - 1].pos.x;
-    const span = xb - xa;
-    // valle IDEAL: centro del vano corregido por el desnivel (acotado)
-    const dif = a.y - b.y; // >0: A más alto → el valle se corre hacia B
-    const shift = Math.max(-ParedNivel.NUDO_SHIFT_MAX, Math.min(ParedNivel.NUDO_SHIFT_MAX, dif * ParedNivel.NUDO_ALT_SHIFT));
-    const xValle = (xa + xb) / 2 + shift * span;
+    // T94 — el VALLE es el FONDO REAL del arco de la cuerda (dictado: el saco
+    // «esté SIEMPRE en la parte baja de la cuerda»): valleDeCuerda mide la
+    // comba del arco (sin la V del propio saco) y calcula el mínimo — ya no
+    // la regla lineal por desnivel que lo dejaba colgado EN LA RAMPA.
+    const xValle = valleDeCuerda(a, b, nds, this.nudoIdx);
     if (this.nudoX === null) this.nudoX = (xa + xb) / 2;
-    // deslizamiento limitado hacia el valle ideal (se VE deslizar)
+    // deslizamiento limitado hacia el valle real (se VE deslizar)
     const dx = xValle - this.nudoX;
     const paso = ParedNivel.NUDO_SLIDE_MPS * Math.max(1e-4, dt);
     this.nudoX = Math.abs(dx) <= paso ? xValle : this.nudoX + Math.sign(dx) * paso;
@@ -2035,7 +2035,9 @@ export class ParedNivel {
     // el nudo desliza y la Y se pega a la cuerda POST-verlet; el lastre hunde
     // SU nodo (la V nace bajo el ricachón) y el clamp de comba manda en todo
     this.actualizaAmarre(dt, a, b);
-    pasoLastreNudo(this.ropeNodes, segLen, dt, a, b, Math.min(a.y, b.y), undefined, this.nudoIdx);
+    // T94 — la V del lastre JAMÁS se hunde bajo la nieve (cota del suelo 0,22:
+    // el saco descansa en la parte baja de la cuerda y siempre SE VE)
+    pasoLastreNudo(this.ropeNodes, segLen, dt, a, b, Math.min(a.y, b.y), undefined, this.nudoIdx, 0.22);
     // re-pega la Y del nudo a la cuerda ya clampada (los tobillos no se van)
     const yClamp = this.cuerdaYEnX(this.nudoX ?? (a.x + b.x) / 2, this.amarre ? this.amarre.y : a.y);
     this.amarre = v3(this.nudoX ?? (a.x + b.x) / 2, yClamp, this.ropeNodes[this.ropeNodes.length >> 1].pos.z);
@@ -2468,9 +2470,13 @@ export class ParedNivel {
     this.sacudidasCont++; // T93: sonda E2E
     const n = this.bolsaNodo;
     const amarre = this.amarre ?? this.nudoCuerda();
+    // T94 — el origen ES la bolsa dibujada (su nodo cuelga con el cuello EN
+    // el amarre): la sacudida se graba para la sonda E2E y certifica que el
+    // enjambre nace EN la boca del saco, no a su alrededor.
     const origen = n
       ? v3(n.position.x, n.position.y, n.position.z)
       : amarre;
+    this.ultimaSacudida = { x: origen.x, y: origen.y, z: origen.z, t: this.simTime };
     const s = sacudidaBilletes(this.billeteRng, this.billeteId, origen);
     this.billeteId = s.idSiguiente;
     this.billetes.push(...s.billetes);
@@ -3250,6 +3256,15 @@ export class ParedNivel {
           return [Math.min(...vivos.map((b) => b.vel.y)), Math.max(...vivos.map((b) => b.vel.y))].map((v) => +v.toFixed(2));
         })(),
         billetesSpin: this.billetes.filter((b) => b.vivo && b.spinAxis).length,
+        // T94 — ORIGEN del papel: boca del saco (última sacudida) y banda viva
+        // (ningún billete por debajo del suelo+0,1: la recogida MURIÓ)
+        sacudidaOrigen: this.ultimaSacudida,
+        billetesYMin: this.billetes.filter((b) => b.vivo).reduce((m, b) => Math.min(m, b.pos.y), 99),
+        amarre: (() => {
+          const am = this.amarre ?? this.nudoCuerda();
+          return { x: +am.x.toFixed(3), y: +(am.y - Y_SALIDA).toFixed(3) };
+        })(),
+        valleArco: +valleDeCuerda(this.sherpas[0].waist(), this.sherpas[1].waist(), this.ropeNodes, this.nudoIdx).toFixed(3),
         estrellas: [0, 1].map((pi) => this.simTime < this.estrellaHasta[pi as 0 | 1]),
         desplome: [0, 1].map((pi) => {
           const ps = this.sherpas[pi as 0 | 1].rig.particles;
@@ -3282,6 +3297,9 @@ export class ParedNivel {
       (w as { sueltaSherpa?: (pi: 0 | 1) => void }).sueltaSherpa = (pi: 0 | 1) => {
         for (const limb of LIMBS) this.sherpas[pi].forceRelease(limb, 0, "player");
       };
+      // T94 — cheat de E2E: FUERZA una sacudida de la bolsa (los billetes
+      // deben nacer EN su boca sin esperar a la rabieta programada).
+      (w as { sacudir?: () => void }).sacudir = () => { this.sacudidaBolsa(); };
     }
   }
 

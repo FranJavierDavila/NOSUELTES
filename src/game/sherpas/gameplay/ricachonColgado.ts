@@ -267,6 +267,43 @@ export function nudoValle(nodes: readonly NodoVerlet[]): V3 {
   return best ? vClone(best) : v3(0, 0, 0);
 }
 
+/** T94 — X del FONDO REAL del arco de la cuerda (dictado del jugador: el saco
+ *  «esté SIEMPRE en la parte baja de la cuerda»). La regla lineal por
+ *  desnivel (0,22·m) DISPARABA el amarre hacia el sherpa bajo: con 4 m de
+ *  desnivel lo ponía al 95 % del vano, colgado EN LA RAMPA de la cuerda y no
+ *  en el fondo del arco — eso es lo que veía el jugador. Ahora el valle se
+ *  CALCULA del arco mismo: con las cinturas A/B y la comba `d` del arco
+ *  (parábola por ambos extremos), el fondo está en
+ *      x = mitad_del_vano + span·(ya−yb)/(8·d)
+ *  — hacia el sherpa más bajo PERO en el FONDO (tangente horizontal), no en
+ *  la rampa. La comba se MIDE en los nodos de la cuerda EXCLUYENDO la V local
+ *  que el propio lastre abre bajo el saco (±3 nodos alrededor de nudoIdx):
+ *  sin esa exclusión el hoyo bajo la bolsa sería siempre el mínimo y el
+ *  amarre se auto-anclaría donde ya está, sin deslizar nunca. */
+export function valleDeCuerda(
+  a: V3, b: V3, nodes: readonly NodoVerlet[], nudoIdx: number, combaReserva = 2.5,
+): number {
+  const xa = a.x, xb = b.x;
+  const span = xb - xa;
+  const mitad = (xa + xb) / 2;
+  if (Math.abs(span) < 1e-6) return mitad;
+  // comba del ARCO (sin la V del saco): máxima caída bajo la recta A→B
+  const centro = nudoIdx >= 0 ? nudoIdx : nodes.length >> 1;
+  let dd = 0;
+  for (let i = 1; i < nodes.length - 1; i++) {
+    if (Math.abs(i - centro) <= 3) continue;
+    const nd = nodes[i].pos;
+    const t = (nd.x - xa) / span;
+    if (t <= 0 || t >= 1) continue;
+    const cuerda = a.y + (b.y - a.y) * t;
+    dd = Math.max(dd, cuerda - nd.y);
+  }
+  const d = dd > 0.15 ? dd : combaReserva;
+  const shift = ((a.y - b.y) * span) / (8 * d);
+  const tope = Math.abs(span) * 0.45; // jamás se cuela en la cintura
+  return mitad + Math.max(-tope, Math.min(tope, shift));
+}
+
 /** El PESO del ricachón hunde la cuerda en SU NODO de amarre (T86: la V se
  *  forma DONDE CUELGA el ricachón — el nivel pasa el índice del nodo amarre,
  *  que desliza de nodo en nodo hacia el valle del arco; sin índice, el nodo
@@ -279,7 +316,7 @@ export function nudoValle(nodes: readonly NodoVerlet[]): V3 {
  *  Mutación in situ: es el paso de render de la cuerda visual. */
 export function pasoLastreNudo(
   nodes: NodoVerlet[], segLen: number, dt: number, a: V3, b: V3, yMin: number,
-  passes = RICACHON_RELAX, idx?: number,
+  passes = RICACHON_RELAX, idx?: number, ySuelo?: number,
 ): void {
   const n = nodes.length;
   if (n < 3) return;
@@ -295,7 +332,11 @@ export function pasoLastreNudo(
   const hundir = RICACHON_LASTRE_MPS * dt;
   m.pos = v3(m.pos.x, m.pos.y - hundir, m.pos.z);
   m.prev = v3(m.prev.x, m.prev.y - hundir, m.prev.z);
-  const suelo = yMin - CUERDA_COMBA_MAX;
+  // T94 — COTA DEL SUELO (dictado: el saco «SIEMPRE en la parte baja de la
+  // cuerda», no ENTERRADO): al empezar, las cinturas están a ~1,9 m y la
+  // comba máxima (3,4 m) hundía la V —y el saco— BAJO la nieve (y<0). El
+  // suelo real manda: la V se apoya justo encima y el saco sigue visible.
+  const suelo = Math.max(yMin - CUERDA_COMBA_MAX, ySuelo ?? -Infinity);
   // T86 — el clamp de comba se aplica a TODOS los nodos: con cuerda larga la
   // holgura cuelga en bucle POR DEBAJO del nudo sujeto y la V se va al abismo;
   // la comba máxima manda en toda la cuerda, el hundimiento solo añade la V.

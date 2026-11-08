@@ -27,7 +27,7 @@ import { v3, vLen, vSub } from "../../src/game/physics/pbd/math";
 import { cuelloDeSaco, type PtGeo } from "../../src/game/sherpas/gameplay/bolsaGeo";
 import {
   sacudidaBilletes, pasoBilletes, billetesVivos,
-  BILLETE_LANZ_MPS, BILLETE_SUBIDA_MPS,
+  BILLETE_LANZ_MPS,
 } from "../../src/game/sherpas/gameplay/billetesAire";
 import { mulberry32 } from "../../src/game/sherpas/core/rng";
 
@@ -123,17 +123,17 @@ describe("T91 · billetes empujados por corrientes de aire", () => {
     expect(b.pos.y).toBeGreaterThan(2 + 1.5);    // y sube claramente
   });
 
-  it("un billete CAÍDO junto al suelo lo recoge la corriente (nunca queda tumbado)", () => {
+  it("T94 — un billete que llega al SUELO muere: jamás relanzado ni tumbado", () => {
     const { billetes } = sacudidaBilletes(mulberry32(4), 1, v3(3, 30, 0)); // lejos: ninguno cerca
     const caido = billetes[0];
-    caido.pos = v3(0.5, 0.1, 0);                 // tumbado junto al suelo (suelo y=0)
+    caido.pos = v3(0.5, 0.09, 0);                // a ras del suelo (suelo y=0; muere ≤ 0,1)
     caido.vel = v3(0, 0, 0);
+    caido.aire = 99;                             // pólvora agotada hace tiempo
     pasoBilletes(billetes, 1 / 60, 0, 99);
-    expect(caido.vel.y).toBeGreaterThanOrEqual(BILLETE_SUBIDA_MPS); // empuje máximo ahí
-    const y1 = caido.pos.y;
-    for (let i = 0; i < 60; i++) pasoBilletes(billetes, 1 / 60, 0, 99);
-    expect(caido.pos.y).toBeGreaterThan(y1 + 0.8); // despega y sube
-    expect(caido.vivo).toBe(true);                 // ya no muere por tocar el suelo
+    expect(caido.vivo).toBe(false);              // muere al rozar el suelo…
+    expect(caido.pos.y).toBeLessThanOrEqual(0.1);// …sin relanzamiento (no «nace» ahí)
+    // y ningún otro billete «aparece» por abajo: la lista queda sin vivos bajos
+    expect(billetes.every((b) => !b.vivo || b.pos.y > 0.1)).toBe(true);
   });
 
   it("el remolino hace girar al billete en torno a la columna (movimiento en espiral)", () => {

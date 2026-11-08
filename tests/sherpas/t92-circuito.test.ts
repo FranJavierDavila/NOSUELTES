@@ -1,7 +1,8 @@
 // T92 — CIRCUITO DE RECOMPENSAS del nivel «Prueba del Campamento»:
 //  · BILLETES FUEGOS ARTIFICIALES: salen DISPARADOS hacia arriba (varios
-//    bloques por encima del saco), se VEN CAER esparcidos y la corriente de
-//    suelo los recoge (nunca quedan tumbados).
+//    bloques por encima del saco) y se VEN CAER esparcidos; T94: al tocar
+//    el suelo MUEREN (sin recogida — todo billete en el aire SALIÓ del saco)
+//    y el amarre del saco va al FONDO REAL del arco (valleDeCuerda).
 //  · RUTA TRIPLE: 27 filas móviles (antes 9) + más combinaciones de
 //    movimiento (lateral / profundo / tumbo se suman a los existentes).
 //  · BLOQUES VERDES: giran en el eje Z (perpendicular a la cámara) mientras
@@ -72,34 +73,36 @@ describe("T92 · billetes fuegos artificiales (suben disparados y se ven caer)",
     expect(b.vel.y).toBeGreaterThanOrEqual(-BILLETE_CAIDA_MPS - 1e-9); // terminal de hoja
   });
 
-  it("la corriente del suelo RECOGE el papel caído y reenciende la pólvora (nunca queda tumbado)", () => {
+  it("T94 — el papel caído MUERE al tocar el suelo: sin relanzamiento ni papel tumbado", () => {
     const { billetes } = sacudidaBilletes(mulberry32(4), 1, v3(3, 30, 0)); // lejos: ninguno cerca
     const caido = billetes[0];
-    caido.pos = v3(0.5, 0.1, 0);                 // tumbado junto al suelo (suelo y=0)
+    caido.pos = v3(0.5, 0.09, 0);                // a ras del suelo (suelo y=0; muere ≤ 0,1)
     caido.vel = v3(0, 0, 0);
     caido.aire = BILLETE_SUBIDA_S + 5;           // pólvora agotada
     pasoBilletes(billetes, 1 / 60, 0, 99);
-    expect(caido.vel.y).toBeGreaterThanOrEqual(1.45); // la corriente lo levanta
-    expect(caido.aire).toBe(0);                  // pólvora REenciendida (aire a cero)
-    const y1 = caido.pos.y;
+    expect(caido.vivo).toBe(false);              // NUNCA renace a ras de suelo…
+    expect(caido.aire).not.toBe(0);              // …la pólvora NO se reenciende
     for (let i = 0; i < 60; i++) pasoBilletes(billetes, 1 / 60, 0, 99);
-    expect(caido.pos.y).toBeGreaterThan(y1 + 0.8); // despega y sube
-    expect(caido.vivo).toBe(true);
+    expect(caido.pos.y).toBeLessThanOrEqual(0.1);// jamás despega: no hay billetes «del suelo»
   });
 
-  it("el ciclo de fuegos: sube, CAE y vuelve a subir (la caída es visible y repetida)", () => {
+  it("T94 — ciclo del fuego: sube, CAE de forma visible y MUERE al llegar al suelo (sin relanzar)", () => {
     const { billetes } = sacudidaBilletes(mulberry32(17), 1, v3(0, 3, 0));
     const b = billetes[0];
-    let subidas = 0, caidas = 0;
+    let subidas = b.vel.y > 0.2 ? 1 : 0, caidas = 0; // nace DISPARADO (la subida es su salida)
     let vyPrev = b.vel.y;
-    for (let i = 0; i < 60 * 14; i++) {
+    let yMuerte = 99;
+    for (let i = 0; i < 60 * 14 && b.vivo; i++) {
       pasoBilletes(billetes, 1 / 60, 0, 999);
       if (b.vel.y > 0.2 && vyPrev <= 0.2) subidas++;
       if (b.vel.y < -0.2 && vyPrev >= -0.2) caidas++;
       vyPrev = b.vel.y;
+      if (!b.vivo) yMuerte = b.pos.y;
     }
     expect(caidas).toBeGreaterThanOrEqual(1);    // al MENOS una caída visible
-    expect(subidas).toBeGreaterThanOrEqual(1);   // y un relanzamiento
+    expect(subidas).toBeGreaterThanOrEqual(1);   // el disparo de salida
+    expect(b.vivo).toBe(false);                  // y MUERE (no cicla eternamente)
+    expect(yMuerte).toBeLessThanOrEqual(0.1);    // al llegar ABAJO: el origen fue el saco
   });
 
   it("los billetes a mano (tests viejos) siguen vivos sin remolino ni pólvora definidos", () => {
