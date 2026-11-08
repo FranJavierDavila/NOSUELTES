@@ -383,7 +383,8 @@
       "selecciona": "Pulsa un muelle para armar el lanzamiento",
       "usar": "Usar",
       "armado": "Muelle armado: arrastra la mochila hacia abajo y suelta",
-      "vueloAuto": "¡Vuela! Buscará el anclaje más alto"
+      "vueloAuto": "¡Vuela! Buscará el anclaje más alto",
+      "sinMuelles": "Sin muelles"
     },
     "ricachon": {
       "enfado": "¡Sacadme de aquí YA!",

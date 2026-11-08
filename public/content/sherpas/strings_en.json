@@ -383,7 +383,8 @@
       "selecciona": "Tap a spring to arm the launch",
       "usar": "Use",
       "armado": "Spring armed: drag the backpack down and release",
-      "vueloAuto": "Flying! It will grab the highest hold"
+      "vueloAuto": "Flying! It will grab the highest hold",
+      "sinMuelles": "Out of springs"
     },
     "ricachon": {
       "enfado": "Get me out of here NOW!",

@@ -80,8 +80,10 @@ try:
                 fallos.append("la bolsa no aterrizó (entrega.lista)")
                 print("FALLO: entrega incompleta", s.get("entrega"))
             else:
-                esperado = s["yCimaEfectiva"] + 0.625 + 0.55
-                if abs(ent["y"] - esperado) > 0.6:
+                # T91: la bolsa POSA por el CUELLO — el nodo queda a cuelloM
+                # sobre la repisa (el fondo del saco toca la repisa)
+                esperado = s["yCimaEfectiva"] + 0.625 + s.get("bolsaCuelloM", 0.55)
+                if abs(ent["y"] - esperado) > 0.05:
                     fallos.append(f"bolsa mal posada: y={ent['y']:.2f} vs {esperado:.2f}")
                 if pico < 12:
                     fallos.append(f"ráfaga festiva débil: pico {pico}")

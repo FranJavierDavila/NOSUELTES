@@ -74,7 +74,7 @@
 
 import {
   Color3, Matrix, Mesh, MeshBuilder, PBRMaterial, Quaternion, RawTexture,
-  SceneLoader, StandardMaterial, Texture, TransformNode, Vector3,
+  SceneLoader, StandardMaterial, Texture, TransformNode, Vector3, VertexBuffer,
 } from "@babylonjs/core";
 import { assetUrl } from "../../assetPath"; // T88: bolsadinero.glb / dollar.glb
 import "@babylonjs/loaders/glTF"; // T88: registro del cargador .glb también desde este módulo
@@ -112,6 +112,7 @@ import {
   billeteCogible, billetesVivos, pasoBilletes, sacudidaBilletes, rafagaFestiva,
   BILLETE_DINERO, type Billete, type ManoLibre,
 } from "./billetesAire"; // T88: billetes que vuelan de la bolsa al sacudirse la cuerda
+import { cuelloDeSaco } from "./bolsaGeo"; // T91: el cuello estrecho del saco
 
 // ---------- geometría del nivel (calibrada con los huesos del rig) ----------
 // Alcances reales (sherpaRig.ts): brazo 0,88×1,08 ≈ 0,95 m; pierna 0,97×1,08 ≈ 1,05 m;
@@ -614,9 +615,16 @@ export class ParedNivel {
   // lastre, misma física de cuerda — solo cambia el decorado en pantalla)
   private bolsaNodo: TransformNode | null = null;
   private bolsaWrap: TransformNode | null = null;
-  private bolsaTopY = 0.0; // del origen del wrap al TECHO de la bolsa (m, escalado)
-  private bolsaAltoM = 0.55; // alto ESCALADO de la bolsa (para POSARLA en el campa)
+  // T91 — la bolsa cuelga POR EL CUELLO (la zona estrecha del cinchado,
+  // dictado del jugador): bolsaCuelloM es del ORIGEN del nodo (el cuello,
+  // atado al amarre) hasta el fondo del saco; bolsaCuelloR es el radio del
+  // cuello para el collar de tirantes.
+  private bolsaCuelloM = 0.45;
+  private bolsaCuelloR = 0.05;
+  private bolsaAltoM = 0.55; // alto ESCALADO de la bolsa (referencia de escala)
   private bolsaLista = false;
+  /** T91 — instrumentación del análisis del cuello (sonda E2E). */
+  private bolsaGeo: { nMeshes: number; nPts: number; rawMinY: number; rawMaxY: number; bbMinY: number; bbMaxY: number; k: number; cuelloY: number; cuelloR: number; perfil: number[] } | null = null;
   // T88 — billetes en el aire: estado PURO (billetesAire.ts) + clones GLB
   private billetes: Billete[] = [];
   private billeteId = 1;
@@ -625,8 +633,8 @@ export class ParedNivel {
   private dollarProto: Mesh | null = null;
   private dinero: [number, number] = [0, 0];
   private billetesCogidos: [number, number] = [0, 0];
-  // T88 — badge de muelles sobre cada mochila (icono + numerito disponible)
-  private elMuelleBadge: [HTMLElement | null, HTMLElement | null] = [null, null];
+  // T91 — el indicador de muelle ya NO vive sobre el mapa (dictado: «solo se
+  // puede ver dentro de la mochila al pulsar sobre ella»): fuera el badge.
   // T89 — giro de la bolsa al deslizar + ESTRELLA DE ORO al coger billete
   private bolsaPrevX = 0;
   private bolsaYaw = 0;
@@ -1119,7 +1127,13 @@ export class ParedNivel {
       // T89 — IMÁN en el DESCENSO (vy < −1 m/s): alcance ×1,35 SOLO manos y
       // viaje relámpago — «debe agarrarse para no caer, el propósito es
       // anclarnos en la parte de arriba del movimiento» (dictado del jugador).
-      if (puedeAgarrarVueloAlto(this.vueloT[pi], vy)) rig.autoGripVuelo("alto", vy < -1);
+      // T91 — si ni con imán alcanza NINGUNA presa, AJUSTA la posición del
+      // cuerpo hacia la presa más alta cercana (dictado: «si tienes que
+      // modificar un poco su posición es preciso hacerlo») y el tick
+      // siguiente el autoGrip normal la agarra.
+      if (puedeAgarrarVueloAlto(this.vueloT[pi], vy)) {
+        if (!rig.autoGripVuelo("alto", vy < -1) && vy < -0.4) rig.ajusteVuelo(dt);
+      }
     }
 
     // T123 — CAÍDA REAL con AUTO-ANCLAJE: en plena caída (y también colgado
@@ -1181,7 +1195,9 @@ export class ParedNivel {
       Math.max(this.sherpas[0].waist().y, this.sherpas[1].waist().y) + 6.5,
       this.state === "ganado" ? this.yCima + 6.5 : 0,
     );
-    pasoBilletes(this.billetes, dt, -6, techoPant);
+    // T91 — el suelo REAL (Y de la base): la corriente recoge el papel caído
+    // cerca de ella y ya no hay muerte por tocar el suelo
+    pasoBilletes(this.billetes, dt, 0, techoPant);
     this.aseguraMallasBilletes();
     const manos: ManoLibre[] = [];
     for (const pi of [0, 1] as const) {
@@ -1706,17 +1722,20 @@ export class ParedNivel {
 
   private actualizaStraps(): void {
     if (this.straps.length < 3) return;
-    // T88 — la bolsa ATADA a la cuerda: dos tirantes del punto de amarre a
-    // los hombros de la bolsa (y la banda inferior fuera). El nudo ES el
-    // amarre: la bolsa cuelga y gira con él (se ve atada en todo momento).
-    const nudo = this.nudoCuerda();
-    const topY = nudo.y - 0.16;
-    const hombroL = v3(nudo.x - 0.11, topY, nudo.z + 0.02);
-    const hombroR = v3(nudo.x + 0.11, topY, nudo.z + 0.02);
-    const anclaL = v3(nudo.x - 0.05, nudo.y, nudo.z);
-    const anclaR = v3(nudo.x + 0.05, nudo.y, nudo.z);
-    this.colocaStrap(this.straps[0], anclaL, hombroL);
-    this.colocaStrap(this.straps[1], anclaR, hombroR);
+    // T91 — ATADA POR EL CUELLO (dictado: «la bolsa debe estar amarrada por
+    // su zona estrecha, el cuello»): los dos tirantes son un COLLAR corto en
+    // el cinchado — del amarre a los lados del cuello (radio ~3-4 cm), no a
+    // los hombros anchos. El nodo de la bolsa cuelga con el cuello EN el
+    // amarre, así que el collar abraza justo la zona estrecha.
+    const nudo = this.amarre ?? this.nudoCuerda();
+    const rc = Math.max(0.035, this.bolsaCuelloR);
+    const yC = nudo.y - 0.02;
+    const anclaL = v3(nudo.x - 0.02, nudo.y + 0.06, nudo.z);
+    const anclaR = v3(nudo.x + 0.02, nudo.y + 0.06, nudo.z);
+    const cuelloL = v3(nudo.x - rc, yC, nudo.z + 0.02);
+    const cuelloR = v3(nudo.x + rc, yC, nudo.z + 0.02);
+    this.colocaStrap(this.straps[0], anclaL, cuelloL);
+    this.colocaStrap(this.straps[1], anclaR, cuelloR);
     this.straps[2].isVisible = false;
   }
 
@@ -1756,14 +1775,68 @@ export class ParedNivel {
         piece.isPickable = false;
         piece.alwaysSelectAsActiveMesh = true;
         // escala objetivo: bolsa de ~0,55 m de alto (presencia de lastre sin tapar la pared)
+        // T91 — la caja y el perfil se miden en el MISMO frame (el del wrap):
+        // se anula un instante la posición del nodo (el amarre se mueve cada
+        // tick y contaminaba la caja — el hueco que veía el jugador) y se
+        // restaura al salir. Los vértices crudos viven en ese mismo frame.
+        const nodoPos = this.bolsaNodo.position.clone();
+        this.bolsaNodo.position.set(0, 0, 0);
         const bb = piece.getHierarchyBoundingVectors();
         const alto = Math.max(1e-3, bb.max.y - bb.min.y);
         const k = 0.55 / alto;
-        this.bolsaAltoM = alto * k; // T90: para posarla SOBRE la repisa del campa
+        this.bolsaAltoM = alto * k;
+        // T91 — CUELLO del saco (petición: «amarrada por su zona estrecha»):
+        // franja de vértices más estrecha de la parte alta = el cinchado.
+        // Los vértices de la jerarquía de la pieza se transforman por su
+        // matriz de mundo (con el nodo a cero) al frame del wrap: el MISMO
+        // frame que la caja bb — cuello, caja y escala quedan coherentes
+        // aunque el GLB traiga desplazamientos en sus nodos.
+        piece.computeWorldMatrix(true);
+        const matPieza = piece.getWorldMatrix();
+        const pts: { x: number; y: number; z: number }[] = [];
+        for (const m of [piece, ...piece.getDescendants(false)]) {
+          if (!(m instanceof Mesh)) continue;
+          const pd = m.getVerticesData(VertexBuffer.PositionKind);
+          if (!pd || pd.length < 9) continue;
+          for (let i = 0; i + 2 < pd.length; i += 3) {
+            const v = Vector3.TransformCoordinates(new Vector3(pd[i], pd[i + 1], pd[i + 2]), matPieza);
+            pts.push({ x: v.x, y: v.y, z: v.z });
+          }
+        }
+        // perfil por franjas (sonda): rMax de cada franja del 45 % hacia arriba
+        const perfil: number[] = [];
+        {
+          const franjas = 20;
+          const desde = bb.min.y + alto * 0.45;
+          for (let i = 0; i < franjas; i++) {
+            const a = bb.min.y + (alto * i) / franjas;
+            const b = bb.min.y + (alto * (i + 1)) / franjas;
+            if (b <= desde) { perfil.push(-1); continue; }
+            const franja = pts.filter((p) => p.y >= a && p.y < b);
+            if (franja.length < 3) { perfil.push(-2); continue; }
+            const cxf = franja.reduce((s, p) => s + p.x, 0) / franja.length;
+            const czf = franja.reduce((s, p) => s + p.z, 0) / franja.length;
+            perfil.push(+Math.max(...franja.map((p) => Math.hypot(p.x - cxf, p.z - czf))).toFixed(3));
+          }
+        }
+        this.bolsaGeo = {
+          nMeshes: 1, nPts: pts.length,
+          rawMinY: +bb.min.y.toFixed(3), rawMaxY: +bb.max.y.toFixed(3),
+          bbMinY: +bb.min.y.toFixed(3), bbMaxY: +bb.max.y.toFixed(3),
+          k: +k.toFixed(3), cuelloY: 0, cuelloR: 0, perfil,
+        };
+        const cuello = cuelloDeSaco(pts) ?? { y: bb.max.y - alto * 0.2, radio: alto * 0.08 };
+        this.bolsaGeo.cuelloY = +cuello.y.toFixed(3);
+        this.bolsaGeo.cuelloR = +cuello.radio.toFixed(3);
+        // T91 — el nodo ES el cuello: cuelloM = del CUELLO (origen del nodo)
+        // al FONDO del saco, para POSARLA con el fondo en la repisa
+        this.bolsaCuelloM = (cuello.y - bb.min.y) * k;
+        this.bolsaCuelloR = Math.max(0.03, cuello.radio * k);
         wrap.scaling.setAll(k);
-        // el TECHO de la bolsa cuelga bajo el nudo: wrap sitúa el top en el origen
-        this.bolsaTopY = bb.max.y * k;
-        wrap.position.set(-((bb.min.x + bb.max.x) / 2) * k, -this.bolsaTopY, -((bb.min.z + bb.max.z) / 2) * k);
+        // el CUELLO cuelga EN el nudo: el origen del wrap es la zona estrecha
+        // (las orejas de tela asoman por encima; el cuerpo queda colgando)
+        wrap.position.set(-((bb.min.x + bb.max.x) / 2) * k, -cuello.y * k, -((bb.min.z + bb.max.z) / 2) * k);
+        this.bolsaNodo.position.copyFrom(nodoPos);
         this.bolsaWrap = wrap;
         this.bolsaLista = true;
       })
@@ -1824,9 +1897,9 @@ export class ParedNivel {
     const mp = campa.mesh.getAbsolutePosition();
     const top = mp.y + campa.spec.h / 2;
     const from = v3(this.bolsaNodo.position.x, this.bolsaNodo.position.y, this.bolsaNodo.position.z);
-    // el wrap sitúa el TECHO de la bolsa en el origen: para POSARLA, el
-    // origen va un alto de saco por encima de la repisa
-    const to = v3(mp.x, top + this.bolsaAltoM, campa.spec.z + 0.06);
+    // T91 — el origen del nodo ES el CUELLO (cuelga por él): para POSARLA el
+    // origen va a cuelloM por encima de la repisa (el fondo toca la repisa)
+    const to = v3(mp.x, top + this.bolsaCuelloM, campa.spec.z + 0.06);
     const ctrl = v3((from.x + to.x) / 2, Math.max(from.y, to.y) + 1.1, (from.z + to.z) / 2 + 0.15);
     this.entrega = { t: 0, dur: 1.5, from, ctrl, to, yaw0: this.bolsaYaw };
     this.rafagaHecha = false;
@@ -1850,7 +1923,8 @@ export class ParedNivel {
     nodo.rotation.z = Math.sin(e.t * 9) * 0.18 * (1 - s);
     if (k >= 1 && !this.rafagaHecha) {
       this.rafagaHecha = true;
-      const boca = v3(e.to.x, e.to.y - this.bolsaAltoM + 0.12, e.to.z + 0.1);
+      // T91 — la boca del saco es el CUELLO (justo bajo el cinchado)
+      const boca = v3(e.to.x, e.to.y - 0.04, e.to.z + 0.1);
       const r = rafagaFestiva(this.billeteRng, this.billeteId, boca);
       this.billeteId = r.idSiguiente;
       this.billetes.push(...r.billetes);
@@ -1880,21 +1954,10 @@ export class ParedNivel {
     }
   }
 
-  /** Badges de muelles sobre cada mochila (icono de muelle + numerito, como
-   *  el indicador de anclas de la mochila de la fase inicial). */
+  /** T91 — el badge de muelles sobre cada mochila se ELIMINÓ (el indicador
+   *  de muelle solo se ve dentro de la mochila, pulsándola). Queda aquí la
+   *  ESTRELLA DE ORO giratoria de la cogida de billetes. */
   private creaMuelleBadges(root: HTMLElement): void {
-    for (const pi of [0, 1] as const) {
-      const el = document.createElement("div");
-      el.id = `pared-muelle-badge-${pi}`;
-      el.setAttribute("style",
-        "position:absolute;display:none;pointer-events:none;z-index:24;transform:translate(-50%,-100%);" +
-        "filter:drop-shadow(0 2px 4px rgba(0,0,0,.6));");
-      el.innerHTML = `<span style="display:block;width:26px;height:26px">${SPRING_SVG}</span>` +
-        `<b style="position:absolute;top:-7px;right:-9px;background:#e2694f;color:#fff;border-radius:9px;` +
-        `min-width:16px;text-align:center;padding:1px 4px;font:900 11px/1.4 system-ui,sans-serif">0</b>`;
-      root.appendChild(el);
-      this.elMuelleBadge[pi] = el;
-    }
     // T89 — ESTRELLA DE ORO giratoria sobre la mochila (el contenido cambió:
     // el sherpa ha cogido un billete). CSS keyframes inyectados una vez.
     if (!document.getElementById("pared-estrella-kf")) {
@@ -1924,17 +1987,7 @@ export class ParedNivel {
   private posicionaMuelleBadges(): void {
     const cv = this.d.scene.engine.getRenderingCanvas();
     if (!cv) return;
-    for (const pi of [0, 1] as const) {
-      const el = this.elMuelleBadge[pi];
-      if (!el) continue;
-      const bp = this.d.scene.backpackScreenPx(pi) ?? this.proyeccionPecho(pi);
-      if (!bp) { el.style.display = "none"; continue; }
-      el.style.display = "block";
-      el.style.left = `${bp.x.toFixed(0)}px`;
-      el.style.top = `${(bp.y - 34).toFixed(0)}px`;
-      const n = el.querySelector("b");
-      if (n) n.textContent = String(this.muelles[pi]);
-    }
+    // T91 — fuera el badge de muelle del mapa (solo en la mochila); queda la
     // T89 — estrella de oro: visible 3 s desde la cogida, sobre la mochila
     for (const pi of [0, 1] as const) {
       const st = this.elEstrella[pi];
@@ -1999,8 +2052,8 @@ export class ParedNivel {
     this.creaMuelleBadges(root);
   }
 
-  /** T123 B5 — abre el INTERIOR de la mochila: los muelles restantes como
-   *  chips; pulsar uno disponible lo ARMA (highlight) y cierra la ventana. */
+  /** T123 B5 — abre el INTERIOR de la mochila: dinero + el indicador de
+   *  muelle (T91: UN icono con el número superpuesto); pulsarlo lo ARMA. */
   private abreMochila(pi: 0 | 1): void {
     this.mochilaAbierta = pi;
     this.refrescaMochila(pi);
@@ -2011,7 +2064,7 @@ export class ParedNivel {
     if (this.elMochilaWin) this.elMochilaWin.style.display = "none";
   }
 
-  /** Contenido de la ventana (título, pista y un chip por muelle). */
+  /** Contenido de la ventana (título, pista, dinero y el icono de muelle). */
   private refrescaMochila(pi: 0 | 1): void {
     const win = this.elMochilaWin;
     if (!win || this.mochilaAbierta !== pi) return;
@@ -2032,21 +2085,31 @@ export class ParedNivel {
       "padding:5px 8px;border:1px solid rgba(232,193,90,.5);background:rgba(232,193,90,.12);font:800 13px system-ui,sans-serif;color:#e8c15a");
     dinero.innerHTML = `<span>💰 ${t("pared.dinero.titulo", "Dinero")}</span><span>$${this.dinero[pi]}</span>`;
     win.appendChild(dinero);
-    for (let i = 0; i < this.ajuste.lanzamientosMax; i++) {
-      const usado = i >= this.muelles[pi];
-      const chip = document.createElement("div");
-      chip.setAttribute("style", `display:flex;align-items:center;gap:8px;border-radius:8px;padding:5px 8px;cursor:${usado ? "default" : "pointer"};border:1px solid ${usado ? "rgba(255,255,255,.12)" : "#57b17e"};background:${usado ? "rgba(255,255,255,.05)" : "rgba(87,177,126,.16)"};opacity:${usado ? 0.45 : 1}`);
-      chip.innerHTML = `${SPRING_SVG}<span style="font-size:11px">${usado ? "✕" : t("pared.mochila.usar", "Usar")}</span>`;
-      if (!usado) {
-        chip.onclick = (ev) => {
-          ev.stopPropagation();
-          this.muelleActivo[pi] = true;
-          this.cierraMochila();
-          this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.mochila.armado", "Muelle armado: arrastra la mochila hacia abajo y suelta"));
-        };
-      }
-      win.appendChild(chip);
+    // T91 — UN SOLO icono de muelle con el NÚMERO superpuesto (dictado del
+    // jugador: el indicador de muelle solo se ve DENTRO de la mochila al
+    // pulsar sobre ella, como 1 icono con el numerito encima). Pulsarlo ARMA
+    // el lanzamiento si quedan muelles.
+    const n = this.muelles[pi];
+    const vacio = n <= 0;
+    const fila = document.createElement("div");
+    fila.setAttribute("style",
+      `display:flex;align-items:center;gap:10px;border-radius:8px;padding:6px 8px;cursor:${vacio ? "default" : "pointer"};` +
+      `border:1px solid ${vacio ? "rgba(255,255,255,.12)" : "#57b17e"};` +
+      `background:${vacio ? "rgba(255,255,255,.05)" : "rgba(87,177,126,.16)"};opacity:${vacio ? 0.55 : 1}`);
+    fila.innerHTML =
+      `<span data-e="muelleIcono" style="position:relative;display:inline-block;width:26px;height:26px;flex:none">${SPRING_SVG}` +
+      `<b style="position:absolute;top:-8px;right:-10px;min-width:16px;text-align:center;padding:1px 4px;` +
+      `border-radius:9px;background:#e8c15a;color:#241a06;font:900 11px/1.4 system-ui,sans-serif">${n}</b></span>` +
+      `<span style="font-size:11px">${vacio ? t("pared.mochila.sinMuelles", "Sin muelles") : t("pared.mochila.usar", "Usar")}</span>`;
+    if (!vacio) {
+      fila.onclick = (ev) => {
+        ev.stopPropagation();
+        this.muelleActivo[pi] = true;
+        this.cierraMochila();
+        this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.mochila.armado", "Muelle armado: arrastra la mochila hacia abajo y suelta"));
+      };
     }
+    win.appendChild(fila);
     win.style.display = "flex";
   }
 
@@ -2526,6 +2589,9 @@ export class ParedNivel {
         muelleActivo: [...this.muelleActivo],
         mochilaAbierta: this.mochilaAbierta,
         enVuelo: [...this.enVuelo],
+        // T91 — cuello del saco (la E2E certifica el POSADO: repisa + cuello)
+        bolsaCuelloM: +this.bolsaCuelloM.toFixed(3),
+        bolsaGeo: this.bolsaGeo,
         gomaM: this.goma?.m ?? null,
         // T89 — largos DIBUJADOS del brazo con la goma tirando (certifica el
         // chicle: húmero ≈ reposo 0,46 y ANTEBRAZO estirado > 0,6)
@@ -2662,9 +2728,6 @@ export class ParedNivel {
     this.elFat?.remove();
     this.elFin?.remove();
     this.elMochilaWin?.remove();
-    this.elMuelleBadge[0]?.remove(); // T88: badges de muelles fuera
-    this.elMuelleBadge[1]?.remove();
-    this.elMuelleBadge = [null, null];
     this.elEstrella[0]?.remove(); // T89: estrellas fuera
     this.elEstrella[1]?.remove();
     this.elEstrella = [null, null];

@@ -25,6 +25,18 @@ export const BILLETE_RADIO_COGIDA = 0.75;
 export const BILLETE_VIDA_S = 14.0;
 /** Velocidad de subida por la corriente (m/s): papel empujado, alcanzable. */
 export const BILLETE_SUBIDA_MPS = 1.45;
+/** T91 — EMPUJE de la corriente (m/s²): el papel ACELERA hacia arriba como
+ *  hoja en una columna de aire caliente (dictado: «vuelan hacia arriba
+ *  empujados por corrientes de aire»), no a velocidad constante. */
+export const BILLETE_EMPUJE_MPS2 = 1.9;
+/** T91 — tope de subida (m/s): la resistencia del aire al papel. */
+export const BILLETE_TOPE_MPS = 2.6;
+/** T91 — velocidad del REMOLINO (m/s): cada billete gira en torno a la
+ *  columna de corriente (corkscrew con fase y sentido propios). */
+export const BILLETE_REMOLINO_MPS = 0.55;
+/** T91 — frecuencia de las RACHAS del térmico (rad/s): ráfagas lentas que
+ *  engordan y aflojan el empuje de cada billete. */
+export const BILLETE_RACHA_OMEGA = 0.9;
 /** Deriva propia de cada billete (m/s): TODOS suben con movimientos distintos
  *  que DIVERGEN (dictado: «suben todos con movimientos diferentes»). */
 export const BILLETE_DERIVA_MPS = 0.7;
@@ -40,6 +52,11 @@ export interface Billete {
   vel: V3;
   /** Fase propia del vaivén (cada billete mariposea distinto). */
   fase: number;
+  /** T91 — remolino propio: ángulo y velocidad angular (rad/s) del giro en
+   *  torno a la columna de corriente (opcionales: los tests crean billetes a
+   *  mano sin remolino y el paso usa valores por defecto). */
+  orbAng?: number;
+  orbW?: number;
   /** t de vida del billete (s). */
   t: number;
   vivo: boolean;
@@ -67,6 +84,8 @@ export function sacudidaBilletes(
         (rng() - 0.5) * BILLETE_DERIVA_MPS * 0.6,
       ),
       fase: rng() * Math.PI * 2,
+      orbAng: rng() * Math.PI * 2,
+      orbW: (rng() < 0.5 ? -1 : 1) * (2.0 + rng() * 1.6),
       t: 0,
       vivo: true,
     });
@@ -74,25 +93,37 @@ export function sacudidaBilletes(
   return { billetes, idSiguiente: id };
 }
 
-/** Paso de física de papel (T89): SUBE sin parar con su corriente propia +
- *  aleteo sinusoidal de hoja (x/z con fase propia: todos distintos y
- *  divergentes) hasta cruzar `techoY` (la parte alta de la PANTALLA, lo pasa
- *  el nivel cada tick) — ahí desaparece. También muere por vida de seguridad
- *  o tocando el suelo. Determinista (el aleteo es sin()). */
+/** Paso de física de papel — T91 CORRIENTE DE AIRE: el billete es una hoja
+ *  en una columna de aire caliente que sube desde la bolsa. El EMPUJE lo
+ *  ACELERA hacia arriba (con RACHAS lentas que engordan y aflojan el
+ *  térmico) hasta el tope de la resistencia del aire; el REMOLINO lo hace
+ *  girar en espiral alrededor de la columna; el aleteo de hoja sigue. Cerca
+ *  del suelo la corriente es MÁS FUERTE: recoge el papel caído y lo levanta
+ *  (un billete NUNCA se queda tumbado — dictado del jugador). Muere solo al
+ *  cruzar `techoY` (la parte alta de la PANTALLA) o por vida de seguridad.
+ *  Determinista (todo es sin/cos). */
 export function pasoBilletes(
-  lista: Billete[], dt: number, floorY: number, techoY: number,
+  lista: Billete[], dt: number, floorY: number, techoY: number = Infinity,
 ): void {
   for (const b of lista) {
     if (!b.vivo) continue;
     b.t += dt;
     // la corriente se afloja en lo alto (el papel casi flota al salir)
     const decay = Math.max(0.55, 1 - Math.max(0, b.pos.y - floorY - 6) * 0.04);
-    b.pos = v3(
-      b.pos.x + (b.vel.x + Math.sin(b.t * BILLETE_OSC_OMEGA + b.fase) * BILLETE_OSC_MPS) * dt,
-      b.pos.y + b.vel.y * decay * dt,
-      b.pos.z + (b.vel.z + Math.cos(b.t * BILLETE_OSC_OMEGA * 0.83 + b.fase) * BILLETE_OSC_MPS * 0.5) * dt,
-    );
-    if (b.pos.y > techoY || b.t >= BILLETE_VIDA_S || b.pos.y <= floorY + 0.05) b.vivo = false;
+    // racha lenta del térmico + empuje: ACELERA sin frenar nunca la subida
+    const racha = 0.78 + 0.32 * Math.sin(b.t * BILLETE_RACHA_OMEGA + b.fase * 1.7);
+    const objetivo = Math.min(BILLETE_TOPE_MPS, b.vel.y + BILLETE_EMPUJE_MPS2 * racha * decay * dt);
+    b.vel.y = Math.max(b.vel.y, objetivo);
+    // junto al suelo el empuje es MÁXIMO: la corriente lo recoge y lo lleva
+    if (b.pos.y <= floorY + 0.5) b.vel.y = Math.max(b.vel.y, BILLETE_SUBIDA_MPS);
+    // remolino propio en torno a la columna (corkscrew) + aleteo de hoja
+    b.orbAng = (b.orbAng ?? 0) + (b.orbW ?? 2.6) * dt;
+    const vx = b.vel.x + Math.cos(b.orbAng) * BILLETE_REMOLINO_MPS
+      + Math.sin(b.t * BILLETE_OSC_OMEGA + b.fase) * BILLETE_OSC_MPS;
+    const vz = b.vel.z + Math.sin(b.orbAng) * BILLETE_REMOLINO_MPS * 0.6
+      + Math.cos(b.t * BILLETE_OSC_OMEGA * 0.83 + b.fase) * BILLETE_OSC_MPS * 0.5;
+    b.pos = v3(b.pos.x + vx * dt, b.pos.y + b.vel.y * decay * dt, b.pos.z + vz * dt);
+    if (b.pos.y > techoY || b.t >= BILLETE_VIDA_S) b.vivo = false;
   }
 }
 
@@ -150,6 +181,8 @@ export function rafagaFestiva(
       pos: v3(origen.x + (rng() - 0.5) * 0.2, origen.y - 0.08 - rng() * 0.1, origen.z + (rng() - 0.5) * 0.16),
       vel: v3(Math.cos(ang) * radio, 1.9 + rng() * 1.2, Math.sin(ang) * radio * 0.55),
       fase: rng() * Math.PI * 2,
+      orbAng: rng() * Math.PI * 2,
+      orbW: (rng() < 0.5 ? -1 : 1) * (2.0 + rng() * 1.6),
       t: 0,
       vivo: true,
     });

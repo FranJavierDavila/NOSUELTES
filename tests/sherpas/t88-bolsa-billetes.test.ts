@@ -172,10 +172,11 @@ describe("T88 · chicle del antebrazo (brazo intacto)", () => {
     expect(src).toContain("this.sacudidaBolsa();");
   });
 
-  it("el badge de muelles existe (icono + numerito sobre cada mochila)", () => {
+  it("T91: el indicador de muelle SOLO vive en la mochila — 1 icono con número superpuesto", () => {
     const src = readFileSync(NIVEL, "utf8");
-    expect(src).toContain("this.creaMuelleBadges(root);");
-    expect(src).toContain("this.posicionaMuelleBadges();");
+    expect(src).not.toContain("pared-muelle-badge"); // fuera del mapa (dictado del jugador)
+    expect(src).toContain('data-e="muelleIcono"');   // UN icono con el numerito dentro de la mochila
+    expect(src).toContain("this.posicionaMuelleBadges();"); // queda la estrella T89
   });
 
   it("el interior de la mochila muestra el DINERO del sherpa", () => {

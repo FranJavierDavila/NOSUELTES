@@ -3,7 +3,8 @@
   1) el nivel arranca SIN ricachón en pantalla y con la BOLSA lista;
   2) la sacudida de la rabieta del lastre (agenda 7-11 s) suelta BILLETES
      que SUBEN (corriente de aire) — la sonda los cuenta en el aire;
-  3) los badges de muelles (icono + numerito) existen por sherpa;
+  3) T91: el indicador de muelle SOLO vive en la mochila — al pulsarla se ve
+     1 icono con el número superpuesto; el badge sobre el mapa NO existe;
   4) sin errores JS. La cogida (+10 $) está certificada en unidad (t88).
 Sirve out/ en 3100 bajo /NOSUELTES. Uso: python3 scripts/e2e-t88-bolsa.py"""
 import os
@@ -99,12 +100,28 @@ try:
         assert pico >= 3, f"menos de 3 billetes vivos: pico={pico}"
         page.screenshot(path=f"{OUT}/t88-2-billetes.png")
 
-        # ---------- 3) badges de muelles presentes ----------
+        # ---------- 3) T91: muelle SOLO en la mochila (1 icono + número) ----------
         badges = page.evaluate("document.querySelectorAll('[id^=pared-muelle-badge]').length")
-        visibles = page.evaluate("[...document.querySelectorAll('[id^=pared-muelle-badge]')].filter(e => e.style.display !== 'none').length")
-        assert badges == 2, f"badges de muelle: {badges}"
-        assert visibles >= 1, "ningún badge de muelle visible"
-        print(f"OK badges de muelles (icono+numerito): {badges} nodos, {visibles} visibles", flush=True)
+        assert badges == 0, f"el badge de muelle sigue en el mapa: {badges}"
+        px = page.evaluate("(() => { const p = window.__PARED && window.__PARED.sondaMochilaPx ? window.__PARED.sondaMochilaPx() : null; return p ? {x: p.x, y: p.y} : null; })()")
+        assert px, "sin px de mochila para pulsar"
+        page.mouse.click(px["x"], px["y"])
+        page.wait_for_timeout(400)
+        s = sonda(page)
+        if s["mochilaAbierta"] is None:
+            # repliegue blanco: mismo camino interno que el press (misma ventana)
+            page.evaluate("window.__PARED.abreMochila(0)")
+            page.wait_for_timeout(200)
+            s = sonda(page)
+        assert s["mochilaAbierta"] is not None, "la mochila no abrió al pulsarla"
+        iconos = page.evaluate("document.querySelectorAll('[data-e=muelleIcono]').length")
+        num = page.evaluate("((document.querySelector('[data-e=muelleIcono] b'))||{}).textContent || ''")
+        assert iconos == 1, f"iconos de muelle en la mochila: {iconos}"
+        assert num == str(s["muelles"][int(s["mochilaAbierta"])]), \
+            f"número del icono {num!r} ≠ muelles {s['muelles']}"
+        print(f"OK muelle SOLO en mochila: 1 icono, número {num} superpuesto · badge del mapa fuera", flush=True)
+        page.screenshot(path=f"{OUT}/t88-3-mochila.png")
+        page.mouse.move(640, 690)  # fuera de la mochila: la ventana se cierra sola
 
         # ---------- 4) el juego sigue vivo ----------
         s = sonda(page)

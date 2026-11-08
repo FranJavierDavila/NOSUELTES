@@ -68,6 +68,14 @@ const TRAVEL_MAX_S = 0.55;
  *  la parte de arriba del movimiento»). Los pies nunca reciben el imán. */
 const IMAN_MANOS_VUELO = 1.35;
 const TRAVEL_RAPIDO_S = 0.1;
+/** T91 — AJUSTE DE POSICIÓN en la caída (dictado del jugador: «al caer se
+ *  debe anclar a algún agarre de forma automática; si tienes que modificar
+ *  un poco su posición es preciso hacerlo»): si el descenso no alcanza
+ *  NINGUNA presa ni con el imán, se buscan candidatas dentro del alcance
+ *  imantado + VUELO_AJUSTE_EXTRA y el cuerpo DESLIZA rígido hacia la presa
+ *  a lo sumo VUELO_AJUSTE_MPS hasta que la mano agarra de verdad. */
+const VUELO_AJUSTE_EXTRA = 0.85; // m de radio extra de búsqueda
+const VUELO_AJUSTE_MPS = 2.3;    // velocidad máx. del deslizamiento del cuerpo
 const LIMB_FOLLOW = 12;         // ganancia del pendejo cosmético (1/s)
 // Huesos cosméticos IGUALADOS al alcance real de juego (fix "escaladores de
 // goma"): colgado, el hombro queda a 0,87 m de la presa y el pie de apoyo a
@@ -622,6 +630,64 @@ export class SherpaRig {
     this.gripWanted[bestLimb] = true;
     this.startTravel(bestLimb, bestHold);
     return true;
+  }
+
+  /** T91 — AJUSTE DE POSICIÓN EN LA CAÍDA (dictado del jugador: «el sherpa
+   *  cuando se lanza y llega arriba al caer se debe anclar a algún agarre de
+   *  forma automática (si tienes que modificar un poco su posición es preciso
+   *  hacerlo)»). Se llama desde el nivel SOLO en descenso del vuelo, cuando
+   *  autoGripVuelo("alto") devolvió false: elige la presa libre más ALTA
+   *  dentro del alcance imantado + VUELO_AJUSTE_EXTRA de una mano libre
+   *  (nunca muy por debajo de la cintura) y DESLIZA el títere entero hacia
+   *  ella, rígido y a velocidad acotada. El tick siguiente el autoGrip
+   *  normal la agarra. false si no hay candidata (sigue cayendo). */
+  ajusteVuelo(dt: number): boolean {
+    if (dt <= 0) return false;
+    const cintura = this.rig.particles[P.pelvisC].pos;
+    let bestHold: HoldInstance | null = null;
+    let bestLimb: Limb | null = null;
+    let bestD = Infinity;
+    for (const hold of this.deps.anchorSystem.holds.values()) {
+      if (this.deps.anchorSystem.anchorAtHold(hold.id)) continue;
+      if (hold.pos.y < cintura.y - 1.5) continue;
+      for (const limb of ["hand_l", "hand_r"] as const) {
+        if (this.dragging === limb) continue;
+        const st = this.states.get(limb)!;
+        if (st.anchored || st.traveling || st.lockedFor > 0) continue;
+        const maxLen = this.fatiguedReach(limb) * IMAN_MANOS_VUELO + VUELO_AJUSTE_EXTRA;
+        // distancia desde la RAÍZ (hombro) o la PUNTA VIVA de la mano —
+        // nunca desde el punto cosmético (puede estar obsoleto en vuelo)
+        const punta = this.rig.particles[limb === "hand_l" ? P.handL : P.handR].pos;
+        const d = Math.min(
+          vLen(vSub(hold.pos, this.rig.particles[CHAIN_ROOT[limb]].pos)),
+          vLen(vSub(hold.pos, punta)),
+        );
+        if (d > maxLen) continue;
+        if (!bestHold || hold.pos.y > bestHold.pos.y || (hold.pos.y === bestHold.pos.y && d < bestD)) {
+          bestHold = hold;
+          bestLimb = limb;
+          bestD = d;
+        }
+      }
+    }
+    if (!bestHold || !bestLimb) return false;
+    const mano = this.rig.particles[bestLimb === "hand_l" ? P.handL : P.handR].pos;
+    const dx = bestHold.pos.x - mano.x;
+    const dy = bestHold.pos.y - mano.y;
+    const dz = bestHold.pos.z - mano.z;
+    const dist = Math.hypot(dx, dy, dz);
+    if (dist < 1e-4) return false;
+    const paso = Math.min(dist, VUELO_AJUSTE_MPS * dt);
+    this.desplazaRigido(v3((dx / dist) * paso, (dy / dist) * paso, (dz / dist) * paso));
+    return true;
+  }
+
+  /** T91 — traslación RÍGIDA de TODO el títere (ajustes de posición del
+   *  vuelo): cada partícula se mueve el MISMO delta, sin deformar el cuerpo. */
+  desplazaRigido(delta: V3): void {
+    for (const p of this.rig.particles) {
+      p.pos = v3(p.pos.x + delta.x, p.pos.y + delta.y, p.pos.z + delta.z);
+    }
   }
 
   // ---------- intenciones del jugador ----------
