@@ -1338,6 +1338,14 @@ export class ParedNivel {
     if (this.state !== "jugando") return;
     // T123: en vuelo el agarre es AUTOMÁTICO — los clics no hacen nada
     if (this.enVuelo[0] || this.enVuelo[1]) return;
+    if (this.mochilaAbierta !== null) this.cierraMochila();
+    // T95-A — LA MANO TIENE SIEMPRE PRIORIDAD (dictado: «pulsar sobre un
+    // anclaje de la mano que esté próximo a la mochila activaba la mochila
+    // en lugar de la mano; en estos casos siempre tendrá prioridad la
+    // mano»): el radio de clic de la mochila (52 px) se tragaba el anclaje.
+    // Primero se intenta la extremidad —beginDrag suelta el anclaje y
+    // arrastra—; SOLO si ninguna extremidad agarra se atiende la mochila.
+    if (!this.goma && this.intentaAgarre(xCss, yCss)) return;
     // T123 B5: ¿clic en la mochila? armado → tiro directo; sin armar → INTERIOR
     const pi = this.d.scene.backpackAt(xCss, yCss);
     if (pi !== null && !this.goma) {
@@ -1351,9 +1359,14 @@ export class ParedNivel {
       }
       return;
     }
-    if (this.mochilaAbierta !== null) this.cierraMochila();
+  }
+
+  /** T95-A — intento de agarre/arrastre de extremidad al nivel del plano de
+   *  presas (antes el cuerpo de onDragDown; ahora también VALE como primer
+   *  filtro del clic). Devuelve true si una extremidad empezó a arrastrarse. */
+  private intentaAgarre(xCss: number, yCss: number): boolean {
     const p = this.puntoPlano(xCss, yCss);
-    if (!p) return;
+    if (!p) return false;
     const cands: { player: 0 | 1; limb: (typeof LIMBS)[number]; d: number }[] = [];
     for (const pi of [0, 1] as const) {
       for (const limb of LIMBS) {
@@ -1369,9 +1382,10 @@ export class ParedNivel {
         this.dragLimb = c.limb;
         this.dragCursor = p;
         this.sherpas[c.player].moveDrag(p);
-        return;
+        return true;
       }
     }
+    return false;
   }
 
   private onDragMove(xCss: number, yCss: number): void {

@@ -1124,6 +1124,10 @@ export class SherpaRig {
       this.fartTrailAcc += dt;
       if (this.fartLaunchT <= 0) this.autoGripAfterFart();
     } else if (nAnchored === 0 && this.ropeState === "hauling") {
+      // T95 — el reloj del desplome sigue contando durante la subida: el
+      // cuerpo se INCORPORA con fundido (despT cae de 1 a 0 en 0,5 s de
+      // hauling) en vez de chocar de golpe a vertical.
+      this.dangleSettleT += dt;
       // 2a-bis. RECUPERACIÓN A PULSO (T58-E, petición del jugador: "subir por
       //    ella a pulso... pulsar una tecla a toda velocidad, los DOS: el
       //    colgado para trepar y el compañero para tirar de la cuerda hacia
@@ -1221,11 +1225,13 @@ export class SherpaRig {
           // (el cuerpo se abandona en la dirección de la caída)
           const vx = body.pos.x - body.prev.x;
           this.desplomeLado = Math.abs(vx) > 1e-4 ? Math.sign(vx) : (this.player === 0 ? -1 : 1);
-          // EL CHICOTE absorbe energía EN el tirón (parada seca, lectura de
-          // juego: la cuerda AGARRA, no se estira un metro de más). T93 —
-          // tirón MÁS BRUSCO (dictado: «dando un tirón brusco»): queda aún
-          // menos velocidad viva para el muelle.
-          vel = v3(vel.x * 0.5, vel.y * 0.22, vel.z * 0.5);
+          // T95 — CUERDA INEXTENSIBLE (dictado: «la cuerda tiene una dimensión
+          // fija NO SE PUEDE ESTIRAR; una vez alcanza su longitud SE FRENA y es
+          // cuando da la sacudida al cuerpo»): la parada es EN la línea y SECA
+          // — la velocidad de bajada muere ENTERA en el mismo tick (el tirón
+          // es la parada), solo sobrevive un poco de vaivén horizontal. FUERA
+          // el muelle que seguía estirando el chicote y rebotando.
+          vel = v3(vel.x * 0.5, 0, vel.z * 0.5);
           if (!this.ropeTautDone) {
             // EL CHICOTAZO: la parada se paga en las manos (re-agarrar cuesta).
             const shock = fT?.catchFatiguePct ?? 0.16;
@@ -1244,12 +1250,12 @@ export class SherpaRig {
           this.ropeTautNow = false;
         }
         if (this.ropeState === "caught") {
-          const pen = catchY - body.pos.y;
-          if (pen > 0) {
-            acc.y += Math.min(MAX_ACC, pen * SPRING_K * 1.1);
-            // amortiguación vertical extra: el rebote muere en ~0,6 s
-            vel = v3(vel.x, vel.y * Math.max(0, 1 - 6 * dt), vel.z);
-          } else if (this.haulDone) {
+          // T95 — CUERDA INEXTENSIBLE: FUERA el muelle de captura
+          // (pen·SPRING_K y el rebote): la cintura cuelga EN la línea (el
+          // clamp duro de tras-integración la mantiene) y solo queda el
+          // vaivén de péndulo, amortiguado.
+          vel = v3(vel.x * Math.max(0, 1 - 2.5 * dt), 0, vel.z * Math.max(0, 1 - 2.5 * dt));
+          if (this.haulDone) {
             // Recobrado terminado: el escalador SE MANTIENE de la cuerda con
             // las manos — no vuelve a caer (está bajo su punto de despegue,
             // con presas a un arrastre). Sin gravedad, sin vaivén.
@@ -1266,6 +1272,20 @@ export class SherpaRig {
       body.prev = vClone(body.pos);
       body.pos = vAdd(body.pos, vAdd(vel, vScale(acc, dt * dt)));
       this.clampBody(body);
+      // T95 — LA LÍNEA DE LA CUERDA ES DURA: capturado, la cintura JAMÁS pasa
+      // de la línea de captura (la cuerda no se estira ni un centímetro).
+      // pos y prev EN la línea: velocidad de bajada cero, sin energía de
+      // muelle almacenada.
+      if (this.ropeState === "caught" && this.ropeFallStartY !== null) {
+        const cy = Math.max(
+          this.deps.floorY + (fT?.catchFloorM ?? 0.6),
+          this.ropeFallStartY - this.belayCatchDropM,
+        );
+        if (body.pos.y < cy) {
+          body.pos = v3(body.pos.x, cy, body.pos.z);
+          body.prev = v3(body.prev.x, cy, body.prev.z);
+        }
+      }
       this.antiGomaServo(body, dt);
       vAbs = vAbsV;
     }
@@ -1689,16 +1709,25 @@ export class SherpaRig {
 
     const set = (i: number, p: V3): void => { ps[i].prev = vClone(ps[i].pos); ps[i].pos = p; };
     const waist = body.pos;
-    // T93 — DESPLOME del colgado (boceto del jugador: tras una caída el
-    // cuerpo queda abandonado, CASI HORIZONTAL, con las extremidades
-    // colgando por gravedad — el dangleTarget ya las cuelga desde sus
-    // raíces, que viajan con la espina). Solo en "caught" (al rescatarse se
-    // incorpora); asienta en ~0,6 s con dangleSettleT. La dirección la da
-    // desplomeLado (el signo de la velocidad al ser capturado).
-    const desplome = this.ropeState === "caught"
-      ? Math.min(1, this.dangleSettleT / 0.6) * 1.22 // rad (~70°)
-      : 0;
-    const despFrac = desplome / 1.22;
+    // T93/T95 — DESPLOME del colgado (boceto + FOTO del jugador: tras una
+    // caída el cuerpo queda abandonado HORIZONTAL, suspendido del arnés de la
+    // cintura, la cara al cielo y las extremidades colgando por gravedad — el
+    // dangleTarget ya las cuelga desde sus raíces, que viajan con la espina).
+    // NUNCA erguido (dictado). Solo en "caught" sin recobro; al rescatarse
+    // (hauling) se INCORPORA con fundido durante la subida (antes chocab de
+    // golpe a vertical). Asienta en ~0,6 s con dangleSettleT; la dirección la
+    // da desplomeLado (el signo de la velocidad al ser capturado). T95 —
+    // 1,63 rad (~93°): horizontal con la ligera arqueación de la foto
+    // (caderas arriba, cabeza y pecho un pelo por debajo de la cintura).
+    let despT = 0;
+    if (this.ropeState === "caught") {
+      despT = this.haulDone ? 0 : Math.min(1, this.dangleSettleT / 0.6);
+    } else if (this.ropeState === "hauling") {
+      // 0,9 s = haulDelaySeconds (la ventana abre con el desplome ya asentado)
+      despT = Math.max(0, 1 - Math.max(0, this.dangleSettleT - 0.9) / 0.5);
+    }
+    const desplome = despT * 1.63;
+    const despFrac = desplome / 1.63;
     const despX = Math.sin(desplome) * this.desplomeLado;
     const despY = Math.cos(desplome);
     const chest = v3(
