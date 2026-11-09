@@ -1868,14 +1868,20 @@ export class ParedNivel {
         this.winT += dt;
         if (this.winT >= 1.2) this.fin(true);
       } else this.winT = 0;
-      if (a.y < FAIL_Y || b.y < FAIL_Y || this.sherpas[0].ropeState === "grounded" || this.sherpas[1].ropeState === "grounded") {
+      // T97 — COLGADO ≠ DERROTA: el que cuelga de la cuerda real (en la
+      // línea de plomo bajo el compañero puede quedar bajo FAIL_Y) está
+      // VIVO y es RESCATABLE — la derrota por cota solo cuenta cayendo
+      // libre (o ya en la nieve). El rescate y el doble colgado deciden.
+      const cg0 = esColgado(this.sherpas[0].ropeState, this.sherpas[0].anchorsCount());
+      const cg1 = esColgado(this.sherpas[1].ropeState, this.sherpas[1].anchorsCount());
+      if ((a.y < FAIL_Y && !cg0) || (b.y < FAIL_Y && !cg1) || this.sherpas[0].ropeState === "grounded" || this.sherpas[1].ropeState === "grounded") {
         this.fin(false);
       }
       // T97 — PARTIDA PERDIDA (dictado: «han caído los dos sherpas y el juego
       // está bloqueado, no da partida perdida»): con los DOS colgados de la
       // cuerda nadie puede izar a nadie (el rescate exige un compañero
       // anclado) → derrota a los 1,5 s, nunca un bloqueo en silencio.
-      if (colgado[0] && colgado[1]) {
+      if (cg0 && cg1) {
         this.ambosColgadoT = pasoAmbosColgados(true, this.ambosColgadoT, dt);
         if (this.ambosColgadoT >= AMBOS_COLGADOS_PERDIDA_S) this.fin(false);
       } else {
@@ -3405,6 +3411,11 @@ export class ParedNivel {
         bolsasBonus: this.bloques.filter((b) => b.bolsa)
           .map((b) => ({ id: b.spec.id, vivo: b.bolsa!.vivo, y: +this.posBolsaBonus(b).y.toFixed(2) })),
         bolsa: this.bolsaLista,
+        // T97 — rotación del saco: en reposo NO debe girar (dictado: «no tiene
+        // sentido que realice un giro oscilante sobre su eje vertical sin
+        // más»); solo el yaw de DESLIZAMIENTO y el temblor de rabieta.
+        bolsaRotY: +(this.bolsaNodo?.rotation.y ?? 0).toFixed(3),
+        bolsaRotZ: +(this.bolsaNodo?.rotation.z ?? 0).toFixed(3),
         muellesBadge: [...this.muelles],
         // T93 — verificación E2E de la oleada de feedback
         lazo: this.lazo.length,

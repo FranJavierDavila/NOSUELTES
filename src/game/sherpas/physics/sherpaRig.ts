@@ -334,6 +334,11 @@ export class SherpaRig {
   private ropeHaulStartNow = false;
   private dangleSettleT = 0;
   private haulDone = false;
+  /** T97 — la VENTANA de izado abre UNA sola vez por caída (a los 0,9 s):
+   *  el evento haulStart dispara el aviso al jugador y la ESPERA pasa a
+   *  'hauling'; entre ráfagas de golpes el cuerpo vuelve a 'caught' (cuelga
+   *  de verdad) y las pulsaciones NUEVAS re-entran al izado sin re-evento. */
+  private ventanaIzado = false;
   /** T96b — RESCATE POR PULSACIONES (dictado: «deberá ser el otro sherpa
    *  quien lo suba tirando de la cuerda por medio de la pulsación de una
    *  tecla, cada golpe de tecla lo sube medio metro con una pequeña sacudida
@@ -1186,11 +1191,14 @@ export class SherpaRig {
       // el gas verde sale por atrás (el trail lo dispara el match vía fartFlying)
       this.fartTrailAcc += dt;
       if (this.fartLaunchT <= 0) this.autoGripAfterFart();
-    } else if (nAnchored === 0 && this.ropeState === "hauling" && (this.haulDone || this.haulPressesPend > 0)) {
-      // T97 — el izado KINEMÁTICO solo corre con pulsaciones del compañero o
-      // en el recobro; la ESPERA (hauling sin golpes) cae al verlet de abajo:
-      // el colgado sigue COLGADO DE VERDAD (péndulo amortiguado que se apaga
-      // en la línea de plomo), no congelado a mitad de balanceo.
+    } else if (nAnchored === 0 && this.ropeState === "hauling") {
+      // T97 — el izado KINEMÁTICO SUBE DE FORMA SOSTENIDA hacia el objetivo
+      // (cada golpe del compañero suma haulStepM al objetivo y el cuerpo
+      // sube a haulRiseMps hasta alcanzarlo — la sacudida NO se corta al
+      // primer tick); al alcanzar el objetivo SIN golpes pendientes el
+      // cuerpo vuelve a 'caught' y cuelga DE VERDAD (péndulo amortiguado,
+      // verlet de abajo) en la altura ya izada — el trinquete de la línea
+      // de captura (haulTargetY en el clamp) impide que resbale hacia abajo.
       this.dangleSettleT += dt;
       if (this.haulDone) {
         // T96b — RECUBRO: el cuerpo se INCORPORA con fundido (recobroT →
@@ -1215,22 +1223,31 @@ export class SherpaRig {
         if (this.haulTargetY === null) this.haulTargetY = body.pos.y;
         if (presses > 0) this.haulTargetY = Math.min(top, this.haulTargetY + presses * (fT?.haulStepM ?? 0.5));
         const dy0 = this.haulTargetY - body.pos.y;
-        const paso = Math.min(Math.max(0, dy0), (fT?.haulRiseMps ?? 2.6) * dt);
-        body.pos = vAdd(body.pos, v3(0, paso, 0));
-        body.prev = v3(body.pos.x, body.pos.y - paso * 0.55, body.pos.z);
-        this.clampBody(body);
-        // T97 — el izado RECOGE cuerda: la longitud efectiva del belay baja
-        // con la cintura (lo izado NO vuelve a colgar entre golpes).
-        if (this.belayPivot) {
-          const dH = vLen(vSub(body.pos, this.belayPivot));
-          this.belayLenEfectivo = Math.max(0.5, Math.min(this.belayLenEfectivo, dH));
+        let paso = 0;
+        if (dy0 > 1e-3) {
+          // SUBIDA sostenida hacia el objetivo (la «sacudida ascendente»)
+          paso = Math.min(dy0, (fT?.haulRiseMps ?? 2.6) * dt);
+          body.pos = vAdd(body.pos, v3(0, paso, 0));
+          body.prev = v3(body.pos.x, body.pos.y - paso * 0.55, body.pos.z);
+          this.clampBody(body);
+          // T97 — el izado RECOGE cuerda: la longitud efectiva del belay baja
+          // con la cintura (lo izado NO vuelve a colgar entre golpes).
+          if (this.belayPivot) {
+            const dH = vLen(vSub(body.pos, this.belayPivot));
+            this.belayLenEfectivo = Math.max(0.5, Math.min(this.belayLenEfectivo, dH));
+          }
+        } else if (this.haulPressesPend === 0) {
+          // Objetivo alcanzado sin más golpes: COLGA DE VERDAD en la altura
+          // izada (no congelado a mitad de balanceo) — el verlet de abajo
+          // manda desde el próximo tick; el trinquete mantiene la cota.
+          this.ropeState = "caught";
         }
         // SOLO cuando el RESCATE (el izado del compañero) lo ha situado con
         // un anclaje a su alcance —o en el tope del izado, junto a sus presas
         // de despegue— recupera la posición erguida (dictado). Sin golpes de
         // tecla del compañero, PERMANECE colgado horizontal e inactivo.
         this.chequeaRecobro(body, fT);
-        vAbs = Math.abs(paso) / Math.max(1e-4, dt);
+        vAbs = paso / Math.max(1e-4, dt);
       }
     } else {
       // RE-AGARRE: cualquier ancla viva devuelve la cuerda a holgura (Task 36).
@@ -1354,13 +1371,23 @@ export class SherpaRig {
             vel = vScale(vel, Math.max(0, 1 - 10 * dt));
           }
           this.dangleSettleT += dt;
-          // T96b/T97 — la ventana de izado abre a los 0,9 s (el colgado NO se
-          // recupera solo: sus golpes no hacen nada); mientras no lleguen
-          // pulsaciones del compañero el cuerpo sigue en el verlet de abajo,
-          // colgado DE VERDAD (péndulo que se apaga en la línea de plomo).
+          // T96b/T97 — la ventana de izado abre a los 0,9 s UNA sola vez por
+          // caída (pestillo ventanaIzado: el evento haulStart avisa al jugador
+          // y el estado pasa a 'hauling' UN tick — sin golpes el cuerpo vuelve
+          // a 'caught' y sigue COLGADO DE VERDAD, péndulo que se apaga en la
+          // línea de plomo; JAMÁS se recupera solo).
           if (!this.haulDone && this.ropeState === "caught" && this.dangleSettleT >= (fT?.haulDelaySeconds ?? 0.9)) {
+            if (!this.ventanaIzado) {
+              this.ventanaIzado = true;
+              this.ropeHaulStartNow = true;
+            }
             this.ropeState = "hauling";
-            this.ropeHaulStartNow = true;
+          }
+          // T97 — golpes del compañero LLEGANDO durante la espera: el izado
+          // arranca YA — pero SOLO con la ventana ya abierta (el reposo
+          // colgado de haulDelaySeconds manda: la cuerda se asienta primero).
+          if (!this.haulDone && this.ropeState === "caught" && this.ventanaIzado && this.haulPressesPend > 0) {
+            this.ropeState = "hauling";
           }
           // T97 — en la ESPERA también puede llegar el recobro: el compañero
           // ya izó lo suyo y las presas quedaron al alcance (o el tope).
@@ -1522,6 +1549,7 @@ export class SherpaRig {
       this.haulTargetY = null;
       this.haulPressesPend = 0;
       this.haulPressesDados = 0;
+      this.ventanaIzado = false; // T97: nueva caída = ventana nueva
     }
 
     result.maxSpeed = vAbs / dt;
