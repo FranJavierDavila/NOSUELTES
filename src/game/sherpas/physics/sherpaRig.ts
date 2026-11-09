@@ -636,7 +636,7 @@ export class SherpaRig {
    *  más cercana a cada presa libre dentro del radio gana el viaje (determi-
    *  nista). upBiasM > 0 (impulso del compañero) PREFIERE presas por encima:
    *  el empujón deja al escalador MÁS ARRIBA, no vuelve a la misma presa. */
-  private autoGripAfterFart(upBiasM = 0): void {
+  autoGripAfterFart(upBiasM = 0): void {
     const r = this.deps.tuning.fart?.autoGripRadiusM ?? 1.5;
     for (const limb of LIMBS) {
       if (this.states.get(limb)!.anchored) continue;
@@ -1362,7 +1362,12 @@ export class SherpaRig {
           // (pen·SPRING_K y el rebote): la cintura cuelga EN la línea (el
           // clamp duro de tras-integración la mantiene) y solo queda el
           // vaivén de péndulo, amortiguado.
-          vel = v3(vel.x * Math.max(0, 1 - 2.5 * dt), 0, vel.z * Math.max(0, 1 - 2.5 * dt));
+          // T97 — con belay REAL el vaivén es el PÉNDULO que ha de llegar a
+          // la LÍNEA DE PLOMO bajo el compañero: freno SUAVE (0,45/s — el
+          // balanceo se ve y se apaga en segundos). El chicote legacy mantiene
+          // su freno fuerte (2,5/s, parada seca de T95).
+          const frenoVaiven = this.belayPivot ? 0.45 : 2.5;
+          vel = v3(vel.x * Math.max(0, 1 - frenoVaiven * dt), 0, vel.z * Math.max(0, 1 - frenoVaiven * dt));
           if (this.haulDone) {
             // Recobrado terminado: el escalador SE MANTIENE de la cuerda con
             // las manos — no vuelve a caer (está bajo su punto de despegue,

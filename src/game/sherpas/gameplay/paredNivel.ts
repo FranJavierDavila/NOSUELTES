@@ -3474,6 +3474,21 @@ export class ParedNivel {
       (w as { sueltaSherpa?: (pi: 0 | 1) => void }).sueltaSherpa = (pi: 0 | 1) => {
         for (const limb of LIMBS) this.sherpas[pi].forceRelease(limb, 0, "player");
       };
+      // T97 — cheat de E2E: TELETRANSPORTA un sherpa dyM hacia arriba y le
+      // deja RE-AGARRAR al radio (para probar la cuerda real con el compañero
+      // anclado MÁS ARRIBA, como en la escalada de verdad).
+      (w as { subeSherpa?: (pi: 0 | 1, dyM: number) => void }).subeSherpa = (pi: 0 | 1, dyM: number) => {
+        const rig = this.sherpas[pi];
+        for (const limb of LIMBS) rig.forceRelease(limb, 0, "player");
+        const d = v3(0, dyM, 0);
+        const ps = rig.rig.particles;
+        for (const i of [P.pelvisC, P.chest, P.head, P.shL, P.shR, P.hipL, P.hipR,
+          P.handL, P.handR, P.footL, P.footR, P.elbowL, P.elbowR, P.kneeL, P.kneeR]) {
+          ps[i].pos = vAdd(ps[i].pos, d);
+          ps[i].prev = vAdd(ps[i].prev, d);
+        }
+        rig.autoGripAfterFart(0.9);
+      };
       // T94 — cheat de E2E: FUERZA una sacudida de la bolsa (los billetes
       // deben nacer EN su boca sin esperar a la rabieta programada).
       (w as { sacudir?: () => void }).sacudir = () => { this.sacudidaBolsa(); };

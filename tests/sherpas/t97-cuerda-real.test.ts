@@ -118,14 +118,14 @@ describe("T97 · CUERDA REAL: cae TODO el largo y queda en LÍNEA DE PLOMO bajo 
     soltar(rig);
     const serie: { y: number; dist: number; estado: string }[] = [];
     let tautTick = -1;
-    for (let i = 0; i < 60 * 9; i++) {
+    for (let i = 0; i < 60 * 14; i++) {
       const info = rig.step(dt, 1);
       const w = rig.waist();
       const dist = vLen(vSub(w, pivot));
       serie.push({ y: w.y, dist, estado: info.rope.state });
       if (info.rope.tautNow && tautTick < 0) tautTick = i;
-      // tras 3,2 s de péndulo el balanceo ya se apagó (damping 2,5/s)
-      if (tautTick >= 0 && i - tautTick >= 60 * 3.2) {
+      // tras 8 s el péndulo (freno suave 0,45/s) ya se apagó en el plomo
+      if (tautTick >= 0 && i - tautTick >= 60 * 8) {
         const fin = rig.waist();
         return { pivot, y0, tautTick, distAlFinal: vLen(vSub(fin, pivot)), serie, pose: fin, rig };
       }

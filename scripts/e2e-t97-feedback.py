@@ -15,7 +15,7 @@ Sirve el build standalone en 3103 y guarda capturas en download/.
 """
 import subprocess, time, json, sys, urllib.request
 
-PORT = 3103
+PORT = 3111
 BASE = f"http://127.0.0.1:{PORT}"
 fallos = []
 
@@ -48,8 +48,13 @@ try:
         # --- nivel arriba y sherpas asentados (4 anclajes) ---
         s = None
         t0 = time.time()
+        _dbg = 0
         while time.time() - t0 < 160:
             s = page.evaluate("window.__PARED && window.__PARED.sonda()")
+            _dbg += 1
+            if _dbg <= 4 or _dbg % 25 == 0:
+                _t = page.evaluate("[typeof window.__PARED, typeof (window.__PARED && window.__PARED.sonda), document.readyState]")
+                print(f"  [boot {_dbg}] s={s is not None} tip={_t}", flush=True)
             if s and s.get("bloques", 0) > 0 and s["anclajes"][0] >= 4 and s.get("bolsa"):
                 break
             page.wait_for_timeout(400)
@@ -102,12 +107,18 @@ try:
         page.screenshot(path="/home/z/my-project/download/t97-saco.png")
 
         # ============ D) CUERDA REAL: colgado en la PERPENDICULAR ============
-        # cuerda corta (2 m) para que el plomo bajo el compañero (cinturas en
-        # la banda de arranque) quede FUERA de la banda de nieve — con la
-        # cuerda de 5 por defecto el plomo toca la nieve y cae a tierra (T79,
-        # física correcta también).
-        page.evaluate("window.__PARED.setAjusteEnVivo('cuerdaMetros', 2)")
-        page.wait_for_timeout(600)
+        # El compañero (S2) sube 4 m y re-agarra (cuerda 5 por defecto: la
+        # separación queda ~4,5 m con ~0,5 de holgura) — así el punto de plomo
+        # bajo él queda LEJOS de la banda de nieve, como a media pared.
+        page.evaluate("window.__PARED.subeSherpa(1, 4)")
+        arriba = False
+        for _ in range(40):
+            s = page.evaluate("window.__PARED.sonda()")
+            if s["anclajes"][1] >= 4 and (s["alt1"] - s["alt0"]) > 3.0:
+                arriba = True; break
+            page.wait_for_timeout(300)
+        check("D.el compañero queda anclado MÁS ARRIBA (+4 m)", arriba,
+              f"anclajes={s['anclajes']} Δalt={(s['alt1'] - s['alt0']):.2f}")
         page.evaluate("window.__PARED.sueltaSherpa(0)")
         colgado = False
         for _ in range(60):
@@ -117,15 +128,15 @@ try:
             page.wait_for_timeout(300)
         check("D.caída capturada por la CUERDA REAL (colgado)", colgado,
               f"ropeState={s['ropeStates'][0]}")
-        page.wait_for_timeout(2600)  # el péndulo se apaga (~2,5 s)
+        page.wait_for_timeout(4500)  # el péndulo se apaga
         s = page.evaluate("window.__PARED.sonda()")
         import math
         dist = math.hypot(s["x0"] - s["x1"], s["alt0"] - s["alt1"])
         L = s["cuerda"]
         check("D.cuelga a TODO EL LARGO de la cuerda (dist ≈ L, no flotando arriba)",
               L - 0.45 <= dist <= L + 0.45, f"dist={dist:.2f} L={L}")
-        check("D.cuelga DEBAJO del compañero (perpendicular/plomo)",
-              (s["alt1"] - s["alt0"]) > 1.0 and abs(s["x0"] - s["x1"]) < 0.55,
+        check("D.cuelga DEBAJO del compañero en su LÍNEA DE PLOMO",
+              (s["alt1"] - s["alt0"]) > 3.5 and abs(s["x0"] - s["x1"]) < 0.55,
               f"Δalt={s['alt1'] - s['alt0']:.2f} Δx={abs(s['x0'] - s['x1']):.2f}")
         check("D.sin rescate sigue COLGADO e inactivo (no se recupera solo)",
               s["ropeStates"][0] in ("caught", "hauling") and not s["rescate"][0]["haulHecho"],
@@ -140,11 +151,11 @@ try:
                 const el = document.getElementById('pared-fin');
                 return el ? { visible: !el.classList.contains('hidden') ?? true, texto: el.textContent || '' } : null;
             })()""")
-            if panel and panel.get("texto") and "PARTIDA PERDIDA" in panel["texto"].upper():
+            if panel and panel.get("texto") and ("PARTIDA PERDIDA" in panel["texto"].upper() or "GAME OVER" in panel["texto"].upper()):
                 break
             page.wait_for_timeout(400)
         check("E.ambos fuera de acción → panel de derrota (NO bloqueo silencioso)",
-              panel is not None and "PARTIDA PERDIDA" in panel["texto"].upper(),
+              panel is not None and ("PARTIDA PERDIDA" in panel["texto"].upper() or "GAME OVER" in panel["texto"].upper()),
               f"panel={'sí' if panel else 'no'}")
         page.screenshot(path="/home/z/my-project/download/t97-partida-perdida.png")
 
