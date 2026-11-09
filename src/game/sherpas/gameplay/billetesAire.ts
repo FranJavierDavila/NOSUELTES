@@ -23,7 +23,9 @@ export const BILLETE_DINERO = 10;
 export const BILLETE_RADIO_COGIDA = 0.42;
 /** T89 (dictado): los billetes SUBEN sin parar hasta desaparecer por la parte
  *  alta de la PANTALLA (techoY lo da el nivel) — el final del vuelo es salir
- *  por arriba, no un temporizador. Vida de seguridad muy larga (14 s). */
+ *  por arriba, no un temporizador. T96b (dictado: «están siempre presentes
+ *  hasta que se cojan o desaparezcan de pantalla»): FUERA la muerte por vida
+ *  — el papel vuela con el viento hasta que se coge o sale de pantalla. */
 export const BILLETE_VIDA_S = 14.0;
 /** T91 — EMPUJE de la corriente (m/s²): el papel ACELERA hacia arriba como
  *  hoja en una columna de aire caliente (dictado: «vuelan hacia arriba
@@ -32,9 +34,11 @@ export const BILLETE_EMPUJE_MPS2 = 1.9;
 /** T92 — FUEGOS ARTIFICIALES (dictado: «deben salir disparados hacia arriba
  *  como si fuesen fuegos artificiales varios bloques por encima de la
  *  posición del saco y deben verse caer o volar esparcidos por el aire»):
- *  el térmico ARDE durante SUBIDA_S (la pólvora del cohete), el papel sigue
- *  subiendo por inercia, CRUZA el ápice y CAE de forma visible (hoja al
- *  viento) hasta que la corriente del suelo lo recoge y lo relanza. */
+ *  el térmico ARDE durante SUBIDA_S (la pólvora del cohete) ACELERANDO el
+ *  disparo hacia arriba (T96c — antes el tope 3,4 estaba POR DEBAJO del
+ *  lanzamiento 5,2 y el empuje nunca actuaba: el papel salía tibio y la
+ *  caída dominaba la imagen), CRUZA el ápice y CAE de forma visible (hoja
+ *  al viento) hasta que el viento lo toma (nunca muere en el suelo). */
 export const BILLETE_SUBIDA_S = 0.8;
 /** T93 — VELOCIDAD DEL DISPARO (m/s): el billete NACE DENTRO de la boca del
  *  saco y SALE DISPARADO como un cohete (dictado T93: «que nazcan desde el
@@ -48,9 +52,25 @@ export const BILLETE_G_MPS2 = 3.2;
  *  de 1,6: «caigan lentamente con movimientos caóticos lentos como de hoja
  *  al viento» — el descenso se queda en un planear perezoso. */
 export const BILLETE_CAIDA_MPS = 1.25;
-/** T92 — tope de subida (m/s): la resistencia del aire al papel. T91 2,6 →
- *  3,4: el disparo de los fuegos alcanza ~4 bloques sobre el saco. */
-export const BILLETE_TOPE_MPS = 3.4;
+/** T92 — tope de la PÓLVORA (m/s): la velocidad máxima del disparo con el
+ *  térmico ardiendo. T96c: 3,4 → 8,5 — el techo del empuje debe estar POR
+ *  ENCIMA del lanzamiento (5,2) para que el fuego artificial ACELERE hacia
+ *  arriba de verdad (el bug «salen hacia abajo»: sin aceleración, el disparo
+ *  se apagaba al nacer y la caída dominaba la imagen). */
+export const BILLETE_TOPE_MPS = 8.5;
+/** T96c — VIENTO (m/s): tras el ápice el papel «comienza a volar movido por
+ *  el viento» (dictado): empuje horizontal DOMINANTE y constante (con rachas)
+ *  que arrastra el papel atravesando la escena hasta salir de pantalla. */
+export const BILLETE_VIENTO_MPS = 1.7;
+/** T96c — segundos que tarda el viento en tomar el papel desde el ápice. */
+export const BILLETE_VIENTO_RAMP_S = 1.2;
+/** T96c — RASANTE (m): altura sobre el suelo bajo la cual la corriente de
+ *  tierra levanta el papel (el billete ROZA la nieve y SIGUE volando — nunca
+ *  muere en el suelo ni queda tumbado: «siempre presentes»). */
+export const BILLETE_RASANTE_M = 1.1;
+/** T96c — subida de la corriente rasante (m/s): el papel vuela RASANTE sin
+ *  hundirse en la nieve. */
+export const BILLETE_RASANTE_VY = 0.9;
 /** T91 — velocidad del REMOLINO (m/s): cada billete gira en torno a la
  *  columna de corriente (corkscrew con fase y sentido propios). */
 export const BILLETE_REMOLINO_MPS = 0.55;
@@ -82,6 +102,9 @@ export interface Billete {
    *  o ser recogido junto al suelo); pasado BILLETE_SUBIDA_S el térmico muere
    *  y el papel CAE (fuegos artificiales). Opcional: por defecto b.t. */
   aire?: number;
+  /** T96c — tiempo desde el ÁPICE (s): el viento toma el papel con rampa
+   *  BILLETE_VIENTO_RAMP_S. Opcional: por defecto 0. */
+  vientoT?: number;
   /** T93 — GIRO PROPIO (dictado: «los billetes rotan, tienen un spin propio
    *  cada uno de ellos para que parezca natural»): eje unitario del tumbo,
    *  velocidad angular (rad/s, con sentido) y ángulo integrado. Opcionales:
@@ -146,19 +169,20 @@ export function sacudidaBilletes(
 }
 
 /** Paso de física de papel — T92 FUEGOS ARTIFICIALES: el billete SALE
- *  DISPARADO hacia arriba (empuje térmico que ACELERA con RACHAS lentas
- *  hasta el tope del aire) mientras arde la pólvora (BILLETE_SUBIDA_S);
- *  luego cruza el ápice y CAE de forma visible (gravedad de hoja con
- *  velocidad terminal), esparcido por el remolino y el aleteo.
- *  T94 — FIN DE LA RECOGIDA DE SUELO: el billete que llega abajo MUERE
- *  (dictado: «no veo que salgan del saco» — la corriente que relanzaba el
- *  papel desde y≈0,6 hacía NACER billetes junto al suelo, lejos del saco, y
- *  ese es el papel circulado en rojo de la captura). Todo billete en el aire
- *  SALIÓ DEL SACO: al rozar el suelo desaparece (nunca queda tumbado ni
- *  renace) y solo muere además al cruzar `techoY` (la parte alta de la
- *  PANTALLA) o por vida de seguridad. Determinista. */
+ *  DISPARADO hacia ARRIBA (dictado T96c: «ahora siempre están saliendo hacia
+ *  abajo, justo en la dirección contraria» — el lanzamiento es vertical con
+ *  cono pequeño y el térmico ACELERA la subida mientras arde la pólvora).
+ *  Tras el ápice CAE como hoja y el VIENTO toma el papel (dictado: «los
+ *  billetes una vez alcanzan su altura máxima comienzan a volar movidos por
+ *  el viento, están SIEMPRE PRESENTES hasta que se cojan o desaparezcan de
+ *  pantalla»): empuje horizontal dominante con rachas y, al llegar rasante,
+ *  la corriente de tierra lo mantiene volando — NUNCA muere en el suelo
+ *  (T94 se revierte a petición expresa del jugador). Solo desaparece al ser
+ *  COGIDO o al salir de PANTALLA (techo `techoY` o límites laterales
+ *  `limitesX`). Determinista. */
 export function pasoBilletes(
   lista: Billete[], dt: number, floorY: number, techoY: number = Infinity,
+  limitesX?: { min: number; max: number },
 ): void {
   for (const b of lista) {
     if (!b.vivo) continue;
@@ -166,32 +190,46 @@ export function pasoBilletes(
     b.aire = (b.aire ?? b.t) + dt;
     // la corriente se afloja en lo alto (el papel casi flota al salir)
     const decay = Math.max(0.55, 1 - Math.max(0, b.pos.y - floorY - 6) * 0.04);
-    // T92 — pólvora: el empuje ARDE un tiempo y luego muere linealmente
+    // T92 — pólvora: el empuje ARDE un tiempo ACELERANDO el disparo hacia
+    // arriba (T96c: el tope está POR ENCIMA del lanzamiento)
     const polvora = Math.max(0, 1 - b.aire / BILLETE_SUBIDA_S);
-    // racha lenta del térmico + empuje: ACELERA sin frenar nunca la subida
+    // racha lenta del térmico
     const racha = 0.78 + 0.32 * Math.sin(b.t * BILLETE_RACHA_OMEGA + b.fase * 1.7);
     if (polvora > 0) {
-      const objetivo = Math.min(BILLETE_TOPE_MPS, b.vel.y + BILLETE_EMPUJE_MPS2 * racha * decay * polvora * dt);
-      b.vel.y = Math.max(b.vel.y, objetivo);
+      b.vel.y = Math.min(BILLETE_TOPE_MPS, b.vel.y + BILLETE_EMPUJE_MPS2 * racha * decay * polvora * dt);
     } else {
       // pólvora agotada: gravedad de HOJA — cae lenta y visiblemente
-      b.vel.y = Math.max(-BILLETE_CAIDA_MPS, b.vel.y - BILLETE_G_MPS2 * dt);
+      const vy = b.vel.y - BILLETE_G_MPS2 * dt;
+      b.vel.y = Math.max(-BILLETE_CAIDA_MPS, vy);
+      // T96c — el VIENTO toma el papel tras el ápice (rampa suave)
+      if (b.vel.y < 0) b.vientoT = (b.vientoT ?? 0) + dt;
+    }
+    // rasante: la corriente de tierra levanta el papel (siempre presente)
+    const rasante = b.pos.y - floorY;
+    if (rasante < BILLETE_RASANTE_M && polvora <= 0) {
+      b.vel.y = Math.max(b.vel.y, BILLETE_RASANTE_VY * (1 - rasante / BILLETE_RASANTE_M));
     }
     // remolino propio en torno a la columna (corkscrew) + aleteo de hoja
     b.orbAng = (b.orbAng ?? 0) + (b.orbW ?? 2.6) * dt;
     // T93 — GIRO PROPIO: cada billete tumba sobre SU eje a SU ritmo (el
     // render lo aplica como cuaternión; aquí solo se integra el ángulo)
     b.spinAng = (b.spinAng ?? 0) + (b.spinW ?? 2.8) * dt;
-    const vx = b.vel.x + Math.cos(b.orbAng) * BILLETE_REMOLINO_MPS
+    // T96c — VIENTO horizontal tras el ápice: empuje dominante (+X, el papel
+    // ATRAVIESA la escena hasta salir de pantalla) + rachas
+    const vientoRampa = Math.min(1, (b.vientoT ?? 0) / BILLETE_VIENTO_RAMP_S);
+    const vientoX = BILLETE_VIENTO_MPS * vientoRampa + Math.sin(b.t * 0.7 + b.fase) * 0.4 * vientoRampa;
+    const vx = b.vel.x + vientoX + Math.cos(b.orbAng) * BILLETE_REMOLINO_MPS
       + Math.sin(b.t * BILLETE_OSC_OMEGA + b.fase) * BILLETE_OSC_MPS;
     const vz = b.vel.z + Math.sin(b.orbAng) * BILLETE_REMOLINO_MPS * 0.6
       + Math.cos(b.t * BILLETE_OSC_OMEGA * 0.83 + b.fase) * BILLETE_OSC_MPS * 0.5;
     b.pos = v3(b.pos.x + vx * dt, b.pos.y + b.vel.y * decay * dt, b.pos.z + vz * dt);
-    // T94 — al rozar el suelo MUERE (comprobado TRAS integrar: ningún billete
-    // vivo queda jamás a ras de suelo, ni un paso — el origen de todo papel
-    // en el aire es LA BOCA DEL SACO)
-    if (b.pos.y <= floorY + 0.1) { b.vivo = false; continue; }
-    if (b.pos.y > techoY || b.t >= BILLETE_VIDA_S) b.vivo = false;
+    // T96c — SOLO dos muertes: COGIDO (lo gestiona el nivel) o FUERA DE
+    // PANTALLA (techo o límites laterales). El suelo NO mata (dictado:
+    // «siempre presentes hasta que se cojan o desaparezcan de pantalla»);
+    // guard de mundo por si algo cayera bajo la nieve.
+    if (b.pos.y > techoY) { b.vivo = false; continue; }
+    if (b.pos.y < floorY - 4) { b.vivo = false; continue; }
+    if (limitesX && (b.pos.x < limitesX.min || b.pos.x > limitesX.max)) b.vivo = false;
   }
 }
 

@@ -98,7 +98,7 @@
     "coopImpulse": "{from} boosts {to}!",
     "coopImpulseNeed": "Anchor yourself first (Q/J) to give a boost",
     "coopImpulseScore": "The boost paid off! Tip +{n}",
-    "ropeMash": "{name} IS HANGING! MASH C (P1) AND N (P2) TO CLIMB THE ROPE",
+    "ropeMash": "{name} IS HANGING! The PARTNER PRESSES HIS KEY (C green / N red): each press lifts him half a metre",
     "ropeReleased": "THE ROPE RAN OUT! {name} FALLS INTO THE VOID!",
     "portablePlaced": "Portable anchor placed — {left} left",
     "portableEmpty": "No portable anchors left",
@@ -208,9 +208,9 @@
       "keys": "Coop anchor: Q (P1) · J (P2) — the firm one stops and pulls the partner"
     },
     "s5": {
-      "title": "MASH! (when someone falls)",
-      "body": "If a sherpa falls, he hangs from the rope holding it with BOTH hands: mash the effort key TOGETHER at the same time. The meter next to the hanger must pass the notch to climb; below it he slides down and burns rope. If the rope runs out… he lets go and falls. Sharing the effort makes the rescue easy.",
-      "keys": "MASH: hammer C (P1) and N (P2) TOGETHER until the meter passes the notch"
+      "title": "RESCUE! (when someone falls)",
+      "body": "If a sherpa falls, he hangs HORIZONTAL from the rope with arms and legs dangling, and his controls go INACTIVE. The PARTNER hauls him up by pulling the rope: EACH PRESS of his key lifts him HALF A METRE with a small jolt. Only once the rescue brings him within reach of an anchor does he get upright and climb again.",
+      "keys": "RESCUE: C (GREEN, P1) · N (RED, P2) — press THE PARTNER key"
     }
   },
   "net": {
@@ -284,7 +284,7 @@
       "mover": "Press and drag a RED limb to a green ring on the wall",
       "mochila": "Press Y and release a RED HAND on the wall",
       "seguro": "Press J with the RED sherpa",
-      "asaco": "Mash N non-stop until the meter passes the line"
+      "asaco": "Mash the PARTNER key non-stop: each press lifts him half a metre"
     },
     "s1": {
       "title": "The goal",
@@ -315,16 +315,16 @@
       "body": "Press **J** with the RED sherpa:\n**your safety anchor is ON.** Now you can take risks without fear."
     },
     "s8": {
-      "title": "MASH IT! (rescue)",
-      "body": "If anyone falls, he hangs from the rope and must be rescued:\n**BOTH of you mash the effort key AT THE SAME TIME** (`C` for RED and `N` for GREEN) until the meter passes the line.\nWatch how the GREEN one does it."
+      "title": "RESCUE! pulling the rope",
+      "body": "If anyone falls, he hangs horizontal and CANNOT do anything:\n**the PARTNER PULLS THE ROPE WITH HIS KEY** (`N` for RED, `C` for GREEN): each press lifts him half a metre with a jolt.\nWatch the RED one rescue the GREEN one."
     },
     "s9": {
-      "title": "Your turn: mash it!",
-      "body": "The GREEN one hangs from the rope (he is already mashing his key):\n**MASH `N` non-stop** until he grips the wall again.\nIf you stop, he slides toward the ground."
+      "title": "Your turn: rescue him!",
+      "body": "The GREEN one hangs (horizontal, inactive — he CANNOT do anything):\n**MASH `N` NON-STOP** — each press lifts him half a metre — until an anchor is within his reach and he gets upright again."
     },
     "s10": {
       "title": "Surprises ahead",
-      "body": "The mountain sets traps: wind gusts, birds, falling rocks.\nIf anyone falls, you already know the drill: safety anchor and mash!"
+      "body": "The mountain sets traps: wind gusts, birds, falling rocks.\nIf anyone falls, you know the drill: the partner pulls the rope with his key."
     },
     "s11": {
       "title": "It's all yours!",

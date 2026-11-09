@@ -25,6 +25,8 @@ import { P } from "../../src/game/physics/pbd/ragdoll";
 
 const fsLoader = async (path: string): Promise<unknown> =>
   JSON.parse(readFileSync(join(process.cwd(), path), "utf8"));
+import { arbitraClic } from "../../src/game/sherpas/input/clicPrioridad"; // T96: arbitraje de clic
+const SCENE = join(__dirname, "../../src/game/sherpas/presentation/scene.ts");
 
 let data: SherpasData;
 let character: import("../../src/game/types").CharacterDefinition;
@@ -181,10 +183,12 @@ describe("T95 · pose de colgado NATURAL (foto): horizontal, nunca erguido", () 
     }
   });
 
-  it("al rescatarse (hauling) se INCORPORA con fundido, no de golpe (fuente)", () => {
+  it("al rescatarse (recobro) se INCORPORA con fundido, no de golpe (fuente)", () => {
     const src = readFileSync(RIG, "utf8");
-    expect(src).toContain("despT = Math.max(0, 1 - Math.max(0, this.dangleSettleT - 0.9) / 0.5)");
-    expect(src).toContain("this.dangleSettleT += dt;"); // también en hauling
+    // T96b — el FUNDIDO corre SOLO en el recobro (haulDone); el izado NO
+    // incorpora (dictado: «no recuperar la posición de ascenso»)
+    expect(src).toContain("despT = this.haulDone ? Math.max(0, 1 - this.recobroT / (fT?.recobroSeconds ?? 0.5)) : 1;");
+    expect(src).toContain("this.dangleSettleT += dt;"); // el reloj del desplome sigue
   });
 
   it("el recobrado terminado NO desploma otra vez (colgado del despegue, erguido)", () => {
@@ -193,14 +197,28 @@ describe("T95 · pose de colgado NATURAL (foto): horizontal, nunca erguido", () 
   });
 });
 
-describe("T95 · la MANO tiene siempre prioridad sobre la mochila", () => {
-  it("onDragDown intenta la EXTREMIDAD antes de mirar backpackAt (fuente)", () => {
+describe("T95/T96 · la MANO tiene siempre prioridad sobre la mochila (y la mochila es pulsable)", () => {
+  it("onDragDown ARBITRA con la regla cercanía (empate → mano) en vez del orden fijo T95 (fuente)", () => {
     const src = srcNivel();
-    const mano = src.indexOf("this.intentaAgarre(xCss, yCss)");
-    const mochila = src.indexOf("backpackAt(xCss, yCss)");
-    expect(mano).toBeGreaterThan(-1);
-    expect(mochila).toBeGreaterThan(-1);
-    expect(mano).toBeLessThan(mochila); // primero la mano, SIEMPRE
+    expect(src).toContain("arbitraClic("); // el arbitraje manda el clic
+    expect(src).toContain("this.objetivoClic(xCss, yCss)");
+  });
+
+  it("el módulo puro de arbitraje: la mano GANA en empate y la mochila SOLO si está más cerca", () => {
+    expect(arbitraClic({ d: 30, radio: 40 }, { d: 30, radio: 40 })).toBe("mano"); // empate → mano (T95)
+    expect(arbitraClic({ d: 31, radio: 40 }, { d: 10, radio: 40 })).toBe("mochila"); // más cerca
+    expect(arbitraClic({ d: 10, radio: 40 }, { d: 31, radio: 40 })).toBe("mano");
+    expect(arbitraClic({ d: 41, radio: 40 }, { d: 10, radio: 40 })).toBe("mochila");
+    expect(arbitraClic({ d: 41, radio: 40 }, { d: 41, radio: 40 })).toBeNull(); // fuera de ambos
+    expect(arbitraClic(null, { d: 5, radio: 40 })).toBe("mochila");
+    expect(arbitraClic({ d: 5, radio: 40 }, null)).toBe("mano");
+  });
+
+  it("la mochila proyecta SU PROPIA zona (centro + radio real) para hover y clic (fuente)", () => {
+    const src = readFileSync(SCENE, "utf8");
+    expect(src).toContain("mochilaZona(player");
+    expect(src).toContain("setMochilaHighlight(player");
+    expect(src).toContain("HighlightLayer"); // outline del objeto
   });
 
   it("beginDrag suelta el anclaje y arrastra (un clic en la mano anclada es agarre, no mochila)", () => {

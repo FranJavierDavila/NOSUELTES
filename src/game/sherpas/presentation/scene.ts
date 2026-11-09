@@ -55,6 +55,7 @@ import type { FallingKind } from "../events/falling"; // T61: objetos que caen (
 import { FALLING_KINDS } from "../events/falling";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
+import { HighlightLayer } from "@babylonjs/core/Layers/highlightLayer"; // T96: outline de la mochila al pasar el ratón
 import { Vector3, Quaternion, Matrix } from "@babylonjs/core/Maths/math.vector";
 import "@babylonjs/core/Culling/ray";
 import "@babylonjs/core/Culling/ray.core";
@@ -5537,6 +5538,131 @@ export class SherpaScene {
       }
     }
     return best;
+  }
+
+  // ---------- T96: HOVER + OUTLINE de la mochila (dictado: «al pasar el
+  // ratón sobre el objeto mochila se resalte o se cree un outline del objeto
+  // para poder pulsarlo y abrirla») ----------
+
+  private mochilaHL: HighlightLayer | null = null;
+  private mochilaHLActivo: 0 | 1 | null = null;
+  private mochilaMallasCache = new Map<0 | 1, Mesh[]>();
+  /** T96 — brillo ORIGINAL de los materiales de la mochila resaltada (para restaurar). */
+  private mochilaOrigEmiss = new Map<0 | 1, { mesh: Mesh; mat: { emissiveColor?: Color3 }; emissive: Color3 }[]>();
+
+  /** Mallas de la pieza «mochila» del títere (para el outline). */
+  private mochilaMallas(player: 0 | 1): Mesh[] {
+    const cache = this.mochilaMallasCache.get(player);
+    if (cache) return cache;
+    const out: Mesh[] = [];
+    const inst = this.puppet[player];
+    if (inst) {
+      for (const [name, node] of inst.pieceEntries()) {
+        if (name !== "mochila") continue;
+        if ((node as Mesh).geometry) out.push(node as Mesh);
+        for (const h of node.getChildMeshes()) out.push(h as Mesh);
+      }
+    } else {
+      const pack = (this.rigVisuals[player] as (RigVisual & { pack?: Mesh }) | undefined)?.pack;
+      if (pack) out.push(pack);
+    }
+    this.mochilaMallasCache.set(player, out);
+    return out;
+  }
+
+  /** T96 — ZONA de la mochila en pantalla (centro px + radio px) para el
+   *  arbitraje de clic y el hover: la caja envolvente de la pieza PROYECTADA
+   *  (antes un radio fijo de 52 px se tragaba los anclajes vecinos o se
+   *  quedaba corto según la cámara). null si la mochila no está en cámara. */
+  mochilaZona(player: 0 | 1): { x: number; y: number; r: number } | null {
+    const canvas = this.engine.getRenderingCanvas();
+    if (!canvas) return null;
+    const centro = this.backpackScreenPx(player);
+    if (!centro) return null;
+    // centro en MUNDO de la pieza (para proyectar su borde)
+    const inst = this.puppet[player];
+    let world: { x: number; y: number; z: number } | null = null;
+    if (inst) {
+      for (const [name, node] of inst.pieceEntries()) {
+        if (name !== "mochila") continue;
+        node.computeWorldMatrix(true);
+        const ap = node.getAbsolutePosition();
+        world = { x: ap.x, y: ap.y, z: ap.z };
+      }
+    } else {
+      const pack = (this.rigVisuals[player] as (RigVisual & { pack?: Mesh }) | undefined)?.pack;
+      if (pack) {
+        pack.computeWorldMatrix(true);
+        const ap = pack.getAbsolutePosition();
+        world = { x: ap.x, y: ap.y, z: ap.z };
+      }
+    }
+    if (!world) return null;
+    let rW = 0;
+    for (const m of this.mochilaMallas(player)) {
+      m.computeWorldMatrix(true);
+      rW = Math.max(rW, m.getBoundingInfo().boundingSphere.radiusWorld);
+    }
+    if (rW <= 0) rW = 0.22;
+    const c0 = this.projectToScreenCss(world);
+    const c1 = this.projectToScreenCss({ x: world.x + rW, y: world.y, z: world.z });
+    const rPx = Math.abs(c1.x - c0.x) / 100 * canvas.clientWidth;
+    if (!Number.isFinite(rPx) || rPx <= 0) return null;
+    // margen de puntería mínimo: la mochila en plano lejano es de ~20 px
+    return { x: centro.x, y: centro.y, r: Math.max(20, rPx * 1.2) };
+  }
+
+  /** T96 — resalta la mochila del jugador dado al pasar el ratón (dictado:
+   *  «se resalte o se cree un outline del objeto para poder pulsarlo y
+   *  abrirla»). Doble resalte: BRILLO dorado en SU material propio (los
+   *  clones del títere tienen materiales por jugador: no toca al gemelo —
+   *  visible SIEMPRE, también sin post-procesado) + OUTLINE del
+   *  HighlightLayer cuando el motor lo soporta. null = sin resalte. */
+  setMochilaHighlight(player: 0 | 1 | null): void {
+    if (this.mochilaHLActivo === player) return;
+    const previo = this.mochilaHLActivo;
+    this.mochilaHLActivo = player;
+    if (previo !== null) this.resalteMochila(previo, false);
+    if (player !== null) this.resalteMochila(player, true);
+  }
+
+  private resalteMochila(player: 0 | 1, on: boolean): void {
+    if (on && !this.mochilaHL) {
+      try {
+        this.mochilaHL = new HighlightLayer("mochilaHL", this.scene);
+      } catch {
+        this.mochilaHL = null; // sin stencil: queda el BRILLO del material
+      }
+    }
+    const registros = this.mochilaOrigEmiss.get(player) ?? [];
+    if (!on) {
+      // restaurar el brillo original de cada material
+      for (const r of registros) {
+        const anyMat = r.mat as unknown as { emissiveColor?: Color3 };
+        if (anyMat.emissiveColor && r.emissive) anyMat.emissiveColor.copyFrom(r.emissive);
+        this.mochilaHL?.removeMesh(r.mesh);
+      }
+      this.mochilaOrigEmiss.delete(player);
+      return;
+    }
+    if (!this.mochilaOrigEmiss.has(player)) this.mochilaOrigEmiss.set(player, []);
+    const arr = this.mochilaOrigEmiss.get(player)!;
+    const dorado = new Color3(0.42, 0.32, 0.04);
+    for (const mesh of this.mochilaMallas(player)) {
+      const mats: unknown[] = [];
+      const mat = mesh.material as unknown as { emissiveColor?: Color3; subMaterials?: unknown[] } | null;
+      if (!mat) continue;
+      if (mat.subMaterials) { for (const sm of mat.subMaterials) mats.push(sm); }
+      else mats.push(mat);
+      for (const m of mats) {
+        const anyMat = m as { emissiveColor?: Color3 } | null;
+        if (!anyMat?.emissiveColor) continue;
+        if (arr.some((r) => r.mat === anyMat)) continue;
+        arr.push({ mesh, mat: anyMat, emissive: anyMat.emissiveColor.clone() });
+        anyMat.emissiveColor = dorado.clone();
+      }
+      try { this.mochilaHL?.addMesh(mesh, Color3.FromHexString("#ffd75e")); } catch { /* sin stencil */ }
+    }
   }
 
   /** Métricas de rendimiento para la sonda E2E (se refrescan cada ventana de

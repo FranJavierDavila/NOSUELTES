@@ -98,7 +98,7 @@
     "coopImpulse": "¡{from} da un impulso a {to}!",
     "coopImpulseNeed": "Anclate primero (Q/J) para dar el impulso",
     "coopImpulseScore": "¡El impulso sirvió! Propina +{n}",
-    "ropeMash": "¡{name} COLGADO! PULSAD C (P1) Y N (P2) A SACO PARA TREPARLA",
+    "ropeMash": "¡{name} COLGADO! El COMPAÑERO PULSA SU TECLA (C verde / N rojo): cada golpe lo sube medio metro",
     "ropeReleased": "¡LA CUERDA SE ACABÓ! ¡{name} CAE AL ABISMO!",
     "portablePlaced": "Anclaje portátil colocado — quedan {left}",
     "portableEmpty": "No quedan anclajes portátiles",
@@ -208,9 +208,9 @@
       "keys": "Ancla cooperativa: Q (J1) · J (J2) — el firme frena y tira del compañero"
     },
     "s5": {
-      "title": "¡A SACO! (cuando alguien cae)",
-      "body": "Si un sherpa cae, queda COLGADO de la cuerda sujetándola con las dos manos: machacad la tecla de esfuerzo LOS DOS a la vez. El medidor junto al colgado debe superar la raya para trepar; si no llega, se desliza y gasta la cuerda. Si la cuerda se agota… suelta y cae. Repartir el esfuerzo hace el rescate fácil.",
-      "keys": "A SACO: machaca C (J1) y N (J2) LOS DOS a la vez hasta pasar la raya del medidor"
+      "title": "¡RESCATE! (cuando alguien cae)",
+      "body": "Si un sherpa cae, queda COLGADO en horizontal, con los brazos y las piernas colgando, y sus controles quedan INACTIVOS. Es el COMPAÑERO quien lo sube tirando de la cuerda: CADA PULSACIÓN de su tecla lo sube MEDIO METRO con una pequeña sacudida. Solo cuando el rescate lo sitúa con un anclaje a su alcance recupera la posición erguida y sigue trepando.",
+      "keys": "RESCATE: C (VERDE, J1) · N (ROJO, J2) — pulsa LA TECLA DEL COMPAÑERO"
     }
   },
   "net": {
@@ -284,7 +284,7 @@
       "mover": "Pulsa y arrastra una extremidad del ROJO hasta un aro verde de la pared",
       "mochila": "Pulsa Y y suelta una MANO del ROJO sobre la pared",
       "seguro": "Pulsa J con el sherpa ROJO",
-      "asaco": "Machaca N sin parar hasta pasar la raya del medidor"
+      "asaco": "Pulsa la tecla del COMPAÑERO sin parar: cada golpe lo sube medio metro"
     },
     "s1": {
       "title": "El objetivo",
@@ -315,16 +315,16 @@
       "body": "Pulsa **J** con el sherpa ROJO:\n**tu ancla de seguro queda activa.** Ya puedes arriesgarte sin miedo."
     },
     "s8": {
-      "title": "¡A SACO!: el rescate",
-      "body": "Si alguien cae, cuelga de la cuerda y hay que rescatarlo:\n**machacad LOS DOS la tecla de esfuerzo A LA VEZ** (`C` el ROJO y `N` el VERDE) hasta que el medidor pase la raya.\nMira cómo lo hace el VERDE."
+      "title": "¡RESCATE!: tirar de la cuerda",
+      "body": "Si alguien cae, cuelga horizontal de la cuerda y NO puede hacer nada:\n**el COMPAÑERO TIRA DE LA CUERDA CON SU TECLA** (`N` el ROJO, `C` el VERDE): cada golpe lo sube medio metro con una sacudida.\nMira cómo el ROJO rescata al VERDE."
     },
     "s9": {
-      "title": "Tu turno: ¡a saco!",
-      "body": "El VERDE cuelga de la cuerda (él ya machaca la suya):\n**machaca `N` sin parar** hasta que vuelva a agarrarse a la pared.\nSi paras, se desliza hacia el suelo."
+      "title": "Tu turno: ¡rescata!",
+      "body": "El VERDE cuelga (horizontal e inactivo, él NO puede hacer nada):\n**PULSA `N` SIN PARAR** — cada golpe lo sube medio metro — hasta que tenga un anclaje a su alcance y recupere la posición erguida."
     },
     "s10": {
       "title": "Sorpresas del camino",
-      "body": "La montaña pone trampas: rachas de viento, pájaros, piedras que caen.\nSi alguien cae, ya lo sabes hacer: ancla de seguro y ¡a saco!"
+      "body": "La montaña pone trampas: rachas de viento, pájaros, piedras que caen.\nSi alguien cae, ya lo sabes hacer: el compañero tira de la cuerda con su tecla."
     },
     "s11": {
       "title": "¡Todo tuyo!",

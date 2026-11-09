@@ -272,9 +272,10 @@ describe("T93 · caída con gravedad natural y tirón brusco al compañero", () 
   it("el colgado queda DESPLOMADO: la espina cae hacia horizontal en 'caught' (fuente)", () => {
     const src = readFileSync(join(__dirname, "../../src/game/sherpas/physics/sherpaRig.ts"), "utf8");
     expect(src).toContain("desplomeLado");
-    // T95 — horizontal (~93°, la foto del jugador); en el recobrado se incorpora con fundido
+    // T95 — horizontal (~93°, la foto del jugador); T96b — el izado NO
+    // incorpora (queda a despT 1): el FUNDIDO corre solo en el recobro
     expect(src).toContain("despT * 1.63");
-    expect(src).toContain("despT = Math.max(0, 1 - Math.max(0, this.dangleSettleT - 0.9) / 0.5)");
+    expect(src).toContain("despT = this.haulDone ? Math.max(0, 1 - this.recobroT / (fT?.recobroSeconds ?? 0.5)) : 1;");
   });
 
   it("el chicote de la propia caída es MÁS BRUSCO (parada seca: la bajada muere entera)", () => {

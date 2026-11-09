@@ -173,11 +173,12 @@ describe("captura de caída por la cuerda de porteo (doc 6.2: la cuerda hace de 
   });
 });
 
-describe("Task 36: seguro de cuerda — caída atrapada + recuperación mano a mano", () => {
+describe("Task 36 + T96b: seguro de cuerda — caída atrapada + RESCATE POR PULSACIONES", () => {
   const FALL = {
     twoHandsGraceSeconds: 0.5, slipReGripLock: 0.35,
     ropeSlackM: 2.9, catchFloorM: 0.6, catchFatiguePct: 0.16,
     haulDelaySeconds: 0.9, haulPerSecondM: 1.05, haulTopOffsetM: 0.35,
+    haulStepM: 0.5, haulRiseMps: 2.6, recobroSeconds: 0.5,
   };
   const dt = 1 / 60;
 
@@ -222,50 +223,113 @@ describe("Task 36: seguro de cuerda — caída atrapada + recuperación mano a m
     return { rig, y0, fatiguePre, fatiguePost, tautTicks, haulStarts, minWaist, sawFalling, sawCaught, sawHauling, releasedTicks };
   };
 
-  it("caída en alto: holgura → CHICOTE (una vez) → colgado → RECUPERACIÓN A SACO (los dos pulsamos) hasta el despegue", () => {
-    // T58-E: el haul ya NO es automático — la fuerza la ponen los jugadores.
-    // 1 pulsación cada 4 ticks por jugador = 15 puls/s cada uno: subida neta.
+  it("caída en alto: holgura → CHICOTE (una vez) → colgado → el COMPAÑERO lo izó a golpes (+0,5 m) y recobra", () => {
+    // T96b: la fuerza la pone SOLO el COMPAÑERO (presses[1]); las del colgado
+    // no hacen nada. 1 pulsación cada 4 ticks = 15 golpes/s → tope del izado.
     const r = fallFromHigh(FALL, 420, (i) => (i % 4 === 0 ? [1, 1] : [0, 0])); // 7 s
     expect(r.sawFalling).toBe(true); // caída libre honesta primero
     expect(r.tautTicks).toBe(1); // UN chicote, una sola vez
     expect(r.sawCaught).toBe(true);
     expect(r.haulStarts).toBe(1);
     expect(r.sawHauling).toBe(true);
-    expect(r.releasedTicks).toBe(0); // machacando, la cuerda NO se agota
+    expect(r.releasedTicks).toBe(0); // sin reserva que consumir: no suelta
     const dropMax = r.y0 - r.minWaist;
     expect(dropMax).toBeGreaterThan(2); // perdió altura DE VERDAD
     expect(r.minWaist).toBeGreaterThan(0.55); // jamás tocó el clamp del suelo (0,45)
-    expect(r.y0 - r.rig.waist().y).toBeLessThan(0.8); // el recobrado lo devuelve al despegue
+    // el rescate lo RECUPERÓ: con la pared llena, una presa queda al alcance
+    // pronto y el recobro dispara en cuanto el izado lo sitúa con ella (el
+    // izado limpio a +0,5 m por golpe se prueba aparte en pared vacía)
+    expect(r.rig.haulHecho()).toBe(true);
+    expect(r.rig.ropeState).toBe("caught"); // recobrado terminado
+    // erguido al acabar (fundido completo): espina VERTICAL de nuevo
+    const ps = r.rig.rig.particles;
+    expect(ps[P.chest].pos.y - ps[P.pelvisC].pos.y).toBeGreaterThan(0.25);
     expect(r.fatiguePost).toBeGreaterThanOrEqual(r.fatiguePre + 0.15); // el chicotazo se paga en las manos
   });
 
-  it("T58-E: si NADIE pulsa, la ventana desliza, la cuerda se AGOTA y suelta al colgado (cae al suelo)", () => {
+  it("T96b — si NADIE pulsa, el colgado PERMANECE horizontal e inactivo (sin deslizar ni soltarse)", () => {
     const r = fallFromHigh(FALL, 60 * 20); // 20 s sin pulsar ni una vez
-    expect(r.haulStarts).toBe(1); // la ventana abrió
-    expect(r.releasedTicks).toBe(1); // la cuerda se agotó UNA vez
-    expect(r.rig.waist().y).toBeLessThan(0.7); // en el suelo (pedriz), no colgado
-    // sin cuerda ya: una nueva caída no vuelve a ser atrapada (castigo real)
+    expect(r.haulStarts).toBe(1); // la ventana de rescate abrió
+    expect(r.releasedTicks).toBe(0); // JAMÁS se suelta (cuerda real: no hay reserva)
+    expect(r.rig.haulHecho()).toBe(false); // sin rescate, sin recuperación
+    expect(r.rig.colgadoSinRecobro()).toBe(true); // controles INACTIVOS
+    // sigue colgado EN la línea de captura (sin deslizar hacia abajo):
+    const catchY = r.y0 - 2.9;
+    expect(r.rig.waist().y).toBeGreaterThanOrEqual(catchY - 0.06);
+    expect(r.rig.waist().y).toBeLessThan(r.y0 - 1.5); // no volvió a subir solo
   });
 
-  it("T58-E: machacar SOLO a 5 puls/s no llega al umbral — desliza sin soltarse aún", () => {
-    const r = fallFromHigh(FALL, 60 * 8, (i) => (i % 12 === 0 ? [1, 0] : [0, 0])); // 5/s solo el colgado
+  it("T96b — las pulsaciones del PROPIO colgado no hacen nada (sus controles están inactivos)", () => {
+    const r = fallFromHigh(FALL, 60 * 8, (i) => (i % 4 === 0 ? [1, 0] : [0, 0])); // 15 golpes/s SUYOS
     expect(r.sawHauling).toBe(true);
-    expect(r.releasedTicks).toBe(0); // la reserva (5 m) aguanta el deslizamiento lento
-    // pero el cuerpo DESCENDIÓ respecto del chicote (no sube: no llegó al umbral)
-    expect(r.rig.waist().y).toBeLessThan(r.y0 - 1.5);
+    expect(r.releasedTicks).toBe(0);
+    expect(r.rig.haulHecho()).toBe(false); // nadie lo izó: no recobra
+    expect(r.rig.colgadoSinRecobro()).toBe(true);
+    // se quedó EN la línea de captura: sus golpes de tecla no lo suben
+    expect(Math.abs(r.rig.waist().y - (r.y0 - 2.9))).toBeLessThan(0.3);
   });
 
-  it("re-agarrarse durante el recobrado devuelve la cuerda a holgura (climbing)", () => {
-    const { rig, gen } = buildRigFull(0, FALL);
-    const holds = highHolds(gen);
-    rig.respawnAt(holds);
+  /** Escenario CON CAÍDA y pared VACÍA: el sherpa se suelta desde las presas
+   *  altas, es capturado y la ventana de rescate abre con SOLO esas dos
+   *  presas registradas (lejos del chicote) — el izado NO dispara el recobro
+   *  por densidad. Devuelve TODAS las presas para re-registrarlas después. */
+  const caidaEnParedVacia = () => {
+    const full = buildRigFull(0, FALL);
+    const holds = highHolds(full.gen);
+    full.rig.respawnAt(holds);
+    for (let i = 0; i < 40; i++) full.rig.step(dt, 1);
+    const keep = new Set([holds.hand_l.id, holds.hand_r.id]);
+    const todas = [...full.anchors.holds.values()];
+    for (const h of todas) if (!keep.has(h.id)) full.anchors.holds.delete(h.id);
+    full.rig.setGrip("hand_l", false);
+    full.rig.setGrip("hand_r", false);
+    let ticks = 0;
+    while (full.rig.ropeState !== "hauling" && ticks < 60 * 4) { full.rig.step(dt, 1); ticks++; }
+    return { rig: full.rig, anchors: full.anchors, todas, yCatch: full.rig.waist().y };
+  };
+
+  it("T96b — CADA pulsación del compañero lo sube MEDIO METRO con sacudida, y sube HORIZONTAL", () => {
+    const { rig, yCatch } = caidaEnParedVacia();
+    const ps = rig.rig.particles;
+    const horizontal = (): number => Math.abs(ps[P.chest].pos.y - ps[P.pelvisC].pos.y);
+    expect(horizontal()).toBeLessThan(0.09); // desplome asentado: horizontal
+    // UN golpe de tecla del compañero → +0,5 m (la subida tarda ~0,2 s)
+    rig.feedRopeMash(0, 1, true);
+    rig.step(dt, 1);
+    for (let i = 0; i < 24; i++) rig.step(dt, 1);
+    expect(rig.waist().y).toBeGreaterThan(yCatch + 0.4); // subió ~medio metro
+    expect(rig.waist().y).toBeLessThan(yCatch + 0.6);
+    expect(rig.haulHecho()).toBe(false); // sin anclaje al alcance: sigue colgado
+    expect(horizontal()).toBeLessThan(0.09); // y SIGUE horizontal (no se incorpora)
+    // dos golpes más → +1 m en total desde la línea (cuerda real: sigue ahí)
+    rig.feedRopeMash(0, 2, true);
+    rig.step(dt, 1);
     for (let i = 0; i < 30; i++) rig.step(dt, 1);
-    rig.setGrip("hand_l", false);
-    rig.setGrip("hand_r", false);
-    for (let i = 0; i < 130; i++) rig.step(dt, 1); // cae, chicote, empieza a recuperar
-    expect(["caught", "hauling"]).toContain(rig.ropeState);
-    // el jugador vuelve a pedir agarre apuntando a las presas del despegue:
-    rig.aim = v3(holds.hand_r.pos.x, holds.hand_r.pos.y, holds.hand_r.pos.z);
+    expect(rig.waist().y).toBeGreaterThan(yCatch + 1.3);
+    expect(horizontal()).toBeLessThan(0.09);
+  });
+
+  it("T96b — SOLO cuando el rescate lo sitúa con un anclaje a su alcance recupera la posición ERGUIDA", () => {
+    const { rig, anchors, todas } = caidaEnParedVacia();
+    const ps = rig.rig.particles;
+    const horizontal = (): number => Math.abs(ps[P.chest].pos.y - ps[P.pelvisC].pos.y);
+    // izado a golpes SIN presas cerca: sube y PERMANECE horizontal
+    for (let i = 0; i < 45; i++) {
+      rig.feedRopeMash(0, i % 10 === 0 ? 1 : 0, true);
+      rig.step(dt, 1);
+      if (i < 40) expect(horizontal()).toBeLessThan(0.09);
+    }
+    expect(rig.haulHecho()).toBe(false);
+    // el rescate lo sitúa CON UN ANCLAJE AL ALCANCE → recupera erguido
+    anchors.registerHolds(todas);
+    let recobrado = false;
+    for (let i = 0; i < 90 && !recobrado; i++) {
+      rig.step(dt, 1);
+      if (rig.haulHecho() && rig.ropeState === "caught") recobrado = true;
+    }
+    expect(recobrado).toBe(true); // recobro por alcance completado
+    expect(ps[P.chest].pos.y - ps[P.pelvisC].pos.y).toBeGreaterThan(0.25); // ERGUIDO
+    // y ya RECUPERADO los controles responden: re-agarrarse → climbing
     rig.setGrip("hand_l", true);
     rig.setGrip("hand_r", true);
     let recovered = false;

@@ -59,7 +59,7 @@ describe("T92 · billetes fuegos artificiales (suben disparados y se ven caer)",
     const { billetes } = sacudidaBilletes(mulberry32(13), 1, v3(0, 40, 0)); // lejos: sin recogida de suelo
     const b = billetes[0];
     b.pos = v3(6, 30, 0);                        // alto: la pólvora ya ardió lejos del suelo
-    b.vel = v3(0, BILLETE_TOPE_MPS, 0);
+    b.vel = v3(0, 0, 0);                         // ya cruzó el ápice (T96c: el viento lo toma ahí)
     b.aire = BILLETE_SUBIDA_S + 0.01;            // pólvora agotada AHORA
     let cayo = false;
     let yMax = b.pos.y;
@@ -73,27 +73,27 @@ describe("T92 · billetes fuegos artificiales (suben disparados y se ven caer)",
     expect(b.vel.y).toBeGreaterThanOrEqual(-BILLETE_CAIDA_MPS - 1e-9); // terminal de hoja
   });
 
-  it("T94 — el papel caído MUERE al tocar el suelo: sin relanzamiento ni papel tumbado", () => {
+  it("T96c — el papel caído NO muere al tocar el suelo: vuela rasante con el viento", () => {
     const { billetes } = sacudidaBilletes(mulberry32(4), 1, v3(3, 30, 0)); // lejos: ninguno cerca
     const caido = billetes[0];
-    caido.pos = v3(0.5, 0.09, 0);                // a ras del suelo (suelo y=0; muere ≤ 0,1)
-    caido.vel = v3(0, 0, 0);
+    caido.pos = v3(0.5, 0.35, 0);                // a ras del suelo (suelo y=0)
+    caido.vel = v3(0, -1, 0);
     caido.aire = BILLETE_SUBIDA_S + 5;           // pólvora agotada
+    caido.vientoT = 3;                           // el viento ya lo lleva
     pasoBilletes(billetes, 1 / 60, 0, 99);
-    expect(caido.vivo).toBe(false);              // NUNCA renace a ras de suelo…
-    expect(caido.aire).not.toBe(0);              // …la pólvora NO se reenciende
-    for (let i = 0; i < 60; i++) pasoBilletes(billetes, 1 / 60, 0, 99);
-    expect(caido.pos.y).toBeLessThanOrEqual(0.1);// jamás despega: no hay billetes «del suelo»
+    expect(caido.vivo).toBe(true);               // el suelo YA NO mata (dictado T96)
+    expect(caido.aire).not.toBe(0);              // la pólvora NO se reenciende
+    expect(caido.pos.y).toBeGreaterThan(0.1);    // la rasante lo levanta: SIGUE volando
   });
 
-  it("T94 — ciclo del fuego: sube, CAE de forma visible y MUERE al llegar al suelo (sin relanzar)", () => {
+  it("T96c — ciclo del fuego: sube, CAE de forma visible y SIGUE volando hasta salir de pantalla", () => {
     const { billetes } = sacudidaBilletes(mulberry32(17), 1, v3(0, 3, 0));
     const b = billetes[0];
     let subidas = b.vel.y > 0.2 ? 1 : 0, caidas = 0; // nace DISPARADO (la subida es su salida)
     let vyPrev = b.vel.y;
     let yMuerte = 99;
-    for (let i = 0; i < 60 * 14 && b.vivo; i++) {
-      pasoBilletes(billetes, 1 / 60, 0, 999);
+    for (let i = 0; i < 60 * 20 && b.vivo; i++) {
+      pasoBilletes(billetes, 1 / 60, 0, 999, { min: -6, max: 6 }); // límites de pantalla
       if (b.vel.y > 0.2 && vyPrev <= 0.2) subidas++;
       if (b.vel.y < -0.2 && vyPrev >= -0.2) caidas++;
       vyPrev = b.vel.y;
@@ -101,8 +101,9 @@ describe("T92 · billetes fuegos artificiales (suben disparados y se ven caer)",
     }
     expect(caidas).toBeGreaterThanOrEqual(1);    // al MENOS una caída visible
     expect(subidas).toBeGreaterThanOrEqual(1);   // el disparo de salida
-    expect(b.vivo).toBe(false);                  // y MUERE (no cicla eternamente)
-    expect(yMuerte).toBeLessThanOrEqual(0.1);    // al llegar ABAJO: el origen fue el saco
+    expect(b.vivo).toBe(false);                  // MUERE al salir de pantalla
+    expect(yMuerte).toBeGreaterThan(-0.05);      // JAMÁS bajo la nieve (rasante lo levanta)
+    expect(b.pos.x).toBeGreaterThan(6);          // el viento lo sacó por el LADO
   });
 
   it("los billetes a mano (tests viejos) siguen vivos sin remolino ni pólvora definidos", () => {

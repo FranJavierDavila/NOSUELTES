@@ -24,10 +24,7 @@ import type { Limb, ReleaseCause } from "../core/bus";
 import type { LimbTuning, RopeTuning, FartTuning, CoopTuning } from "../core/data";
 import { AnchorSystem, AnchorInstance, type HoldInstance } from "./anchors";
 import { TEST_MODE } from "../gameplay/testMode"; // T89: modo test oculto
-import {
-  mashMeter01, mashRisePerS, mashSlidePerS, mashThreshold01, openRopeMash, ROPE_MASH_DEFAULTS, stepRopeMash,
-  type RopeMashState, type RopeMashTuning,
-} from "../gameplay/ropeMash"; // T58-E: trepar a pulso
+import type { RopeMashTuning } from "../gameplay/ropeMash"; // T96b: tipo de compat del afinado (la mecánica A SACO se retiró)
 
 export const LIMBS: Limb[] = ["hand_l", "hand_r", "foot_l", "foot_r"];
 const isHand = (l: Limb) => l === "hand_l" || l === "hand_r";
@@ -196,8 +193,17 @@ export interface SherpaGripTuning {
     /** el recobrado termina justo DEBAJO del punto de despegue (m). */
     haulTopOffsetM?: number;
     /** T58-E TREPAR A PULSO: afinado de la ventana de fuerza (ausente →
-     *  ROPE_MASH_DEFAULTS). */
+     *  ROPE_MASH_DEFAULTS). RETIRADO en T96b (la ventana A SACO ya no existe).
+     *  Se conserva el campo por compatibilidad de datos/tests. */
     ropeMash?: Partial<RopeMashTuning>;
+    /** T96b (dictado: «cada golpe de tecla lo sube medio metro»): metros que
+     *  el COMPAÑERO iza al colgado POR CADA PULSACIÓN de su tecla. */
+    haulStepM?: number;
+    /** T96b: velocidad de la subida hacia el objetivo de izado (m/s) — es la
+     *  «pequeña sacudida ascendente» de cada golpe de tecla. */
+    haulRiseMps?: number;
+    /** T96b: duración del FUNDIDO de incorporación al rescatarse (s). */
+    recobroSeconds?: number;
   };
   /** SUPER FLATULENCIA (opcional en tests: ausente → sin superpoder). */
   fart?: FartTuning;
@@ -328,6 +334,20 @@ export class SherpaRig {
   private ropeHaulStartNow = false;
   private dangleSettleT = 0;
   private haulDone = false;
+  /** T96b — RESCATE POR PULSACIONES (dictado: «deberá ser el otro sherpa
+   *  quien lo suba tirando de la cuerda por medio de la pulsación de una
+   *  tecla, cada golpe de tecla lo sube medio metro con una pequeña sacudida
+   *  ascendente»): objetivo Y del cuerpo durante el izado (cada pulsación del
+   *  compañero suma haulStepM) y reloj del fundido de incorporación. */
+  private haulTargetY: number | null = null;
+  private recobroT = 0;
+  /** Pulsaciones del compañero pendientes de aplicar (acumuladas entre
+   *  ticks — las pulsaciones durante el choque cuentan en cuanto la ventana
+   *  de izado abre). Cap: el turbo-software no rompe la mecánica. */
+  private haulPressesPend = 0;
+  /** T96b — golpes de izado YA aplicados (sin ellos el colgado jamás se
+   *  recupera: el rescate es la acción del compañero). */
+  private haulPressesDados = 0;
   /** T93 — lado del DESPLOME del colgado (boceto del jugador: tras una
    *  caída el cuerpo queda abandonado, casi horizontal): se fija al entrar
    *  en "caught" con el signo de la velocidad horizontal (por defecto, hacia
@@ -335,14 +355,9 @@ export class SherpaRig {
   private desplomeLado = -1;
   /** T58-E: borde — este tick la cuerda se AGOTÓ y soltó al colgado. */
   private ropeReleasedNow = false;
-  // T58-E — TREPAR A PULSO: la recuperación ya no es automática: la fuerza la
-  // ponen LOS DOS JUGADORES machacando su tecla (ropeMash.ts). El match inyecta
-  // las pulsaciones del tick con feedRopeMash() justo antes de step().
-  private ropeMash: RopeMashState | null = null;
-  private readonly ropeMashCfg: RopeMashTuning;
-  private feedHangedPresses = 0;
-  private feedPartnerPresses = 0;
-  private feedPartnerAnchored = false;
+  // T96b — la ventana A SACO (fuerza/umbral/deslizamiento/reserva) se RETIRÓ:
+  // el colgado NO se recupera solo (sus controles quedan inactivos) y la
+  // fuerza la pone SOLO el compañero, pulsación a pulsación (+0,5 m cada una).
   /** T58-E: la cuerda se AGOTÓ deslizando → caída libre sin captura (suelo). */
   private ropeReleased = false;
   /** CUERDA COOPERATIVA (Task 37): este escalador está ANCLADO como seguro del
@@ -364,8 +379,6 @@ export class SherpaRig {
   constructor(deps: SherpaDeps, startHolds: { hand_l: HoldInstance; hand_r: HoldInstance; foot_l?: HoldInstance; foot_r?: HoldInstance }) {
     this.deps = deps;
     this.player = deps.player;
-    // T58-E: afinado de la ventana A SACO (datos ausentes → defaults)
-    this.ropeMashCfg = { ...ROPE_MASH_DEFAULTS, ...(deps.tuning.fall?.ropeMash ?? {}) };
     const mass = deps.tuning.limb.mass;
     this.rig = { particles: [] };
     for (let i = 0; i < 15; i++) {
@@ -1059,6 +1072,9 @@ export class SherpaRig {
       if (st.lockedFor > 0) st.lockedFor = Math.max(0, st.lockedFor - dt);
       if (this.dragging === limb) continue;
       if (st.anchored || st.traveling || st.lockedFor > 0 || !this.gripWanted[limb]) continue;
+      // T96b — COLGADO sin recobrar: TODOS sus controles inactivos (dictado)
+      // — tampoco agarra por su cuenta aunque haya presa al alcance.
+      if (this.colgadoSinRecobro()) continue;
       const hold = this.findHoldFor(limb);
       if (hold) this.startTravel(limb, hold);
     }
@@ -1124,51 +1140,43 @@ export class SherpaRig {
       this.fartTrailAcc += dt;
       if (this.fartLaunchT <= 0) this.autoGripAfterFart();
     } else if (nAnchored === 0 && this.ropeState === "hauling") {
-      // T95 — el reloj del desplome sigue contando durante la subida: el
-      // cuerpo se INCORPORA con fundido (despT cae de 1 a 0 en 0,5 s de
-      // hauling) en vez de chocar de golpe a vertical.
       this.dangleSettleT += dt;
-      // 2a-bis. RECUPERACIÓN A PULSO (T58-E, petición del jugador: "subir por
-      //    ella a pulso... pulsar una tecla a toda velocidad, los DOS: el
-      //    colgado para trepar y el compañero para tirar de la cuerda hacia
-      //    arriba, con un medidor con umbral"). La fuerza la ponen las
-      //    pulsaciones (ropeMash.ts): sobre el umbral asciende (más fuerza =
-      //    más rápido); debajo, DESLIZA y consume la cuerda de reserva;
-      //    agotada, SUELTA y cae al suelo. Cinemática pura: sin gravedad y
-      //    sin energía fantasma. El jugador puede ADELANTAR el rescate
-      //    arrastrando una mano a una presa (entonces hay anclas y esta rama
-      //    ni se entra).
-      const cfg = this.ropeMashCfg;
-      const rm = this.ropeMash ?? (this.ropeMash = openRopeMash());
-      const wasInGrace = rm.tOpen <= cfg.graceS; // el tick que cruza el descanso no desliza
-      this.ropeMash = stepRopeMash(rm, dt, this.feedHangedPresses, this.feedPartnerPresses, this.feedPartnerAnchored, this.handFatigueAvg(), cfg);
-      this.consumeRopeMashFeed();
-      const st = this.ropeMash;
-      if (st.released) {
-        // ¡SE ACABÓ LA CUERDA!: suelta y cae SIN captura (el suelo es el final)
-        this.ropeState = "falling";
-        this.ropeFallStartY = body.pos.y;
-        this.ropeMash = null;
-        this.ropeReleased = true;
-        this.ropeReleasedNow = true; // borde: el match suena/avisa
-        vAbs = 0; // la caída libre re-lee la velocidad del cuerpo el próximo bloque
+      if (this.haulDone) {
+        // T96b — RECUBRO: el cuerpo se INCORPORA con fundido (recobroT →
+        // despT 1→0 en fillSkeleton) y al terminar pasa a 'caught' erguido.
+        this.recobroT += dt;
+        body.prev = vClone(body.pos); // quieto mientras se incorpora
+        if (this.recobroT >= (fT?.recobroSeconds ?? 0.5)) this.ropeState = "caught";
+        vAbs = 0;
       } else {
-        const start = this.ropeFallStartY ?? body.pos.y;
-        const top = start - (fT?.haulTopOffsetM ?? 0.35);
-        const rising = mashRisePerS(st.force, cfg);
-        const sliding = wasInGrace ? 0 : mashSlidePerS(st.force, cfg);
-        const dy = Math.min(Math.max(0, top - body.pos.y), rising * dt) - sliding * dt;
-        body.pos = vAdd(body.pos, v3(0, dy, 0));
-        body.prev = v3(body.pos.x, body.pos.y - dy * 0.55, body.pos.z);
+        // T96b — RESCATE POR PULSACIONES DEL COMPAÑERO (dictado: «deberá ser
+        // el otro sherpa quien lo suba tirando de la cuerda por medio de la
+        // pulsación de una tecla, cada golpe de tecla lo sube MEDIO METRO con
+        // una pequeña sacudida ascendente»). La ventana A SACO de T58-E
+        // (fuerza/umbral/deslizamiento/reserva) se RETIRÓ: el colgado no se
+        // recupera solo, sus pulsaciones no hacen nada; cada pulsación del
+        // COMPAÑERO suma haulStepM al objetivo y el cuerpo sube hacia él
+        // rápido (la sacudida) quedándose HORIZONTAL en la nueva altura.
+        const presses = Math.min(6, this.haulPressesPend);
+        this.haulPressesPend = 0;
+        if (presses > 0) this.haulPressesDados += presses;
+        const top = (this.ropeFallStartY ?? body.pos.y) - (fT?.haulTopOffsetM ?? 0.35);
+        if (this.haulTargetY === null) this.haulTargetY = body.pos.y;
+        if (presses > 0) this.haulTargetY = Math.min(top, this.haulTargetY + presses * (fT?.haulStepM ?? 0.5));
+        const dy0 = this.haulTargetY - body.pos.y;
+        const paso = Math.min(Math.max(0, dy0), (fT?.haulRiseMps ?? 2.6) * dt);
+        body.pos = vAdd(body.pos, v3(0, paso, 0));
+        body.prev = v3(body.pos.x, body.pos.y - paso * 0.55, body.pos.z);
         this.clampBody(body);
-        if (rising > 0 && body.pos.y >= top - 1e-4) {
-          // RESCATE COMPLETO: queda colgado bajo su punto de despegue (igual
-          // que el haul automático de siempre) — a un arrastre de las presas.
-          this.ropeState = "caught";
+        // SOLO cuando el RESCATE (el izado del compañero) lo ha situado con
+        // un anclaje a su alcance —o en el tope del izado, junto a sus presas
+        // de despegue— recupera la posición erguida (dictado). Sin golpes de
+        // tecla del compañero, PERMANECE colgado horizontal e inactivo.
+        if (this.haulPressesDados > 0 && (this.alcanzaAnclajeManos() || body.pos.y >= top - 1e-4)) {
           this.haulDone = true;
-          this.ropeMash = null;
+          this.recobroT = 0;
         }
-        vAbs = Math.abs(dy) / Math.max(1e-4, dt);
+        vAbs = Math.abs(paso) / Math.max(1e-4, dt);
       }
     } else {
       // RE-AGARRE: cualquier ancla viva devuelve la cuerda a holgura (Task 36).
@@ -1412,6 +1420,10 @@ export class SherpaRig {
       // la cuerda vuelve a estar en reserva: el próximo chicote vuelve a doler.
       this.ropeTautDone = false;
       this.haulDone = false;
+      this.recobroT = 0; // T96b: el recobro muere al volver a trepar
+      this.haulTargetY = null;
+      this.haulPressesPend = 0;
+      this.haulPressesDados = 0;
     }
 
     result.maxSpeed = vAbs / dt;
@@ -1428,38 +1440,63 @@ export class SherpaRig {
     };
   }
 
-  // ---------- T58-E: TREPAR A PULSO (inyección de pulsaciones + medidor) ----------
+  // ---------- T96b: RESCATE POR PULSACIONES (izado por el compañero) ----------
 
-  /** El match inyecta las pulsaciones del tick ANTES de step(): las del
-   *  COLGADO (sus teclas) y las del COMPAÑERO (que izá). Cap 4/tick: el
-   *  turbo-software no rompe la mecánica. */
-  feedRopeMash(hangedPresses: number, partnerPresses: number, partnerAnchored: boolean): void {
-    this.feedHangedPresses = Math.max(0, Math.min(4, hangedPresses));
-    this.feedPartnerPresses = Math.max(0, Math.min(4, partnerPresses));
-    this.feedPartnerAnchored = partnerAnchored;
+  /** El match/nivel inyecta las pulsaciones del tick ANTES de step(): las del
+   *  COLGADO no hacen nada (dictado: «todos sus controles permanecen
+   *  inactivos») y CADA pulsación del COMPAÑERO suma un golpe de izado
+   *  (+haulStepM, por defecto medio metro). Las pulsaciones que llegan
+   *  durante el chicote cuentan en cuanto la ventana de izado abre. */
+  feedRopeMash(_hangedPresses: number, partnerPresses: number, _partnerAnchored: boolean): void {
+    void _hangedPresses;
+    void _partnerAnchored;
+    this.haulPressesPend = Math.min(10, this.haulPressesPend + Math.max(0, Math.floor(partnerPresses)));
   }
 
-  private consumeRopeMashFeed(): void {
-    this.feedHangedPresses = 0;
-    this.feedPartnerPresses = 0;
+  /** T96b — ¿hay alguna presa LIBRE al alcance de una mano libre? (dictado:
+   *  «SOLO cuando el sherpa colgado tiene un anclaje a su alcance recupera
+   *  su posición erguida»). true si existe una presa alcanzable. */
+  private alcanzaAnclajeManos(): boolean {
+    for (const limb of ["hand_l", "hand_r"] as const) {
+      if (this.dragging === limb) continue;
+      const st = this.states.get(limb)!;
+      if (st.anchored || st.traveling || st.lockedFor > 0) continue;
+      const maxLen = this.fatiguedReach(limb);
+      for (const hold of this.deps.anchorSystem.holds.values()) {
+        if (this.deps.anchorSystem.anchorAtHold(hold.id)) continue;
+        if (vLen(vSub(hold.pos, this.rig.particles[CHAIN_ROOT[limb]].pos)) <= maxLen) return true;
+        if (vLen(vSub(hold.pos, this.limbPt[limb])) <= maxLen) return true;
+      }
+    }
+    return false;
   }
 
-  /** Fatiga MEDIA de las manos (el chicote se paga: molar menos a saco). */
-  private handFatigueAvg(): number {
-    const a = this.states.get("hand_l")!.fatigue;
-    const b = this.states.get("hand_r")!.fatigue;
-    return (a + b) / 2;
+  /** T96b — COLGADO sin recobrar: TODOS sus controles quedan INACTIVOS
+   *  (dictado) hasta que el compañero lo izo cerca de un anclaje. El nivel
+   *  consulta esto para rechazar arrastres sobre SUS extremidades. */
+  colgadoSinRecobro(): boolean {
+    return this.anchorsCount() === 0 && !this.haulDone
+      && (this.ropeState === "caught" || this.ropeState === "hauling");
   }
 
-  /** Medidor leído por el match para el HUD/escena (null = sin ventana). */
+  /** T96b — el rescate TERMINÓ (recobrado erguido, a un arrastre de las
+   *  presas): controles de nuevo activos. Sonda/E2E. */
+  haulHecho(): boolean {
+    return this.haulDone;
+  }
+
+  /** Medidor leído por el match/escena para el HUD (null = sin izado).
+   *  T96b — muestra el PROGRESO del izado por pulsaciones (0..1 hacia el
+   *  tope); la raya del umbral va AL FINAL (la meta). */
   ropeMashMeter(): { force01: number; threshold01: number; climbing: boolean } | null {
-    return this.ropeMash
-      ? {
-          force01: mashMeter01(this.ropeMash.force, this.ropeMashCfg),
-          threshold01: mashThreshold01(this.ropeMashCfg),
-          climbing: this.ropeMash.force >= this.ropeMashCfg.threshold,
-        }
-      : null;
+    if (this.ropeState !== "hauling" || this.haulDone || this.ropeFallStartY === null) return null;
+    const fT = this.deps.tuning.fall;
+    const start = this.ropeFallStartY;
+    const catchY = Math.max(this.deps.floorY + (fT?.catchFloorM ?? 0.6), start - this.belayCatchDropM);
+    const top = start - (fT?.haulTopOffsetM ?? 0.35);
+    const span = Math.max(0.3, top - catchY);
+    const prog = Math.min(1, Math.max(0, (this.rig.particles[P.pelvisC].pos.y - catchY) / span));
+    return { force01: prog, threshold01: 1, climbing: false };
   }
 
   // ---------- cargas (falseadas, suaves, con techo) ----------
@@ -1720,11 +1757,16 @@ export class SherpaRig {
     // 1,63 rad (~93°): horizontal con la ligera arqueación de la foto
     // (caderas arriba, cabeza y pecho un pelo por debajo de la cintura).
     let despT = 0;
+    const fT = this.deps.tuning.fall;
     if (this.ropeState === "caught") {
       despT = this.haulDone ? 0 : Math.min(1, this.dangleSettleT / 0.6);
     } else if (this.ropeState === "hauling") {
-      // 0,9 s = haulDelaySeconds (la ventana abre con el desplome ya asentado)
-      despT = Math.max(0, 1 - Math.max(0, this.dangleSettleT - 0.9) / 0.5);
+      // T96b — el izado NO incorpora (dictado: «debe permanecer en la misma
+      // posición horizontal con extremidades caídas y NO recuperar la
+      // posición de ascenso»): horizontal SIEMPRE mientras sube por golpes
+      // de tecla; el FUNDIDO de incorporación corre SOLO en el recobro
+      // (haulDone: anclaje al alcance o tope del izado).
+      despT = this.haulDone ? Math.max(0, 1 - this.recobroT / (fT?.recobroSeconds ?? 0.5)) : 1;
     }
     const desplome = despT * 1.63;
     const despFrac = desplome / 1.63;
@@ -1842,8 +1884,11 @@ export class SherpaRig {
     this.ropeTautDone = false;
     this.dangleSettleT = 0;
     this.haulDone = false;
-    // T58-E: respawn = cuerda nueva (la ventana A SACO y el desenroque mueren)
-    this.ropeMash = null;
+    // T96b: el izado por pulsaciones muere con el respawn.
+    this.haulTargetY = null;
+    this.recobroT = 0;
+    this.haulPressesPend = 0;
+    this.haulPressesDados = 0;
     this.ropeReleased = false;
     this.ropeReleasedNow = false;
     // Task 37 (cuerda cooperativa): el respawn deshace ancla e impulso, y la

@@ -27,7 +27,7 @@ import { v3, vLen, vSub } from "../../src/game/physics/pbd/math";
 import { cuelloDeSaco, type PtGeo } from "../../src/game/sherpas/gameplay/bolsaGeo";
 import {
   sacudidaBilletes, pasoBilletes, billetesVivos,
-  BILLETE_LANZ_MPS,
+  BILLETE_LANZ_MPS, BILLETE_TOPE_MPS,
 } from "../../src/game/sherpas/gameplay/billetesAire";
 import { mulberry32 } from "../../src/game/sherpas/core/rng";
 
@@ -113,27 +113,39 @@ describe("T91 · la bolsa se amarra por su zona estrecha (el cuello)", () => {
 // ---------- 2) BILLETES EMPUJADOS POR CORRIENTES DE AIRE ----------
 
 describe("T91 · billetes empujados por corrientes de aire", () => {
-  it("T93 — el disparo de fuegos NACE fuerte y la corriente mantiene la subida", () => {
+  it("T93/T96c — el disparo NACE fuerte y el térmico ACELERA la subida hacia el tope de la pólvora", () => {
     const { billetes } = sacudidaBilletes(mulberry32(9), 1, v3(0, 2, 0));
     const b = billetes[0];
     const vy0 = b.vel.y;
     expect(vy0).toBeGreaterThanOrEqual(BILLETE_LANZ_MPS * 0.8); // lanzamiento
+    expect(BILLETE_TOPE_MPS).toBeGreaterThan(BILLETE_LANZ_MPS); // T96c: el techo está POR ENCIMA del disparo (acelera)
     for (let i = 0; i < 120; i++) pasoBilletes(billetes, 1 / 60, -6, 99);
-    expect(b.vel.y).toBeLessThanOrEqual(BILLETE_LANZ_MPS * 1.2 + 1e-9);
+    expect(b.vel.y).toBeLessThanOrEqual(BILLETE_TOPE_MPS + 1e-9);
     expect(b.pos.y).toBeGreaterThan(2 + 1.5);    // y sube claramente
   });
 
-  it("T94 — un billete que llega al SUELO muere: jamás relanzado ni tumbado", () => {
+  it("T96c — un billete que llega RASANTE NO muere: vuela con el viento (siempre presente)", () => {
     const { billetes } = sacudidaBilletes(mulberry32(4), 1, v3(3, 30, 0)); // lejos: ninguno cerca
     const caido = billetes[0];
-    caido.pos = v3(0.5, 0.09, 0);                // a ras del suelo (suelo y=0; muere ≤ 0,1)
-    caido.vel = v3(0, 0, 0);
+    caido.pos = v3(0.5, 0.35, 0);                // a ras del suelo (suelo y=0)
+    caido.vel = v3(0, -1, 0);
     caido.aire = 99;                             // pólvora agotada hace tiempo
+    caido.vientoT = 5;                           // el viento ya lo llevó
     pasoBilletes(billetes, 1 / 60, 0, 99);
-    expect(caido.vivo).toBe(false);              // muere al rozar el suelo…
-    expect(caido.pos.y).toBeLessThanOrEqual(0.1);// …sin relanzamiento (no «nace» ahí)
-    // y ningún otro billete «aparece» por abajo: la lista queda sin vivos bajos
-    expect(billetes.every((b) => !b.vivo || b.pos.y > 0.1)).toBe(true);
+    expect(caido.vivo).toBe(true);               // el suelo YA NO mata (dictado)
+    // la corriente rasante lo levanta y el viento lo empuja: SIGUE volando
+    expect(caido.pos.y).toBeGreaterThan(0.2);
+    expect(caido.pos.x).toBeGreaterThan(0.5);    // viento +X tras el ápice
+  });
+
+  it("T96c — el billete solo muere al salir de PANTALLA (límites laterales)", () => {
+    const { billetes } = sacudidaBilletes(mulberry32(8), 1, v3(0, 8, 0));
+    const b = billetes[0];
+    b.aire = 99; b.vientoT = 5; b.vel = v3(0, 0, 0);
+    b.pos = v3(0, 8, 0);
+    for (let i = 0; i < 60 * 12 && b.vivo; i++) pasoBilletes(billetes, 1 / 60, 0, 99, { min: -2, max: 6 });
+    expect(b.vivo).toBe(false);                  // el viento lo sacó por el lado
+    expect(b.pos.x).toBeGreaterThan(6);          // cruzó el límite derecho
   });
 
   it("el remolino hace girar al billete en torno a la columna (movimiento en espiral)", () => {

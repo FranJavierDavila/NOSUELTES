@@ -117,16 +117,24 @@ describe("T94 · billetes — nacen EN la boca del saco y mueren en el suelo", (
     expect(billetes[0].pos.y).toBeGreaterThan(origen.y);
   });
 
-  it("NINGÚN billete vivo por debajo de suelo+0,1 (la recogida murió)", () => {
+  it("T96c — NINGÚN billete vivo bajo la nieve y SIEMPRE presentes hasta salir de pantalla", () => {
     const origen = v3(0, 6, 0);
     const { billetes } = sacudidaBilletes(mulberry32(23), 1, origen);
     for (let i = 0; i < 60 * 16; i++) {
-      pasoBilletes(billetes, 1 / 60, 0, 999);
+      pasoBilletes(billetes, 1 / 60, 0, 999); // sin límites: vuelan con el viento
       for (const b of billetes) {
         if (!b.vivo) continue;
-        expect(b.pos.y).toBeGreaterThan(0.1); // nada vivo a ras de suelo
+        expect(b.pos.y).toBeGreaterThan(-0.05); // jamás bajo la nieve (rasante lo levanta)
       }
     }
-    expect(billetes.every((b) => !b.vivo)).toBe(true); // y al final ya no queda papel vivo
+    // «siempre presentes hasta que se cojan o desaparezcan de pantalla»: con
+    // la pared entera alrededor el viento LOS MANTIENE vivos (el suelo no mata)
+    expect(billetes.some((b) => b.vivo)).toBe(true);
+    // y al AÑADIR los límites de pantalla, salen por el lado y mueren ahí:
+    const { billetes: lote2 } = sacudidaBilletes(mulberry32(23), 1, origen);
+    for (let i = 0; i < 60 * 30 && lote2.some((b) => b.vivo); i++) {
+      pasoBilletes(lote2, 1 / 60, 0, 999, { min: 1, max: 1.5 });
+    }
+    expect(lote2.every((b) => !b.vivo)).toBe(true); // salieron de pantalla
   });
 });

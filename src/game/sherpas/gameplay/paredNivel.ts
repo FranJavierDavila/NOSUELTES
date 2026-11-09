@@ -109,6 +109,7 @@ import {
   type RockwallStyle,
 } from "../world/rockwall";
 import { PointerDrag } from "../input/drag";
+import { arbitraClic, type CandidatoClic } from "../input/clicPrioridad"; // T96: arbitraje mano-vs-mochila
 import type { InputManager } from "../input/input";
 import type { SherpaHud, MinimapHold } from "../presentation/hud";
 import type { SherpaScene } from "../presentation/scene";
@@ -883,6 +884,7 @@ export class ParedNivel {
   private matAzul: PBRMaterial | null = null;      // T92 bloques que derivan hacia los lados
   private masterPresa: Mesh | null = null;
   private pointerDrag: PointerDrag | null = null;
+  private hoverMove: ((e: PointerEvent) => void) | null = null; // T96: hover de la mochila
   private raf = 0;
   private lastMs = 0;
   private acc = 0;
@@ -1321,6 +1323,32 @@ export class ParedNivel {
     });
     const canvas = this.d.scene.engine.getRenderingCanvas();
     if (canvas) this.pointerDrag.attach(canvas);
+    // T96 — HOVER de la mochila: al pasar el ratón sobre el OBJETO mochila se
+    // le crea un outline (y cursor pointer) para ver que es pulsable —
+    // dictado: «casi resulta imposible activar la mochila... se resalte o se
+    // cree un outline del objeto para poder pulsarlo y abrirla».
+    this.hoverMove = (e: PointerEvent) => {
+      const cv = this.d.scene.engine.getRenderingCanvas();
+      if (!cv) return;
+      const r = cv.getBoundingClientRect();
+      this.pasoHover(e.clientX - r.left, e.clientY - r.top);
+    };
+    window.addEventListener("pointermove", this.hoverMove, { passive: true });
+  }
+
+  /** T96 — hover: resalta la mochila si el ARBITRAJE daría el clic a la
+   *  mochila (el cursor puede estar sobre una extremidad: ahí NO resalta). */
+  private pasoHover(xCss: number, yCss: number): void {
+    if (this.state !== "jugando" || this.goma || this.dragLimb !== null
+      || this.enVuelo[0] || this.enVuelo[1]) {
+      this.d.scene.setMochilaHighlight(null);
+      return;
+    }
+    const obj = this.objetivoClic(xCss, yCss);
+    const mochila = obj?.tipo === "mochila" ? obj.pi : null;
+    this.d.scene.setMochilaHighlight(mochila);
+    const cv = this.d.scene.engine.getRenderingCanvas();
+    if (cv) cv.style.cursor = mochila !== null ? "pointer" : "";
   }
 
   private puntoPlano(xCss: number, yCss: number): V3 | null {
@@ -1339,16 +1367,17 @@ export class ParedNivel {
     // T123: en vuelo el agarre es AUTOMÁTICO — los clics no hacen nada
     if (this.enVuelo[0] || this.enVuelo[1]) return;
     if (this.mochilaAbierta !== null) this.cierraMochila();
-    // T95-A — LA MANO TIENE SIEMPRE PRIORIDAD (dictado: «pulsar sobre un
-    // anclaje de la mano que esté próximo a la mochila activaba la mochila
-    // en lugar de la mano; en estos casos siempre tendrá prioridad la
-    // mano»): el radio de clic de la mochila (52 px) se tragaba el anclaje.
-    // Primero se intenta la extremidad —beginDrag suelta el anclaje y
-    // arrastra—; SOLO si ninguna extremidad agarra se atiende la mochila.
-    if (!this.goma && this.intentaAgarre(xCss, yCss)) return;
-    // T123 B5: ¿clic en la mochila? armado → tiro directo; sin armar → INTERIOR
-    const pi = this.d.scene.backpackAt(xCss, yCss);
-    if (pi !== null && !this.goma) {
+    if (this.goma) return; // con el muelle armado, el clic no interrumpe
+    this.d.scene.setMochilaHighlight(null);
+    // T96 — ARBITRAJE (más cercano gana; empate → mano): resuelve los DOS
+    // dictados a la vez — T95 («pulsar sobre un anclaje de la mano próximo a
+    // la mochila activaba la mochila: SIEMPRE prioridad la mano») y T96
+    // («casi imposible activar la mochila»: el clic SOBRE el objeto mochila
+    // la abre aunque haya extremidades cerca).
+    const obj = this.objetivoClic(xCss, yCss);
+    if (obj?.tipo === "mochila") {
+      // T123 B5: clic en la mochila — armado → tiro directo; sin armar → INTERIOR
+      const pi = obj.pi;
       if (this.muelleActivo[pi]) {
         this.arrancaGoma(pi, xCss, yCss);
       } else if (this.muelles[pi] <= 0) {
@@ -1359,16 +1388,84 @@ export class ParedNivel {
       }
       return;
     }
+    if (obj?.tipo === "mano" && this.beginDragCandidato(obj.pi, obj.limb, xCss, yCss)) return;
+    // sin objetivo preciso (beginDrag falló en la candidata ganadora): el
+    // camino viejo prueba las extremidades restantes por cercanía.
+    this.intentaAgarre(xCss, yCss);
   }
 
-  /** T95-A — intento de agarre/arrastre de extremidad al nivel del plano de
-   *  presas (antes el cuerpo de onDragDown; ahora también VALE como primer
-   *  filtro del clic). Devuelve true si una extremidad empezó a arrastrarse. */
+  /** T96 — px por metro de mundo en la profundidad del punto dado. */
+  private pxPorMundo(p: V3): number {
+    const canvas = this.d.scene.engine.getRenderingCanvas();
+    if (!canvas) return 100;
+    const a = this.d.scene.projectToScreenCss(p);
+    const b = this.d.scene.projectToScreenCss(v3(p.x + 1, p.y, p.z));
+    return Math.max(8, Math.hypot((b.x - a.x) / 100 * canvas.clientWidth, (b.y - a.y) / 100 * canvas.clientHeight));
+  }
+
+  /** T96 — ¿QUÉ hay bajo el cursor? La extremidad más cercana vs la mochila
+   *  (en px de pantalla, el mismo espacio): decide arbitraClic. */
+  private objetivoClic(xCss: number, yCss: number):
+    { tipo: "mano"; pi: 0 | 1; limb: Limb } | { tipo: "mochila"; pi: 0 | 1 } | null {
+    // MOCHILA: zona proyectada de la pieza (centro + radio real en pantalla)
+    let mochila: { pi: 0 | 1; cand: CandidatoClic } | null = null;
+    for (const pi of [0, 1] as const) {
+      const z = this.d.scene.mochilaZona(pi);
+      if (!z) continue;
+      const d = Math.hypot(z.x - xCss, z.y - yCss);
+      if (d <= z.r && (!mochila || d < mochila.cand.d)) {
+        mochila = { pi, cand: { d, radio: z.r } };
+      }
+    }
+    // EXTREMIDAD: la más cercana bajo el cursor en el plano de presas
+    let mano: { pi: 0 | 1; limb: Limb; cand: CandidatoClic } | null = null;
+    const p = this.puntoPlano(xCss, yCss);
+    if (p) {
+      for (const pi of [0, 1] as const) {
+        for (const limb of LIMBS) {
+          const lp = this.sherpas[pi].limbPos(limb);
+          const dd = Math.hypot(lp.x - p.x, lp.y - p.y);
+          const radioM = limb.startsWith("hand") ? 0.55 : 0.7;
+          if (dd > radioM * 1.8) continue; // fuera: ni candidata (recorte barato)
+          const ppm = this.pxPorMundo(lp);
+          const cand: CandidatoClic = { d: dd * ppm, radio: radioM * ppm };
+          if (!mano || cand.d < mano.cand.d) mano = { pi, limb, cand };
+        }
+      }
+    }
+    const ganador = arbitraClic(mano?.cand ?? null, mochila?.cand ?? null);
+    if (ganador === "mano" && mano) return { tipo: "mano", pi: mano.pi, limb: mano.limb };
+    if (ganador === "mochila" && mochila) return { tipo: "mochila", pi: mochila.pi };
+    return null;
+  }
+
+  /** beginDrag de una extremidad concreta (T96): falla si el sherpa está
+   *  COLGADO sin recobrar (dictado: «todos sus controles permanecen
+   *  inactivos» hasta que el compañero lo izo cerca de un anclaje). */
+  private beginDragCandidato(pi: 0 | 1, limb: Limb, xCss: number, yCss: number): boolean {
+    if (this.sherpas[pi].colgadoSinRecobro()) return false;
+    if (!this.sherpas[pi].beginDrag(limb)) return false;
+    this.dragPlayer = pi;
+    this.dragLimb = limb;
+    const p = this.puntoPlano(xCss, yCss);
+    if (p) {
+      this.dragCursor = p;
+      this.sherpas[pi].moveDrag(p);
+    }
+    return true;
+  }
+
+  /** T95-A/T96 — intento de agarre/arrastre de extremidad al nivel del plano
+   *  de presas (respaldo del arbitraje: prueba las candidatas por cercanía).
+   *  T96 — las extremidades de un sherpa COLGADO sin recobrar son
+   *  INARRASTRABLES (todos sus controles inactivos). Devuelve true si una
+   *  extremidad empezó a arrastrarse. */
   private intentaAgarre(xCss: number, yCss: number): boolean {
     const p = this.puntoPlano(xCss, yCss);
     if (!p) return false;
     const cands: { player: 0 | 1; limb: (typeof LIMBS)[number]; d: number }[] = [];
     for (const pi of [0, 1] as const) {
+      if (this.sherpas[pi].colgadoSinRecobro()) continue; // T96: controles inactivos
       for (const limb of LIMBS) {
         const lp = this.sherpas[pi].limbPos(limb);
         const dd = Math.hypot(lp.x - p.x, lp.y - p.y);
@@ -1605,7 +1702,9 @@ export class ParedNivel {
     );
     // T91 — el suelo REAL (Y de la base): la corriente recoge el papel caído
     // cerca de ella y ya no hay muerte por tocar el suelo
-    pasoBilletes(this.billetes, dt, 0, techoPant);
+    // T96c — el papel ya NUNCA muere en el suelo: vuela con el viento hasta
+    // que se coge o sale de PANTALLA (techo o límites laterales del muro)
+    pasoBilletes(this.billetes, dt, 0, techoPant, { min: -10, max: 10 });
     this.aseguraMallasBilletes();
     const manos: ManoLibre[] = [];
     for (const pi of [0, 1] as const) {
@@ -2481,6 +2580,10 @@ export class ParedNivel {
    *  cuello en el origen; los billetes nacen dentro de la boca, justo bajo
    *  el cinchado) y el lanzamiento es el fuego artificial de sacudidaBilletes. */
   private sacudidaBolsa(): void {
+    // T96c — dictado: «SOLO salen billetes cuando el saco recibe una fuerte
+    // sacudida DURANTE LA ESCALADA»: fuera de partida (victoria/derrota) la
+    // bolsa no suelta papel (la ráfaga festiva de la entrega es aparte).
+    if (this.state !== "jugando") return;
     this.sacudidasCont++; // T93: sonda E2E
     const n = this.bolsaNodo;
     const amarre = this.amarre ?? this.nudoCuerda();
@@ -3281,6 +3384,13 @@ export class ParedNivel {
         })(),
         valleArco: +valleDeCuerda(this.sherpas[0].waist(), this.sherpas[1].waist(), this.ropeNodes, this.nudoIdx).toFixed(3),
         estrellas: [0, 1].map((pi) => this.simTime < this.estrellaHasta[pi as 0 | 1]),
+        // T96 — arbitraje de clic (zona proyectada de la mochila), cursor y RESCATE
+        mochilaZona: [0, 1].map((pi) => this.d.scene.mochilaZona(pi as 0 | 1)),
+        cursor: (() => { const cv = this.d.scene.engine.getRenderingCanvas(); return cv ? cv.style.cursor : ""; })(),
+        rescate: [0, 1].map((pi) => ({
+          colgado: this.sherpas[pi as 0 | 1].colgadoSinRecobro(),
+          haulHecho: this.sherpas[pi as 0 | 1].haulHecho(),
+        })),
         desplome: [0, 1].map((pi) => {
           const ps = this.sherpas[pi as 0 | 1].rig.particles;
           return +(ps[P.chest].pos.x - ps[P.pelvisC].pos.x).toFixed(3);
@@ -3391,6 +3501,10 @@ export class ParedNivel {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
     document.removeEventListener("keydown", this.onKey);
+    if (this.hoverMove) {
+      window.removeEventListener("pointermove", this.hoverMove); // T96
+      this.hoverMove = null;
+    }
     this.cierraPanel(true);
     this.pointerDrag?.dispose();
     this.pointerDrag = null;
