@@ -148,17 +148,20 @@ describe("T93 · billetes nacen del saco y se mecen como hojas", () => {
 
 // ---------- B) DINERO SOLO POR ACCIÓN DEL SHERPA ----------
 
-describe("T93 · el dinero solo entra por la mano del sherpa", () => {
-  it("radios de CONTACTO: tocar el billete (0,42) y agarrar el saco (0,55)", async () => {
+describe("T93/T125 · el dinero solo entra por la mano del sherpa", () => {
+  it("radios: billete «tocar O APROXIMARSE» (0,75) y agarrar el saco (0,55)", async () => {
     const { BILLETE_RADIO_COGIDA } = await import("../../src/game/sherpas/gameplay/billetesAire");
     const { RADIO_BOLSA_BONUS } = await import("../../src/game/sherpas/gameplay/paredNivel");
-    expect(BILLETE_RADIO_COGIDA).toBeLessThanOrEqual(0.5); // tocar, no cobrar a distancia
+    expect(BILLETE_RADIO_COGIDA).toBeGreaterThanOrEqual(0.7); // T125: la aproximación cuenta
+    expect(BILLETE_RADIO_COGIDA).toBeLessThanOrEqual(0.8);
     expect(RADIO_BOLSA_BONUS).toBeLessThanOrEqual(0.6);
   });
 
   it("ambas fuentes de dinero siguen siendo COGIDA CON MANO LIBRE (fuente)", () => {
     const src = srcNivel();
-    expect(src).toContain("const cogida = billeteCogible(this.billetes, manos);");
+    expect(src).toContain("let cogida = billeteCogible(this.billetes, manos);");
+    // T125 — segundo pase en PANTALLA: apuntar la extremidad al papel caza
+    expect(src).toContain("this.cogidaEnPantalla(manos)");
     expect(src).toContain("for (const m of manos) {");
     // y ninguna otra línea suma dinero fuera de esas dos
     const sumas = [...src.matchAll(/this\.dinero\[[^\]]+\] \+=/g)].length;
@@ -166,13 +169,13 @@ describe("T93 · el dinero solo entra por la mano del sherpa", () => {
   });
 });
 
-// ---------- C) ESTRELLA: 5 s y centrada en la mochila ----------
+// ---------- C) ESTRELLA: PERMANENTE y centrada en la mochila ----------
 
-describe("T93 · estrella de oro: 5 segundos y centrada en la mochila", () => {
-  it("duración 5 s en las dos cogidas y CSS centrado (fuente)", () => {
+describe("T125 · estrella de oro: PERMANENTE (dictado: no desaparece a los 5 s)", () => {
+  it("Infinity en las dos cogidas y CSS centrado (fuente)", () => {
     const src = srcNivel();
-    expect(src).not.toContain("this.simTime + 3.0");
-    expect(src.match(/this\.simTime \+ 5\.0/g)?.length).toBe(2);
+    expect(src).not.toContain("this.simTime + 5.0");
+    expect(src.match(/estrellaHasta\[[^\]]+\] = Infinity/g)?.length).toBe(2);
     expect(src).toContain("translate(-50%,-50%)");
     expect(src).toContain("centro EXACTO de la mochila");
   });

@@ -25,7 +25,7 @@ import {
 } from "../../src/game/sherpas/gameplay/paredNivel";
 import {
   BILLETE_FLOTANTE_MPS, BILLETE_LANZ_MPS, BILLETE_LEY_SACO_M, BILLETE_SUBIDA_S, BILLETE_TOPE_MPS,
-  pasoBilletes, rafagaFestiva, sacudidaBilletes, type Billete,
+  pasoBilletes, RAFAGA_N, rafagaFestiva, sacudidaBilletes, type Billete,
 } from "../../src/game/sherpas/gameplay/billetesAire";
 import { v3 } from "../../src/game/physics/pbd/math";
 import { mulberry32 } from "../../src/game/sherpas/core/rng";
@@ -109,7 +109,7 @@ describe("T99 · LEY ABSOLUTA: los billetes SIEMPRE suben y JAMÁS quedan bajo e
 
   it("la RAFAGA FESTIVA dispara hacia arriba y NINGÚN billete desciende jamás (fiesta en la cumbre)", () => {
     const r = rafagaFestiva(mulberry32(23), 1, v3(0, 22.4, 0));
-    expect(r.billetes.length).toBe(12);
+    expect(r.billetes.length).toBe(RAFAGA_N); // T125: el DOBLE (24) — dictado del jugador
     for (const b of r.billetes) expect(b.vel.y).toBeGreaterThan(0);
     const yMax = new Map<number, number>();
     let minDelta = 0;

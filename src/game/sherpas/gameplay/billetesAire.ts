@@ -27,21 +27,34 @@
  *  alcanzable por las manos libres, sin romper ni una coma de la LEY: vy
  *  nunca negativa, jamás bajo la boca del saco.
  *
+ * T125 — COGIDA ALCANZABLE (queja del jugador: «no soy capaz de coger los
+ *  billetes… no los detecta al mover el brazo por encima»): el disparo baja
+ *  a 1,9 m/s (tope 3,0) para cruzar la banda de los brazos despacio, el
+ *  radio de cogida se abre a 0,75 m («tocamos O NOS APROXIMAMOS») y el
+ *  nivel AÑADE detección en PANTALLA: apuntar la extremidad al billete
+ *  basta — la mano vive en el plano de la pared y el papel vuela donde
+ *  cuelga la bolsa, así que el alcance real lo manda la vista. Y el DOBLE
+ *  de billetes por sacudida (6-12) y por ráfaga (24).
+ *
  * Módulo PURO (sin Babylon): posición/velocidad/fase por billete, paso
  * determinista con rng inyectado y detección de cogida por mano libre.
  * La escena solo lee las posiciones para colocar los clones de dollar.glb.
  */
 import { v3, vLen, vSub, type V3 } from "../../physics/pbd/math";
 
-/** Billetes que suelta una sacudida (petición: «de 3 a 6»). */
-export const BILLETES_MIN = 3;
-export const BILLETES_MAX = 6;
+/** Billetes que suelta una sacudida. T125 — DOBLE (dictado: «deberían aparecer
+ *  el doble de ellos»): 6-12 por sacudida (antes 3-6, T88). */
+export const BILLETES_MIN = 6;
+export const BILLETES_MAX = 12;
 /** Dinero por billete cogido (petición: «cada billete cogido son 10 $»). */
 export const BILLETE_DINERO = 10;
 /** Radio de cogida con la mano libre (m). T93 — dictado: «SOLO ganan dinero
  *  si son ellos los que con su mano TOCAN un billete»: radio estrecho de
- *  contacto (el billete mide ~28 cm), ya no se cobra a distancia. */
-export const BILLETE_RADIO_COGIDA = 0.42;
+ *  contacto (el billete mide ~28 cm), ya no se cobra a distancia.
+ *  T125 — dictado NUEVO («tocamos O NOS APROXIMAMOS a un billete»): la mano
+ *  que se acerca también caza — 0,42 → 0,75 m (la aproximación a un palmo
+ *  y medio del papel cuenta; el resto lo hace la detección en pantalla). */
+export const BILLETE_RADIO_COGIDA = 0.75;
 /** T89 (dictado): los billetes SUBEN sin parar hasta desaparecer por la parte
  *  alta de la PANTALLA (techoY lo da el nivel) — el final del vuelo es salir
  *  por arriba, no un temporizador. T96b (dictado: «están siempre presentes
@@ -67,14 +80,17 @@ export const BILLETE_EMPUJE_MPS2 = 1.1;
  *  0,6 s (medido: y pantalla 20-30 % a t+0,6; fuera por arriba a t+1,2;
  *  muerto en el techo a t+3). Ahora el disparo sube ~2 bloques VISIBLES y
  *  entrega el papel a la flotación DENTRO del cuadro. */
-export const BILLETE_SUBIDA_S = 0.8;
+export const BILLETE_SUBIDA_S = 1.0;
 /** T93 — VELOCIDAD DEL DISPARO (m/s): el billete NACE en la boca del saco y
  *  SALE DISPARADO hacia arriba (dictado T93: «que nazcan desde el propio
  *  saco, se lancen hacia arriba como fuegos artificiales»). T100: 5,2 → 2,6
  *  — el disparo ya no escupe el papel fuera de pantalla en un segundo; el
  *  billete se VE nacer, subir y QUEDARSE flotando (queja: «no veo ningún
- *  billete»). */
-export const BILLETE_LANZ_MPS = 2.6;
+ *  billete»). T125 — 2,6 → 1,9: con radio de cogida generoso el disparo
+ *  CRUZABA la banda de los brazos (1-3 m) en ~0,3 s — imposible apuntarle;
+ *  ahora la pólvora más larga y suave deja el papel a la vista del brazo
+ *  ~40 % más de tiempo (el crucero flotante 0,45 ya era alcanzable). */
+export const BILLETE_LANZ_MPS = 1.9;
 /** T99 — FLOTACIÓN (m/s): velocidad vertical de CRUCERO tras la pólvora —
  *  el papel sube MECIDO hacia la cumbre (dictado: «los billetes vuelen
  *  flotando por el aire hasta que sean cogidos»). */
@@ -98,8 +114,10 @@ export const BILLETE_LEY_SACO_M = 0.05;
  *  lanzamiento para que el fuego artificial ACELERE hacia arriba de verdad.
  *  T100: 8,5 → 4,4 — sigue por encima del lanzamiento (2,6) y el disparo ya
  *  no escupe el papel fuera del cuadro (la ráfaga festiva nace más rápida y
- *  el tope la recoge sin salto de posición). */
-export const BILLETE_TOPE_MPS = 4.4;
+ *  el tope la recoge sin salto de posición). T125: 4,4 → 3,0 — sigue por
+ *  encima del lanzamiento (1,9), el ápice baja a la banda alcanzable y la
+ *  ráfaga (4,6-6,6 propio) la recoge sin salto. */
+export const BILLETE_TOPE_MPS = 3.0;
 /** T96c — VIENTO (m/s): el papel «comienza a volar movido por el viento»
  *  (dictado). T100 — VIENTO OSCILANTE: antes empujaba SIEMPRE hacia +X con
  *  1,7 m/s y barría el papel fuera del cuadro por un lateral en ~3 s
@@ -330,8 +348,9 @@ export function billetesVivos(lista: readonly Billete[]): number {
  *  lluvia de billetes (no una sacudida de rabieta: es la fiesta del botín).
  *  Salen RADIALMENTE hacia arriba desde la boca del saco — cono abierto con
  *  vel x/z propias — y a partir de ahí manda pasoBilletes (T99: suben
- *  disparados y FLOTAN hacia la cumbre; jamás bajan del nivel del saco). */
-export const RAFAGA_N = 12;
+ *  disparados y FLOTAN hacia la cumbre; jamás bajan del nivel del saco).
+ *  T125 — DOBLE (dictado: «el doble de ellos»): 12 → 24. */
+export const RAFAGA_N = 24;
 export function rafagaFestiva(
   rng: Rng, idBase: number, origen: V3,
 ): { billetes: Billete[]; idSiguiente: number } {

@@ -146,6 +146,10 @@ export const FILAS_MOVILES = 27;
 export const Y_CIMA = Y_SALIDA + FILA_PASO * (FILAS_MOVILES + 1); // 55,4 — fila de cima
 export const WIN_Y = Y_CIMA - 0.8; // ambos sherpas por encima → prueba superada
 export const FAIL_Y = -1.4;       // caída al vacío → prueba fallada
+/** T125 — superficie REAL del suelo del nivel (nieve): la losa está en −0,18
+ *  y el dorso medio de las parcelas en 0 — el cuerpo caído reposa a
+ *  SUELO_Y + 0,45 (cintura ~0,45, ENCIMA del relieve que asoma ~+0,2). */
+export const SUELO_Y = 0;
 export const CUERDA_LEN = 5.0;    // separación máxima entre los dos sherpas (m)
 /** Altura de la fila de cima para un paso dado (panel de ajuste). */
 export function yCimaDe(paso: number): number {
@@ -874,6 +878,33 @@ function hangDePlataforma(forma: "hex" | "cil" | "caja" | "cubo" | undefined): n
   return forma === "hex" ? -0.84 : -0.52;
 }
 
+/** T125 — densidad de textura POR CARA (queja del jugador: los bloques
+ *  «deben tener por todas sus caras el material en 3d con relieve para que
+ *  no parezca planos»): el material comparte uScale/vScale calibrados para
+ *  la cara de 1,8 m — las caras de 1,0 o 0,5 m mostraban la MISMA porción de
+ *  textura ESTIRADA (plana y borrosa). Reescala los UV de cada cara por su
+ *  tamaño REAL (normal ±z → w×h, ±x → d×h, ±y → w×d) para que TODAS las
+ *  caras muestren el relieve a la MISMA densidad de texels que el muro
+ *  (512 px = 6,4 m; el material aporta el factor común 1,8/6,4). La cara es
+ *  el plano de 4 vértices que comparte normal — no depende del orden de
+ *  caras de CreateBox. */
+function normalizaUVCaras(mesh: Mesh, w: number, h: number, d: number): void {
+  const uv = mesh.getVerticesData(VertexBuffer.UVKind);
+  const nor = mesh.getVerticesData(VertexBuffer.NormalKind);
+  if (!uv || !nor || uv.length !== (nor.length / 3) * 2) return;
+  const out = uv.slice();
+  for (let v = 0; v < nor.length; v += 3) {
+    const nx = Math.abs(nor[v]), ny = Math.abs(nor[v + 1]), nz = Math.abs(nor[v + 2]);
+    let su: number, sv: number;
+    if (nz >= nx && nz >= ny) { su = w / 1.8; sv = h / 1.8; }  // front/back
+    else if (nx >= ny)        { su = d / 1.8; sv = h / 1.8; }  // laterales
+    else                      { su = w / 1.8; sv = d / 1.8; }  // techo/suelo
+    out[v / 3 * 2] *= su;
+    out[v / 3 * 2 + 1] *= sv;
+  }
+  mesh.setVerticesData(VertexBuffer.UVKind, out);
+}
+
 /** T121 B5: partículas del CUERPO que se hunden tirando de la mochila (todas
  *  menos las manos — esas permanecen PERFECTAMENTE ancladas). */
 const GOMA_CUERPO: number[] = [
@@ -1030,6 +1061,7 @@ export class ParedNivel {
 
   start(): void {
     this.construirSuelo(); // T124: la fase de escalada tiene SUELO (planos de hielo y rocas)
+    this.construirMacizo(); // T125: continuidad del muro — los huecos muestran roca
     this.construirBloques();
     this.construirSherpas();
     this.conectarDrag();
@@ -1091,7 +1123,10 @@ export class ParedNivel {
       nmt.wrapV = Texture.WRAP_ADDRESSMODE;
       nmt.anisotropicFilteringLevel = 4;
       m.bumpTexture = nmt;
-      m.bumpTexture.level = 1.05;
+      // T125 — relieve MÁS MARCADO (queja: «que no parezca planos»): el
+      // normal map a nivel 1,05 se perdía a distancia; 1,3 lo deja legible
+      // en todas las caras (comparte textura con rojizo/verde/azul: sube para todos)
+      m.bumpTexture.level = 1.3;
       // cada cara del bloque (1,8 m) muestra 1,8 m de textura — MISMA densidad de
       // detalle que el muro (512 px = 6,4 m): uScale = 1,8/6,4.
       const alb = m.albedoTexture as Texture;
@@ -1246,6 +1281,26 @@ export class ParedNivel {
     }
   }
 
+  /** T125 — MACIZO TRASERO (continuación del dictado: los bloques deben
+   *  «tener continuidad entre sus caras para que no aparezcan huecos en las
+   *  formas»): detrás de los bloques (sus espaldas quedan en Z_PRESA+0,5)
+   *  va una LOSA de roca del MISMO material que tapa el fondo entre filas —
+   *  los huecos de 0,4 m del aparato de escalada ahora muestran roca del
+   *  muro, no el vacío. Estático (los bloques se mueven DELANTE de él),
+   *  sin picks, congelado. */
+  private construirMacizo(): void {
+    const esc = this.d.scene.scene;
+    const cima = Y_SALIDA + this.paso * (FILAS_MOVILES + 1) + 0.7; // techo de la fila de cima
+    const y0 = 0.55, y1 = Math.max(cima, 56);
+    const macizo = MeshBuilder.CreateBox("paredMacizo", { width: 5.2, height: y1 - y0, depth: 0.12 }, esc);
+    macizo.position.set(0, (y0 + y1) / 2, Z_PRESA + 0.58); // 8 cm tras las espaldas: sin z-fight
+    macizo.material = this.ensureMaterials().bloque;
+    normalizaUVCaras(macizo, 5.2, y1 - y0, 0.12); // densidad de texels correcta también aquí
+    macizo.isPickable = false;
+    macizo.receiveShadows = true;
+    macizo.freezeWorldMatrix();
+  }
+
   private construirBloques(): void {
     const scene = this.d.scene.scene;
     const mats = this.ensureMaterials();
@@ -1281,6 +1336,11 @@ export class ParedNivel {
         : MeshBuilder.CreateBox(`blkM_${spec.id}`, { width: spec.w, height: spec.h, depth: spec.d }, scene);
       if (spec.bono && spec.forma === "hex") mesh.rotation.x = Math.PI / 2;   // cara hexagonal de frente
       if (spec.bono && spec.forma === "cil") mesh.rotation.z = Math.PI / 2;   // tambor tumbado (eje X)
+      // T125 — relieve REAL en TODAS las caras: densidad de textura por cara
+      // (los cilindros de bono traen sus UV cilíndricos propios: fuera)
+      if (!spec.bono || (spec.forma !== "hex" && spec.forma !== "cil")) {
+        normalizaUVCaras(mesh, spec.bono ? 1.6 : spec.w, spec.bono ? 1.0 : spec.h, spec.bono ? 0.9 : spec.d);
+      }
       mesh.material = spec.verde ? mats.verde : spec.azul ? mats.azul : spec.destructible ? mats.rojizo : mats.bloque;
       mesh.parent = node;
       const bloque: Bloque = {
@@ -1388,7 +1448,15 @@ export class ParedNivel {
       // T92 — el X se ensancha: las plataformas de bonificación viven en
       // |x| = 4,15 y el vuelo/deriva azul deben alcanzarlas
       bounds: { minX: -5.8, maxX: 5.8, minY: -6, maxY: this.yCima + 6, minZ: Z_PRESA - 2.5, maxZ: Z_PRESA + 2.5 },
-      floorY: -6,
+      // T125 — SUELO REAL (queja del jugador: «cuando caen los sherpas que no
+      // se hundan en el suelo, que queden encima de las piedras y de la
+      // nieve»): la superficie de la nieve está en y≈0 (losa −0,18, dorso
+      // medio de las parcelas en 0, piedras que asoman ~+0,2). Antes el suelo
+      // físico estaba en −6: el cuerpo caído descansaba 5,5 m DEBAJO del
+      // suelo dibujado y la captura de cuerda ocurría bajo tierra. Ahora el
+      // cuerpo reposa a floorY + 0,45 (cintura ~0,45 — ENCIMA del relieve),
+      // la captura trunca a +0,6 y "grounded" vuelve a ser alcanzable.
+      floorY: SUELO_Y,
       wallFrontZ: Z_PRESA,
       rope: t.rope,
     };
@@ -1831,7 +1899,14 @@ export class ParedNivel {
         manos.push({ pi, limb, pos: rig.rig.particles[limb === "hand_l" ? P.handL : P.handR].pos });
       }
     }
-    const cogida = billeteCogible(this.billetes, manos);
+    // T125 — COGIDA EN DOS PASES: 3D (radio 0,75 — «tocamos o nos
+    // aproximamos») y, si ninguna mano junta 3D, PANTALLA: la extremidad que
+    // APUNTA al billete lo caza. La mano vive en el plano de la pared y el
+    // papel vuela donde cuelga la bolsa — mover el brazo «por encima» del
+    // billete (dictado del jugador) nunca los junta en 3D; el alcance real
+    // lo manda la vista, no la profundidad.
+    let cogida = billeteCogible(this.billetes, manos);
+    if (!cogida) cogida = this.cogidaEnPantalla(manos);
     if (cogida) {
       const b = this.billetes[cogida.i];
       if (b && b.vivo) {
@@ -1859,9 +1934,11 @@ export class ParedNivel {
           `¡+${BILLETE_DINERO} $! Billete para el Sherpa ${cogida.pi + 1}`).replace("{n}", String(cogida.pi + 1)));
         // T124 — «+10 $» sobre la mochila del cazador: EL CAMBIO se lee al instante
         this.etiquetaDinero(cogida.pi, `+${BILLETE_DINERO} $`);
-        // T89/T93 — ESTRELLA DE ORO girando sobre SU mochila (el contenido
-        // cambió): dictado T93 «este efecto dura 5 segundos y desaparece»
-        this.estrellaHasta[cogida.pi] = this.simTime + 5.0;
+        // T89/T125 — ESTRELLA DE ORO girando sobre SU mochila (el contenido
+        // cambió): dictado T93 «dura 5 segundos» → T125 PERMANENTE (queja:
+        // «la estrella en la mochila solo aparece 5 segundos y desaparece»):
+        // una vez hay dinero cogido, la estrella SE QUEDA hasta el reinicio.
+        this.estrellaHasta[cogida.pi] = Infinity;
         if (this.mochilaAbierta !== null) this.refrescaMochila(this.mochilaAbierta);
       }
     }
@@ -1880,7 +1957,8 @@ export class ParedNivel {
         bb.cuerda.isVisible = false;
         this.dinero[m.pi] += BONUS_DINERO;
         this.etiquetaDinero(m.pi, `+${BONUS_DINERO} $`); // T124: el cobro se LEE
-        this.estrellaHasta[m.pi] = this.simTime + 5.0; // T93: 5 s el efecto
+        // T125 — estrella PERMANENTE (igual que el billete: no se apaga a los 5 s)
+        this.estrellaHasta[m.pi] = Infinity;
         this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.dinero.bolsa",
           `¡+${BONUS_DINERO} $! Saco del bono para el Sherpa ${m.pi + 1}`).replace("{n}", String(m.pi + 1)));
         if (this.mochilaAbierta !== null) this.refrescaMochila(this.mochilaAbierta);
@@ -2740,6 +2818,43 @@ export class ParedNivel {
       .catch((err) => console.error("[T88] dollar.glb:", err));
   }
 
+  /** T125 — radio de la cogida en PANTALLA (% del ANCHO de cuadro, centro de
+   *  la extremidad → centro del billete): apuntar al papel desde ~5 % (≈64 px
+   *  en 1280) cuenta como «tocamos o nos aproximamos» (dictado). */
+  private static readonly COGIDA_PANT_PCT = 5;
+
+  /** T125 — cogida en PANTALLA: la mano libre cuyo punto proyectado quede a
+   *  menos de COGIDA_PANT_PCT del billete vivo más cercano lo coge (menor
+   *  distancia gana; empate → menor id, determinista como el pase 3D). La
+   *  distancia se mide en unidades de ANCHO (el eje y se corrige por el
+   *  aspecto del lienzo para que la ventana sea circular en píxeles). */
+  private cogidaEnPantalla(
+    manos: readonly ManoLibre[],
+  ): { i: number; pi: 0 | 1; limb: "hand_l" | "hand_r" } | null {
+    if (manos.length === 0 || this.billetes.length === 0) return null;
+    const cv = this.d.scene.engine.getRenderingCanvas();
+    const ar = cv && cv.clientWidth > 0 ? cv.clientHeight / cv.clientWidth : 0.5625;
+    let mejor: { i: number; pi: 0 | 1; limb: "hand_l" | "hand_r"; d: number } | null = null;
+    for (let i = 0; i < this.billetes.length; i++) {
+      const b = this.billetes[i];
+      if (!b.vivo) continue;
+      let bp: { x: number; y: number };
+      try { bp = this.d.scene.projectToScreenCss(b.pos); } catch { continue; }
+      for (const m of manos) {
+        let mp: { x: number; y: number };
+        try { mp = this.d.scene.projectToScreenCss(m.pos); } catch { continue; }
+        const dx = bp.x - mp.x;
+        const dy = (bp.y - mp.y) * ar; // % de alto → unidades de ancho
+        const d = Math.hypot(dx, dy);
+        if (d > ParedNivel.COGIDA_PANT_PCT) continue;
+        if (!mejor || d < mejor.d || (d === mejor.d && i < mejor.i)) {
+          mejor = { i, pi: m.pi, limb: m.limb, d };
+        }
+      }
+    }
+    return mejor ? { i: mejor.i, pi: mejor.pi, limb: mejor.limb } : null;
+  }
+
   /** SACUDIDA DE LA CUERDA → la bolsa suelta 3-6 billetes (rabieta del
    *  lastre, tirón de la cuerda al capturar una caída o rotura de bloque).
    *  T93 — dictado: «no salen del propio saco sino que nacen como 1 metro por
@@ -2767,7 +2882,7 @@ export class ParedNivel {
     const s = sacudidaBilletes(this.billeteRng, this.billeteId, origen);
     this.billeteId = s.idSiguiente;
     this.billetes.push(...s.billetes);
-    while (this.billetes.length > 24) this.billetes.shift(); // techo de seguridad
+    while (this.billetes.length > 48) this.billetes.shift(); // techo (T125: el DOBLE de papel)
     this.aseguraMallasBilletes();
   }
 
@@ -2927,7 +3042,9 @@ export class ParedNivel {
     const cv = this.d.scene.engine.getRenderingCanvas();
     if (!cv) return;
     // T91 — fuera el badge de muelle del mapa (solo en la mochila); queda la
-    // T89 — estrella de oro: visible 5 s (T93) CENTRADA en la mochila
+    // T89/T125 — estrella de oro: PERMANENTE tras el primer cobro (dictado
+    // T125: «la estrella… solo aparece 5 segundos y desaparece» → se queda)
+    // CENTRADA en la mochila
     for (const pi of [0, 1] as const) {
       const st = this.elEstrella[pi];
       if (!st) continue;
@@ -3534,6 +3651,10 @@ export class ParedNivel {
         bloques: this.bloques.length,
         cuerda: this.ajuste.cuerdaMetros,
         paso: this.paso,
+        // T125 — suelo real, macizo de continuidad y banco de pruebas E2E
+        sueloY: SUELO_Y,
+        macizo: !!this.d.scene.scene.getMeshByName("paredMacizo"),
+        waists: [wa.y, wb.y], // caída honesta: la cintura NUNCA bajo la nieve
         ajuste: this.ajuste,
         // T123: muelles/interior/goma/vuelo — y caídas con peso real
         muelles: [...this.muelles],
