@@ -261,7 +261,11 @@ describe("Task 36 + T96b: seguro de cuerda — caída atrapada + RESCATE POR PUL
 
   it("T96b — las pulsaciones del PROPIO colgado no hacen nada (sus controles están inactivos)", () => {
     const r = fallFromHigh(FALL, 60 * 8, (i) => (i % 4 === 0 ? [1, 0] : [0, 0])); // 15 golpes/s SUYOS
-    expect(r.sawHauling).toBe(true);
+    // T98 — la ventana de rescate ABRE (evento haulStart) pero sus golpes no
+    // la convierten en izado: 'hauling' es SOLO del compañero. Sin ellos el
+    // cuerpo permanece 'caught', colgado del péndulo real.
+    expect(r.haulStarts).toBe(1);
+    expect(r.sawHauling).toBe(false); // sus pulsaciones NO izan (controles muertos)
     expect(r.releasedTicks).toBe(0);
     expect(r.rig.haulHecho()).toBe(false); // nadie lo izó: no recobra
     expect(r.rig.colgadoSinRecobro()).toBe(true);

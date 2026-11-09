@@ -638,6 +638,16 @@ export class SherpaRig {
    *  el empujón deja al escalador MÁS ARRIBA, no vuelve a la misma presa. */
   autoGripAfterFart(upBiasM = 0): void {
     const r = this.deps.tuning.fart?.autoGripRadiusM ?? 1.5;
+    // limbPt SOLO se refresca dentro del tick (viajes/anclajes/dangle): si el
+    // cuerpo acaba de ser teletransportado (cheat E2E subeSherpa) o lanzado,
+    // medir desde limbPt elegiría presas junto a la posición VIEJA y el
+    // re-agarre devolvería al sherpa a su punto de partida. La verdad en
+    // vuelo/re-agarre es la PARTÍCULA viva de cada extremidad.
+    for (const limb of LIMBS) {
+      if (!this.states.get(limb)!.anchored) {
+        this.limbPt[limb] = vClone(this.rig.particles[LIMB_PARTICLE[limb]].pos);
+      }
+    }
     for (const limb of LIMBS) {
       if (this.states.get(limb)!.anchored) continue;
       let best: HoldInstance | null = null;
@@ -1363,11 +1373,18 @@ export class SherpaRig {
           // clamp duro de tras-integración la mantiene) y solo queda el
           // vaivén de péndulo, amortiguado.
           // T97 — con belay REAL el vaivén es el PÉNDULO que ha de llegar a
-          // la LÍNEA DE PLOMO bajo el compañero: freno SUAVE (0,45/s — el
-          // balanceo se ve y se apaga en segundos). El chicote legacy mantiene
+          // la LÍNEA DE PLOMO bajo el compañero. El chicote legacy mantiene
           // su freno fuerte (2,5/s, parada seca de T95).
-          const frenoVaiven = this.belayPivot ? 0.45 : 2.5;
-          vel = v3(vel.x * Math.max(0, 1 - frenoVaiven * dt), 0, vel.z * Math.max(0, 1 - frenoVaiven * dt));
+          // T98 — PÉNDULO DE VERDAD: la velocidad TANGENCIAL sobrevive ENTERA
+          // (con su componente vertical). Poner vel.y=0 cada tick mataba el
+          // vaivén: el cuerpo solo «creepaba» con el paso seco de gravedad
+          // (g·dt²·sinθ ≈ 1 mm/tick) y quedaba CONGELADO a media esfera,
+          // fuera de la plomo para siempre (captura del jugador: «medio
+          // flotando en una posición físicamente incorrecta»). Ahora el
+          // clampBelay quita la radial hacia fuera y el freno amortigua el
+          // péndulo hasta la vertical (ζ≈0,43: un vaivén visible y frena).
+          const frenoVaiven = this.belayPivot ? 1.2 : 2.5;
+          vel = vScale(vel, Math.max(0, 1 - frenoVaiven * dt));
           if (this.haulDone) {
             // Recobrado terminado: el escalador SE MANTIENE de la cuerda con
             // las manos — no vuelve a caer (está bajo su punto de despegue,
@@ -1377,16 +1394,20 @@ export class SherpaRig {
           }
           this.dangleSettleT += dt;
           // T96b/T97 — la ventana de izado abre a los 0,9 s UNA sola vez por
-          // caída (pestillo ventanaIzado: el evento haulStart avisa al jugador
-          // y el estado pasa a 'hauling' UN tick — sin golpes el cuerpo vuelve
-          // a 'caught' y sigue COLGADO DE VERDAD, péndulo que se apaga en la
-          // línea de plomo; JAMÁS se recupera solo).
+          // caída (pestillo ventanaIzado: el evento haulStart avisa al
+          // jugador; los golpes del compañero arrancan el izado).
+          // T98 — la ventana es un AVISO, no un estado de física: poner
+          // ropeState='hauling' sin golpes MATABA el verlet (la rama de izado
+          // no integra el cuerpo y devolvía a 'caught' al tick siguiente —
+          // ping-pong que congelaba el péndulo a media esfera, lejos de la
+          // línea de plomo: la captura «flotando» del jugador). Sin golpes el
+          // cuerpo permanece en 'caught': péndulo vivo CADA tick; con golpes
+          // la rama de abajo pasa a 'hauling' y iza.
           if (!this.haulDone && this.ropeState === "caught" && this.dangleSettleT >= (fT?.haulDelaySeconds ?? 0.9)) {
             if (!this.ventanaIzado) {
               this.ventanaIzado = true;
               this.ropeHaulStartNow = true;
             }
-            this.ropeState = "hauling";
           }
           // T97 — golpes del compañero LLEGANDO durante la espera: el izado
           // arranca YA — pero SOLO con la ventana ya abierta (el reposo
@@ -1402,6 +1423,22 @@ export class SherpaRig {
       body.prev = vClone(body.pos);
       body.pos = vAdd(body.pos, vAdd(vel, vScale(acc, dt * dt)));
       this.clampBody(body);
+      // T98 — NADIE SOSTIENE: con belay real, si el pivote DESAPARECE a mitad
+      // del colgado (el compañero soltó / cayó), la cuerda ya no sostiene a
+      // nadie — caída honesta: volver a 'falling' con groundLanding (el T79
+      // lo recoge en la nieve y el nivel da la derrota). Antes entraba en el
+      // clamp LEGACY de línea y el cuerpo quedaba CONGELADO flotando en la
+      // línea vieja (la captura del jugador: «los dos sherpas flotando»).
+      if (this.belayPivotActivo && !this.belayPivot
+        && (this.ropeState === "caught" || this.ropeState === "hauling")) {
+        this.ropeState = "falling";
+        this.ropeFallStartY = body.pos.y;
+        this.groundLanding = true; // sin rescatador: la nieve es el final
+        this.dangleSettleT = 0;
+        this.belayLenEfectivo = this.belayLenM;
+        this.haulTargetY = null;
+        this.ventanaIzado = false;
+      }
       // T95/T97 — LA CUERDA ES DURA colgado: con belay real, la cintura vive
       // EN (o dentro de) la ESFERA de radio L en torno al compañero anclado
       // (proyección de Jakobsen: radial muerta, tangential amortiguada → el
@@ -1410,7 +1447,9 @@ export class SherpaRig {
       if ((this.ropeState === "caught" || this.ropeState === "hauling") && this.ropeFallStartY !== null) {
         if (this.belayPivotActivo && this.belayPivot) {
           this.clampBelay(body);
-        } else {
+        } else if (!this.belayPivotActivo) {
+          // T98 — el clamp LEGACY solo manda SIN nivel (tests/match): con
+          // belay activo y pivote nulo ya se decidió caída honesta arriba.
           // T97 — la línea de captura SUBE con lo ya izado (la cuerda recogida
           // no se re-suelta entre golpes: el rescate no resbala).
           const cy = Math.max(

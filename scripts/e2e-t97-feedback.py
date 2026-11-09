@@ -128,7 +128,15 @@ try:
             page.wait_for_timeout(300)
         check("D.caída capturada por la CUERDA REAL (colgado)", colgado,
               f"ropeState={s['ropeStates'][0]}")
-        page.wait_for_timeout(4500)  # el péndulo se apaga
+        # el péndulo se apaga — en TIEMPO DE SIMULACIÓN (lección T94b: sin GPU
+        # el sim va detrás del reloj de pared; 4,5 s de pared eran ~1 s de sim
+        # y el péndulo no daba tiempo a converger bajo la plomo)
+        t_cap = page.evaluate("window.__PARED.sonda().simT")
+        for _ in range(240):
+            s = page.evaluate("window.__PARED.sonda()")
+            if s["simT"] - t_cap >= 8.0:
+                break
+            page.wait_for_timeout(500)
         s = page.evaluate("window.__PARED.sonda()")
         import math
         dist = math.hypot(s["x0"] - s["x1"], s["alt0"] - s["alt1"])
