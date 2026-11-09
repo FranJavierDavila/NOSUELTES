@@ -29,7 +29,7 @@ import { P } from "../../src/game/physics/pbd/ragdoll";
 import { v3 } from "../../src/game/physics/pbd/math";
 import {
   sacudidaBilletes, pasoBilletes, ejeSpin,
-  BILLETE_CAIDA_MPS, BILLETE_LANZ_MPS, BILLETE_SUBIDA_S,
+  BILLETE_FLOTANTE_MPS, BILLETE_LANZ_MPS, BILLETE_SUBIDA_S,
 } from "../../src/game/sherpas/gameplay/billetesAire";
 import { agarreCruzado } from "../../src/game/sherpas/gameplay/paredNivel";
 import { mulberry32 } from "../../src/game/sherpas/core/rng";
@@ -76,12 +76,12 @@ const srcNivel = (): string => readFileSync(NIVEL, "utf8");
 // ---------- A) BILLETES: nacen EN el saco, fuegos y hoja al viento ----------
 
 describe("T93 · billetes nacen del saco y se mecen como hojas", () => {
-  it("el billete nace DENTRO de la boca del saco (bajo el cinchado), no por encima", () => {
+  it("T99 — el billete nace EN LA BOCA del saco, POR ENCIMA del cinchado (nunca bajo el saco)", () => {
     const boca = v3(1.2, 8.5, 0.2);
     const { billetes } = sacudidaBilletes(mulberry32(3), 1, boca);
     for (const b of billetes) {
-      expect(b.pos.y).toBeLessThan(boca.y);            // dentro de la boca
-      expect(b.pos.y).toBeGreaterThan(boca.y - 0.3);   // pero en la PARTE ALTA
+      expect(b.pos.y).toBeGreaterThan(boca.y + 0.05);  // T99: SOBRE el cinchado
+      expect(b.pos.y).toBeLessThan(boca.y + 0.13);     // en la garganta de la boca
       expect(Math.abs(b.pos.x - boca.x)).toBeLessThan(0.2);
     }
   });
@@ -101,16 +101,16 @@ describe("T93 · billetes nacen del saco y se mecen como hojas", () => {
     expect(yMax - y0).toBeGreaterThan(4);              // «varios bloques por encima»
   });
 
-  it("la caída es de HOJA: lenta (terminal ≤ 1,3 m/s) y visible", () => {
+  it("T99 LEY — tras la pólvora el papel FLOTA hacia la cumbre: velocidad SIEMPRE positiva y suave", () => {
     const { billetes } = sacudidaBilletes(mulberry32(7), 1, v3(0, 2, 0));
     const b = billetes[0];
     b.pos = v3(0, 30, 0);
     b.vel = v3(0, 0, 0);
     b.aire = BILLETE_SUBIDA_S + 0.01;                  // pólvora agotada
     for (let i = 0; i < 60 * 6; i++) pasoBilletes(billetes, 1 / 60, -50, 999);
-    expect(b.vel.y).toBeGreaterThanOrEqual(-BILLETE_CAIDA_MPS - 1e-9);
-    expect(b.vel.y).toBeLessThanOrEqual(-1.0);         // cae de verdad, no flota
-    expect(BILLETE_CAIDA_MPS).toBeLessThanOrEqual(1.3); // «lentamente»
+    expect(b.vel.y).toBeGreaterThan(0);                // LEY: JAMÁS negativa
+    expect(b.vel.y).toBeLessThanOrEqual(BILLETE_FLOTANTE_MPS * 1.2 + 1e-9); // flotación suave
+    expect(BILLETE_FLOTANTE_MPS).toBeLessThanOrEqual(0.6); // «flotando por el aire»
   });
 
   it("cada billete tiene GIRO PROPIO (eje unitario, velocidad y ángulo integrado)", () => {

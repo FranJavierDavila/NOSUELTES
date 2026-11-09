@@ -24,28 +24,29 @@ import {
   esFilaAzul, esFilaVerde, haySolape, layoutPared, pasoDerivaAzul, pasoGiroVerde,
 } from "../../src/game/sherpas/gameplay/paredNivel";
 import {
-  BILLETE_CAIDA_MPS, BILLETE_G_MPS2, BILLETE_LANZ_MPS, BILLETE_SUBIDA_S, BILLETE_TOPE_MPS,
+  BILLETE_FLOTANTE_MPS, BILLETE_LANZ_MPS, BILLETE_LEY_SACO_M, BILLETE_SUBIDA_S, BILLETE_TOPE_MPS,
   pasoBilletes, rafagaFestiva, sacudidaBilletes, type Billete,
 } from "../../src/game/sherpas/gameplay/billetesAire";
 import { v3 } from "../../src/game/physics/pbd/math";
 import { mulberry32 } from "../../src/game/sherpas/core/rng";
 
-// ---------- 1) BILLETES FUEGOS ARTIFICIALES ----------
+// ---------- 1) BILLETES · LEY ABSOLUTA (T99) ----------
 
-describe("T92 · billetes fuegos artificiales (suben disparados y se ven caer)", () => {
-  it("T93 — el billete NACE DISPARADO desde el saco (lanzamiento de fuegos) y nunca supera el disparo", () => {
+describe("T99 · LEY ABSOLUTA: los billetes SIEMPRE suben y JAMÁS quedan bajo el saco", () => {
+  it("T93/T99 — el billete NACE DISPARADO desde la BOCA del saco (por encima del cinchado)", () => {
     const { billetes } = sacudidaBilletes(mulberry32(9), 1, v3(0, 2, 0));
     const b = billetes[0];
     const vy0 = b.vel.y;
     expect(vy0).toBeGreaterThanOrEqual(BILLETE_LANZ_MPS * 0.8); // SALE DISPARADO
     expect(vy0).toBeLessThanOrEqual(BILLETE_LANZ_MPS * 1.2);
-    expect(b.pos.y).toBeLessThan(2);               // nace DENTRO de la boca del saco
+    expect(b.pos.y).toBeGreaterThan(2);            // nace POR ENCIMA del cinchado (la boca)
+    expect(b.pos.y).toBeLessThan(2.1);             // y dentro de la garganta del cuello
     for (let i = 0; i < 120; i++) pasoBilletes(billetes, 1 / 60, -6, 99);
-    expect(b.vel.y).toBeLessThanOrEqual(BILLETE_LANZ_MPS * 1.2 + 1e-9);
+    expect(b.vel.y).toBeLessThanOrEqual(BILLETE_TOPE_MPS + 1e-9);
     expect(b.pos.y).toBeGreaterThan(2 + 1.5);      // y ha subido claramente
   });
 
-  it("el disparo alcanza VARIOS BLOQUES por encima del saco (ápice > 4 m sobre el nacimiento)", () => {
+  it("el disparo alcanza VARIOS BLOQUES por encima del saco (sube > 4 m sobre el nacimiento)", () => {
     const { billetes } = sacudidaBilletes(mulberry32(11), 1, v3(0, 5, 0));
     let yMax = -99;
     for (let i = 0; i < 60 * 8; i++) {
@@ -55,54 +56,47 @@ describe("T92 · billetes fuegos artificiales (suben disparados y se ven caer)",
     expect(yMax - 5).toBeGreaterThan(4);         // «varios bloques por encima»
   });
 
-  it("después del ápice el billete CAE de forma VISIBLE (gravedad de hoja, velocidad terminal)", () => {
-    const { billetes } = sacudidaBilletes(mulberry32(13), 1, v3(0, 40, 0)); // lejos: sin recogida de suelo
+  it("T99 LEY — tras la pólvora el billete FLOTA hacia la cumbre: velocidad vertical SIEMPRE positiva", () => {
+    const { billetes } = sacudidaBilletes(mulberry32(13), 1, v3(0, 40, 0));
     const b = billetes[0];
-    b.pos = v3(6, 30, 0);                        // alto: la pólvora ya ardió lejos del suelo
-    b.vel = v3(0, 0, 0);                         // ya cruzó el ápice (T96c: el viento lo toma ahí)
+    b.pos = v3(6, 30, 0);                        // alto: la pólvora ya ardió lejos
+    b.vel = v3(0, 0, 0);                         // ya cruzó el ápice del disparo
     b.aire = BILLETE_SUBIDA_S + 0.01;            // pólvora agotada AHORA
-    let cayo = false;
-    let yMax = b.pos.y;
+    let yMin = b.pos.y;
     for (let i = 0; i < 60 * 4; i++) {
-      pasoBilletes(billetes, 1 / 60, -50, 999);  // suelo imposible: solo cae
-      yMax = Math.max(yMax, b.pos.y);
-      if (b.pos.y < yMax - 1.5) cayo = true;     // descenso de más de 1,5 m: SE VE
+      pasoBilletes(billetes, 1 / 60, 0, 999);
+      yMin = Math.min(yMin, b.pos.y);
+      expect(b.vel.y).toBeGreaterThan(0);        // LEY: JAMÁS una velocidad negativa
     }
-    expect(cayo).toBe(true);                     // se VE caer
-    expect(b.vel.y).toBeLessThanOrEqual(-1);     // caída real, no flotación
-    expect(b.vel.y).toBeGreaterThanOrEqual(-BILLETE_CAIDA_MPS - 1e-9); // terminal de hoja
+    expect(b.pos.y).toBeGreaterThan(30 + 0.5);   // flota hacia la cumbre
+    expect(yMin).toBeGreaterThanOrEqual(30 - 1e-9); // no descendió NI UN MILÍMETRO
   });
 
-  it("T96c — el papel caído NO muere al tocar el suelo: vuela rasante con el viento", () => {
+  it("T99 LEY DEL SACO — ningún billete queda por debajo del nivel de la boca del saco", () => {
     const { billetes } = sacudidaBilletes(mulberry32(4), 1, v3(3, 30, 0)); // lejos: ninguno cerca
     const caido = billetes[0];
-    caido.pos = v3(0.5, 0.35, 0);                // a ras del suelo (suelo y=0)
-    caido.vel = v3(0, -1, 0);
+    caido.pos = v3(0.5, 1.95, 0);                // BAJO la frontera de la ley (boca y=2 → 2.05)
+    caido.vel = v3(0, -1, 0);                    // «cayendo» (p. ej., el saco subió por escalada)
     caido.aire = BILLETE_SUBIDA_S + 5;           // pólvora agotada
-    caido.vientoT = 3;                           // el viento ya lo lleva
-    pasoBilletes(billetes, 1 / 60, 0, 99);
-    expect(caido.vivo).toBe(true);               // el suelo YA NO mata (dictado T96)
-    expect(caido.aire).not.toBe(0);              // la pólvora NO se reenciende
-    expect(caido.pos.y).toBeGreaterThan(0.1);    // la rasante lo levanta: SIGUE volando
+    pasoBilletes(billetes, 1 / 60, 2, 99);       // la boca del SACO está en y=2
+    expect(caido.vivo).toBe(true);
+    expect(caido.pos.y).toBeGreaterThanOrEqual(2 + BILLETE_LEY_SACO_M - 1e-9); // la ley lo DEVUELVE arriba
+    expect(caido.vel.y).toBeGreaterThanOrEqual(0.8); // empujado por el térmico del saco
   });
 
-  it("T96c — ciclo del fuego: sube, CAE de forma visible y SIGUE volando hasta salir de pantalla", () => {
+  it("T99 — ciclo completo: la velocidad vertical es POSITIVA en cada tick y muere solo al salir de pantalla", () => {
     const { billetes } = sacudidaBilletes(mulberry32(17), 1, v3(0, 3, 0));
     const b = billetes[0];
-    let subidas = b.vel.y > 0.2 ? 1 : 0, caidas = 0; // nace DISPARADO (la subida es su salida)
-    let vyPrev = b.vel.y;
+    let vyMin = 99;
     let yMuerte = 99;
-    for (let i = 0; i < 60 * 20 && b.vivo; i++) {
+    for (let i = 0; i < 60 * 30 && b.vivo; i++) {
       pasoBilletes(billetes, 1 / 60, 0, 999, { min: -6, max: 6 }); // límites de pantalla
-      if (b.vel.y > 0.2 && vyPrev <= 0.2) subidas++;
-      if (b.vel.y < -0.2 && vyPrev >= -0.2) caidas++;
-      vyPrev = b.vel.y;
+      vyMin = Math.min(vyMin, b.vel.y);
       if (!b.vivo) yMuerte = b.pos.y;
     }
-    expect(caidas).toBeGreaterThanOrEqual(1);    // al MENOS una caída visible
-    expect(subidas).toBeGreaterThanOrEqual(1);   // el disparo de salida
+    expect(vyMin).toBeGreaterThan(0);            // LEY: la velocidad vertical jamás es negativa
     expect(b.vivo).toBe(false);                  // MUERE al salir de pantalla
-    expect(yMuerte).toBeGreaterThan(-0.05);      // JAMÁS bajo la nieve (rasante lo levanta)
+    expect(yMuerte).toBeGreaterThan(3);          // muere POR ENCIMA de donde nació
     expect(b.pos.x).toBeGreaterThan(6);          // el viento lo sacó por el LADO
   });
 
@@ -113,22 +107,22 @@ describe("T92 · billetes fuegos artificiales (suben disparados y se ven caer)",
     expect(bs[0].vel.y).toBeGreaterThan(0);      // el térmico lo empuja
   });
 
-  it("la RAFAGA FESTIVA también dispara fuegos (radial hacia arriba y luego CAEN al menos 1,5 m)", () => {
+  it("la RAFAGA FESTIVA dispara hacia arriba y NINGÚN billete desciende jamás (fiesta en la cumbre)", () => {
     const r = rafagaFestiva(mulberry32(23), 1, v3(0, 22.4, 0));
     expect(r.billetes.length).toBe(12);
     for (const b of r.billetes) expect(b.vel.y).toBeGreaterThan(0);
-    let cayo = false;
     const yMax = new Map<number, number>();
-    for (let i = 0; i < 60 * 12 && !cayo; i++) {
-      pasoBilletes(r.billetes, 1 / 60, 20.0, 999); // recogida SOLO a ras del suelo bajo
+    let minDelta = 0;
+    for (let i = 0; i < 60 * 12; i++) {
+      pasoBilletes(r.billetes, 1 / 60, 20.0, 999); // boca del saco posado en el campa (y=20)
       for (const b of r.billetes) {
         if (!b.vivo) continue;
-        const m = Math.max(yMax.get(b.id) ?? b.pos.y, b.pos.y);
-        yMax.set(b.id, m);
-        if (b.pos.y < m - 1.5) cayo = true;      // descenso visible de 1,5 m
+        const m = yMax.get(b.id) ?? b.pos.y;
+        minDelta = Math.min(minDelta, b.pos.y - m);  // cotización contra SU propia cota máxima
+        yMax.set(b.id, Math.max(m, b.pos.y));
       }
     }
-    expect(cayo).toBe(true);                     // la fiesta también CAE al final
+    expect(minDelta).toBeGreaterThanOrEqual(-1e-9);    // LEY: nadie descendió ni 1 mm
   });
 });
 

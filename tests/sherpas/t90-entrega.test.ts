@@ -48,7 +48,7 @@ describe("T90 · ráfaga festiva del botín", () => {
     expect(vx.size).toBeGreaterThanOrEqual(6);
   });
 
-  it("nacen en la boca del saco (jitter ≤ 0,1 m) y con fases propias", () => {
+  it("T99 — nacen en la boca del saco (jitter ≤ 0,1 m, SOBRE el cinchado) y con fases propias", () => {
     const rng = mulberry32(9);
     const origen = v3(0.4, 21.8, 0.3);
     const s = rafagaFestiva(rng, 0, origen);
@@ -56,8 +56,8 @@ describe("T90 · ráfaga festiva del botín", () => {
     expect(fases.size).toBeGreaterThanOrEqual(10);
     for (const b of s.billetes) {
       expect(Math.abs(b.pos.x - origen.x)).toBeLessThanOrEqual(0.1);
-      expect(b.pos.y).toBeLessThan(origen.y);           // boca = bajo el cuello
-      expect(b.pos.y).toBeGreaterThan(origen.y - 0.2);
+      expect(b.pos.y).toBeGreaterThan(origen.y + 0.05); // T99: boca = SOBRE el cuello
+      expect(b.pos.y).toBeLessThan(origen.y + 0.13);
       expect(Math.abs(b.pos.z - origen.z)).toBeLessThanOrEqual(0.09);
       expect(b.t).toBe(0);
     }

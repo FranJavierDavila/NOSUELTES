@@ -124,18 +124,19 @@ describe("T91 · billetes empujados por corrientes de aire", () => {
     expect(b.pos.y).toBeGreaterThan(2 + 1.5);    // y sube claramente
   });
 
-  it("T96c — un billete que llega RASANTE NO muere: vuela con el viento (siempre presente)", () => {
+  it("T99 — un billete bajo la boca del saco es DEVUELTO arriba por el térmico y sigue volando", () => {
     const { billetes } = sacudidaBilletes(mulberry32(4), 1, v3(3, 30, 0)); // lejos: ninguno cerca
     const caido = billetes[0];
-    caido.pos = v3(0.5, 0.35, 0);                // a ras del suelo (suelo y=0)
+    caido.pos = v3(0.5, 0.35, 0);                // bajo la boca del saco (saco en y=0)
     caido.vel = v3(0, -1, 0);
     caido.aire = 99;                             // pólvora agotada hace tiempo
     caido.vientoT = 5;                           // el viento ya lo llevó
     pasoBilletes(billetes, 1 / 60, 0, 99);
-    expect(caido.vivo).toBe(true);               // el suelo YA NO mata (dictado)
-    // la corriente rasante lo levanta y el viento lo empuja: SIGUE volando
-    expect(caido.pos.y).toBeGreaterThan(0.2);
-    expect(caido.pos.x).toBeGreaterThan(0.5);    // viento +X tras el ápice
+    expect(caido.vivo).toBe(true);               // SIEMPRE presente (dictado T96)
+    // la LEY DEL SACO lo mantiene sobre la boca (0.30) y el viento lo empuja
+    expect(caido.pos.y).toBeGreaterThanOrEqual(0.3 - 1e-9);
+    expect(caido.vel.y).toBeGreaterThan(0);      // el térmico lo sube: JAMÁS baja
+    expect(caido.pos.x).toBeGreaterThan(0.5);    // viento +X tras la pólvora
   });
 
   it("T96c — el billete solo muere al salir de PANTALLA (límites laterales)", () => {

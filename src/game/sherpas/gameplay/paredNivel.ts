@@ -1710,11 +1710,11 @@ export class ParedNivel {
         if (b) b.carga = Math.max(b.carga, n);
       }
     }
-    // T88 — BILLETES: física de papel (suben con la corriente, vaivén
-    // oscilante) y COGIDA con la MANO LIBRE — cada billete son +10 $ para el
-    // sherpa que lo pille (la detección usa la partícula de la mano: la
-    // física ya corrió este tick). Los billetes en subida SON cogibles
-    // (petición: «que permita a los sherpas alcanzarlo en su ascenso»).
+    // T88 — BILLETES: física de papel (disparo + flotación) y COGIDA con la
+    // MANO LIBRE — cada billete son +10 $ para el sherpa que lo pille (la
+    // detección usa la partícula de la mano: la física ya corrió este tick).
+    // Los billetes en subida SON cogibles («que permita a los sherpas
+    // alcanzarlo en su ascenso»).
     // T89 — techo de PANTALLA: los billetes desaparecen por la parte alta
     // T90 — tras GANAR el techo nunca baja de la cima: la ráfaga festiva
     // nace en el campa (22,4 m) aunque algún sherpa resbale después
@@ -1722,11 +1722,19 @@ export class ParedNivel {
       Math.max(this.sherpas[0].waist().y, this.sherpas[1].waist().y) + 6.5,
       this.state === "ganado" ? this.yCima + 6.5 : 0,
     );
-    // T91 — el suelo REAL (Y de la base): la corriente recoge el papel caído
-    // cerca de ella y ya no hay muerte por tocar el suelo
-    // T96c — el papel ya NUNCA muere en el suelo: vuela con el viento hasta
-    // que se coge o sale de PANTALLA (techo o límites laterales del muro)
-    pasoBilletes(this.billetes, dt, 0, techoPant, { min: -10, max: 10 });
+    // T99 — LEY ABSOLUTA del jugador («los billetes son lanzados hacia
+    // arriba, hacia la cumbre y NUNCA por debajo del saco. Es ley»): el
+    // nivel de la BOCA del saco es la frontera del papel — el amarre ES el
+    // cuello de la bolsa (se decide en ESTE tick, sin retardo del render)
+    // y durante la entrega manda el nodo de la bolsa (vuela hacia el campa).
+    // Ningún billete puede quedar por debajo del saco NI AÚN cuando la
+    // cuerda/lastre lo sube escalando (la corriente térmica lo devuelve).
+    pasoBilletes(
+      this.billetes, dt,
+      this.entrega && this.bolsaNodo ? this.bolsaNodo.position.y
+        : (this.amarre ?? this.nudoCuerda()).y,
+      techoPant, { min: -10, max: 10 },
+    );
     this.aseguraMallasBilletes();
     const manos: ManoLibre[] = [];
     for (const pi of [0, 1] as const) {
@@ -2686,8 +2694,9 @@ export class ParedNivel {
     nodo.rotation.z = Math.sin(e.t * 9) * 0.18 * (1 - s);
     if (k >= 1 && !this.rafagaHecha) {
       this.rafagaHecha = true;
-      // T91 — la boca del saco es el CUELLO (justo bajo el cinchado)
-      const boca = v3(e.to.x, e.to.y - 0.04, e.to.z + 0.1);
+      // T91/T99 — la boca del saco es el CUELLO (el nodo posado en la repisa)
+      // y la ráfaga nace SOBRE la frontera de la ley (boca + 0.06)
+      const boca = v3(e.to.x, e.to.y + 0.06, e.to.z + 0.1);
       const r = rafagaFestiva(this.billeteRng, this.billeteId, boca);
       this.billeteId = r.idSiguiente;
       this.billetes.push(...r.billetes);
@@ -3411,6 +3420,13 @@ export class ParedNivel {
         bolsasBonus: this.bloques.filter((b) => b.bolsa)
           .map((b) => ({ id: b.spec.id, vivo: b.bolsa!.vivo, y: +this.posBolsaBonus(b).y.toFixed(2) })),
         bolsa: this.bolsaLista,
+        // T99 — LEY ABSOLUTA: nivel de la boca del saco y billetes VERDADERAMENTE
+        // bajo ella (DEBE ser 0 siempre: «nunca por debajo del saco, es ley»;
+        // el margen 0.02 absorbe el retardo tick→render del amarre)
+        bolsaY: +(this.bolsaNodo?.position.y ?? 0).toFixed(3),
+        billetesBajoSaco: this.billetes.filter((b) => b.vivo
+          && b.pos.y < (this.entrega && this.bolsaNodo ? this.bolsaNodo.position.y
+            : (this.amarre ?? this.nudoCuerda()).y) - 0.02).length,
         // T97 — rotación del saco: en reposo NO debe girar (dictado: «no tiene
         // sentido que realice un giro oscilante sobre su eje vertical sin
         // más»); solo el yaw de DESLIZAMIENTO y el temblor de rabieta.

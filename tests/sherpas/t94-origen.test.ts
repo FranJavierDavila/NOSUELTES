@@ -94,14 +94,14 @@ describe("T94 · valleDeCuerda — el fondo REAL del arco", () => {
   });
 });
 
-describe("T94 · billetes — nacen EN la boca del saco y mueren en el suelo", () => {
-  it("el nacimiento queda DENTRO de la boca (banda estrecha bajo el cinchado)", () => {
+describe("T94/T99 · billetes — nacen EN la boca del saco (sobre el cinchado) y JAMÁS bajo él", () => {
+  it("el nacimiento queda EN LA BOCA: banda estrecha POR ENCIMA del cinchado (ley T99)", () => {
     const origen = v3(2, 8, 0.5);
     for (const seed of [3, 9, 17, 42, 77]) {
       const { billetes } = sacudidaBilletes(mulberry32(seed), 1, origen);
       for (const b of billetes) {
-        expect(b.pos.y).toBeLessThanOrEqual(origen.y - 0.04);      // bajo el cinchado
-        expect(b.pos.y).toBeGreaterThanOrEqual(origen.y - 0.13);   // dentro del cuello
+        expect(b.pos.y).toBeGreaterThan(origen.y + 0.05);          // T99: SOBRE el cinchado
+        expect(b.pos.y).toBeLessThanOrEqual(origen.y + 0.125);     // dentro de la garganta
         expect(Math.abs(b.pos.x - origen.x)).toBeLessThanOrEqual(0.051);
         expect(Math.abs(b.pos.z - origen.z)).toBeLessThanOrEqual(0.046);
       }
