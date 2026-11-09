@@ -83,7 +83,8 @@ try:
             return out;
         }""")
         print(f"m1: {m}", flush=True)
-        check("L1.disparo hacia ARRIBA (vy de TODOS > 0)", m["n0"] >= 3 and m["vyMin"] > 0.4,
+        check("L1.disparo hacia ARRIBA (vy de TODOS >= ley 0.08; T100 flotación lenta)",
+              m["n0"] >= 3 and m["vyMin"] > 0.07,
               f"n0={m['n0']} vyMin={m['vyMin']} vyMax={m['vyMax']}")
         check("L2.LEY DEL SACO: cero billetes bajo la boca en TODO el vuelo",
               m["bajoSacoMax"] == 0 and m["yMinSobreSaco"] > -0.02,
@@ -114,7 +115,7 @@ try:
         }""")
         print(f"m2: {m2}", flush=True)
         check("L4.segunda sacudida: relanzamiento aleatorio TAMBIÉN 100 % hacia arriba y sobre el saco",
-              m2["vyMin"] > 0.4 and m2["bajoSacoMax"] == 0 and m2["n0"] > m["vivosFin"],
+              m2["vyMin"] > 0.07 and m2["bajoSacoMax"] == 0 and m2["n0"] > m["vivosFin"],
               f"n0={m2['n0']} vyMin={m2['vyMin']} bajoSacoMax={m2['bajoSacoMax']}")
         page.screenshot(path="/home/z/my-project/download/t99-segunda-sacudida.png")
 

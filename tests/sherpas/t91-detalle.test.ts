@@ -133,19 +133,21 @@ describe("T91 · billetes empujados por corrientes de aire", () => {
     caido.vientoT = 5;                           // el viento ya lo llevó
     pasoBilletes(billetes, 1 / 60, 0, 99);
     expect(caido.vivo).toBe(true);               // SIEMPRE presente (dictado T96)
-    // la LEY DEL SACO lo mantiene sobre la boca (0.30) y el viento lo empuja
+    // la LEY DEL SACO lo mantiene sobre la boca (0.30); el viento VAGA (T100:
+    // media cero — ya no barre fijo hacia +X)
     expect(caido.pos.y).toBeGreaterThanOrEqual(0.3 - 1e-9);
     expect(caido.vel.y).toBeGreaterThan(0);      // el térmico lo sube: JAMÁS baja
-    expect(caido.pos.x).toBeGreaterThan(0.5);    // viento +X tras la pólvora
+    expect(Math.abs(caido.pos.x - 0.5)).toBeGreaterThan(1e-4); // el papel se mueve
   });
 
   it("T96c — el billete solo muere al salir de PANTALLA (límites laterales)", () => {
     const { billetes } = sacudidaBilletes(mulberry32(8), 1, v3(0, 8, 0));
     const b = billetes[0];
-    b.aire = 99; b.vientoT = 5; b.vel = v3(0, 0, 0);
+    b.aire = 99; b.vientoT = 5;
+    b.vel = v3(1.0, 0, 0);                       // deriva propia hacia +X (T100: el viento ya no barre fijo)
     b.pos = v3(0, 8, 0);
     for (let i = 0; i < 60 * 12 && b.vivo; i++) pasoBilletes(billetes, 1 / 60, 0, 99, { min: -2, max: 6 });
-    expect(b.vivo).toBe(false);                  // el viento lo sacó por el lado
+    expect(b.vivo).toBe(false);                  // salió por el lado
     expect(b.pos.x).toBeGreaterThan(6);          // cruzó el límite derecho
   });
 

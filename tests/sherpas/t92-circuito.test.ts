@@ -97,7 +97,7 @@ describe("T99 · LEY ABSOLUTA: los billetes SIEMPRE suben y JAMÁS quedan bajo e
     expect(vyMin).toBeGreaterThan(0);            // LEY: la velocidad vertical jamás es negativa
     expect(b.vivo).toBe(false);                  // MUERE al salir de pantalla
     expect(yMuerte).toBeGreaterThan(3);          // muere POR ENCIMA de donde nació
-    expect(b.pos.x).toBeGreaterThan(6);          // el viento lo sacó por el LADO
+    expect(Math.abs(b.pos.x)).toBeGreaterThan(5.9); // salió por ALGÚN lateral (T100: el viento vaga)
   });
 
   it("los billetes a mano (tests viejos) siguen vivos sin remolino ni pólvora definidos", () => {

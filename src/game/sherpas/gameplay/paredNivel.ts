@@ -2618,6 +2618,13 @@ export class ParedNivel {
         const bb = piece.getHierarchyBoundingVectors();
         const ancho = Math.max(1e-3, bb.max.x - bb.min.x);
         piece.scaling.setAll(0.28 / ancho); // billete de ~28 cm
+        // T100 — FUERA de la jerarquía del GLB: los clones heredaban la cadena
+        // __root__ del contenedor (conversión glTF→Babylon) y la posición local
+        // que el render escribe NO era la posición en mundo — el papel volaba
+        // en la sonda pero se dibujaba a ~9 m de donde decía estar (queja del
+        // jugador: «no veo ningún billete»). Como el saco: sin padre, la
+        // posición local ES la de mundo.
+        piece.parent = null;
         piece.isPickable = false;
         piece.alwaysSelectAsActiveMesh = true;
         piece.isVisible = false; // el proto nunca se ve: solo los clones
@@ -2643,8 +2650,11 @@ export class ParedNivel {
     // T94 — el origen ES la bolsa dibujada (su nodo cuelga con el cuello EN
     // el amarre): la sacudida se graba para la sonda E2E y certifica que el
     // enjambre nace EN la boca del saco, no a su alrededor.
+    // T100 — en MUNDO (getAbsolutePosition): el nodo hoy no tiene padre, pero
+    // si algún padre le añadiera desfase (como avisa la entrega: «getAbsolute-
+    // Position manda») el papel nacería desplazado del saco dibujado.
     const origen = n
-      ? v3(n.position.x, n.position.y, n.position.z)
+      ? (() => { const a = n.getAbsolutePosition(); return v3(a.x, a.y, a.z); })()
       : amarre;
     this.ultimaSacudida = { x: origen.x, y: origen.y, z: origen.z, t: this.simTime };
     const s = sacudidaBilletes(this.billeteRng, this.billeteId, origen);
@@ -2714,6 +2724,7 @@ export class ParedNivel {
       vivos.add(b.id);
       if (!this.billeteMallas.has(b.id)) {
         const clon = proto.clone(`billete_${b.id}`);
+        clon.parent = null; // T100: posición local = mundo (sin la jerarquía del GLB)
         clon.isVisible = true;
         clon.isPickable = false;
         clon.alwaysSelectAsActiveMesh = true;

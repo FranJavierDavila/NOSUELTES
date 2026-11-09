@@ -86,7 +86,7 @@ describe("T93 · billetes nacen del saco y se mecen como hojas", () => {
     }
   });
 
-  it("el lanzamiento es de FUEGO ARTIFICIAL: disparo fuerte (4-7 m de ápice)", () => {
+  it("el lanzamiento es un DISPARO VISIBLE CONTENIDO (T100): sube ~2-4 m de ápice", () => {
     const { billetes } = sacudidaBilletes(mulberry32(5), 1, v3(0, 2, 0));
     for (const b of billetes) {
       expect(b.vel.y).toBeGreaterThanOrEqual(BILLETE_LANZ_MPS * 0.8);
@@ -98,7 +98,8 @@ describe("T93 · billetes nacen del saco y se mecen como hojas", () => {
       pasoBilletes(billetes, 1 / 60, -50, 999);        // suelo imposible: solo el disparo
       yMax = Math.max(yMax, ...billetes.map((b) => (b.vivo ? b.pos.y : -99)));
     }
-    expect(yMax - y0).toBeGreaterThan(4);              // «varios bloques por encima»
+    expect(yMax - y0).toBeGreaterThan(2);              // se VE nacer y subir (varios bloques)
+    expect(yMax - y0).toBeLessThan(5);                 // pero SE QUEDA en el cuadro (T100: no cohete)
   });
 
   it("T99 LEY — tras la pólvora el papel FLOTA hacia la cumbre: velocidad SIEMPRE positiva y suave", () => {

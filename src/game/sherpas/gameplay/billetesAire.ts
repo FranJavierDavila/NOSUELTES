@@ -19,6 +19,14 @@
  *  El billete solo desaparece COGIDO o al salir de pantalla (por arriba o
  *  por los lados); el suelo NO EXISTE para el papel.
  *
+ * T100 — VISIBILIDAD (queja del jugador tras T99: «ahora no veo ningún
+ *  billete»; medido con proyección a pantalla: el papel cruzaba el cuadro en
+ *  ~1 s y moría en el techo a los 3 s): el disparo se CONTIENE (2,6 m/s,
+ *  tope 4,4), la flotación manda y el viento VAGA con media cero — el papel
+ *  nace en la boca del saco, se VE subir, y FLOTA en el cuadro ~15 s
+ *  alcanzable por las manos libres, sin romper ni una coma de la LEY: vy
+ *  nunca negativa, jamás bajo la boca del saco.
+ *
  * Módulo PURO (sin Babylon): posición/velocidad/fase por billete, paso
  * determinista con rng inyectado y detección de cogida por mano libre.
  * La escena solo lee las posiciones para colocar los clones de dollar.glb.
@@ -42,8 +50,11 @@ export const BILLETE_RADIO_COGIDA = 0.42;
  *  bajan (ver cabecera). */
 /** T91 — EMPUJE de la corriente (m/s²): el papel ACELERA hacia arriba como
  *  hoja en una columna de aire caliente (dictado: «vuelan hacia arriba
- *  empujados por corrientes de aire»), no a velocidad constante. */
-export const BILLETE_EMPUJE_MPS2 = 1.9;
+ *  empujados por corrientes de aire»), no a velocidad constante.
+ *  T100 — quemado MÁS SUAVE: el disparo ya no es un cohete que cruza la
+ *  pantalla en 1 s (queja del jugador: «ahora no veo ningún billete») sino
+ *  una subida viva que SE QUEDA en el cuadro. */
+export const BILLETE_EMPUJE_MPS2 = 1.1;
 /** T92 — FUEGOS ARTIFICIALES (dictado: «deben salir disparados hacia arriba
  *  como si fuesen fuegos artificiales varios bloques por encima de la
  *  posición del saco y deben verse caer o volar esparcidos por el aire»):
@@ -51,17 +62,23 @@ export const BILLETE_EMPUJE_MPS2 = 1.9;
  *  disparo hacia arriba (T96c — antes el tope 3,4 estaba POR DEBAJO del
  *  lanzamiento 5,2 y el empuje nunca actuaba: el papel salía tibio y la
  *  caída dominaba la imagen). T99: al agotarse la pólvora NO hay caída —
- *  el papel FLOTA hacia la cumbre (LEY). */
+ *  el papel FLOTA hacia la cumbre (LEY).
+ *  T100 — lanzamiento CONTENIDO: con 5,2 m/s el papel cruzaba el cuadro en
+ *  0,6 s (medido: y pantalla 20-30 % a t+0,6; fuera por arriba a t+1,2;
+ *  muerto en el techo a t+3). Ahora el disparo sube ~2 bloques VISIBLES y
+ *  entrega el papel a la flotación DENTRO del cuadro. */
 export const BILLETE_SUBIDA_S = 0.8;
-/** T93 — VELOCIDAD DEL DISPARO (m/s): el billete NACE DENTRO de la boca del
- *  saco y SALE DISPARADO como un cohete (dictado T93: «que nazcan desde el
- *  propio saco, se lancen hacia arriba como fuegos artificiales»): con
- *  v²/2g_leaf el disparo alcanza ~4-6 bloques antes del ápice. */
-export const BILLETE_LANZ_MPS = 5.2;
+/** T93 — VELOCIDAD DEL DISPARO (m/s): el billete NACE en la boca del saco y
+ *  SALE DISPARADO hacia arriba (dictado T93: «que nazcan desde el propio
+ *  saco, se lancen hacia arriba como fuegos artificiales»). T100: 5,2 → 2,6
+ *  — el disparo ya no escupe el papel fuera de pantalla en un segundo; el
+ *  billete se VE nacer, subir y QUEDARSE flotando (queja: «no veo ningún
+ *  billete»). */
+export const BILLETE_LANZ_MPS = 2.6;
 /** T99 — FLOTACIÓN (m/s): velocidad vertical de CRUCERO tras la pólvora —
  *  el papel sube MECIDO hacia la cumbre (dictado: «los billetes vuelen
  *  flotando por el aire hasta que sean cogidos»). */
-export const BILLETE_FLOTANTE_MPS = 0.55;
+export const BILLETE_FLOTANTE_MPS = 0.45;
 /** T99 — relajación (1/s) con la que la flotación toma el papel al agotarse
  *  la pólvora (transición suave disparo → flotación, sin tirones). */
 export const BILLETE_FLOTANTE_K = 1.4;
@@ -77,21 +94,27 @@ export const BILLETE_SUBE_MIN_MPS = 0.08;
  *  frontera nada puede verse bajo el saco). */
 export const BILLETE_LEY_SACO_M = 0.05;
 /** T92 — tope de la PÓLVORA (m/s): la velocidad máxima del disparo con el
- *  térmico ardiendo. T96c: 3,4 → 8,5 — el techo del empuje debe estar POR
- *  ENCIMA del lanzamiento (5,2) para que el fuego artificial ACELERE hacia
- *  arriba de verdad (el bug «salen hacia abajo»: sin aceleración, el disparo
- *  se apagaba al nacer y la caída dominaba la imagen). */
-export const BILLETE_TOPE_MPS = 8.5;
-/** T96c — VIENTO (m/s): tras el ápice el papel «comienza a volar movido por
- *  el viento» (dictado): empuje horizontal DOMINANTE y constante (con rachas)
- *  que arrastra el papel atravesando la escena hasta salir de pantalla. */
-export const BILLETE_VIENTO_MPS = 1.7;
+ *  térmico ardiendo. T96c: el techo del empuje debe estar POR ENCIMA del
+ *  lanzamiento para que el fuego artificial ACELERE hacia arriba de verdad.
+ *  T100: 8,5 → 4,4 — sigue por encima del lanzamiento (2,6) y el disparo ya
+ *  no escupe el papel fuera del cuadro (la ráfaga festiva nace más rápida y
+ *  el tope la recoge sin salto de posición). */
+export const BILLETE_TOPE_MPS = 4.4;
+/** T96c — VIENTO (m/s): el papel «comienza a volar movido por el viento»
+ *  (dictado). T100 — VIENTO OSCILANTE: antes empujaba SIEMPRE hacia +X con
+ *  1,7 m/s y barría el papel fuera del cuadro por un lateral en ~3 s
+ *  («no veo ningún billete»); ahora el viento VAGA (rafa senoidal de media
+ *  cero) — el papel mecea en el cuadro, esparcido pero SIN irse en línea
+ *  recta, flotando hasta ser cogido o salir por arriba (LEY T99). */
+export const BILLETE_VIENTO_MPS = 0.45;
 /** T96c — segundos que tarda el viento en tomar el papel (desde que la
  *  pólvora se agota). */
 export const BILLETE_VIENTO_RAMP_S = 1.2;
 /** T91 — velocidad del REMOLINO (m/s): cada billete gira en torno a la
- *  columna de corriente (corkscrew con fase y sentido propios). */
-export const BILLETE_REMOLINO_MPS = 0.55;
+ *  columna de corriente (corkscrew con fase y sentido propios).
+ *  T100: 0,55 → 0,35 — espiral más apretada para que el papel no camine
+ *  fuera del cuadro. */
+export const BILLETE_REMOLINO_MPS = 0.35;
 /** T91 — frecuencia de las RACHAS del térmico (rad/s): ráfagas lentas que
  *  engordan y aflojan el empuje de cada billete. */
 export const BILLETE_RACHA_OMEGA = 0.9;
@@ -233,10 +256,13 @@ export function pasoBilletes(
     // T93 — GIRO PROPIO: cada billete tumba sobre SU eje a SU ritmo (el
     // render lo aplica como cuaternión; aquí solo se integra el ángulo)
     b.spinAng = (b.spinAng ?? 0) + (b.spinW ?? 2.8) * dt;
-    // T96c — VIENTO horizontal: empuje de dispersión (+X, el papel atraviesa
-    // la escena hasta salir de pantalla) + rachas
+    // T96c/T100 — VIENTO horizontal OSCILANTE: vaga a un lado y a otro (media
+    // cero) en vez de barrer en línea recta hacia +X — el papel se queda
+    // esparcido DENTRO del cuadro flotando (dictado T99: «flotando hasta que
+    // sean cogidos»; queja T100: «no veo ningún billete»)
     const vientoRampa = Math.min(1, (b.vientoT ?? 0) / BILLETE_VIENTO_RAMP_S);
-    const vientoX = BILLETE_VIENTO_MPS * vientoRampa + Math.sin(b.t * 0.7 + b.fase) * 0.4 * vientoRampa;
+    const vientoX = BILLETE_VIENTO_MPS * Math.sin(b.t * 0.55 + b.fase) * vientoRampa
+      + Math.sin(b.t * 0.7 + b.fase) * 0.25 * vientoRampa;
     const vx = b.vel.x + vientoX + Math.cos(b.orbAng) * BILLETE_REMOLINO_MPS
       + Math.sin(b.t * BILLETE_OSC_OMEGA + b.fase) * BILLETE_OSC_MPS;
     const vz = b.vel.z + Math.sin(b.orbAng) * BILLETE_REMOLINO_MPS * 0.6
