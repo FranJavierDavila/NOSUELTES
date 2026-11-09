@@ -346,7 +346,7 @@
     "controls": "Arrastra manos y pies a las presas de cada bloque que levita · los DOS sherpas deben llegar arriba",
     "win": "¡Prueba superada!",
     "winSub": "Los sherpas alcanzan la cima de los bloques flotantes. El Ricachón puede descansar tranquilo.",
-    "fail": "Caída en la prueba",
+    "fail": "¡PARTIDA PERDIDA!",
     "failSub": "El campamento sigue esperando… inténtalo de nuevo",
     "retry": "Reintentar",
     "exit": "Menú",

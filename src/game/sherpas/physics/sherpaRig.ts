@@ -365,6 +365,24 @@ export class SherpaRig {
    *  El match valida requisitos y lo desactiva si se pierden los agarres. */
   belaying = false;
   private belayCatchDropM = 2.9;
+  /** T97 — CUERDA REAL (dictado: «descienda por efecto de la gravedad hasta
+   *  quedar TODO el largo de la cuerda justo en la perpendicular del compañero
+   *  que aún sigue agarrado al bloque, y no medio flotando en el aire»): el
+   *  nivel alimenta CADA tick el PIVOTE del belay = cintura del compañero SOLO
+   *  si sigue anclado a la escalada, y la longitud real de la cuerda
+   *  (cuerdaMetros). El colgado cae hasta agotar la cuerda y queda EN LA
+   *  ESFERA de radio L en torno al pivote → péndulo amortiguado que se apaga
+   *  en la LÍNEA DE PLOMO bajo el compañero (integración Verlet + restricción
+   *  de distancia, método de Jakobsen/PBD). null = el compañero NO sostiene
+   *  (también cayó): nadie aguantá la cuerda → caída honesta hasta la nieve.
+   *  belayPivotActivo solo se pone con setBelayPivot (el nivel): los rigs de
+   *  tests y match.ts conservan la captura clásica por línea (t95 intacta). */
+  private belayPivot: V3 | null = null;
+  private belayLenM = 5;
+  private belayPivotActivo = false;
+  /** T97 — longitud EFECTIVA mientras el compañero IZA (cada golpe recoge
+   *  cuerda: la cuerda izada NO vuelve a soltar 0,5 m entre golpes). */
+  private belayLenEfectivo = 5;
   // T89 — el chicle del antebrazo vive en fillSkeleton (codoGoma) y en la
   // escala de la pieza del puppet: nada de repiñes de partículas aquí.
   /** IMPULSO del compañero (mini-ascensión cinemática): ventana activa (reloj
@@ -493,6 +511,35 @@ export class SherpaRig {
    *  holgura normal (ropeSlackM) o el seguro CORTO si el compañero está
    *  anclado (el match lo fija cada tick antes de step). */
   setBelayCatch(dropM: number): void { this.belayCatchDropM = Math.max(0.4, dropM); }
+
+  /** T97 — pivote del belay REAL: cintura del compañero anclado (o null si
+   *  nadie sostiene) + longitud fija de la cuerda. Lo llama el nivel cada
+   *  tick ANTES de step; el rig NO mueve al compañero (solo se sujeta de él). */
+  setBelayPivot(p: V3 | null, lenM: number): void {
+    this.belayPivotActivo = true;
+    this.belayPivot = p ? vClone(p) : null;
+    if (lenM >= 1) { this.belayLenM = lenM; this.belayLenEfectivo = lenM; }
+  }
+
+  /** T97 — proyección sobre la esfera del belay (restricción de distancia de
+   *  Jakobsen): la posición vuelve a la esfera de radio L en torno al pivote
+   *  y la velocidad RADIAL muere (solo sobrevive la tangencial, ya
+   *  amortiguada por el llamador) → péndulo creíble sin energía fantasma. */
+  private clampBelay(body: { pos: V3; prev: V3 }): void {
+    if (!this.belayPivot) return;
+    const d = vSub(body.pos, this.belayPivot);
+    const dist = vLen(d);
+    if (dist <= this.belayLenEfectivo) return;
+    const dir = vScale(d, 1 / (dist || 1e-6));
+    body.pos = vAdd(this.belayPivot, vScale(dir, this.belayLenEfectivo));
+    // velocidad implícita nueva (pos − prev): quitar la componente radial
+    const vel = vSub(body.pos, body.prev);
+    const vr = vel.x * dir.x + vel.y * dir.y + vel.z * dir.z;
+    if (vr > 0) {
+      const tang = v3(vel.x - dir.x * vr, vel.y - dir.y * vr, vel.z - dir.z * vr);
+      body.prev = vSub(body.pos, tang);
+    }
+  }
 
   /** T93 — TIRÓN BRUSCO de la cuerda cuando la CAÍDA DEL COMPAÑERO se
    *  captura (dictado: «dando un tirón brusco al sherpa que esté anclado
@@ -1139,7 +1186,11 @@ export class SherpaRig {
       // el gas verde sale por atrás (el trail lo dispara el match vía fartFlying)
       this.fartTrailAcc += dt;
       if (this.fartLaunchT <= 0) this.autoGripAfterFart();
-    } else if (nAnchored === 0 && this.ropeState === "hauling") {
+    } else if (nAnchored === 0 && this.ropeState === "hauling" && (this.haulDone || this.haulPressesPend > 0)) {
+      // T97 — el izado KINEMÁTICO solo corre con pulsaciones del compañero o
+      // en el recobro; la ESPERA (hauling sin golpes) cae al verlet de abajo:
+      // el colgado sigue COLGADO DE VERDAD (péndulo amortiguado que se apaga
+      // en la línea de plomo), no congelado a mitad de balanceo.
       this.dangleSettleT += dt;
       if (this.haulDone) {
         // T96b — RECUBRO: el cuerpo se INCORPORA con fundido (recobroT →
@@ -1168,14 +1219,17 @@ export class SherpaRig {
         body.pos = vAdd(body.pos, v3(0, paso, 0));
         body.prev = v3(body.pos.x, body.pos.y - paso * 0.55, body.pos.z);
         this.clampBody(body);
+        // T97 — el izado RECOGE cuerda: la longitud efectiva del belay baja
+        // con la cintura (lo izado NO vuelve a colgar entre golpes).
+        if (this.belayPivot) {
+          const dH = vLen(vSub(body.pos, this.belayPivot));
+          this.belayLenEfectivo = Math.max(0.5, Math.min(this.belayLenEfectivo, dH));
+        }
         // SOLO cuando el RESCATE (el izado del compañero) lo ha situado con
         // un anclaje a su alcance —o en el tope del izado, junto a sus presas
         // de despegue— recupera la posición erguida (dictado). Sin golpes de
         // tecla del compañero, PERMANECE colgado horizontal e inactivo.
-        if (this.haulPressesDados > 0 && (this.alcanzaAnclajeManos() || body.pos.y >= top - 1e-4)) {
-          this.haulDone = true;
-          this.recobroT = 0;
-        }
+        this.chequeaRecobro(body, fT);
         vAbs = Math.abs(paso) / Math.max(1e-4, dt);
       }
     } else {
@@ -1203,10 +1257,14 @@ export class SherpaRig {
         // (Task 36, petición: "cae, la cuerda lo agarra, pierde altura y
         // tiempo pero no vuelve a cero"). El tirón usa el MISMO muelle
         // estable del colgado: frena, rebota una vez y queda colgado.
-        if (this.ropeState !== "falling" && this.ropeState !== "caught" && this.ropeState !== "grounded") {
+        // T97 — la ESPERA del rescate ('hauling' sin golpes) también vive
+        // aquí (verlet colgado): NUNCA re-entra en 'falling' (se ratchetaba
+        // a la baja hasta la nieve).
+        if (this.ropeState !== "falling" && this.ropeState !== "caught" && this.ropeState !== "grounded" && this.ropeState !== "hauling") {
           this.ropeState = "falling";
           this.ropeFallStartY = body.pos.y;
           this.dangleSettleT = 0;
+          this.belayLenEfectivo = this.belayLenM; // nueva caída = cuerda entera
           // T79 — ¿LA CAPTURA CAERÍA JUNTO AL SUELO? Si la línea de captura de
           // la cuerda (inicio − caída absorvida) queda en la banda de suelo
           // (floorY + catchFloorM), el escalador toca la nieve ANTES de que la
@@ -1216,16 +1274,29 @@ export class SherpaRig {
           // suelo». A media pared la banda no se toca y la captura de siempre
           // manda (cae, la cuerda lo agarra, cuelga y el compañero iza).
           const floorCatch = this.deps.floorY + (fT?.catchFloorM ?? 0.6);
-          this.groundLanding = (this.ropeFallStartY - this.belayCatchDropM) <= floorCatch + 0.05;
+          // T97 — con belay REAL: si el punto de plomo bajo el compañero
+          // (pivot.y − L) queda en la banda de suelo, la nieve gana ANTES que
+          // la cuerda (cae a tierra); sin compañero anclado NADIE sostiene la
+          // cuerda → también cae a la nieve. Sin nivel (tests/match): línea
+          // clásica por ropeFallStartY − belayCatchDropM (t95 intacto).
+          this.groundLanding = this.belayPivotActivo
+            ? (!this.belayPivot || (this.belayPivot.y - this.belayLenM) <= floorCatch + 0.05)
+            : (this.ropeFallStartY - this.belayCatchDropM) <= floorCatch + 0.05;
         }
         const catchY = Math.max(
           this.deps.floorY + (fT?.catchFloorM ?? 0.6),
           (this.ropeFallStartY ?? body.pos.y) - this.belayCatchDropM,
         );
+        // T97 — captura por CUERDA REAL: con pivote del compañero la cuerda
+        // se agota cuando la DISTANCIA entre cinturas alcanza L (no una línea
+        // horizontal fija) — la caída desciende por gravedad hasta agotarla.
+        const distBelay = this.belayPivot ? vLen(vSub(body.pos, this.belayPivot)) : -1;
+        const catchCuerda = this.belayPivot !== null && distBelay >= this.belayLenM;
+        const catchLegacy = !this.belayPivotActivo && body.pos.y <= catchY;
         // T58-E: si la cuerda se AGOTÓ en la ventana A SACO, NO vuelve a
         // agarrar — el suelo es el final (castigo del rescate fallido).
         // T79: tampoco agarra si va a caer AL SUELO (groundLanding).
-        if (this.ropeState === "falling" && body.pos.y <= catchY && !this.ropeReleased && !this.groundLanding) {
+        if (this.ropeState === "falling" && (catchLegacy || catchCuerda) && !this.ropeReleased && !this.groundLanding) {
           this.ropeState = "caught";
           this.ropeTautNow = true; // evento de borde: el match suena/avisa
           this.dangleSettleT = 0;
@@ -1239,7 +1310,17 @@ export class SherpaRig {
           // — la velocidad de bajada muere ENTERA en el mismo tick (el tirón
           // es la parada), solo sobrevive un poco de vaivén horizontal. FUERA
           // el muelle que seguía estirando el chicote y rebotando.
-          vel = v3(vel.x * 0.5, 0, vel.z * 0.5);
+          if (this.belayPivot) {
+            // T97 — captura en la ESFERA del belay: la radial muere entera y
+            // la tangential queda al 50 % (parada seca + vaivén de péndulo).
+            const d = vSub(body.pos, this.belayPivot);
+            const dist = vLen(d) || 1e-6;
+            const dir = vScale(d, 1 / dist);
+            const vr = vel.x * dir.x + vel.y * dir.y + vel.z * dir.z;
+            vel = vScale(v3(vel.x - dir.x * vr, vel.y - dir.y * vr, vel.z - dir.z * vr), 0.5);
+          } else {
+            vel = v3(vel.x * 0.5, 0, vel.z * 0.5);
+          }
           if (!this.ropeTautDone) {
             // EL CHICOTAZO: la parada se paga en las manos (re-agarrar cuesta).
             const shock = fT?.catchFatiguePct ?? 0.16;
@@ -1257,7 +1338,9 @@ export class SherpaRig {
           this.ropeState = "grounded";
           this.ropeTautNow = false;
         }
-        if (this.ropeState === "caught") {
+        // T97 — 'caught' Y la ESPERA del rescate ('hauling' sin golpes ni
+        // recobro) cuelgan IGUAL: verlet dinámico con vaivén amortiguado.
+        if (this.ropeState === "caught" || (this.ropeState === "hauling" && !this.haulDone)) {
           // T95 — CUERDA INEXTENSIBLE: FUERA el muelle de captura
           // (pen·SPRING_K y el rebote): la cintura cuelga EN la línea (el
           // clamp duro de tras-integración la mantiene) y solo queda el
@@ -1271,27 +1354,42 @@ export class SherpaRig {
             vel = vScale(vel, Math.max(0, 1 - 10 * dt));
           }
           this.dangleSettleT += dt;
-          if (!this.haulDone && this.dangleSettleT >= (fT?.haulDelaySeconds ?? 0.9)) {
+          // T96b/T97 — la ventana de izado abre a los 0,9 s (el colgado NO se
+          // recupera solo: sus golpes no hacen nada); mientras no lleguen
+          // pulsaciones del compañero el cuerpo sigue en el verlet de abajo,
+          // colgado DE VERDAD (péndulo que se apaga en la línea de plomo).
+          if (!this.haulDone && this.ropeState === "caught" && this.dangleSettleT >= (fT?.haulDelaySeconds ?? 0.9)) {
             this.ropeState = "hauling";
             this.ropeHaulStartNow = true;
           }
+          // T97 — en la ESPERA también puede llegar el recobro: el compañero
+          // ya izó lo suyo y las presas quedaron al alcance (o el tope).
+          this.chequeaRecobro(body, fT);
         }
       }
       body.prev = vClone(body.pos);
       body.pos = vAdd(body.pos, vAdd(vel, vScale(acc, dt * dt)));
       this.clampBody(body);
-      // T95 — LA LÍNEA DE LA CUERDA ES DURA: capturado, la cintura JAMÁS pasa
-      // de la línea de captura (la cuerda no se estira ni un centímetro).
-      // pos y prev EN la línea: velocidad de bajada cero, sin energía de
-      // muelle almacenada.
-      if (this.ropeState === "caught" && this.ropeFallStartY !== null) {
-        const cy = Math.max(
-          this.deps.floorY + (fT?.catchFloorM ?? 0.6),
-          this.ropeFallStartY - this.belayCatchDropM,
-        );
-        if (body.pos.y < cy) {
-          body.pos = v3(body.pos.x, cy, body.pos.z);
-          body.prev = v3(body.prev.x, cy, body.prev.z);
+      // T95/T97 — LA CUERDA ES DURA colgado: con belay real, la cintura vive
+      // EN (o dentro de) la ESFERA de radio L en torno al compañero anclado
+      // (proyección de Jakobsen: radial muerta, tangential amortiguada → el
+      // péndulo se apaga en la LÍNEA DE PLOMO bajo el compañero). Sin nivel
+      // (tests/match), la línea clásica de captura manda (t95 intacto).
+      if ((this.ropeState === "caught" || this.ropeState === "hauling") && this.ropeFallStartY !== null) {
+        if (this.belayPivotActivo && this.belayPivot) {
+          this.clampBelay(body);
+        } else {
+          // T97 — la línea de captura SUBE con lo ya izado (la cuerda recogida
+          // no se re-suelta entre golpes: el rescate no resbala).
+          const cy = Math.max(
+            this.deps.floorY + (fT?.catchFloorM ?? 0.6),
+            this.ropeFallStartY - this.belayCatchDropM,
+            this.haulTargetY ?? -Infinity,
+          );
+          if (body.pos.y < cy) {
+            body.pos = v3(body.pos.x, cy, body.pos.z);
+            body.prev = v3(body.prev.x, cy, body.prev.z);
+          }
         }
       }
       this.antiGomaServo(body, dt);
@@ -1451,6 +1549,19 @@ export class SherpaRig {
     void _hangedPresses;
     void _partnerAnchored;
     this.haulPressesPend = Math.min(10, this.haulPressesPend + Math.max(0, Math.floor(partnerPresses)));
+  }
+
+  /** T96b/T97 — recobro: SOLO cuando el izado (golpes YA dados) sitúa al
+   *  colgado con un anclaje a mano —o en el tope del izado— recupera la
+   *  posición erguida. Se chequea en el izado Y en la espera (la presa puede
+   *  quedar al alcance sin más golpes). */
+  private chequeaRecobro(body: { pos: V3 }, fT: NonNullable<ConstructorParameters<typeof SherpaRig>[0]["tuning"]["fall"]> | undefined): void {
+    if (this.haulDone || this.haulPressesDados === 0 || this.ropeState !== "hauling") return;
+    const top = (this.ropeFallStartY ?? body.pos.y) - (fT?.haulTopOffsetM ?? 0.35);
+    if (this.alcanzaAnclajeManos() || body.pos.y >= top - 1e-4) {
+      this.haulDone = true;
+      this.recobroT = 0;
+    }
   }
 
   /** T96b — ¿hay alguna presa LIBRE al alcance de una mano libre? (dictado:

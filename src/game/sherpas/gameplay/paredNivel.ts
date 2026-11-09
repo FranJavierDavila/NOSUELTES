@@ -323,6 +323,18 @@ export function esColgado(ropeState: string, anclajes: number): boolean {
   return anclajes === 0 && (ropeState === "caught" || ropeState === "hauling");
 }
 
+/** T97 — PARTIDA PERDIDA: segundos con los DOS sherpas colgados (nadie puede
+ *  izar a nadie: el rescate exige un compañero anclado) antes de la derrota.
+ *  Dictado: «el juego está bloqueado, no da partida perdida» — jamás un
+ *  bloqueo en silencio. */
+export const AMBOS_COLGADOS_PERDIDA_S = 1.5;
+
+/** Reloj puro de la derrota por doble colgado: cuenta SOLO mientras ambos
+ *  cuelgan; cualquier recuperación lo reencierra a cero. */
+export function pasoAmbosColgados(ambos: boolean, t: number, dt: number): number {
+  return ambos ? t + dt : 0;
+}
+
 /** T93 — ¿AGARRES CRUZADOS? (dictado: «el sherpa no puede cruzar los brazos
  *  de forma antinatural, como ocurre cuando está colgado en un bloque verde
  *  que gira sobre su eje y obliga a cruzar los brazos; si se alcanza un giro
@@ -944,6 +956,8 @@ export class ParedNivel {
   // T89 — giro de la bolsa al deslizar + ESTRELLA DE ORO al coger billete
   private bolsaPrevX = 0;
   private bolsaYaw = 0;
+  // T97 — PARTIDA PERDIDA: reloj con los DOS sherpas colgados sin rescate
+  private ambosColgadoT = 0;
   // T93 — LAZO del saco (dictado: «no parece que esté atado a la cuerda,
   // hay que ponerle una cuerdita con una especie de lazo que queda anclado
   // al propio saco, con el mismo material de la cuerda»): anillo + dos orejas
@@ -1661,6 +1675,14 @@ export class ParedNivel {
 
     for (const pi of [0, 1] as const) {
       const rig = this.sherpas[pi];
+      // T97 — PIVOTE DEL BELAY REAL: la cintura del compañero SOLO si sigue
+      // anclado a la escalada (climbing); si también cayó, nadie sostiene la
+      // cuerda y el que cae baja honestamente hasta la nieve. La longitud es
+      // la cuerda REAL del nivel (cuerdaMetros): el colgado cae hasta
+      // agotarla y queda colgado EN LA LÍNEA DE PLOMO bajo el compañero.
+      const comp = this.sherpas[1 - pi];
+      const sostiene = comp.anchorsCount() > 0 && comp.ropeState === "climbing";
+      rig.setBelayPivot(sostiene ? comp.rig.particles[P.pelvisC].pos : null, this.ajuste.cuerdaMetros);
       rig.feedRopeMash(mash[pi], mash[1 - pi], this.sherpas[1 - pi].anchorsCount() > 0);
       const info = rig.step(dt, multCarga(pi, colgado, gomas));
       for (const g of info.gripped) this.alAgarrar(g.anchor.hold.id, pi);
@@ -1819,8 +1841,12 @@ export class ParedNivel {
     this.rabietaAmp = rab.amp;
     if (rab.nueva) {
       this.hablaRabieta();
-      // T88 — la bolsa (el «ricachón» de dinero) patalea: SACUDIDA → billetes
-      this.sacudidaBolsa();
+      // T97 — dictado: «el dinero sale disparado sin criterio marcado de las
+      // sacudidas del saco; nada más empezar, sin hacer absolutamente nada,
+      // lanza billetes». FUERA: la rabieta es un temblor programado, no una
+      // sacudida real de la escalada — YA NO suelta billetes. SOLO la sueltan
+      // las sacudidas FUERTES de verdad: el tirón de captura de una caída y
+      // la explosión de un bloque.
     }
     if (rab.amp > 0.02) {
       for (const pi of [0, 1] as const) {
@@ -1844,6 +1870,16 @@ export class ParedNivel {
       } else this.winT = 0;
       if (a.y < FAIL_Y || b.y < FAIL_Y || this.sherpas[0].ropeState === "grounded" || this.sherpas[1].ropeState === "grounded") {
         this.fin(false);
+      }
+      // T97 — PARTIDA PERDIDA (dictado: «han caído los dos sherpas y el juego
+      // está bloqueado, no da partida perdida»): con los DOS colgados de la
+      // cuerda nadie puede izar a nadie (el rescate exige un compañero
+      // anclado) → derrota a los 1,5 s, nunca un bloqueo en silencio.
+      if (colgado[0] && colgado[1]) {
+        this.ambosColgadoT = pasoAmbosColgados(true, this.ambosColgadoT, dt);
+        if (this.ambosColgadoT >= AMBOS_COLGADOS_PERDIDA_S) this.fin(false);
+      } else {
+        this.ambosColgadoT = pasoAmbosColgados(false, this.ambosColgadoT, dt);
       }
     }
   }
@@ -2221,9 +2257,15 @@ export class ParedNivel {
       this.bolsaYaw += (Math.max(-0.7, Math.min(0.7, vx * 9)) - this.bolsaYaw) * 0.12;
       this.bolsaNodo.position.set(pto.x, pto.y, pto.z);
       if (this.bolsaLista) {
-        this.bolsaNodo.rotation.y = this.bolsaYaw + Math.sin(this.simTime * 1.7) * 0.08
+        // T97 — dictado: «no tiene ningún sentido que el saco realice un giro
+        // oscilante sobre su eje vertical sin más, cuando está parado… ¿a qué
+        // obedece ese giro?». FUERA el vaivén de yaw en reposo (sin) y el
+        // bamboleo constante en Z: el saco SOLO gira al DESLIZAR por la
+        // cuerda (bolsaYaw sigue la velocidad real del amarre y muere al
+        // parar) y SOLO se sacude (yaw/z) cuando una rabieta lo sacude.
+        this.bolsaNodo.rotation.y = this.bolsaYaw
           + this.rabietaAmp * Math.sin(this.simTime * 21) * 0.35;
-        this.bolsaNodo.rotation.z = Math.sin(this.simTime * 1.3 + 0.7) * 0.05;
+        this.bolsaNodo.rotation.z = this.rabietaAmp * Math.sin(this.simTime * 1.3 + 0.7) * 0.12;
       }
     }
     // T88 — billetes: mallas siguiendo la física de papel. T93 — GIRO
@@ -2404,15 +2446,12 @@ export class ParedNivel {
       .then((cont) => {
         if (this.disposed || !this.bolsaNodo) { cont.dispose(); return; }
         cont.addAllToScene();
-        // espejo LH del loader (mismo neutralizado que la fábrica de caras)
-        for (const root of cont.rootNodes as unknown as TransformNode[]) {
-          const s = root.scaling;
-          if (s && s.z < 0) {
-            s.setAll(1);
-            if (root.rotationQuaternion) root.rotationQuaternion.set(0, 0, 0, 1);
-            else if (root.rotation) root.rotation.setAll(0);
-          }
-        }
+        // T97 — dictado: «el saco de dinero está espejado o invertido en
+        // sentido horizontal». El neutralizado del loader (poner a 1 la
+        // escala del root cuando trae −Z) le QUITABA a Babylon la conversión
+        // LH del glTF: la bolsa quedaba ESPEJADA. Se respeta el transform del
+        // cargador (como en cualquier GLB del juego) y el saco se ve de
+        // cara, con el $ y el lazo en su sitio.
         const piece = cont.meshes.find((m) => m.getTotalVertices() > 0) ?? cont.meshes[0];
         if (!piece) { cont.removeAllFromScene(); cont.dispose(); return; }
         const wrap = new TransformNode("bolsaWrap", esc);
@@ -2994,7 +3033,7 @@ export class ParedNivel {
     wrap.setAttribute("style", "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(4,10,8,.55);pointer-events:auto;");
     const t = (p: string, f: string): string => txt(this.d.data.strings, this.d.hud.lang, p, f);
     wrap.innerHTML = `<div style="background:rgba(12,22,17,.94);border:1px solid #57b17e;border-radius:14px;padding:26px 34px;text-align:center;max-width:420px;font-family:system-ui,sans-serif;color:#eaf4ec">
-      <h1 style="font-size:24px;margin:0 0 8px">${won ? "🎉 " : ""}${esc(t(won ? "pared.win" : "pared.fail", won ? "¡Prueba superada!" : "Caída en la prueba"))}</h1>
+      <h1 style="font-size:24px;margin:0 0 8px">${won ? "🎉 " : ""}${esc(t(won ? "pared.win" : "pared.fail", won ? "¡Prueba superada!" : "¡PARTIDA PERDIDA!"))}</h1>
       <p style="margin:0 0 6px;font-size:14px;opacity:.85">${esc(t(won ? "pared.winSub" : "pared.failSub", won ? "Los sherpas alcanzan la cima de los bloques flotantes" : "El campamento sigue esperando… inténtalo de nuevo"))}</p>
       <p style="margin:0 0 4px;font-size:13px;opacity:.7">${t("pared.finaleTime", "Tiempo")}: ${Math.floor(this.simTime / 60)}:${String(Math.floor(this.simTime % 60)).padStart(2, "0")} · ${t("pared.finaleFalls", "Caídas")}: ${this.falls}</p>
       ${won ? `<p style="margin:0 0 14px;font-size:15px;font-weight:700;color:#ffd76a">💰 ${esc(t("pared.finaleBotin", "Botín"))}: $${this.dinero[0] + this.dinero[1]} <span style="font-size:12px;font-weight:400;opacity:.75">· S1 $${this.dinero[0]} · S2 $${this.dinero[1]}</span></p>` : `<p style="margin:0 0 14px"></p>`}
@@ -3029,6 +3068,8 @@ export class ParedNivel {
     // T122: reinicio de rabietas + ricachón reenganchado al nudo
     this.rabietaAmp = 0;
     this.rabietas = rabietasInicio();
+    // T97 — reinicio del reloj de PARTIDA PERDIDA por doble colgado
+    this.ambosColgadoT = 0;
     this.richi = ricachonReset(this.nudoCuerda());
     // T90: la bolsa vuelve a la cuerda (la entrega del botín se cancela)
     this.entrega = null;

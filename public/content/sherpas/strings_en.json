@@ -346,7 +346,7 @@
     "controls": "Drag hands and feet to the holds of each floating block · BOTH sherpas must reach the top",
     "win": "Test passed!",
     "winSub": "The sherpas reach the top of the floating blocks. The rich man can rest easy.",
-    "fail": "Fall during the test",
+    "fail": "GAME OVER",
     "failSub": "The camp is still waiting… try again",
     "retry": "Retry",
     "exit": "Menu",
