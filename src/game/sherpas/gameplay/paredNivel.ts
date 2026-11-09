@@ -951,6 +951,12 @@ export class ParedNivel {
   private dollarProto: Mesh | null = null;
   private dinero: [number, number] = [0, 0];
   private billetesCogidos: [number, number] = [0, 0];
+  // T124 — ENTREGA VISIBLE de los billetes cogidos: el papel NO se desvanece —
+  // vuela (bezier) de la cogida hasta la mochila del cazador y muere ahí.
+  // Queja del jugador: «aparece una estrella… se pega a la mochila y desaparece»
+  // sin que se entendiera que el billete SE HABÍA COGIDO. Vive en RENDER
+  // (el destino sigue al cuerpo cada frame). La sonda E2E la cuenta.
+  private entregas: { mesh: Mesh; t: number; dur: number; pi: 0 | 1; base: number; desde: V3; ctrl: V3 }[] = [];
   // T91 — el indicador de muelle ya NO vive sobre el mapa (dictado: «solo se
   // puede ver dentro de la mochila al pulsar sobre ella»): fuera el badge.
   // T89 — giro de la bolsa al deslizar + ESTRELLA DE ORO al coger billete
@@ -1023,6 +1029,7 @@ export class ParedNivel {
   // ---------- construcción ----------
 
   start(): void {
+    this.construirSuelo(); // T124: la fase de escalada tiene SUELO (planos de hielo y rocas)
     this.construirBloques();
     this.construirSherpas();
     this.conectarDrag();
@@ -1164,6 +1171,79 @@ export class ParedNivel {
       this.matAzul = a;
     }
     return { bloque: this.matBloque, presa: this.matPresa, rojizo: this.matRojizo, verde: this.matVerde, azul: this.matAzul };
+  }
+
+  /** T124 — SUELO DEL NIVEL PARED (petición del jugador: «vamos a colocar un
+   *  suelo, de tal forma que tengamos plano de suelo en esta fase de escalada…
+   *  recurriremos a los modelos 3d que ya teníamos de hielo y rocas, colocaremos
+   *  varios de estos planos para rellenar una buena porción del suelo»): el
+   *  nivel flotaba en el vacío. Ahora la base del cuadro es un suelo de verdad:
+   *  1) losa continua de nieve (mata el cielo entre los valles de las láminas),
+   *  2) MOSAICO de parcelas de los GLB que YA TENÍAMOS (suelonevado1/2.glb,
+   *     planos de hielo y rocas del campamento) con la MISMA receta T104/T108c:
+   *     escala uniforme ×4, solape 35-45 cm (bordes enterrados bajo el vecino)
+   *     y filas escalonadas media celda (aparato de ladrillo, sin costuras). */
+  private construirSuelo(): void {
+    const esc = this.d.scene.scene;
+    // losa base: una malla barata que garantiza horizonte nevado bajo el mosaico
+    const losa = MeshBuilder.CreateGround("paredSueloLosa", { width: 46, height: 26 }, esc);
+    losa.position.y = -0.18; // el dorso MEDIO de las parcelas repousa en y=0
+    const mLosa = new PBRMaterial("paredSueloLosaM", esc);
+    mLosa.albedoColor = new Color3(0.9, 0.925, 0.965); // nieve azulada (familia base.glb)
+    mLosa.metallic = 0;
+    mLosa.roughness = 0.95;
+    losa.material = mLosa;
+    losa.isPickable = false;
+    losa.receiveShadows = true;
+    losa.freezeWorldMatrix();
+    // receta T104/T108c del campamento: escala UNIFORME ×4, huella real (bbox)
+    const S = 4.0;
+    const FOOT_X = 0.7101 * S;  // 2,84 m (v1, la más ancha)
+    const FOOT_Z = 1.0544 * S;  // 4,22 m (v2)
+    const SX = FOOT_X - 0.35;
+    const SZ = FOOT_Z - 0.45;
+    const X0 = -21, X1 = 21, Z0 = -10, Z1 = 12; // banda que ve la cámara del nivel
+    const nCols = Math.ceil((X1 - X0) / SX) + 1;
+    const nRows = Math.ceil((Z1 - Z0) / SZ) + 1;
+    // dorso medio medido en T104 (local): v1 +0.044, v2 −0.002 — los valles de
+    // la lámina 1 rozan la losa y las piedras asoman, como en el campamento
+    const MEAN_Y: [number, number] = [0.044, -0.002];
+    const celdas: { x: number; z: number; v: 0 | 1; ry: number }[] = [];
+    for (let r = 0; r < nRows; r++) {
+      const shift = (r % 2) * SX * 0.5; // aparato de ladrillo (sin costuras alineadas)
+      for (let c = 0; c < nCols; c++) {
+        const alt = (r + c) % 2 === 1;
+        celdas.push({ x: X0 + c * SX + shift, z: Z0 + r * SZ, v: alt ? 1 : 0, ry: alt ? Math.PI : 0 });
+      }
+    }
+    for (let v = 0; v <= 1; v++) {
+      const mias = celdas.filter((cl) => cl.v === v);
+      const file = v === 0 ? "/models/suelonevado1.glb" : "/models/suelonevado2.glb";
+      void SceneLoader.ImportMeshAsync("", assetUrl(file), undefined, esc)
+        .then((res) => {
+          if (this.disposed) return; // la escena entera muere al salir del nivel
+          const src = res.meshes.find((m) => m.getTotalVertices() > 0) as Mesh | undefined;
+          if (!src) return;
+          src.parent = null; // la malla ES el portador (las parcelas: instancias)
+          for (const tn of res.transformNodes) tn.dispose();
+          // dieléctrico limpio (nieve), como el mosaico del campamento
+          const mat = src.material as PBRMaterial | null;
+          if (mat) { mat.metallic = 0; mat.roughness = Math.max(0.9, mat.roughness ?? 0.95); }
+          src.isPickable = false;
+          src.isVisible = false; // solo semilla (patrón de las rocas del pedriz)
+          const py = -MEAN_Y[v] * S;
+          for (const [i, cl] of mias.entries()) {
+            const inst = src.createInstance(`paredSuelo_v${v}_${i}`);
+            inst.position.set(cl.x, py, cl.z);
+            inst.scaling.setAll(S); // UNIFORME: volumen 3D original intacto
+            inst.rotation.y = cl.ry;
+            inst.isPickable = false;
+            inst.receiveShadows = true;
+            inst.freezeWorldMatrix(); // terreno estático
+          }
+        })
+        .catch((err) => console.warn(`[T124 suelo] ${file} no cargó:`, err));
+    }
   }
 
   private construirBloques(): void {
@@ -1736,12 +1816,18 @@ export class ParedNivel {
       techoPant, { min: -10, max: 10 },
     );
     this.aseguraMallasBilletes();
+    // T124 — MANOS COGIBLES: también mientras SE ARRASTRAN y durante el viaje
+    // de vuelta (queja del jugador: «si movemos alguna de las extremidades de
+    // las manos y tocamos o nos aproximamos a un billete… no consigo cogerlos»
+    // — la mano ARRASTRADA no contaba como libre y el billete era incogible
+    // JUSTO cuando el jugador lo intentaba: movía la mano hacia el papel y
+    // nada). Solo la mano ANCLADA a una presa no caza (está ocupada agarrando).
     const manos: ManoLibre[] = [];
     for (const pi of [0, 1] as const) {
       const rig = this.sherpas[pi];
       for (const limb of ["hand_l", "hand_r"] as const) {
         const st = rig.states.get(limb)!;
-        if (st.anchored || st.traveling || rig.dragging === limb) continue;
+        if (st.anchored) continue;
         manos.push({ pi, limb, pos: rig.rig.particles[limb === "hand_l" ? P.handL : P.handR].pos });
       }
     }
@@ -1752,9 +1838,27 @@ export class ParedNivel {
         b.vivo = false;
         this.dinero[cogida.pi] += BILLETE_DINERO;
         this.billetesCogidos[cogida.pi] += 1;
+        // T124 — ENTREGA VISIBLE: el papel no se desvanece — VUELA de la
+        // posición de la cogida hasta la mochila del cazador (queja del
+        // jugador: «no consigo cogerlos» — la estrella aparecía y el billete
+        // desaparecía sin que se entendiera que SE HABÍA COGIDO).
+        const malla = this.billeteMallas.get(b.id);
+        if (malla) {
+          this.billeteMallas.delete(b.id); // la entrega gestiona SU malla
+          const pecho = this.sherpas[cogida.pi].rig.particles[P.chest].pos;
+          const desde = v3(b.pos.x, b.pos.y, b.pos.z);
+          this.entregas.push({
+            mesh: malla, t: 0, dur: 0.55, pi: cogida.pi,
+            base: malla.scaling.x, // el clon hereda la escala del proto (~0,28 m)
+            desde,
+            ctrl: v3((desde.x + pecho.x) / 2, Math.max(desde.y, pecho.y) + 0.45, (desde.z + pecho.z) / 2 + 0.3),
+          });
+        }
         this.aseguraMallasBilletes();
         this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.dinero.cogido",
           `¡+${BILLETE_DINERO} $! Billete para el Sherpa ${cogida.pi + 1}`));
+        // T124 — «+10 $» sobre la mochila del cazador: EL CAMBIO se lee al instante
+        this.etiquetaDinero(cogida.pi, `+${BILLETE_DINERO} $`);
         // T89/T93 — ESTRELLA DE ORO girando sobre SU mochila (el contenido
         // cambió): dictado T93 «este efecto dura 5 segundos y desaparece»
         this.estrellaHasta[cogida.pi] = this.simTime + 5.0;
@@ -1775,6 +1879,7 @@ export class ParedNivel {
         bb.nodo.setEnabled(false);
         bb.cuerda.isVisible = false;
         this.dinero[m.pi] += BONUS_DINERO;
+        this.etiquetaDinero(m.pi, `+${BONUS_DINERO} $`); // T124: el cobro se LEE
         this.estrellaHasta[m.pi] = this.simTime + 5.0; // T93: 5 s el efecto
         this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.dinero.bolsa",
           `¡+${BONUS_DINERO} $! Saco del bono para el Sherpa ${m.pi + 1}`));
@@ -2302,6 +2407,8 @@ export class ParedNivel {
       Quaternion.RotationAxisToRef(ejeZ, Math.sin(b.t * BILLETE_OSC_OMEGA + b.fase) * 0.45, qAleteo);
       qAleteo.multiplyToRef(qSpin, m.rotationQuaternion ?? (m.rotationQuaternion = new Quaternion()));
     }
+    // T124 — entregas: el papel cogido vuela a la mochila de su cazador
+    this.pasoEntregasBillete(frameDt);
     // T92 — sacos bonus: la bolsa cuelga del borde de SU plataforma y la
     // cuerda los une (vaivén pendular suave)
     for (const b of this.bloques) {
@@ -2737,6 +2844,52 @@ export class ParedNivel {
     }
   }
 
+  /** T124 — las entregas de billetes cogidos: bezier de la cogida a la
+   *  mochila del cazador (que SE MUEVE: destino recalculado cada frame),
+   *  encogiendo el papel hasta morir en la mochila. */
+  private pasoEntregasBillete(frameDt: number): void {
+    for (let i = this.entregas.length - 1; i >= 0; i--) {
+      const e = this.entregas[i];
+      e.t += frameDt;
+      const k = Math.min(1, e.t / e.dur);
+      const s2 = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+      const u = 1 - s2;
+      const pecho = this.sherpas[e.pi].rig.particles[P.chest].pos;
+      const destino = v3(pecho.x, pecho.y + 0.22, pecho.z + 0.2); // la mochila (espalda, lado cámara)
+      e.mesh.position.set(
+        u * u * e.desde.x + 2 * u * s2 * e.ctrl.x + s2 * s2 * destino.x,
+        u * u * e.desde.y + 2 * u * s2 * e.ctrl.y + s2 * s2 * destino.y,
+        u * u * e.desde.z + 2 * u * s2 * e.ctrl.z + s2 * s2 * destino.z,
+      );
+      e.mesh.scaling.setAll(e.base * (1 - 0.7 * s2));
+      if (k >= 1) { e.mesh.isVisible = false; e.mesh.dispose(); this.entregas.splice(i, 1); }
+    }
+  }
+
+  /** T124 — etiqueta de DINERO sobre la mochila del cobrador: sube ~56 px y
+   *  se funde en 1,4 s (el jugador ve EL CAMBIO de una vez). Solo DOM+CSS:
+   *  el valor verdadero manda en la sonda (dinero) y en la mochila abierta. */
+  private etiquetaDinero(pi: 0 | 1, texto: string): void {
+    if (typeof document === "undefined") return;
+    const bpa = this.d.scene.backpackScreenPx(pi) ?? this.proyeccionPecho(pi);
+    const el = document.createElement("div");
+    el.setAttribute("style",
+      "position:absolute;pointer-events:none;z-index:27;font:900 22px/1 system-ui,sans-serif;color:#ffe27a;" +
+      "text-shadow:0 2px 6px rgba(0,0,0,.8),0 0 14px rgba(232,193,90,.6);transform:translate(-50%,-50%);");
+    el.textContent = texto;
+    const x0 = bpa ? bpa.x : window.innerWidth / 2;
+    const y0 = bpa ? bpa.y : window.innerHeight / 2;
+    el.style.left = `${x0.toFixed(0)}px`;
+    el.style.top = `${y0.toFixed(0)}px`;
+    this.d.hudRoot.appendChild(el);
+    requestAnimationFrame(() => {
+      el.style.transition = "top 1.3s ease-out, opacity 1.3s ease-in";
+      el.style.top = `${(y0 - 56).toFixed(0)}px`;
+      el.style.opacity = "0";
+    });
+    window.setTimeout(() => el.remove(), 1400);
+  }
+
   /** T91 — el badge de muelles sobre cada mochila se ELIMINÓ (el indicador
    *  de muelle solo se ve dentro de la mochila, pulsándola). Queda aquí la
    *  ESTRELLA DE ORO giratoria de la cogida de billetes. */
@@ -3100,6 +3253,9 @@ export class ParedNivel {
     // T90: la bolsa vuelve a la cuerda (la entrega del botín se cancela)
     this.entrega = null;
     this.rafagaHecha = false;
+    // T124 — fuera entregas de billetes pendientes (sus mallas mueren con ellas)
+    for (const e of this.entregas) { e.mesh.isVisible = false; e.mesh.dispose(); }
+    this.entregas = [];
     this.avisoT = 0;
     if (this.elAviso) this.elAviso.style.display = "none";
     this.aplicaAlturas();
@@ -3452,6 +3608,24 @@ export class ParedNivel {
           return [Math.min(...vivos.map((b) => b.vel.y)), Math.max(...vivos.map((b) => b.vel.y))].map((v) => +v.toFixed(2));
         })(),
         billetesSpin: this.billetes.filter((b) => b.vivo && b.spinAxis).length,
+        // T124 — sonda de COGIDA: manos (libres o no) y papel vivo con posición
+        manos: (() => {
+          const out: { pi: 0 | 1; limb: string; libre: boolean; x: number; y: number; z: number }[] = [];
+          for (const pi of [0, 1] as const) {
+            const rig = this.sherpas[pi];
+            for (const limb of ["hand_l", "hand_r"] as const) {
+              const st = rig.states.get(limb)!;
+              const p = rig.rig.particles[limb === "hand_l" ? P.handL : P.handR];
+              out.push({ pi, limb, libre: !st.anchored,
+                x: +p.pos.x.toFixed(3), y: +p.pos.y.toFixed(3), z: +p.pos.z.toFixed(3) });
+            }
+          }
+          return out;
+        })(),
+        billetesPos: this.billetes.filter((b) => b.vivo).map((b) => ({
+          id: b.id, x: +b.pos.x.toFixed(3), y: +b.pos.y.toFixed(3), z: +b.pos.z.toFixed(3), vy: +b.vel.y.toFixed(2),
+        })),
+        entregasFx: this.entregas.length,
         // T94 — ORIGEN del papel: boca del saco (última sacudida) y banda viva
         // (ningún billete por debajo del suelo+0,1: la recogida MURIÓ)
         sacudidaOrigen: this.ultimaSacudida,

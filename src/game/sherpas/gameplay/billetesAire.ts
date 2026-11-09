@@ -287,7 +287,11 @@ export function pasoBilletes(
   }
 }
 
-/** ¿Mano libre? No anclada, sin viaje y sin arrastre del jugador. */
+/** ¿Mano disponible para cazar? T124 — solo la mano ANCLADA a una presa no
+ *  caza: la ARRASTRADA (el jugador moviéndola hacia el papel) y la que viaja
+ *  de vuelta a su reposo SÍ cuentan (queja del jugador: «si movemos alguna de
+ *  las extremidades de las manos y tocamos o nos aproximamos a un billete…
+ *  no consigo cogerlos» — la mano en movimiento era incogible por decreto). */
 export interface ManoLibre {
   pi: 0 | 1;
   limb: "hand_l" | "hand_r";

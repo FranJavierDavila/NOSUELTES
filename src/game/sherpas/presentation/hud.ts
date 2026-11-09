@@ -403,7 +403,7 @@ export class SherpaHud {
         <button class="chat-mic off" data-e="micBtn" type="button" title="Micrófono"></button>
         <span class="voice-label" data-e="voiceLabel">VOZ</span>
       </div>
-      <div class="buildtag" data-e="buildTag">vT100</div>
+      <div class="buildtag" data-e="buildTag">vT101</div>
       <div data-e="bubbles" style="position:absolute;inset:0;overflow:hidden"></div>
       <!-- T101: ventana del INVENTARIO DE MOCHILA (abre al pulsar la mochila
            del escalador; hueco del Anclaje con icono + contador encima). -->
