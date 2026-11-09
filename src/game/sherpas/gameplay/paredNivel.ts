@@ -1856,7 +1856,7 @@ export class ParedNivel {
         }
         this.aseguraMallasBilletes();
         this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.dinero.cogido",
-          `¡+${BILLETE_DINERO} $! Billete para el Sherpa ${cogida.pi + 1}`));
+          `¡+${BILLETE_DINERO} $! Billete para el Sherpa ${cogida.pi + 1}`).replace("{n}", String(cogida.pi + 1)));
         // T124 — «+10 $» sobre la mochila del cazador: EL CAMBIO se lee al instante
         this.etiquetaDinero(cogida.pi, `+${BILLETE_DINERO} $`);
         // T89/T93 — ESTRELLA DE ORO girando sobre SU mochila (el contenido
@@ -1882,7 +1882,7 @@ export class ParedNivel {
         this.etiquetaDinero(m.pi, `+${BONUS_DINERO} $`); // T124: el cobro se LEE
         this.estrellaHasta[m.pi] = this.simTime + 5.0; // T93: 5 s el efecto
         this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.dinero.bolsa",
-          `¡+${BONUS_DINERO} $! Saco del bono para el Sherpa ${m.pi + 1}`));
+          `¡+${BONUS_DINERO} $! Saco del bono para el Sherpa ${m.pi + 1}`).replace("{n}", String(m.pi + 1)));
         if (this.mochilaAbierta !== null) this.refrescaMochila(this.mochilaAbierta);
         break;
       }
