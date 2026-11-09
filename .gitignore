@@ -65,3 +65,6 @@ __pycache__/
 /visor_bundle.js
 /backups/
 /db/
+
+# subidas del usuario (videos/capturas de evidencia): no trackear en el repo
+/upload/
