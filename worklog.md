@@ -2433,3 +2433,21 @@ Dictado literal: «el saco lance billetes SOLO hacia arriba de forma aleatoria y
 4. **Sonda E2E** (`paredNivel.ts`): `bolsaY` (nodo del saco) y `billetesBajoSaco` (contador de billetes vivos bajo boca+0,25 — DEBE ser 0 siempre).
 
 VERIFICACIÓN: E2E en vivo `scripts/e2e-t99-ley-billetes.py` sobre el standalone TODO VERDE — 0 billetes al arrancar; L1 disparo vyMin 0,87 / vyMax 6,6 (TODOS positivos); L2 cero billetes bajo la boca en 14 muestreos (yMin−bolsaY = +0,06); L3 flotación alt0 0,50 → altMax 8,32 m (hacia la cumbre) y vivos flotando tras 8 s; L4 segunda sacudida vyMin 0,92 y bajoSaco 0; 0 errores JS. Capturas download/t99-billetes-ascendiendo.png + t99-segunda-sacudida.png. vitest 1073/43 (baseline EXACTA; los 2 fallos extra de la 1.ª pasada eran los 2 tests pesados «10 semillas» bajo carga paralela — verdes en solitario). tsc 0 errores en src (20 baseline de tests+skills). Build standalone EXIT=0 con NODE_OPTIONS heap cap. Buildtag **vT99**.
+
+## Sherpas T99 (vídeo del jugador «el dinero sigue saliendo hacia abajo» + dictado «ES LEY: los billetes vuelan lanzados hacia arriba»): LEY ABSOLUTA DEL PAPEL — sin caída, frontera en la boca del saco.
+
+Recuperación del sandbox: reset a origin/main (42ae102, T98) + npm install. El árbol local había vuelto a T85 (reciclaje); el trabajo T86-T98 vive SOLO en origin/main — sin pérdida.
+
+Diagnóstico con el código vT98 + forense de vídeo (scripts/rastrea_billetes*.py sobre los 2 MP4 del jugador): el LANZAMIENTO ya era 100 % ascendente (vy 4,4-6,0), pero T92-T96 dejaban la cola del vuelo con GRAVEDAD DE HOJA (−3,2 m/s², terminal −1,25 m/s) + rasante que paseaba el papel por el SUELO — el jugador lo lee literal: «el dinero sale hacia abajo» y «nunca por debajo del saco» violado cada vez que el papel bajaba del nivel del saco (que cuelga a ras de suelo al inicio).
+
+LA LEY (billetesAire.ts, puro + tests):
+1. NACIMIENTO: la boca del saco POR ENCIMA del cinchado (banda +0,06..+0,12 sobre el nudo — antes nacían −0,05..−0,12, DENTRO del saco cerrado: se leía «salen por debajo»). Los clones del dollar emergen de la boca, jamás del vientre.
+2. VUELO: MUERTA la gravedad de hoja — tras la pólvora (0,8 s) la velocidad vertical se relaja a FLOTACIÓN de crucero (BILLETE_FLOTANTE_MPS 0,55 m/s con mecido sinusoidal) y JAMÁS baja de BILLETE_SUBE_MIN_MPS (0,08): un billete es matemáticamente incapaz de descender. Constantes de caída/rasante ELIMINADAS (BILLETE_G_MPS2/CAIDA_MPS/RASANTE_*): el dictado T92 «deben verse caer» queda REEMPLAZADO por el dictado T99 «flotando hasta que sean cogidos... ES LEY».
+3. LEY DEL SACO: pasoBilletes recibe `nivelSaco` = la boca del saco EN CADA TICK (el amarre fresco del tick — no el nodo del render, que va un frame por detrás; durante la entrega, el nodo de la bolsa). Frontera dura: pos.y < boca + BILLETE_LEY_SACO_M (0,05) → clamp + empujón térmico (vy ≥ 0,8). Si el saco sube escalando y alcanza billetes flotando, la corriente los levanta — nada vive por debajo del saco.
+4. La ráfaga festiva de la entrega nace SOBRE la frontera (boca + 0,06) — sin salto inicial.
+
+SONDA (paredNivel.sonda()): bolsaY + billetesBajoSaco (billetes vivos VERDADERAMENTE bajo la boca −0,02 de tolerancia tick→render — debe ser 0 SIEMPRE).
+
+VERIFICACIÓN: vitest 943/949 tests/sherpas (baseline EXACTA: las mismas 6 fallas preexistentes por assets fuera del repo — 5 t78 caras GLB + vozreal); t92/t88/t90/t91/t93/t94 100/100 reescritos a la LEY (vy > 0 en cada tick de toda la vida del billete, ninguno desciende ni 1 mm, ninguno bajo la boca, nacimiento en banda +0,06..+0,12, muertes solo techo/lados). tsc 0 en src. Build EXIT=0. E2E `scripts/e2e-t99-ley-billetes.py` sobre el standalone **TODO VERDE**: L1 disparo vyMin 0,84 > 0 (n0=4); L2 bajoSacoMax=0 en 20 muestras y yMin−bolsaY=+0,07 (jamás bajo la boca); L3 altMax 8,39 m (+8 sobre la boca) y 1 vivo flotando a los 8 s; L4 segunda sacudida relanzamiento 100 % arriba (vyMin 0,92, bajoSacoMax=0); 0 errores JS. Capturas download/t99-*.png. Buildtag **vT99**.
+
+El PÉNDULO del colgado (1ª parte del dictado) ya está en vT98 (péndulo PBD real que termina en la plomo bajo el compañero, Δx=0,00 verificado E2E) — T99 no toca esa física.
