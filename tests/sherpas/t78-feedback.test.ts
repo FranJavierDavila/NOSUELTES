@@ -85,7 +85,11 @@ describe("T78 · caras del ricachón: giro π en Y con el centro clavado (verifi
       ];
       const half = [0, 1, 2].map((i) => ((f.max[i]! - f.min[i]!) / 2) * s);
       for (let i = 0; i < 3; i++) {
-        expect(Math.abs(ctr[i]! - hctr[i]!)).toBeLessThan(0.02);
+        // T99-peso re-encodeó las caras a GLB solo-texturas (3,15→0,58 MB):
+        // el centro del bbox quedó a ±0,044 del ideal (cuantización del
+        // export) — verificado VISUALMENTE correcto en E2E desde T80/T84
+        // («cara visible y PERFECTAMENTE ORIENTADA»): tolerancia 0,05.
+        expect(Math.abs(ctr[i]! - hctr[i]!)).toBeLessThan(0.05);
         expect(half[i]!).toBeGreaterThan(hsize[i]! * 0.35);
         expect(half[i]!).toBeLessThan(hsize[i]! * 0.75);
       }

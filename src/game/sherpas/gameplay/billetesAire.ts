@@ -4,7 +4,7 @@
  * sacudida; salen volando «impulsados por corrientes de aire» con un
  * movimiento OSCILANTE realista que les deja SUBIR al alcance de los
  * sherpas durante su ascenso; si un escalador los pilla con la mano libre,
- * son +10 $ para él.
+ * son +1 $ para él (T131: cada billete suma 1 a la cantidad).
  *
  * T99 — LEY ABSOLUTA DEL JUGADOR («los billetes son lanzados hacia arriba,
  * hacia la cumbre y NUNCA por debajo del saco. Es ley: los billetes vuelan
@@ -46,8 +46,9 @@ import { v3, vLen, vSub, type V3 } from "../../physics/pbd/math";
  *  el doble de ellos»): 6-12 por sacudida (antes 3-6, T88). */
 export const BILLETES_MIN = 6;
 export const BILLETES_MAX = 12;
-/** Dinero por billete cogido (petición: «cada billete cogido son 10 $»). */
-export const BILLETE_DINERO = 10;
+/** Dinero por billete cogido (T131 — dictado: «cada billete que se coge
+ *  suma 1 a la cantidad que tengamos»: EL VALOR DEL BILLETE ES 1). */
+export const BILLETE_DINERO = 1;
 /** Radio de cogida con la mano libre (m). T93 — dictado: «SOLO ganan dinero
  *  si son ellos los que con su mano TOCAN un billete»: radio estrecho de
  *  contacto (el billete mide ~28 cm), ya no se cobra a distancia.

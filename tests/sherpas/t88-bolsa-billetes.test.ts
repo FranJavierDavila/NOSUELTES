@@ -6,7 +6,7 @@
  *     (corriente de aire) alcanzables por los sherpas EN SU ASCENSO; luego
  *     planean hacia abajo y mueren por vida/suelo.
  *  3. Mano LIBRE (no anclada, sin viaje, sin arrastre) coge el billete vivo
- *     más cercano → +10 $ al sherpa.
+ *     más cercano → +1 $ al sherpa (T131: el valor del billete es 1).
  *  4. Lanzamiento del DOBLE de altura (v ×√2: h ∝ v²) y DOBLE recorrido de
  *     goma (3,2 m), sin hundir al sherpa bajo FAIL_Y (clamp del servo).
  *  5. CHICLE DEL ANTEBRAZO: durante la goma el codo se repiña a su largo de
@@ -85,7 +85,7 @@ describe("T88 · sacudida de la bolsa → billetes", () => {
   });
 });
 
-describe("T88 · cogida con mano libre (+10 $)", () => {
+describe("T88/T131 · cogida con mano libre (+1 $ por billete)", () => {
   const mano = (pi: 0 | 1, x: number, y: number): ManoLibre => ({ pi, limb: "hand_l", pos: v3(x, y, 0) });
 
   it("coge el billete vivo MÁS CERCANO dentro del radio; nada fuera de radio", () => {
@@ -104,8 +104,8 @@ describe("T88 · cogida con mano libre (+10 $)", () => {
     expect(billeteCogible(bs, [mano(0, 0, 0)])).toBeNull();
   });
 
-  it("cada billete vale 10 $ (constante del dictado)", () => {
-    expect(BILLETE_DINERO).toBe(10);
+  it("cada billete vale 1 $ (T131: «cada billete que se coge suma 1 a la cantidad que tengamos»)", () => {
+    expect(BILLETE_DINERO).toBe(1);
   });
 
   it("radio de cogida generoso pero acotado", () => {

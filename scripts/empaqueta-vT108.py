@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Empaqueta CARRY-ME-vT107-jugable.zip desde la exportación SIN prefijo
+"""Empaqueta CARRY-ME-vT108-jugable.zip desde la exportación SIN prefijo
 (.next-export/, rutas raíz /_next/... como el zip vT99 — sin reescrituras).
-Uso: python3 empaqueta-vT107.py"""
+Uso: python3 empaqueta-vT108.py"""
 import os, subprocess, zipfile
 
 SRC = "/home/z/my-project/.next-export"
-ZIP = "/home/z/my-project/download/CARRY-ME-vT107-jugable.zip"
+ZIP = "/home/z/my-project/download/CARRY-ME-vT108-jugable.zip"
 
 assert os.path.isdir(SRC), "falta .next-export (build STATIC_EXPORT=1 EXPORT_BASE_PATH= EXPORT_DIST_DIR=.next-export)"
 assert not os.path.islink(SRC), "SRC no debe ser symlink"
 
-tag = subprocess.run(["grep", "-rl", "vT107", SRC + "/_next/static/chunks/"],
+tag = subprocess.run(["grep", "-rl", "vT108", SRC + "/_next/static/chunks/"],
                      capture_output=True, text=True).stdout.strip()
-print("chunk con vT107:", tag or "NINGUNO")
-assert tag, "buildtag vT107 ausente"
+print("chunk con vT108:", tag or "NINGUNO")
+assert tag, "buildtag vT108 ausente"
 # sin prefijo: ningún /NOSUELTES en el html
 html = open(SRC + "/index.html", encoding="utf-8", errors="ignore").read()
 assert "NOSUELTES" not in html, "el index aún referencia /NOSUELTES"

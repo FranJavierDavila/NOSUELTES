@@ -334,9 +334,15 @@ describe("Task 36 + T96b: seguro de cuerda — caída atrapada + RESCATE POR PUL
     let recobrado = false;
     for (let i = 0; i < 90 && !recobrado; i++) {
       rig.step(dt, 1);
-      if (rig.haulHecho() && rig.ropeState === "caught") recobrado = true;
+      // T131 — el rescate SOLO termina AGARRADO: alcance → viaje de mano →
+      // ancla real → climbing. El fundido puede durar MENOS que el viaje de
+      // la mano y el reset de re-agarre limpia haulDone al aterrizar el
+      // ancla: el observable del rescate completado es ANCLADO + TREAPANDO.
+      if (rig.ropeState === "climbing" && rig.anchorsCount() > 0) recobrado = true;
     }
-    expect(recobrado).toBe(true); // recobro por alcance completado
+    expect(recobrado).toBe(true); // recobro por alcance completado (al AGARRAR)
+    for (let i = 0; i < 12; i++) rig.step(dt, 1); // asentar la pose
+    expect(rig.ropeState).toBe("climbing");
     expect(ps[P.chest].pos.y - ps[P.pelvisC].pos.y).toBeGreaterThan(0.25); // ERGUIDO
     // y ya RECUPERADO los controles responden: re-agarrarse → climbing
     rig.setGrip("hand_l", true);

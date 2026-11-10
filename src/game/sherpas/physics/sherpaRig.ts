@@ -204,6 +204,11 @@ export interface SherpaGripTuning {
     haulRiseMps?: number;
     /** T96b: duración del FUNDIDO de incorporación al rescatarse (s). */
     recobroSeconds?: number;
+    /** T131: espera EN EL TOPE del izado sin presa al alcance antes de
+     *  devolver los controles con el recobro (s). Evita el softlock del
+     *  colgado cuando ningún bloque deja presa a mano (los bloques levitan:
+     *  el auto-ancla sigue intentándolo tras el recobro). */
+    recobroEsperaS?: number;
   };
   /** SUPER FLATULENCIA (opcional en tests: ausente → sin superpoder). */
   fart?: FartTuning;
@@ -339,6 +344,10 @@ export class SherpaRig {
    *  'hauling'; entre ráfagas de golpes el cuerpo vuelve a 'caught' (cuelga
    *  de verdad) y las pulsaciones NUEVAS re-entran al izado sin re-evento. */
   private ventanaIzado = false;
+  /** T131 — segundos llevando EN EL TOPE del izado sin presa al alcance:
+   *  al agotar recobroEsperaS el recobro devuelve los controles (nunca
+   *  softlock) y el re-intento de auto-ancla sigue vivo tick a tick. */
+  private topeEsperaT = 0;
   /** T96b — RESCATE POR PULSACIONES (dictado: «deberá ser el otro sherpa
    *  quien lo suba tirando de la cuerda por medio de la pulsación de una
    *  tecla, cada golpe de tecla lo sube medio metro con una pequeña sacudida
@@ -1217,12 +1226,12 @@ export class SherpaRig {
         body.prev = vClone(body.pos); // quieto mientras se incorpora
         if (this.recobroT >= (fT?.recobroSeconds ?? 0.5)) {
           this.ropeState = "caught";
-          // T126 — ANCLA AUTOMÁTICA DEL RESCATE (dictado: «el escalador caído
-          // si tiene en su radio de acción algún agarre con sus manos se ancla
-          // de forma automática a él»): erguido al fin del recobro, la mano
-          // libre más próxima a una presa libre DENTRO de su radio viaja y
-          // agarra sola — el rescate termina enganchado, no flotando colgado.
-          this.autoAnclaRescate();
+          // T126/T131 — ANCLA AUTOMÁTICA DEL RESCATE (dictado: «el escalador
+          // caído si tiene en su radio de acción algún agarre con sus manos se
+          // ancla de forma automática a él»): el fin del recobro REINTENTA el
+          // agarre — los bloques levitan y la presa que faltó puede entrar en
+          // el radio ahora. El rescate SOLO termina con la mano agarrada.
+          this.intentaCompletarRescate();
         }
         vAbs = 0;
       } else {
@@ -1262,11 +1271,16 @@ export class SherpaRig {
           // manda desde el próximo tick; el trinquete mantiene la cota.
           this.ropeState = "caught";
         }
+        // T131 — COMPLETAR AL AGARRAR (dictado: «hasta que consigue agarrarse
+        // con sus manos a algún agarre cercano»): cada tick del izado, si una
+        // presa entra en el radio, la mano viaja a ella y el rescate termina
+        // en AGARRE REAL — no en una promesa de alcance que un bloque en
+        // movimiento puede invalidar medio segundo después.
+        this.intentaCompletarRescate();
         // SOLO cuando el RESCATE (el izado del compañero) lo ha situado con
-        // un anclaje a su alcance —o en el tope del izado, junto a sus presas
-        // de despegue— recupera la posición erguida (dictado). Sin golpes de
-        // tecla del compañero, PERMANECE colgado horizontal e inactivo.
-        this.chequeaRecobro(body, fT);
+        // un anclaje a su alcance recupera la posición erguida (dictado).
+        // Sin golpes de tecla del compañero, PERMANECE colgado horizontal.
+        this.chequeaRecobro(body, fT, dt);
         vAbs = paso / Math.max(1e-4, dt);
       }
     } else {
@@ -1425,9 +1439,11 @@ export class SherpaRig {
           if (!this.haulDone && this.ropeState === "caught" && this.ventanaIzado && this.haulPressesPend > 0) {
             this.ropeState = "hauling";
           }
-          // T97 — en la ESPERA también puede llegar el recobro: el compañero
-          // ya izó lo suyo y las presas quedaron al alcance (o el tope).
-          this.chequeaRecobro(body, fT);
+          // T131 — en la ESPERA el auto-ancla SIGUE intentando (los bloques
+          // levitan: una presa puede entrar en el radio sin más golpes) y el
+          // recobro por alcance/espera también corre aquí.
+          this.intentaCompletarRescate();
+          this.chequeaRecobro(body, fT, dt);
         }
       }
       body.prev = vClone(body.pos);
@@ -1604,6 +1620,7 @@ export class SherpaRig {
       this.haulPressesPend = 0;
       this.haulPressesDados = 0;
       this.ventanaIzado = false; // T97: nueva caída = ventana nueva
+      this.topeEsperaT = 0; // T131: nueva caída = espera de tope nueva
     }
 
     result.maxSpeed = vAbs / dt;
@@ -1633,16 +1650,69 @@ export class SherpaRig {
     this.haulPressesPend = Math.min(10, this.haulPressesPend + Math.max(0, Math.floor(partnerPresses)));
   }
 
-  /** T96b/T97 — recobro: SOLO cuando el izado (golpes YA dados) sitúa al
-   *  colgado con un anclaje a mano —o en el tope del izado— recupera la
-   *  posición erguida. Se chequea en el izado Y en la espera (la presa puede
-   *  quedar al alcance sin más golpes). */
-  private chequeaRecobro(body: { pos: V3 }, fT: NonNullable<ConstructorParameters<typeof SherpaRig>[0]["tuning"]["fall"]> | undefined): void {
-    if (this.haulDone || this.haulPressesDados === 0 || this.ropeState !== "hauling") return;
+  /** T96b/T131 — recobro: SOLO cuando el izado (golpes YA dados) sitúa al
+   *  colgado con un anclaje REALMENTE a su alcance recupera la posición
+   *  erguida (dictado: «solo cuando el rescate lo sitúa con un anclaje a su
+   *  alcance recupera la posición erguida y sigue trepando»). El TOPE del
+   *  izado YA NO dispara el recobro por sí solo — antes un tope sin presa
+   *  consumía el rescate y el colgado quedaba ERGUIDO, sin ancla y sordo a
+   *  más tirones (captura del jugador T131: «se pone en posición de escalada
+   *  pero ni se ancla con las manos a una presa alcanzable ni se sube con los
+   *  tirones»). Ahora el tope ESPERA recobroEsperaS (3 s por defecto): si en
+   *  ese tiempo el auto-ancla no engancha (los bloques levitan y la presa
+   *  puede entrar en el radio), el recobro da los controles de vuelta para
+   *  que el jugador agarre a mano — y el re-intento automático sigue vivo
+   *  tick a tick. Se chequea en el izado Y en la espera. */
+  private chequeaRecobro(body: { pos: V3 }, fT: NonNullable<ConstructorParameters<typeof SherpaRig>[0]["tuning"]["fall"]> | undefined, dt: number): void {
+    if (this.haulDone || this.haulPressesDados === 0) return;
     const top = (this.ropeFallStartY ?? body.pos.y) - (fT?.haulTopOffsetM ?? 0.35);
-    if (this.alcanzaAnclajeManos() || body.pos.y >= top - 1e-4) {
+    if (this.alcanzaAnclajeManos()) {
       this.haulDone = true;
       this.recobroT = 0;
+      if (this.ropeState !== "hauling") this.ropeState = "hauling"; // el fundido corre en su rama
+      return;
+    }
+    // T131 — la espera del tope acumula EN IZADO Y EN ESPERA: al alcanzar el
+    // tope sin pulsaciones el estado vuelve a 'caught' (cuelga de verdad) y
+    // un guard de estado mataría el reloj — el tope ES el tope en los dos.
+    const enTope = body.pos.y >= top - 1e-4;
+    this.topeEsperaT = enTope ? this.topeEsperaT + dt : 0;
+    if (enTope && this.topeEsperaT >= (fT?.recobroEsperaS ?? 3.0)) {
+      this.haulDone = true;
+      this.recobroT = 0;
+      if (this.ropeState !== "hauling") this.ropeState = "hauling"; // el fundido corre en su rama
+    }
+  }
+
+  /** T131 — el rescate SOLO TERMINA AGARRADO (captura del jugador: «se pone
+   *  en posición de escalada pero ni se ancla con las manos a una presa
+   *  alcanzable ni se sube con los tirones de la cuerda del compañero»).
+   *  Mientras el rescate esté en curso (el compañero ya tiró al menos una
+   *  vez), NINGUNA mano anclada y NINGUNA mano viajando a una presa, cada
+   *  tick reintenta el auto-ancla: los bloques levitan y la presa que faltó
+   *  puede entrar en el radio en cualquier momento. El primer viaje de mano
+   *  CIERRA el izado (trinquete de la cuerda recogida) y arranca el recobro
+   *  erguido; el agarre real pasa el rig a climbing por la vía normal.
+   *  Tras el recobro (haulDone) el método sigue vivo: re-intenta hasta que
+   *  la mano de verdad engancha, aunque el compañero no pulse más. */
+  private intentaCompletarRescate(): void {
+    if (this.haulPressesDados === 0) return; // el rescate no ha empezado
+    if (this.anchorsCount() > 0) return;     // ya está agarrado: fin
+    for (const limb of ["hand_l", "hand_r"] as const) {
+      const st = this.states.get(limb)!;
+      if (st.anchored || st.traveling) return; // ya hay mano yendo a una presa
+    }
+    this.autoAnclaRescate();
+    for (const limb of ["hand_l", "hand_r"] as const) {
+      if (!this.states.get(limb)!.traveling) continue;
+      if (!this.haulDone) {
+        // el AGARRE es el fin del rescate: trinquete del izado + recobro.
+        this.haulDone = true;
+        this.recobroT = 0;
+        this.haulTargetY = this.haulTargetY ?? this.rig.particles[P.pelvisC].pos.y;
+        if (this.ropeState !== "hauling") this.ropeState = "hauling";
+      }
+      return;
     }
   }
 
@@ -1672,19 +1742,24 @@ export class SherpaRig {
       && (this.ropeState === "caught" || this.ropeState === "hauling");
   }
 
-  /** T126 — ANCLA AUTOMÁTICA DEL RESCATE (dictado: «el escalador caído si
+  /** T126/T131 — ANCLA AUTOMÁTICA DEL RESCATE (dictado: «el escalador caído si
    *  tiene en su radio de acción algún agarre con sus manos se ancla de forma
    *  automática a él»): cada mano libre busca la presa LIBRE más próxima
    *  DENTRO de su radio (el MISMO criterio doble de alcanzaAnclajeManos:
-   *  partícula viva o último punto de la extremidad) y viaja sola hacia ella.
-   *  PREFIERE presas a la altura de la cintura o por encima: agarrarse es
-   *  SOSTENERSE — una presa muy por debajo lo arrastraría hacia abajo y
-   *  desperdiciaría todo el izado (medido en test: el cuerpo llegaba al clamp
-   *  del suelo). Solo si NADA hay al nivel de la cintura se toma la más
-   *  cercana aunque sea baja (mejor anclado que flotando). Determinista:
-   *  menor distancia; empate exacto → presa de menor id. Sin presa al
-   *  alcance (recobro por el tope del izado) no ancla nada: el jugador
-   *  agarra a mano como siempre. */
+   *  partícula RAÍZ de la cadena —hombro/cadera, el círculo de juego real— o
+   *  último punto de la extremidad) y viaja sola hacia ella. T131: el radio
+   *  se mide desde la RAÍZ (como el aro del arrastre y alcanzaAnclajeManos):
+   *  antes medía desde la PARTÍCULA de la mano — colgado, la mano está EN LO
+   *  ALTO sujetando la cuerda y las presas de despegue (encima del hombro)
+   *  quedaban FUERA del radio aunque el brazo llega de sobra — el rescate
+   *  terminaba sin anclar. PREFIERE presas a la altura de la cintura o por
+   *  encima: agarrarse es SOSTENERSE — una presa muy por debajo lo
+   *  arrastraría hacia abajo y desperdiciaría todo el izado (medido en test:
+   *  el cuerpo llegaba al clamp del suelo). Solo si NADA hay al nivel de la
+   *  cintura se toma la más cercana aunque sea baja (mejor anclado que
+   *  flotando). Determinista: menor distancia; empate exacto → presa de
+   *  menor id. Sin presa al alcance no ancla nada: el jugador agarra a mano
+   *  como siempre (y el re-intento de intentaCompletarRescate sigue vivo). */
   private autoAnclaRescate(): void {
     const cintura = this.rig.particles[P.pelvisC].pos;
     for (const limb of ["hand_l", "hand_r"] as const) {
@@ -1692,7 +1767,7 @@ export class SherpaRig {
       const st = this.states.get(limb)!;
       if (st.anchored || st.traveling || st.lockedFor > 0) continue;
       const maxLen = this.fatiguedReach(limb);
-      const cand = this.rig.particles[LIMB_PARTICLE[limb]].pos;
+      const cand = this.rig.particles[CHAIN_ROOT[limb]].pos;
       const pt = this.limbPt[limb];
       let best: HoldInstance | null = null;
       let bd = Infinity;

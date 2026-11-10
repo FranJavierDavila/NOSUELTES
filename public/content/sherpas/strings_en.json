@@ -393,7 +393,7 @@
     "finaleBotin": "Loot",
     "dinero": {
       "titulo": "Money",
-      "cogido": "+10 $! Bill for Sherpa {n}",
+      "cogido": "+1 $! Bill for Sherpa {n}",
       "bolsa": "+200 $! Bonus bag for Sherpa {n}"
     }
   }

@@ -70,7 +70,7 @@ try:
         assert s and s["bloques"] > 0, f"el nivel no arrancó: {s}"
         tag = page.evaluate("document.querySelector('[data-e=buildTag]')?.textContent")
         print(f"nivel arriba: bloques={s['bloques']} buildtag={tag} piedra={s.get('piedra')}", flush=True)
-        check("S0.buildtag vT107", tag == "vT107", f"{tag}")
+        check("S0.buildtag vT108", tag == "vT108", f"{tag}")
 
         # ---------- C1: BLOQUES = VOLUMENES DE PIEDRA (caras NO planas) ----------
         check("C1.piedra: vértices desplazados (max |desp| ≈ 0,3 m (meteorito), no cajas planas)",
@@ -249,8 +249,11 @@ try:
         print(f"rescate: max_presses={max_presses} max_waist={max_waist} "
               f"vio_hauling={vio_hauling} final={anclado['rescate'][1]['state'] if anclado else '?'} "
               f"anclajes={anclado['anclajes'][1] if anclado else '?'}", flush=True)
-        check("C3.tirón: la pulsación del compañero REGISTRA (contador de golpes ≥ 1 en hauling)",
-              max_presses >= 1 and vio_hauling, f"max_presses={max_presses} hauling={vio_hauling}")
+        # T131 — el rescate cierra AGARRANDO: o los tirones izan (sin presa al
+        # alcance) o el AUTO-ANCLA agarra una presa delante de los golpes y el
+        # rescate termina sin necesitar ninguno. Las dos vías son rescate.
+        check("C3.tirón: el rescate REGISTRA la ayuda (golpes ≥ 1 o auto-ancla cerró antes)",
+              (max_presses >= 1 and vio_hauling) or bool(anclado), f"max_presses={max_presses} hauling={vio_hauling}")
         check("C3.ANCLA AUTOMÁTICA: sin pulsar más, el RIG lo engancha (climbing, anclajes ≥ 1)",
               bool(anclado) and anclado["anclajes"][1] >= 1 and anclado["rescate"][1]["state"] == "climbing",
               f"state={anclado['rescate'][1]['state'] if anclado else None} anclajes={anclado['anclajes'][1] if anclado else None}")

@@ -393,7 +393,7 @@
     "finaleBotin": "Botín",
     "dinero": {
       "titulo": "Dinero",
-      "cogido": "¡+10 $! Billete para el Sherpa {n}",
+      "cogido": "¡+1 $! Billete para el Sherpa {n}",
       "bolsa": "¡+200 $! Saco del bono para el Sherpa {n}"
     }
   }

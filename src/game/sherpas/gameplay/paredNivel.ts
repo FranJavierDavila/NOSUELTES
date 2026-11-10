@@ -1974,8 +1974,9 @@ export class ParedNivel {
       }
     }
     // T88 — BILLETES: física de papel (disparo + flotación) y COGIDA con la
-    // MANO LIBRE — cada billete son +10 $ para el sherpa que lo pille (la
-    // detección usa la partícula de la mano: la física ya corrió este tick).
+    // MANO LIBRE — cada billete suma 1 a la cantidad del sherpa que lo pille
+    // (T131: «cada billete que se coge suma 1 a la cantidad que tengamos»;
+    // la detección usa la partícula de la mano: la física ya corrió este tick).
     // Los billetes en subida SON cogibles («que permita a los sherpas
     // alcanzarlo en su ascenso»).
     // T89 — techo de PANTALLA: los billetes desaparecen por la parte alta
@@ -2047,7 +2048,7 @@ export class ParedNivel {
         this.aseguraMallasBilletes();
         this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.dinero.cogido",
           `¡+${BILLETE_DINERO} $! Billete para el Sherpa ${cogida.pi + 1}`).replace("{n}", String(cogida.pi + 1)));
-        // T124 — «+10 $» sobre la mochila del cazador: EL CAMBIO se lee al instante
+        // T124 — «+1 $» sobre la mochila del cazador: EL CAMBIO se lee al instante
         this.etiquetaDinero(cogida.pi, `+${BILLETE_DINERO} $`);
         // T89/T93/T126 — ESTRELLA DE ORO girando sobre SU mochila: NUNCA es
         // permanente (dictado T126: «desaparecen de la mochila transcurridos
