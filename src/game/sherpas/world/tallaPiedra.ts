@@ -6,19 +6,29 @@
  *
  * Este módulo (PURO, sin Babylon — D20) replica la receta EXACTA del muro de
  * escalada (buildRockChunkMesh en presentation/scene.ts):
- *  1) cada cara del bloque se SUBDIVIDE en una retícula de ~12 cm (el muro
- *     también salta texels con su stride);
+ *  1) cada cara del bloque se SUBDIVIDE en una retícula (el muro también
+ *     salta texels con su stride);
  *  2) cada vértice se desplaza en −Z (hacia el escalador, como z = faceZ − h
  *     en el muro) según el CAMPO DE ALTURA de la MISMA textura que pinta el
  *     bloque — generateChunk devuelve height junto a colorMap/normalMap y
  *     antes se descartaba;
  *  3) el muestreo es por (x,y) DE MUNDO: los vértices duplicados de las
- *     aristas y los de bloques/macizo vecinos reciben el MISMO desplazamiento
- *     → malla continua (sin rendijas) y todo el muro lee como UNA roca;
+ *     aristas reciben el MISMO desplazamiento → malla continua;
  *  4) caras ±Z con UVs alineados al mundo (u = (x−ox)/6,4, v = (y−oy)/6,4 —
  *     la MISMA convención del muro: uvs = i/(W−1)) para que cada bulto de la
  *     geometría coincida con su sombra en el normal map.
  *  Normales por área ponderada (cantos tallados, como piedra).
+ *
+ * T129 — ROCA SUSPENSA ORGÁNICA (corrección del jugador al T128: «las piezas
+ * donde se anclan los sherpas pueden ser volúmenes irregulares no
+ * necesariamente cuadrados o prismáticos, deberían parecer como rocas o
+ * islotes suspendidos en el aire levitando... hacer algo más orgánico y que
+ * parezcan piedras con ese shader pero aún más desplazado, más exagerado»):
+ * encima del campo de altura se aplica un CAMPO VECTORIAL 3D de bultos
+ * (ruido de valor determinista, lóbulos de ~42 cm, tres canales x/y/z)
+ * muestreado por posición DE MUNDO: las aristas compartidas entre caras
+ * reciben el MISMO desplazamiento total → malla watertight, la silueta
+ * ondula y la caja desaparece (islote de roca, no prisma).
  */
 
 /** Campo de altura de la textura del muro (metros, 512 px = 6,4 m). */
@@ -45,9 +55,9 @@ export function sampleAlturaCampo(c: CampoPiedra, x: number, y: number): number 
   return (h00 * (1 - fu) + h10 * fu) * (1 - fv) + (h01 * (1 - fu) + h11 * fu) * fv;
 }
 
-/** Resolución de la talla: celdas de ~12 cm por cara (la retícula del muro
- *  camina en la misma escala; el grano más fino lo pone el normal map). */
-export const PASO_TALLA_M = 0.12;
+/** Resolución de la talla: celdas de ~11 cm por cara (el grano más fino lo
+ *  pone el normal map; la orgánica T129 necesita retícula densa). */
+export const PASO_TALLA_M = 0.11;
 
 export interface GeometriaTallada {
   positions: number[];
@@ -79,14 +89,60 @@ function normalesPorArea(pos: number[], idx: number[]): number[] {
   return nor;
 }
 
-/** Talla un bloque-caja de w×h×d (centrado en el origen LOCAL, anclaje de
- *  mundo (wx, wy)) con el campo de altura del muro: retícula por cara +
- *  desplazamiento −Z por (x,y) mundial + UVs alineados al mundo en las caras
- *  ±Z (laterales a densidad de texels del muro, fase irrelevante). Winding
- *  por cara para que la normal salga hacia FUERA. */
-export function tallaGeometriaPiedra(
+// ---------- T129 — CAMPO DE BULTOS ORGÁNICO (islote, no caja) ----------
+
+/** Ruido de valor 3D determinista en −1..1 (hash entero de 32 bits con
+ *  Math.imul + interpolación trilineal con smoothstep). La LONGITUD DE ONDA
+ *  es ~42 cm: lóbulos a escala de islote. Determinismo: misma entrada →
+ *  mismo valor SIEMPRE (misma partida, misma recarga, misma sesión). */
+export function ruidoRoca3(x: number, y: number, z: number, sem: number): number {
+  const L = 0.42;
+  const gx = x / L, gy = y / L, gz = z / L;
+  const ix = Math.floor(gx), iy = Math.floor(gy), iz = Math.floor(gz);
+  const s = (t: number): number => t * t * (3 - 2 * t);
+  const ux = s(gx - ix), uy = s(gy - iy), uz = s(gz - iz);
+  const h3 = (a: number, b: number, cc: number, se: number): number => {
+    let h = (Math.imul(a, 374761393) ^ Math.imul(b, 668265263) ^ Math.imul(cc, 1274126177) ^ Math.imul(se, 144665)) >>> 0;
+    h = (h ^ (h >>> 13)) >>> 0;
+    h = Math.imul(h, 1274126177) >>> 0;
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
+  };
+  const p = (se: number): [number, number, number, number, number, number, number, number] => [
+    h3(ix, iy, iz, se), h3(ix + 1, iy, iz, se),
+    h3(ix, iy + 1, iz, se), h3(ix + 1, iy + 1, iz, se),
+    h3(ix, iy, iz + 1, se), h3(ix + 1, iy, iz + 1, se),
+    h3(ix, iy + 1, iz + 1, se), h3(ix + 1, iy + 1, iz + 1, se),
+  ];
+  const tri = (v: number[]): number =>
+    ((v[0]! * (1 - ux) + v[1]! * ux) * (1 - uy) + (v[2]! * (1 - ux) + v[3]! * ux) * uy) * (1 - uz)
+    + ((v[4]! * (1 - ux) + v[5]! * ux) * (1 - uy) + (v[6]! * (1 - ux) + v[7]! * ux) * uy) * uz;
+  return tri(p(sem)) * 2 - 1;
+}
+
+/** Desplazamiento −Z por (x,y) DE MUNDO según el campo de altura (la receta
+ *  T127), normalizado al RANGO del campo (hMin..hMax → ±amplitud) y CUANTIZADO
+ *  a 1 mm (las costuras entre bloques vecinos caen en fronteras de texel y
+ *  una diferencia de 1e-16 en x volteamaría floor() al texel vecino). */
+function desplazamientoHF(c: CampoPiedra, amplitud: number, wx: number, wy: number): (lx: number, ly: number) => number {
+  const qmm = (v: number): number => Math.round(v * 1000) / 1000;
+  return (lx: number, ly: number): number => {
+    if (c.hMax <= c.hMin) return 0;
+    const hM = sampleAlturaCampo(c, qmm(wx + lx), qmm(wy + ly));
+    const r = (hM - c.hMin) / (c.hMax - c.hMin);
+    return amplitud * (2 * r - 1);
+  };
+}
+
+/** Núcleo de la talla (T127/T129): seis caras con retícula, vértices
+ *  desplazados por el campo de altura −Z (fase de textura) MÁS un campo
+ *  vectorial extra opcional (bultos orgánicos), UVs del muro (±Z alineados
+ *  al mundo; laterales a densidad de texels), winding por cara con normal
+ *  hacia FUERA y normales por área ponderada. maxDesp = mayor componente
+ *  aplicada a cualquier vértice (sonda E2E). */
+function tallaCore(
   w: number, h: number, d: number, c: CampoPiedra,
-  amplitud: number, wx: number, wy: number,
+  amplitudHF: number, wx: number, wy: number,
+  bultos: ((lx: number, ly: number, lz: number) => [number, number, number]) | null,
 ): GeometriaTallada {
   const hw = w / 2, hh = h / 2, hd = d / 2;
   const nx = Math.max(2, Math.ceil(w / PASO_TALLA_M));
@@ -94,24 +150,8 @@ export function tallaGeometriaPiedra(
   const nz = Math.max(2, Math.ceil(d / PASO_TALLA_M));
   const positions: number[] = [], uvs: number[] = [], indices: number[] = [];
   let maxDesp = 0;
-
-  // desplazamiento −Z (hacia el escalador) por (x,y) DE MUNDO — normalizado
-  // al RANGO del campo (hMin..hMax → 0..1 → ±amplitud, el mismo envolvente
-  // verificado en T126: holguras intactas). La entrada se CUANTIZA a 1 mm:
-  // las costuras entre bloques vecinos caen en fronteras de texel y una
-  // diferencia de 1e-16 en el x mundial (0,9 vs 1,8−0,9) volteamaría floor()
-  // al texel vecino → escalón visible; cuantizado, ambos lados muestrean EL
-  // MISMO punto y el muro lee como UNA roca continua.
-  const qmm = (v: number): number => Math.round(v * 1000) / 1000;
-  const despDe = (lx: number, ly: number): number => {
-    if (c.hMax <= c.hMin) return 0;
-    const hM = sampleAlturaCampo(c, qmm(wx + lx), qmm(wy + ly));
-    const r = (hM - c.hMin) / (c.hMax - c.hMin);
-    const desp = amplitud * (2 * r - 1);
-    maxDesp = Math.max(maxDesp, Math.abs(desp));
-    return desp;
-  };
-  // UV alineado al mundo (caras ±Z): la MISMA fase que muestrea despDe
+  const despHF = desplazamientoHF(c, amplitudHF, wx, wy);
+  // UV alineado al mundo (caras ±Z): la MISMA fase que muestrea despHF
   const uvMundo = (lx: number, ly: number): [number, number] => [
     (((wx + lx - c.ox) / c.tile) % 1 + 1) % 1,
     (((wy + ly - c.oy) / c.tile) % 1 + 1) % 1,
@@ -133,7 +173,14 @@ export function tallaGeometriaPiedra(
     for (let iv = 0; iv <= nv; iv++) {
       for (let iu = 0; iu <= nu; iu++) {
         const [lx, ly, lz] = gen(iu, iv);
-        positions.push(lx, ly, lz - despDe(lx, ly));
+        // T127: −despHF (hacia el escalador, fase de textura). T129: MÁS el
+        // campo vectorial de bultos por posición de MUNDO — dos caras que
+        // comparten arista pasan la MISMA (lx,ly,lz) → mismo desplazamiento
+        // total → malla watertight aunque las normales de cara difieran.
+        const [bx, by, bz] = bultos ? bultos(lx, ly, lz) : [0, 0, 0];
+        const dz = -despHF(lx, ly) + bz;
+        positions.push(lx + bx, ly + by, lz + dz);
+        maxDesp = Math.max(maxDesp, Math.abs(bx), Math.abs(by), Math.abs(dz));
         const [u, v] = uvFn(iu, iv, lx, ly);
         uvs.push(u, v);
       }
@@ -168,4 +215,38 @@ export function tallaGeometriaPiedra(
     normals: normalesPorArea(positions, indices),
     maxDesp,
   };
+}
+
+/** T127 — talla de PIEDRA clásica: solo el campo de altura (sin bultos). */
+export function tallaGeometriaPiedra(
+  w: number, h: number, d: number, c: CampoPiedra,
+  amplitud: number, wx: number, wy: number,
+): GeometriaTallada {
+  return tallaCore(w, h, d, c, amplitud, wx, wy, null);
+}
+
+/** T129 — talla ORGÁNICA de roca suspensa: campo de altura EXAGERADO más
+ *  lóbulos 3D de ~42 cm (tres canales x/y/z de ruido determinista, semilla
+ *  por bloque) muestreados por posición de mundo → islote de roca con la
+ *  silueta ondulada, watertight entre caras. */
+export function tallaGeometriaRocaSuspensa(
+  w: number, h: number, d: number, c: CampoPiedra,
+  amplitudHF: number, amplitudBulto: number, wx: number, wy: number, sem: number,
+): GeometriaTallada {
+  return tallaCore(w, h, d, c, amplitudHF, wx, wy, (lx, ly, lz) => [
+    ruidoRoca3(wx + lx, wy + ly, lz, sem) * amplitudBulto,
+    ruidoRoca3(wx + lx, wy + ly, lz, sem + 101) * amplitudBulto,
+    ruidoRoca3(wx + lx, wy + ly, lz, sem + 202) * amplitudBulto,
+  ]);
+}
+
+/** T129 — −Z TOTAL en un punto de la cara frontal (lz = −d/2): campo de
+ *  altura + canal z del bulto — LA MISMA fórmula de los vértices tallados.
+ *  Las presas se PEGAN a la roca (glue) sin hundirse ni flotar. */
+export function despZSuperficieRoca(
+  c: CampoPiedra, amplitudHF: number, amplitudBulto: number,
+  wx: number, wy: number, lx: number, ly: number, lz: number, sem: number,
+): number {
+  return -desplazamientoHF(c, amplitudHF, wx, wy)(lx, ly)
+    + ruidoRoca3(wx + lx, wy + ly, lz, sem + 202) * amplitudBulto;
 }

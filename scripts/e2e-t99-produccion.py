@@ -3,7 +3,7 @@
 Igual que e2e-t99-ley-billetes.py (build local) pero apuntando al sitio publicado:
   https://franjavierdavila.github.io/NOSUELTES/?nivel=pared
 Comprueba en el site LIVE:
-  P0. la página y el chunk del juego servidos contienen el buildtag vT105.
+  P0. la página y el chunk del juego servidos contienen el buildtag vT106.
   L1. DISPARO: la velocidad vertical de TODOS los billetes es > 0 al salir.
   L2. LEY DEL SACO: ningún billete vivo por debajo de la boca del saco
       (billetesBajoSaco === 0 siempre).
@@ -38,9 +38,9 @@ try:
         page.on("pageerror", lambda e: errores.append(str(e)))
         page.goto(BASE + "/?nivel=pared", wait_until="domcontentloaded")
 
-        # P0b: el chunk que el navegador ejecuta es el vT105 (comprobado DENTRO de la página).
+        # P0b: el chunk que el navegador ejecuta es el vT106 (comprobado DENTRO de la página).
         # El tag vive en un chunk con import dinámico, así que se hace BFS: index → chunks
-        # referenciados → chunks que esos chunks importan, hasta encontrar vT105.
+        # referenciados → chunks que esos chunks importan, hasta encontrar vT106.
         tag = page.evaluate("""async () => {
             const html = await (await fetch('/NOSUELTES/', {cache: 'no-store'})).text();
             const pend = [...html.matchAll(/chunks\\/([a-z0-9]+\\.js)/g)].map(m => m[1]);
@@ -50,15 +50,15 @@ try:
                 if (vistos.has(s)) continue;
                 vistos.add(s);
                 const body = await (await fetch('/NOSUELTES/_next/static/chunks/' + s, {cache: 'no-store'})).text();
-                if (body.includes('vT105')) return s;
+                if (body.includes('vT106')) return s;
                 for (const m of body.matchAll(/chunks\\/([a-z0-9]+\\.js)/g)) {
                     if (!vistos.has(m[1])) pend.push(m[1]);
                 }
             }
             return null;
         }""")
-        check("P0b. buildtag vT105 en el JS servido a este navegador", tag is not None,
-              f"chunk={tag}" if tag else "vT105 NO encontrado en ningún chunk")
+        check("P0b. buildtag vT106 en el JS servido a este navegador", tag is not None,
+              f"chunk={tag}" if tag else "vT106 NO encontrado en ningún chunk")
 
         s = None
         t0 = time.time()

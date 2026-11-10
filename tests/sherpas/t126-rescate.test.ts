@@ -190,13 +190,13 @@ describe("T126 · fuente: 25 cm por defecto y bloques de piedra desnivelada", ()
 
   it("paredNivel TALLA los bloques con el campo de altura del muro y expone la sonda piedra (T127 corrige la talla T126)", () => {
     const src = srcNivel();
-    expect(src).toContain("export const PIEDRA_DESP_M = 0.06");
+    expect(src).toContain("export const PIEDRA_DESP_M = 0.12");
     // T127 — el desplazamiento ya no son 24 esquinas: es la receta del muro
     // (world/tallaPiedra.ts, testeada en t127-piedra.test.ts) aplicada a los
     // bloques con el campo de altura de la MISMA textura. T128: el macizo
     // trasero se ELIMINÓ y los materiales llevan LAS CAPAS DE SHADER del muro
-    expect(src).toContain("tallaGeometriaPiedra, type CampoPiedra } from \"../world/tallaPiedra\"");
-    expect(src).toContain("this.campoPiedra, PIEDRA_DESP_M, spec.x, spec.y)");
+    expect(src).toContain("despZSuperficieRoca, tallaGeometriaRocaSuspensa, type CampoPiedra,");
+    expect(src).toContain("this.campoPiedra, PIEDRA_DESP_M, ROCA_BULTO_M,");
     expect(src).not.toContain("desplazaVerticesPiedra");
     expect(src).toContain("refreshBoundingInfo()");
     expect(src).toContain("piedra: +this.despPiedraMax.toFixed(4)");

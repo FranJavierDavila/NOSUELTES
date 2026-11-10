@@ -109,7 +109,9 @@ import {
   generateChunk, rockwallStyleFromData, ROCKWALL_SEED,
   type RockwallStyle,
 } from "../world/rockwall";
-import { tallaGeometriaPiedra, type CampoPiedra } from "../world/tallaPiedra"; // T127
+import {
+  despZSuperficieRoca, tallaGeometriaRocaSuspensa, type CampoPiedra,
+} from "../world/tallaPiedra"; // T127 + T129 roca suspensa orgánica
 import { PointerDrag } from "../input/drag";
 import { arbitraClic, type CandidatoClic } from "../input/clicPrioridad"; // T96: arbitraje mano-vs-mochila
 import type { InputManager } from "../input/input";
@@ -158,13 +160,22 @@ export const CUERDA_LEN = 5.0;    // separación máxima entre los dos sherpas (
  *  que vuelven a aparecer otros 5 segundos para volver a desaparecer»):
  *  cada cobro reencende la vela ESTRELLA_DURACION_S; sin cobros, se apaga. */
 export const ESTRELLA_DURACION_S = 5;
-/** T126 — GEOMETRÍA DE PIEDRA REAL de los bloques (dictado: «los bloques que
- *  tenemos no sean planos sino que sean bloques con el shader del muro
- *  escalable y que no sean caras planas»): amplitud del desplazamiento de
- *  vértices a lo largo de su normal — 6 cm es liso a la vista y a la vez
- *  respeta los márgenes del juego (hueco entre filas 0,4 m, holgura al macizo
- *  0,08 m, salidas de las presas ≫ 6 cm). */
-export const PIEDRA_DESP_M = 0.06;
+/** T126/T129 — GEOMETRÍA DE PIEDRA REAL y EXAGERADA de los bloques (dictado:
+ *  «que parezcan piedras con ese shader pero aún más desplazado, más
+ *  exagerado, tienen que parecer rocas suspendidas por las que poder
+ *  trepar»): amplitud del campo de altura horneado en los vértices — 12 cm
+ *  (el doble del T126) es relieve de islote a la vista; las presas se PEGAN
+ *  a la superficie tallada (despZSuperficieRoca) así que los bultos no las
+ *  sepultan, y el hueco entre filas (0,4 m) sigue holgado (bulto máx ≈ 0,21
+ *  < 0,4). */
+export const PIEDRA_DESP_M = 0.12;
+/** T129 — LÓBULOS ORGÁNICOS: amplitud del campo vectorial 3D (ruido de valor
+ *  ~42 cm, tres canales x/y/z por posición de mundo) que ondula la silueta
+ *  y mata el prisma: el bloque lee como un ISLOTE de roca suspendido. */
+export const ROCA_BULTO_M = 0.09;
+/** T129 — semilla del canal base del bulto (los canales y/z derivan +101 /
+ *  +202; la variación POR BLOQUE la pone semillaDeId(spec.id)). */
+export const ROCA_SEMILLA_BULTO = 0x5a29;
 /** Altura de la fila de cima para un paso dado (panel de ajuste). */
 export function yCimaDe(paso: number): number {
   return Y_SALIDA + paso * (FILAS_MOVILES + 1);
@@ -872,9 +883,33 @@ function localsDePlataforma(forma: "hex" | "cil" | "caja", d: number): V3[] {
   ];
 }
 
-/** T92 — presas locales de un spec (6 en la cara frontal de los cubos,
- *  10-11 repartidas por TODAS las caras de las plataformas). */
-function localsDeBloque(spec: BloqueSpec): V3[] {
+/** T129 — semilla determinista a partir del id del bloque (f1_3i, salida_0,
+ *  cima_1...): el tambaleo de las presas y la talla orgánica son ESTABLES
+ *  entre recargas/sesiones (misma partida = mismas rocas). */
+function semillaDeId(id: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < id.length; i++) {
+    h = Math.imul(h ^ id.charCodeAt(i), 16777619) >>> 0;
+  }
+  return h >>> 0;
+}
+
+/** T129 — REPARTO NO UNIFORME de las presas (petición del jugador: «los
+ *  anclajes tampoco tienen que tener una distribución uniforme, solo
+ *  asegurar de que son alcanzables para no bloquear el juego»): rejilla base
+ *  por anchura + tambaleo determinista por semilla del id, con:
+ *  · MARGEN 0,26 m del borde de la cara (la roca ondula ±~0,21 m);
+ *  · separación mínima 0,34 m entre presas (caben dos manos);
+ *  · COBERTURA: al menos una presa en la franja superior y otra en la
+ *    inferior de la cara — el hueco entre filas (0,4 m) encadena SIEMPRE
+ *    (alcanzabilidad garantizada por construcción, la misma que T92).
+ *  Con ctx (campo de la textura del bloque), cada presa se PEGA a la
+ *  superficie tallada: z = zLocalPresa + despZSuperficieRoca (glue T129).
+ *  Las plataformas de bonificación conservan su racimo diseñado. */
+function localsDeBloque(
+  spec: BloqueSpec,
+  ctx?: { c: CampoPiedra; ampHF: number; ampBulto: number; sem: number },
+): V3[] {
   if (spec.bono && (spec.forma === "hex" || spec.forma === "cil" || spec.forma === "caja")) {
     return localsDePlataforma(spec.forma, spec.d);
   }
@@ -884,7 +919,35 @@ function localsDeBloque(spec: BloqueSpec): V3[] {
     : spec.w < 1.45 ? HOLD_LOCALS_W14
     : spec.w < 1.7 ? HOLD_LOCALS_W16
     : HOLD_LOCALS_W18;
-  return tabla.map(([lx, ly]): V3 => v3(lx, ly, zLocalPresa(spec.d)));
+  const hw = spec.w / 2, hh = spec.h / 2;
+  const MARGEN = 0.26, MIN_SEP = 0.34, TAMB = 0.17;
+  const rng = mulberry32((semillaDeId(spec.id) ^ ROCA_SEMILLA_BULTO) >>> 0);
+  const recorta = (x: number, m: number): number => Math.min(m, Math.max(-m, x));
+  const pts = tabla.map(([lx, ly]): [number, number] => [
+    recorta(lx + (rng() * 2 - 1) * TAMB, hw - MARGEN),
+    recorta(ly + (rng() * 2 - 1) * TAMB, hh - MARGEN),
+  ]);
+  for (let i = 1; i < pts.length; i++) {
+    for (let t = 0; t < 8; t++) {
+      const [px, py] = pts[i]!;
+      const chocan = pts.slice(0, i).some(([qx, qy]) => Math.hypot(px - qx!, py - qy!) < MIN_SEP);
+      if (!chocan) break;
+      pts[i] = [
+        recorta(px + (rng() * 2 - 1) * 0.2, hw - MARGEN),
+        recorta(py + (rng() * 2 - 1) * 0.2, hh - MARGEN),
+      ];
+    }
+  }
+  // COBERTURA vertical (alcanzabilidad): franja superior e inferior
+  const ys = pts.map((p) => p[1]!);
+  if (Math.max(...ys) < hh - 0.45) pts[0]![1] = hh - 0.38;
+  if (Math.min(...ys) > -(hh - 0.45)) pts[pts.length - 1]![1] = -(hh - 0.38);
+  // GLUE T129: pegar cada presa a la superficie tallada de su roca
+  const despZ = ctx
+    ? (lx: number, ly: number): number =>
+      despZSuperficieRoca(ctx.c, ctx.ampHF, ctx.ampBulto, spec.x, spec.y, lx, ly, -spec.d / 2, ctx.sem)
+    : (): number => 0;
+  return pts.map(([lx, ly]): V3 => v3(lx, ly, zLocalPresa(spec.d) + despZ(lx, ly)));
 }
 
 /** T92 — punto LOCAL (en el nodo) donde cuelga la cuerda del saco bonus. */
@@ -892,15 +955,17 @@ function hangDePlataforma(forma: "hex" | "cil" | "caja" | "cubo" | undefined): n
   return forma === "hex" ? -0.84 : -0.52;
 }
 
-/** T127 — EL MATERIAL CON DESPLAZAMIENTO DEL MURO DE ESCALADA: la receta
- *  (retícula ~12 cm + Δz −Z por (x,y) de mundo + UVs alineados al mundo en las
- *  caras ±Z) vive en el módulo PURO world/tallaPiedra.ts (testeable sin
- *  Babylon, D20). Aquí solo el adaptador que aplica la geometría al mesh. */
+/** T127/T129 — EL MATERIAL CON DESPLAZAMIENTO DEL MURO, EXAGERADO Y ORGÁNICO:
+ *  la receta vive en el módulo PURO world/tallaPiedra.ts (testeable sin
+ *  Babylon, D20). T129: tallaGeometriaRocaSuspensa (campo de altura ±PIEDRA-
+ *  _DESP_M + lóbulos 3D ±ROCA_BULTO_M por posición de mundo, semilla por
+ *  bloque) — islote de roca, no caja. Aquí solo el adaptador que aplica la
+ *  geometría al mesh. */
 function tallaBloquePiedra(
   mesh: Mesh, w: number, h: number, d: number, c: CampoPiedra,
-  amplitud: number, wx: number, wy: number,
+  amplitud: number, ampBulto: number, wx: number, wy: number, sem: number,
 ): number {
-  const g = tallaGeometriaPiedra(w, h, d, c, amplitud, wx, wy);
+  const g = tallaGeometriaRocaSuspensa(w, h, d, c, amplitud, ampBulto, wx, wy, sem);
   const vd = new VertexData();
   vd.positions = g.positions;
   vd.uvs = g.uvs;
@@ -1351,7 +1416,8 @@ export class ParedNivel {
         this.despPiedraMax = Math.max(this.despPiedraMax,
           tallaBloquePiedra(mesh,
             spec.bono ? 1.6 : spec.w, spec.bono ? 1.0 : spec.h, spec.bono ? 0.9 : spec.d,
-            this.campoPiedra, PIEDRA_DESP_M, spec.x, spec.y));
+            this.campoPiedra, PIEDRA_DESP_M, ROCA_BULTO_M,
+            spec.x, spec.y, (semillaDeId(spec.id) ^ ROCA_SEMILLA_BULTO) >>> 0));
       }
       mesh.material = spec.verde ? mats.verde : spec.azul ? mats.azul : spec.destructible ? mats.rojizo : mats.bloque;
       mesh.parent = node;
@@ -1364,7 +1430,15 @@ export class ParedNivel {
       // la rotación la manda el cuaternión (yaw·pitch·roll compuestos —
       // el giro verde vive en el roll)
       node.rotationQuaternion = bloque.q;
-      const locals = localsDeBloque(spec);
+      // T129 — presas con reparto NO UNIFORME determinista (tambaleo por
+      // semilla del id) y PEGADAS a la superficie tallada (glue): alcanzables
+      // por construcción (cobertura arriba/abajo + separación mínima)
+      const locals = this.campoPiedra
+        ? localsDeBloque(spec, {
+          c: this.campoPiedra, ampHF: PIEDRA_DESP_M, ampBulto: ROCA_BULTO_M,
+          sem: (semillaDeId(spec.id) ^ ROCA_SEMILLA_BULTO) >>> 0,
+        })
+        : localsDeBloque(spec);
       for (const [k, lpos] of locals.entries()) {
         // presas EN LA CARA saliendo hacia FUERA (T121 B1): la física coincide
         // con el bulto visible y ambos quedan de cara a la cámara

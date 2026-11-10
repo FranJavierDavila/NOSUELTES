@@ -13,8 +13,8 @@ import {
   generateChunk, rockwallStyleFromData, ROCKWALL_SEED,
 } from "../../src/game/sherpas/world/rockwall";
 import {
-  sampleAlturaCampo, tallaGeometriaPiedra, PASO_TALLA_M,
-  type CampoPiedra,
+  despZSuperficieRoca, PASO_TALLA_M, ruidoRoca3, sampleAlturaCampo,
+  tallaGeometriaPiedra, tallaGeometriaRocaSuspensa, type CampoPiedra,
 } from "../../src/game/sherpas/world/tallaPiedra";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -154,10 +154,27 @@ describe("T127 · cableado en paredNivel (fuente, sin Babylon)", () => {
   const src = readFileSync(join(process.cwd(), "src/game/sherpas/gameplay/paredNivel.ts"), "utf8");
   const srcScene = readFileSync(join(process.cwd(), "src/game/sherpas/presentation/scene.ts"), "utf8");
 
-  it("los bloques se tallan con el campo de altura del muro", () => {
-    expect(src).toContain("tallaGeometriaPiedra, type CampoPiedra } from \"../world/tallaPiedra\"");
-    expect(src).toContain("this.campoPiedra, PIEDRA_DESP_M, spec.x, spec.y)");
+  it("los bloques se tallan con el campo de altura del muro (T129: orgánico y exagerado)", () => {
+    expect(src).toContain("despZSuperficieRoca, tallaGeometriaRocaSuspensa, type CampoPiedra,");
+    expect(src).toContain("this.campoPiedra, PIEDRA_DESP_M, ROCA_BULTO_M,");
     expect(src).toContain("h: res.height, W: res.W, H: res.H"); // el campo ya no se descarta
+  });
+
+  it("T129 — ROCA SUSPENSA: exagerado + lóbulos + semilla por bloque", () => {
+    expect(src).toContain("export const PIEDRA_DESP_M = 0.12"); // exagerado (era 0,06)
+    expect(src).toContain("export const ROCA_BULTO_M = 0.09");
+    expect(src).toContain("export const ROCA_SEMILLA_BULTO = 0x5a29");
+    expect(src).toContain("tallaGeometriaRocaSuspensa(w, h, d, c, amplitud, ampBulto, wx, wy, sem)");
+    expect(src).toContain("(semillaDeId(spec.id) ^ ROCA_SEMILLA_BULTO) >>> 0");
+  });
+
+  it("T129 — presas NO UNIFORMES, pegadas a la roca y alcanzables", () => {
+    expect(src).toContain("function semillaDeId(id: string)"); // determinismo por id
+    expect(src).toContain("mulberry32((semillaDeId(spec.id) ^ ROCA_SEMILLA_BULTO) >>> 0)");
+    expect(src).toContain("const MARGEN = 0.26, MIN_SEP = 0.34, TAMB = 0.17");
+    expect(src).toContain("despZSuperficieRoca(ctx.c, ctx.ampHF, ctx.ampBulto"); // glue
+    expect(src).toContain("hh - 0.45"); // cobertura: franja superior e inferior
+    expect(src).toContain("localsDeBloque(spec, {");
   });
 
   it("T128 — SIN pared vertical trasera: el macizo no existe", () => {
@@ -183,5 +200,63 @@ describe("T127 · cableado en paredNivel (fuente, sin Babylon)", () => {
     expect(src).not.toContain("uScale = 1.4 / 6.4");
     expect(src).not.toContain("normalizaUVCaras"); // sustituido por la talla
     expect(src).toContain("piedra: +this.despPiedraMax.toFixed(4)"); // sonda E2E viva
+  });
+});
+
+describe("T129 · roca suspensa orgánica (módulo puro, headless)", () => {
+  const BULTO = 0.09; // ROCA_BULTO_M (paredNivel)
+  const SEM = 0x5a29;
+
+  it("ruidoRoca3: determinista, en −1..1 y sin saltos entre celdas vecinas", () => {
+    const a = ruidoRoca3(3.2, 14.7, -0.21, SEM);
+    expect(a).toBe(ruidoRoca3(3.2, 14.7, -0.21, SEM)); // misma entrada = mismo valor
+    expect(a).toBeGreaterThanOrEqual(-1);
+    expect(a).toBeLessThanOrEqual(1);
+    const b = ruidoRoca3(3.2 + 0.42, 14.7, -0.21, SEM); // una celda al lado
+    expect(Math.abs(a - b)).toBeLessThan(0.9);
+  });
+
+  it("la talla orgánica ONDULA la silueta (vértices fuera del prisma) y el relieve supera al del campo", () => {
+    const g = tallaGeometriaRocaSuspensa(1.8, 1.5, 0.5, campo, 0.12, BULTO, 3.1, 12.7, SEM);
+    let maxX = 0;
+    for (let v = 0; v < g.positions.length / 3; v++) {
+      maxX = Math.max(maxX, Math.abs(g.positions[v * 3]!));
+    }
+    expect(maxX).toBeGreaterThan(0.9 + 0.01); // silueta fuera del prisma (w/2 = 0,9)
+    expect(g.maxDesp).toBeGreaterThan(0.12); // bultos + campo > solo campo
+    expect(g.maxDesp).toBeLessThanOrEqual(0.12 + BULTO + 1e-9); // envolvente
+  });
+
+  it("WATERTIGHT: las esquinas de la caja (3 caras comparten punto de mundo) colapsan al MISMO sitio", () => {
+    const g = tallaGeometriaRocaSuspensa(1.8, 1.5, 0.5, campo, 0.12, BULTO, 3.1, 12.7, SEM);
+    const clave = (x: number, y: number, z: number): string =>
+      `${x.toFixed(6)}|${y.toFixed(6)}|${z.toFixed(6)}`;
+    const cuenta = new Map<string, number>();
+    for (let v = 0; v < g.positions.length / 3; v++) {
+      const k = clave(g.positions[v * 3]!, g.positions[v * 3 + 1]!, g.positions[v * 3 + 2]!);
+      cuenta.set(k, (cuenta.get(k) ?? 0) + 1);
+    }
+    expect(Math.max(...cuenta.values())).toBeGreaterThanOrEqual(3);
+  });
+
+  it("GLUE: la z tallada de la cara frontal = −d/2 + despZSuperficieRoca (las presas se pegan a la roca)", () => {
+    const w = 1.8, h = 1.5, d = 0.5, AMP = 0.12;
+    const g = tallaGeometriaRocaSuspensa(w, h, d, campo, AMP, BULTO, 3.1, 12.7, SEM);
+    const nx = Math.ceil(w / PASO_TALLA_M), ny = Math.ceil(h / PASO_TALLA_M);
+    const zsFrontales = new Set<number>();
+    for (let v = 0; v < g.positions.length / 3; v++) {
+      const z = g.positions[v * 3 + 2]!;
+      if (z < 0.04) zsFrontales.add(Math.round(z * 1e9) / 1e9); // frontal (d/2=0,25; rangos no solapan)
+    }
+    let parejas = 0;
+    for (let iv = 0; iv <= ny; iv++) {
+      for (let iu = 0; iu <= nx; iu++) {
+        const lx = -w / 2 + (iu / nx) * w, ly = -h / 2 + (iv / ny) * h;
+        const zEsp = -d / 2 + despZSuperficieRoca(campo, AMP, BULTO, 3.1, 12.7, lx, ly, -d / 2, SEM);
+        expect(zsFrontales.has(Math.round(zEsp * 1e9) / 1e9)).toBe(true);
+        parejas++;
+      }
+    }
+    expect(parejas).toBeGreaterThanOrEqual((nx + 1) * (ny + 1)); // TODA la retícula pegada
   });
 });

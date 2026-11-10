@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Smoke del ZIP jugable vT105: sirve el contenido descomprimido (raíz, sin
+"""Smoke del ZIP jugable vT106: sirve el contenido descomprimido (raíz, sin
 subruta), arranca el nivel, comprueba buildtag, sacudida y billetes en cuadro.
-Uso: smoke-zip-vT105.py <dir-descomprimido> <puerto>"""
+Uso: smoke-zip-vT106.py <dir-descomprimido> <puerto>"""
 import subprocess, time, sys, urllib.request, signal
 
 DIR = sys.argv[1] if len(sys.argv) > 1 else "/tmp/zip-smoke"
@@ -54,7 +54,7 @@ try:
         }""")
         print("buildtag:", tag)
         print("tras sacudida 1.5 s de sim:", r)
-        pg.screenshot(path=f"{DL}/zip-vT105-jugando.png")
+        pg.screenshot(path=f"{DL}/zip-vT106-jugando.png")
         print("errores JS:", cons[:4] if cons else "ninguno")
         browser.close()
 finally:
