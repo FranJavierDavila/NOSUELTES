@@ -151,6 +151,18 @@ export const FAIL_Y = -1.4;       // caída al vacío → prueba fallada
  *  SUELO_Y + 0,45 (cintura ~0,45, ENCIMA del relieve que asoma ~+0,2). */
 export const SUELO_Y = 0;
 export const CUERDA_LEN = 5.0;    // separación máxima entre los dos sherpas (m)
+/** T126 — la estrella de oro de la mochila NUNCA es permanente (dictado:
+ *  «desaparecen transcurridos 5 segundos hasta que se cogen nuevos billetes
+ *  que vuelven a aparecer otros 5 segundos para volver a desaparecer»):
+ *  cada cobro reencende la vela ESTRELLA_DURACION_S; sin cobros, se apaga. */
+export const ESTRELLA_DURACION_S = 5;
+/** T126 — GEOMETRÍA DE PIEDRA REAL de los bloques (dictado: «los bloques que
+ *  tenemos no sean planos sino que sean bloques con el shader del muro
+ *  escalable y que no sean caras planas»): amplitud del desplazamiento de
+ *  vértices a lo largo de su normal — 6 cm es liso a la vista y a la vez
+ *  respeta los márgenes del juego (hueco entre filas 0,4 m, holgura al macizo
+ *  0,08 m, salidas de las presas ≫ 6 cm). */
+export const PIEDRA_DESP_M = 0.06;
 /** Altura de la fila de cima para un paso dado (panel de ajuste). */
 export function yCimaDe(paso: number): number {
   return Y_SALIDA + paso * (FILAS_MOVILES + 1);
@@ -905,6 +917,40 @@ function normalizaUVCaras(mesh: Mesh, w: number, h: number, d: number): void {
   mesh.setVerticesData(VertexBuffer.UVKind, out);
 }
 
+/** T126 — VERDADERA GEOMETRÍA 3D DE PIEDRA (dictado: «los bloques que tenemos
+ *  no sean planos sino que sean bloques con el shader del muro escalable y que
+ *  no sean caras planas»): desplaza cada vértice a lo largo de SU NORMAL con
+ *  un ruido senoidal determinista de 3 octavas (bultos grandes + facetas
+ *  medianas + grano fino). El ruido depende SOLO de la posición y la semilla
+ *  del bloque: los vértices duplicados de las aristas (CreateBox repite 4
+ *  vértices por cara) reciben el MISMO desplazamiento → la malla sigue
+ *  cerrada (watertight), sin rendijas en las aristas. El material NO cambia:
+ *  es el del muro escalable (misma receta generateChunk) — lo que antes era
+ *  una caja perfecta ahora ES un volumen de piedra desnivelado por dentro y
+ *  por fuera, como la roca del primer muro.
+ *  Devuelve el desplazamiento máximo aplicado (sonda E2E: ≠ 0 → no planos). */
+function desplazaVerticesPiedra(mesh: Mesh, seed: number, amplitud: number): number {
+  const pos = mesh.getVerticesData(VertexBuffer.PositionKind);
+  const nor = mesh.getVerticesData(VertexBuffer.NormalKind);
+  if (!pos || !nor || pos.length !== nor.length) return 0;
+  const out = pos.slice();
+  let maxDesp = 0;
+  for (let v = 0; v < pos.length; v += 3) {
+    const x = pos[v], y = pos[v + 1], z = pos[v + 2];
+    const n1 = Math.sin(x * 1.7 + y * 2.3 + z * 1.1 + seed * 0.618);
+    const n2 = Math.sin(x * 3.9 - y * 2.7 + z * 4.1 + seed * 1.309);
+    const n3 = Math.sin(x * 8.3 + y * 7.1 - z * 6.7 + seed * 2.117);
+    const desp = amplitud * (0.5 * n1 + 0.3 * n2 + 0.2 * n3);
+    out[v] = x + nor[v] * desp;
+    out[v + 1] = y + nor[v + 1] * desp;
+    out[v + 2] = z + nor[v + 2] * desp;
+    maxDesp = Math.max(maxDesp, Math.abs(desp));
+  }
+  mesh.setVerticesData(VertexBuffer.PositionKind, out);
+  mesh.refreshBoundingInfo();
+  return maxDesp;
+}
+
 /** T121 B5: partículas del CUERPO que se hunden tirando de la mochila (todas
  *  menos las manos — esas permanecen PERFECTAMENTE ancladas). */
 const GOMA_CUERPO: number[] = [
@@ -1010,6 +1056,9 @@ export class ParedNivel {
   private entrega: { t: number; dur: number; from: V3; ctrl: V3; to: V3; yaw0: number } | null = null;
   private rafagaHecha = false;
   private estrellaHasta = [0, 0];
+  /** T126 — desplazamiento máximo de vértices aplicado a los bloques (sonda
+   *  E2E: > 0 certifica que las caras NO son planas). */
+  private despPiedraMax = 0;
   // HUD del interior de la mochila, la barra/flecha de la goma y los avisos
   private elMochilaWin: HTMLElement | null = null;
   private elGoma: HTMLElement | null = null;
@@ -1341,6 +1390,15 @@ export class ParedNivel {
       if (!spec.bono || (spec.forma !== "hex" && spec.forma !== "cil")) {
         normalizaUVCaras(mesh, spec.bono ? 1.6 : spec.w, spec.bono ? 1.0 : spec.h, spec.bono ? 0.9 : spec.d);
       }
+      // T126 — VOLUMEN DE PIEDRA REAL (dictado: «que no sean caras planas»):
+      // los vértices se desnivelan a lo largo de su normal — el bloque deja de
+      // ser una caja perfecta y ES un volumen de piedra. Semilla por bloque
+      // (id + posición) → cada piedra es distinta y determinista. Las presas
+      // sobresalen ≫ PIEDRA_DESP_M: siguen leyéndose sobre la cara ondulada.
+      const semilla = [...spec.id].reduce((a, c) => a + c.charCodeAt(0), 0)
+        + spec.x * 13 + spec.y * 29 + spec.z * 7;
+      this.despPiedraMax = Math.max(this.despPiedraMax,
+        desplazaVerticesPiedra(mesh, semilla, PIEDRA_DESP_M));
       mesh.material = spec.verde ? mats.verde : spec.azul ? mats.azul : spec.destructible ? mats.rojizo : mats.bloque;
       mesh.parent = node;
       const bloque: Bloque = {
@@ -1934,11 +1992,12 @@ export class ParedNivel {
           `¡+${BILLETE_DINERO} $! Billete para el Sherpa ${cogida.pi + 1}`).replace("{n}", String(cogida.pi + 1)));
         // T124 — «+10 $» sobre la mochila del cazador: EL CAMBIO se lee al instante
         this.etiquetaDinero(cogida.pi, `+${BILLETE_DINERO} $`);
-        // T89/T125 — ESTRELLA DE ORO girando sobre SU mochila (el contenido
-        // cambió): dictado T93 «dura 5 segundos» → T125 PERMANENTE (queja:
-        // «la estrella en la mochila solo aparece 5 segundos y desaparece»):
-        // una vez hay dinero cogido, la estrella SE QUEDA hasta el reinicio.
-        this.estrellaHasta[cogida.pi] = Infinity;
+        // T89/T93/T126 — ESTRELLA DE ORO girando sobre SU mochila: NUNCA es
+        // permanente (dictado T126: «desaparecen de la mochila transcurridos
+        // 5 segundos hasta que se cogen nuevos billetes que vuelven a aparecer
+        // otros 5 segundos para volver a desaparecer»): cada cobra REENCENDE
+        // la vela de 5 s; sin cobros, se apaga.
+        this.estrellaHasta[cogida.pi] = this.simTime + ESTRELLA_DURACION_S;
         if (this.mochilaAbierta !== null) this.refrescaMochila(this.mochilaAbierta);
       }
     }
@@ -1957,8 +2016,8 @@ export class ParedNivel {
         bb.cuerda.isVisible = false;
         this.dinero[m.pi] += BONUS_DINERO;
         this.etiquetaDinero(m.pi, `+${BONUS_DINERO} $`); // T124: el cobro se LEE
-        // T125 — estrella PERMANENTE (igual que el billete: no se apaga a los 5 s)
-        this.estrellaHasta[m.pi] = Infinity;
+        // T126 — estrella de 5 s (igual que el billete: NUNCA permanente)
+        this.estrellaHasta[m.pi] = this.simTime + ESTRELLA_DURACION_S;
         this.aviso(txt(this.d.data.strings, this.d.hud.lang, "pared.dinero.bolsa",
           `¡+${BONUS_DINERO} $! Saco del bono para el Sherpa ${m.pi + 1}`).replace("{n}", String(m.pi + 1)));
         if (this.mochilaAbierta !== null) this.refrescaMochila(this.mochilaAbierta);
@@ -3042,8 +3101,8 @@ export class ParedNivel {
     const cv = this.d.scene.engine.getRenderingCanvas();
     if (!cv) return;
     // T91 — fuera el badge de muelle del mapa (solo en la mochila); queda la
-    // T89/T125 — estrella de oro: PERMANENTE tras el primer cobro (dictado
-    // T125: «la estrella… solo aparece 5 segundos y desaparece» → se queda)
+    // T89/T126 — estrella de oro: NUNCA permanente (dictado T126: aparece al
+    // cobrar, dura 5 s, desaparece; nuevos billetes la vuelven a encender)
     // CENTRADA en la mochila
     for (const pi of [0, 1] as const) {
       const st = this.elEstrella[pi];
@@ -3764,7 +3823,11 @@ export class ParedNivel {
         rescate: [0, 1].map((pi) => ({
           colgado: this.sherpas[pi as 0 | 1].colgadoSinRecobro(),
           haulHecho: this.sherpas[pi as 0 | 1].haulHecho(),
+          haul: this.sherpas[pi as 0 | 1].haulInfo(),
+          state: this.sherpas[pi as 0 | 1].ropeState,
         })),
+        // T126 — ¿las caras de los bloques SON piedra desnivelada? (max desp)
+        piedra: +this.despPiedraMax.toFixed(4),
         desplome: [0, 1].map((pi) => {
           const ps = this.sherpas[pi as 0 | 1].rig.particles;
           return +(ps[P.chest].pos.x - ps[P.pelvisC].pos.x).toFixed(3);

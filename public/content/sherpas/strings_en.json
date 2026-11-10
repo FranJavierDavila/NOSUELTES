@@ -98,7 +98,7 @@
     "coopImpulse": "{from} boosts {to}!",
     "coopImpulseNeed": "Anchor yourself first (Q/J) to give a boost",
     "coopImpulseScore": "The boost paid off! Tip +{n}",
-    "ropeMash": "{name} IS HANGING! The PARTNER PRESSES HIS KEY (C green / N red): each press lifts him half a metre",
+    "ropeMash": "{name} IS HANGING! The PARTNER PRESSES HIS KEY (C green / N red): each pull hoists him 25 cm, until he auto-grabs a nearby hold",
     "ropeReleased": "THE ROPE RAN OUT! {name} FALLS INTO THE VOID!",
     "portablePlaced": "Portable anchor placed — {left} left",
     "portableEmpty": "No portable anchors left",
@@ -126,7 +126,7 @@
     "hand_r": "R.Hand",
     "foot_l": "L.Foot",
     "foot_r": "R.Foot",
-    "ropeMash": "{name} IS HANGING! MASH C (Green) AND N (Red) TO CLIMB THE ROPE"
+    "ropeMash": "{name} IS HANGING! THE PARTNER PRESSES C (Green) OR N (Red) TO HOIST HIM PULL BY PULL"
   },
   "anchor": {
     "roca_firme": "firm rock",

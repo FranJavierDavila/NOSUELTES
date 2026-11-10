@@ -169,13 +169,15 @@ describe("T93/T125 · el dinero solo entra por la mano del sherpa", () => {
   });
 });
 
-// ---------- C) ESTRELLA: PERMANENTE y centrada en la mochila ----------
+// ---------- C) ESTRELLA: 5 SEGUNDOS, NUNCA permanente (T126) ----------
 
-describe("T125 · estrella de oro: PERMANENTE (dictado: no desaparece a los 5 s)", () => {
-  it("Infinity en las dos cogidas y CSS centrado (fuente)", () => {
+describe("T126 · estrella de oro: 5 s y NUNCA permanente (dictado T126)", () => {
+  it("simTime + ESTRELLA_DURACION_S en las dos cogidas; sin Infinity (fuente)", () => {
     const src = srcNivel();
-    expect(src).not.toContain("this.simTime + 5.0");
-    expect(src.match(/estrellaHasta\[[^\]]+\] = Infinity/g)?.length).toBe(2);
+    expect(src.match(/estrellaHasta\[[^\]]+\] = this\.simTime \+ ESTRELLA_DURACION_S/g)?.length).toBe(2);
+    expect(src).not.toContain("estrellaHasta[cogida.pi] = Infinity");
+    expect(src).not.toContain("estrellaHasta[m.pi] = Infinity");
+    expect(src).toContain("export const ESTRELLA_DURACION_S = 5");
     expect(src).toContain("translate(-50%,-50%)");
     expect(src).toContain("centro EXACTO de la mochila");
   });

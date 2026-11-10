@@ -98,7 +98,7 @@
     "coopImpulse": "¡{from} da un impulso a {to}!",
     "coopImpulseNeed": "Anclate primero (Q/J) para dar el impulso",
     "coopImpulseScore": "¡El impulso sirvió! Propina +{n}",
-    "ropeMash": "¡{name} COLGADO! El COMPAÑERO PULSA SU TECLA (C verde / N rojo): cada golpe lo sube medio metro",
+    "ropeMash": "¡{name} COLGADO! El COMPAÑERO PULSA SU TECLA (C verde / N rojo): cada tirón lo iza 25 cm, hasta que se ancla SOLO a un agarre cercano",
     "ropeReleased": "¡LA CUERDA SE ACABÓ! ¡{name} CAE AL ABISMO!",
     "portablePlaced": "Anclaje portátil colocado — quedan {left}",
     "portableEmpty": "No quedan anclajes portátiles",
@@ -126,7 +126,7 @@
     "hand_r": "M.Der",
     "foot_l": "P.Izq",
     "foot_r": "P.Der",
-    "ropeMash": "¡{name} COLGADO! PULSAD C (Verde) Y N (Rojo) A SACO PARA TREPARLA"
+    "ropeMash": "¡{name} COLGADO! EL COMPAÑERO PULSA C (Verde) O N (Rojo) PARA IZARLO TIRÓN A TIRÓN"
   },
   "anchor": {
     "roca_firme": "roca firme",

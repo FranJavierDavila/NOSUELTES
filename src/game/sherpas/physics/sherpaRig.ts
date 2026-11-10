@@ -1215,23 +1215,33 @@ export class SherpaRig {
         // despT 1→0 en fillSkeleton) y al terminar pasa a 'caught' erguido.
         this.recobroT += dt;
         body.prev = vClone(body.pos); // quieto mientras se incorpora
-        if (this.recobroT >= (fT?.recobroSeconds ?? 0.5)) this.ropeState = "caught";
+        if (this.recobroT >= (fT?.recobroSeconds ?? 0.5)) {
+          this.ropeState = "caught";
+          // T126 — ANCLA AUTOMÁTICA DEL RESCATE (dictado: «el escalador caído
+          // si tiene en su radio de acción algún agarre con sus manos se ancla
+          // de forma automática a él»): erguido al fin del recobro, la mano
+          // libre más próxima a una presa libre DENTRO de su radio viaja y
+          // agarra sola — el rescate termina enganchado, no flotando colgado.
+          this.autoAnclaRescate();
+        }
         vAbs = 0;
       } else {
         // T96b — RESCATE POR PULSACIONES DEL COMPAÑERO (dictado: «deberá ser
         // el otro sherpa quien lo suba tirando de la cuerda por medio de la
-        // pulsación de una tecla, cada golpe de tecla lo sube MEDIO METRO con
-        // una pequeña sacudida ascendente»). La ventana A SACO de T58-E
-        // (fuerza/umbral/deslizamiento/reserva) se RETIRÓ: el colgado no se
-        // recupera solo, sus pulsaciones no hacen nada; cada pulsación del
-        // COMPAÑERO suma haulStepM al objetivo y el cuerpo sube hacia él
-        // rápido (la sacudida) quedándose HORIZONTAL en la nueva altura.
+        // pulsación de una tecla» — T126: «cada pulsación de la tecla tira de
+        // la cuerda unos 25 centímetros para izar al escalador... hasta que
+        // consigue agarrarse con sus manos a algún agarre cercano»). La
+        // ventana A SACO de T58-E (fuerza/umbral/deslizamiento/reserva) se
+        // RETIRÓ: el colgado no se recupera solo, sus pulsaciones no hacen
+        // nada; cada pulsación del COMPAÑERO suma haulStepM al objetivo y el
+        // cuerpo sube hacia él rápido (la sacudida) quedándose HORIZONTAL en
+        // la nueva altura.
         const presses = Math.min(6, this.haulPressesPend);
         this.haulPressesPend = 0;
         if (presses > 0) this.haulPressesDados += presses;
         const top = (this.ropeFallStartY ?? body.pos.y) - (fT?.haulTopOffsetM ?? 0.35);
         if (this.haulTargetY === null) this.haulTargetY = body.pos.y;
-        if (presses > 0) this.haulTargetY = Math.min(top, this.haulTargetY + presses * (fT?.haulStepM ?? 0.5));
+        if (presses > 0) this.haulTargetY = Math.min(top, this.haulTargetY + presses * (fT?.haulStepM ?? 0.25));
         const dy0 = this.haulTargetY - body.pos.y;
         let paso = 0;
         if (dy0 > 1e-3) {
@@ -1615,7 +1625,7 @@ export class SherpaRig {
   /** El match/nivel inyecta las pulsaciones del tick ANTES de step(): las del
    *  COLGADO no hacen nada (dictado: «todos sus controles permanecen
    *  inactivos») y CADA pulsación del COMPAÑERO suma un golpe de izado
-   *  (+haulStepM, por defecto medio metro). Las pulsaciones que llegan
+   *  (+haulStepM, por defecto 25 cm — T126). Las pulsaciones que llegan
    *  durante el chicote cuentan en cuanto la ventana de izado abre. */
   feedRopeMash(_hangedPresses: number, partnerPresses: number, _partnerAnchored: boolean): void {
     void _hangedPresses;
@@ -1662,10 +1672,61 @@ export class SherpaRig {
       && (this.ropeState === "caught" || this.ropeState === "hauling");
   }
 
+  /** T126 — ANCLA AUTOMÁTICA DEL RESCATE (dictado: «el escalador caído si
+   *  tiene en su radio de acción algún agarre con sus manos se ancla de forma
+   *  automática a él»): cada mano libre busca la presa LIBRE más próxima
+   *  DENTRO de su radio (el MISMO criterio doble de alcanzaAnclajeManos:
+   *  partícula viva o último punto de la extremidad) y viaja sola hacia ella.
+   *  PREFIERE presas a la altura de la cintura o por encima: agarrarse es
+   *  SOSTENERSE — una presa muy por debajo lo arrastraría hacia abajo y
+   *  desperdiciaría todo el izado (medido en test: el cuerpo llegaba al clamp
+   *  del suelo). Solo si NADA hay al nivel de la cintura se toma la más
+   *  cercana aunque sea baja (mejor anclado que flotando). Determinista:
+   *  menor distancia; empate exacto → presa de menor id. Sin presa al
+   *  alcance (recobro por el tope del izado) no ancla nada: el jugador
+   *  agarra a mano como siempre. */
+  private autoAnclaRescate(): void {
+    const cintura = this.rig.particles[P.pelvisC].pos;
+    for (const limb of ["hand_l", "hand_r"] as const) {
+      if (this.dragging === limb) continue;
+      const st = this.states.get(limb)!;
+      if (st.anchored || st.traveling || st.lockedFor > 0) continue;
+      const maxLen = this.fatiguedReach(limb);
+      const cand = this.rig.particles[LIMB_PARTICLE[limb]].pos;
+      const pt = this.limbPt[limb];
+      let best: HoldInstance | null = null;
+      let bd = Infinity;
+      let bestBajo: HoldInstance | null = null;
+      let bdBajo = Infinity;
+      for (const hold of this.deps.anchorSystem.holds.values()) {
+        if (this.deps.anchorSystem.anchorAtHold(hold.id)) continue;
+        const d = Math.min(vLen(vSub(hold.pos, cand)), vLen(vSub(hold.pos, pt)));
+        if (d > maxLen) continue;
+        if (hold.pos.y >= cintura.y - 0.2) {
+          if (d < bd || (d === bd && best !== null && hold.id < best.id)) { bd = d; best = hold; }
+        } else if (d < bdBajo || (d === bdBajo && bestBajo !== null && hold.id < bestBajo.id)) {
+          bdBajo = d; bestBajo = hold;
+        }
+      }
+      const elegida = best ?? bestBajo;
+      if (elegida) { this.gripWanted[limb] = true; this.startTravel(limb, elegida); }
+    }
+  }
+
   /** T96b — el rescate TERMINÓ (recobrado erguido, a un arrastre de las
    *  presas): controles de nuevo activos. Sonda/E2E. */
   haulHecho(): boolean {
     return this.haulDone;
+  }
+
+  /** T126 — sonda/E2E del rescate: golpes de izado YA dados, objetivo de
+   *  altura actual y cintura (para medir los ~25 cm por tirón). */
+  haulInfo(): { presses: number; targetY: number | null; waistY: number } {
+    return {
+      presses: this.haulPressesDados,
+      targetY: this.haulTargetY === null ? null : +this.haulTargetY.toFixed(3),
+      waistY: +this.waist().y.toFixed(3),
+    };
   }
 
   /** Medidor leído por el match/escena para el HUD (null = sin izado).

@@ -239,8 +239,13 @@ describe("Task 36 + T96b: seguro de cuerda — caída atrapada + RESCATE POR PUL
     // el rescate lo RECUPERÓ: con la pared llena, una presa queda al alcance
     // pronto y el recobro dispara en cuanto el izado lo sitúa con ella (el
     // izado limpio a +0,5 m por golpe se prueba aparte en pared vacía)
-    expect(r.rig.haulHecho()).toBe(true);
-    expect(r.rig.ropeState).toBe("caught"); // recobrado terminado
+    expect(r.rig.haulHecho()).toBe(false);
+    // T126 — el recobro ya NO acaba «caught» flotando: el ANCLA AUTOMÁTICA
+    // engancha una presa al alcance con la mano libre y el rig vuelve a
+    // 'climbing' (dictado: «se ancla de forma automática a él») — y al volver
+    // a trepar el rescate MUERE por diseño (haulDone=false, cuerda en reserva)
+    expect(r.rig.ropeState).toBe("climbing");
+    expect(r.rig.anchorsCount()).toBeGreaterThan(0);
     // erguido al acabar (fundido completo): espina VERTICAL de nuevo
     const ps = r.rig.rig.particles;
     expect(ps[P.chest].pos.y - ps[P.pelvisC].pos.y).toBeGreaterThan(0.25);
