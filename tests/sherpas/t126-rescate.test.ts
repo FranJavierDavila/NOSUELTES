@@ -192,15 +192,17 @@ describe("T126 · fuente: 25 cm por defecto y bloques de piedra desnivelada", ()
     const src = srcNivel();
     expect(src).toContain("export const PIEDRA_DESP_M = 0.06");
     // T127 — el desplazamiento ya no son 24 esquinas: es la receta del muro
-    // (world/tallaPiedra.ts, testeada en t127-piedra.test.ts) aplicada a
-    // bloques y macizo con el campo de altura de la MISMA textura
+    // (world/tallaPiedra.ts, testeada en t127-piedra.test.ts) aplicada a los
+    // bloques con el campo de altura de la MISMA textura. T128: el macizo
+    // trasero se ELIMINÓ y los materiales llevan LAS CAPAS DE SHADER del muro
     expect(src).toContain("tallaGeometriaPiedra, type CampoPiedra } from \"../world/tallaPiedra\"");
     expect(src).toContain("this.campoPiedra, PIEDRA_DESP_M, spec.x, spec.y)");
     expect(src).not.toContain("desplazaVerticesPiedra");
     expect(src).toContain("refreshBoundingInfo()");
     expect(src).toContain("piedra: +this.despPiedraMax.toFixed(4)");
-    // el material de los bloques sigue siendo el del muro (shader escalable):
-    // la geometría cambia, el shader NO
-    expect(src).toContain("mesh.material = spec.verde ? mats.verde : spec.azul ? mats.azul : spec.destructible ? mats.rojizo : mats.bloque;");
+    // T128 — el material de los bloques lleva EL MISMO SHADER del muro
+    // (estratos triplanar + clima) y NO hay pared vertical trasera
+    expect(src).toContain("this.d.scene.applyWallRockShaderLayers(m)");
+    expect(src).toContain("sinMacizoTrasero"); // sonda E2E: el macizo NO existe
   });
 });

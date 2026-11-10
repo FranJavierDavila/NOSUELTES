@@ -2578,6 +2578,32 @@ export class SherpaScene {
     }
   }
 
+  /** T128 — LAS CAPAS DE SHADER DEL MURO ESCALABLE para un material de la
+   *  partida (los bloques del nivel pared): MISMA estratificación triplanar
+   *  (TriPlanarStrataPlugin) y MISMA meteorización climática (ClimateRock-
+   *  Plugin) que los chunks donde se colocan los anclajes — texturas
+   *  compartidas de escena y los mismos parámetros del horno. Petición del
+   *  jugador: «solo quiero que los bloques tengan el mismo shader donde se
+   *  colocan los anclajes». El material entra con su albedo/bump horneados;
+   *  aquí se le enganchan las DOS capas de shader y se rehace el layout del
+   *  UBO (T69-FIX 3). Los plugins entran en strataPlugins/climaPlugins, así
+   *  que syncNow() del render los mantiene sincronizados cada frame. */
+  applyWallRockShaderLayers(mat: PBRMaterial): void {
+    const strata = this.ensureStrataTexture();
+    if (strata) {
+      const plugin = new TriPlanarStrataPlugin(mat);
+      plugin.configure(strata, this.strataCfg!.scale, this.strataCfg!.strength, this.strataCfg!.detail);
+      this.strataPlugins.push(plugin);
+    }
+    const clima = this.ensureClimateTextures();
+    if (clima) {
+      const plugin = new ClimateRockPlugin(mat);
+      plugin.configure(clima.fields, clima.normal, clima.scale, clima.strength, clima.freezeY);
+      this.climaPlugins.push(plugin);
+    }
+    if (this.strataPlugins.length || this.climaPlugins.length) this.refreshMaterialUboLayout(mat);
+  }
+
   /** T69 SONDA E2E: estado de la capa climática de la piedra (campos horneados
    *  + clima en vivo con su easing). */
   /** T69-FIX 3 — REBUILD del UBO tras añadir plugins MaterialPluginBase.

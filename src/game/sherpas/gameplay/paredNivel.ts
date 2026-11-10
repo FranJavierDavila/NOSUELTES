@@ -1020,8 +1020,8 @@ export class ParedNivel {
    *  (sonda E2E: > 0 certifica que las caras NO son planas). */
   private despPiedraMax = 0;
   /** T127 — campo de altura de la textura del muro (generateChunk.height):
-   *  el «desplazamiento del muro de escalada» que se hornea en bloques y
-   *  macizo (tallaBloquePiedra). */
+   *  el «desplazamiento del muro de escalada» que se hornea en la geometría
+   *  de los bloques (tallaBloquePiedra). */
   private campoPiedra: CampoPiedra | null = null;
   // HUD del interior de la mochila, la barra/flecha de la goma y los avisos
   private elMochilaWin: HTMLElement | null = null;
@@ -1074,7 +1074,8 @@ export class ParedNivel {
 
   start(): void {
     this.construirSuelo(); // T124: la fase de escalada tiene SUELO (planos de hielo y rocas)
-    this.construirMacizo(); // T125: continuidad del muro — los huecos muestran roca
+    // T128 — SIN PARED VERTICAL TRASERA (petición del jugador): el macizo
+    // T125/T127 se ELIMINA — solo los bloques con el shader del muro.
     this.construirBloques();
     this.construirSherpas();
     this.conectarDrag();
@@ -1115,8 +1116,10 @@ export class ParedNivel {
   private ensureMaterials(): { bloque: PBRMaterial; presa: PBRMaterial; rojizo: PBRMaterial; verde: PBRMaterial; azul: PBRMaterial } {
     const scene = this.d.scene.scene;
     if (!this.matBloque) {
-      // MISMA RECETA que ensureMassifRockMaterial (scene.ts): el material EXACTO
-      // del macizo del muro — petición del jugador: "mismo material que la pared".
+      // T128 — albedo/bump horneados con la MISMA receta que los chunks del
+      // muro (generateChunk) + LAS CAPAS DE SHADER del muro escalable vía
+      // applyWallRockShaderLayers (estratos triplanar + clima): el shader
+      // EXACTO donde se colocan los anclajes — petición del jugador.
       const style = rockwallStyleFromData(this.d.rockwallStyle);
       const res = generateChunk({
         seed: (ROCKWALL_SEED ^ 0x51a7) >>> 0,
@@ -1149,10 +1152,11 @@ export class ParedNivel {
       nmt.wrapV = Texture.WRAP_ADDRESSMODE;
       nmt.anisotropicFilteringLevel = 4;
       m.bumpTexture = nmt;
-      // T125 — relieve MÁS MARCADO (queja: «que no parezca planos»): el
-      // normal map a nivel 1,05 se perdía a distancia; 1,3 lo deja legible
-      // en todas las caras (comparte textura con rojizo/verde/azul: sube para todos)
-      m.bumpTexture.level = 1.3;
+      // T128 — bump al MISMO nivel que los chunks del muro (1,15): con la
+      // talla real de la geometría (T127) el detalle del mapa lee igual que
+      // la pared donde van los anclajes (la textura es compartida con
+      // rojizo/verde/azul: el nivel vale para los cuatro).
+      m.bumpTexture.level = 1.15;
       // T127 — uScale/vScale = 1 (por defecto): la densidad de texels por cara
       // la lleva HORNEADA cada malla (UVs de tallaBloquePiedra) — las 4
       // compartían la textura y el último uScale pisaba a los demás.
@@ -1160,6 +1164,11 @@ export class ParedNivel {
       m.metallic = 0;
       m.roughness = 0.93;
       m.backFaceCulling = false;
+      // T128 — EL MISMO SHADER donde se colocan los anclajes (petición del
+      // jugador): MISMA estratificación triplanar y MISMA meteorización
+      // climática que los chunks del muro — texturas compartidas de la escena
+      // y los mismos parámetros del horno (antes: receta clonada SIN shaders).
+      this.d.scene.applyWallRockShaderLayers(m);
       this.matBloque = m;
     }
     if (!this.matPresa) {
@@ -1181,6 +1190,7 @@ export class ParedNivel {
       r.metallic = 0;
       r.roughness = 0.85;
       r.backFaceCulling = false;
+      this.d.scene.applyWallRockShaderLayers(r); // T128: mismo shader que el muro
       this.matRojizo = r;
     }
     if (!this.matVerde) {
@@ -1194,6 +1204,7 @@ export class ParedNivel {
       g.metallic = 0;
       g.roughness = 0.85;
       g.backFaceCulling = false;
+      this.d.scene.applyWallRockShaderLayers(g); // T128: mismo shader que el muro
       this.matVerde = g;
     }
     if (!this.matAzul) {
@@ -1206,6 +1217,7 @@ export class ParedNivel {
       a.metallic = 0;
       a.roughness = 0.85;
       a.backFaceCulling = false;
+      this.d.scene.applyWallRockShaderLayers(a); // T128: mismo shader que el muro
       this.matAzul = a;
     }
     return { bloque: this.matBloque, presa: this.matPresa, rojizo: this.matRojizo, verde: this.matVerde, azul: this.matAzul };
@@ -1284,32 +1296,9 @@ export class ParedNivel {
     }
   }
 
-  /** T125 — MACIZO TRASERO (continuación del dictado: los bloques deben
-   *  «tener continuidad entre sus caras para que no aparezcan huecos en las
-   *  formas»): detrás de los bloques (sus espaldas quedan en Z_PRESA+0,5)
-   *  va una LOSA de roca del MISMO material que tapa el fondo entre filas —
-   *  los huecos de 0,4 m del aparato de escalada ahora muestran roca del
-   *  muro, no el vacío. Estático (los bloques se mueven DELANTE de él),
-   *  sin picks, congelado. */
-  private construirMacizo(): void {
-    const esc = this.d.scene.scene;
-    const cima = Y_SALIDA + this.paso * (FILAS_MOVILES + 1) + 0.7; // techo de la fila de cima
-    const y0 = 0.55, y1 = Math.max(cima, 56);
-    const macizo = MeshBuilder.CreateBox("paredMacizo", { width: 5.2, height: y1 - y0, depth: 0.12 }, esc);
-    macizo.position.set(0, (y0 + y1) / 2, Z_PRESA + 0.58); // 8 cm tras las espaldas: sin z-fight
-    macizo.material = this.ensureMaterials().bloque;
-    // T127 — EL MACIZO TAMBIÉN SE TALLA con el campo de altura del muro: los
-    // huecos entre bloques muestran roca desnivelada CONTINUA con los bloques
-    // (mismo (x,y) mundial → mismo desplazamiento). La talla respeta las 8 cm
-    // de holgura: protrusión ≤ PIEDRA_DESP_M (0,06) hacia el escalador.
-    if (this.campoPiedra) {
-      tallaBloquePiedra(macizo, 5.2, y1 - y0, 0.12, this.campoPiedra, PIEDRA_DESP_M,
-        0, (y0 + y1) / 2);
-    }
-    macizo.isPickable = false;
-    macizo.receiveShadows = true;
-    macizo.freezeWorldMatrix();
-  }
+  /** T125 — MACIZO TRASERO — ELIMINADO EN T128 (petición del jugador:
+   *  «NO QUIERO LA PARED VERTICAL TRASERA»): detrás de los bloques no hay
+   *  losa ninguna; el fondo que se ve entre filas es el suelo/skyline. */
 
   private construirBloques(): void {
     const scene = this.d.scene.scene;
@@ -1348,12 +1337,15 @@ export class ParedNivel {
       if (spec.bono && spec.forma === "cil") mesh.rotation.z = Math.PI / 2;   // tambor tumbado (eje X)
       // T127 — EL MATERIAL CON DESPLAZAMIENTO DEL MURO (corrección del jugador
       // al T126: «quiero los bloques con el material con desplazamiento del
-      // muro de escalada»): la caja se TALLA con el campo de altura de la
-      // MISMA textura del muro (retícula ~12 cm + Δz −Z por (x,y) mundial +
-      // UVs alineados al mundo en las caras ±Z) — la receta EXACTA de
-      // buildRockChunkMesh: cada bulto de geometría coincide con su sombra del
-      // normal map y bloques/macizo leen como UNA roca continua. Las presas
-      // sobresalen ≫ PIEDRA_DESP_M: siguen leyéndose sobre el relieve.
+      // muro de escalada») + T128 EL MISMO SHADER (corrección al T127: «los
+      // bloques con el mismo shader donde se colocan los anclajes»): la caja
+      // se TALLA con el campo de altura de la MISMA textura del muro (retícula
+      // ~12 cm + Δz −Z por (x,y) mundial + UVs alineados al mundo en las caras
+      // ±Z) y su material lleva LAS MISMAS CAPAS DE SHADER que los chunks
+      // (estratos triplanar + clima). Cada bulto de geometría coincide con su
+      // sombra del normal map: los bloques leen como la roca del muro, sin
+      // pared trasera ninguna. Las presas sobresalen ≫ PIEDRA_DESP_M:
+      // siguen leyéndose sobre el relieve.
       // (los cilindros de bono traen sus UV cilíndricos propios: fuera)
       if (this.campoPiedra && (!spec.bono || (spec.forma !== "hex" && spec.forma !== "cil"))) {
         this.despPiedraMax = Math.max(this.despPiedraMax,
@@ -3672,9 +3664,10 @@ export class ParedNivel {
         bloques: this.bloques.length,
         cuerda: this.ajuste.cuerdaMetros,
         paso: this.paso,
-        // T125 — suelo real, macizo de continuidad y banco de pruebas E2E
+        // T125 — suelo real y banco de pruebas E2E (T128: el macizo trasero
+        // se ELIMINÓ — no hay pared vertical detrás de los bloques)
         sueloY: SUELO_Y,
-        macizo: !!this.d.scene.scene.getMeshByName("paredMacizo"),
+        sinMacizoTrasero: !this.d.scene.scene.getMeshByName("paredMacizo"),
         waists: [wa.y, wb.y], // caída honesta: la cintura NUNCA bajo la nieve
         ajuste: this.ajuste,
         // T123: muelles/interior/goma/vuelo — y caídas con peso real

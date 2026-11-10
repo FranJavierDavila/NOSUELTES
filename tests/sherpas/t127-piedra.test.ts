@@ -152,12 +152,29 @@ describe("T127 · talla de piedra = material con desplazamiento del muro", () =>
 
 describe("T127 · cableado en paredNivel (fuente, sin Babylon)", () => {
   const src = readFileSync(join(process.cwd(), "src/game/sherpas/gameplay/paredNivel.ts"), "utf8");
+  const srcScene = readFileSync(join(process.cwd(), "src/game/sherpas/presentation/scene.ts"), "utf8");
 
-  it("bloques Y MACIZO se tallan con el campo de altura del muro", () => {
+  it("los bloques se tallan con el campo de altura del muro", () => {
     expect(src).toContain("tallaGeometriaPiedra, type CampoPiedra } from \"../world/tallaPiedra\"");
-    expect(src).toContain("tallaBloquePiedra(macizo, 5.2, y1 - y0, 0.12, this.campoPiedra");
     expect(src).toContain("this.campoPiedra, PIEDRA_DESP_M, spec.x, spec.y)");
     expect(src).toContain("h: res.height, W: res.W, H: res.H"); // el campo ya no se descarta
+  });
+
+  it("T128 — SIN pared vertical trasera: el macizo no existe", () => {
+    expect(src).not.toContain("construirMacizo"); // ni método ni llamada
+    expect(src).toContain("sinMacizoTrasero"); // sonda E2E viva (invierte)
+  });
+
+  it("T128 — los bloques llevan EL MISMO SHADER del muro (estratos + clima)", () => {
+    // la escena expone las capas de shader de los chunks del muro...
+    expect(srcScene).toContain("applyWallRockShaderLayers(mat: PBRMaterial)");
+    expect(srcScene).toContain("new TriPlanarStrataPlugin(mat)");
+    expect(srcScene).toContain("new ClimateRockPlugin(mat)");
+    // ...y los CUATRO materiales de bloque se las enganchan
+    expect(src).toContain("this.d.scene.applyWallRockShaderLayers(m)");
+    expect(src).toContain("this.d.scene.applyWallRockShaderLayers(r)");
+    expect(src).toContain("this.d.scene.applyWallRockShaderLayers(g)");
+    expect(src).toContain("this.d.scene.applyWallRockShaderLayers(a)");
   });
 
   it("ya no hay uScale por material (la densidad va HORNEADA en los UV de la talla)", () => {

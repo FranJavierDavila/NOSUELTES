@@ -70,7 +70,7 @@ try:
         assert s and s["bloques"] > 0, f"el nivel no arrancó: {s}"
         tag = page.evaluate("document.querySelector('[data-e=buildTag]')?.textContent")
         print(f"nivel arriba: bloques={s['bloques']} buildtag={tag} piedra={s.get('piedra')}", flush=True)
-        check("S0.buildtag vT104", tag == "vT104", f"{tag}")
+        check("S0.buildtag vT105", tag == "vT105", f"{tag}")
 
         # ---------- C1: BLOQUES = VOLUMENES DE PIEDRA (caras NO planas) ----------
         check("C1.piedra: vértices desplazados (max |desp| ≈ 0,06 m, no cajas planas)",
