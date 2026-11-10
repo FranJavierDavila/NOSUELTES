@@ -30,7 +30,10 @@ try:
               if r.status >= 400 and ("_next" in r.url or "models" in r.url) else None)
         pg.goto(BASE + "/?nivel=pared", wait_until="domcontentloaded")
         t0 = time.time(); ok = False
-        while time.time() - t0 < 150:
+        # T131 — el arranque a 1280×720 bajo SwiftShader (render por software
+        # del sandbox) tarda ~205 s en construir el nivel (en GPU real son
+        # segundos): el timeout de 150 s mataba un zip BUENO.
+        while time.time() - t0 < 280:
             s = pg.evaluate("window.__PARED && window.__PARED.sonda()")
             if s and s.get("bloques", 0) > 0:
                 ok = True; break
