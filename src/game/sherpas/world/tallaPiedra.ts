@@ -250,3 +250,98 @@ export function despZSuperficieRoca(
   return -desplazamientoHF(c, amplitudHF, wx, wy)(lx, ly)
     + ruidoRoca3(wx + lx, wy + ly, lz, sem + 202) * amplitudBulto;
 }
+
+// ---------- T130 — METEORITOS (corrección del jugador al T129: «los bloques
+// siguen pareciendo bloques y a mí me gustaría formas mucho más aleatorias y
+// orgánicas como grandes piedras que flotan... siguen pareciendo bloques
+// cuadrados... quiero formas más orgánicas son partes curvas, piensa en
+// formas de meteoritos») ----------
+//
+// El tallado T129 deformaba UNA CAJA: la silueta rectangular del prisma se
+// seguía leyendo. Aquí la caja DESAPARECE: la malla es una ESFERA UV
+// (elipsoide base con las proporciones del bloque, hinchada en profundidad)
+// deformada RADIALMENTE por 3 octavas de ruido (lóbulos de patata, crag y
+// grano fino) → gran piedra flotante con partes curvas, sin una sola cara
+// plana ni arista recta. La MISMA función de radio vale para el GLUE de las
+// presas (misma dirección → mismo factor → presa exactamente en la piedra).
+
+/** Profundidad del meteorito: rz = (d/2) × esto (el bloque de 0,5 m se
+ *  hincha a ~0,9 m de canto: islote 3D, no losa). El bulge frontal queda
+ *  dentro de la holgura del escalador (frontal ≈ Z_PRESA ± 6 cm). */
+export const PROFUNDIDAD_METEORITO = 1.8;
+
+/** Factor de radio del meteorito para una dirección UNITARIA (ux,uy,uz),
+ *  determinista por semilla: 1 + 3 octavas de ruido (amplitudes 0,20 / 0,10 /
+ *  0,05 → envolvente 0,65..1,35). LA MISMA función para la malla y el glue. */
+export function factorMeteorito(ux: number, uy: number, uz: number, sem: number): number {
+  return 1
+    + 0.20 * ruidoRoca3(ux * 1.35, uy * 1.35, uz * 1.35, sem)
+    + 0.10 * ruidoRoca3(ux * 3.1, uy * 3.1, uz * 3.1, sem + 101)
+    + 0.05 * ruidoRoca3(ux * 6.3, uy * 6.3, uz * 6.3, sem + 202);
+}
+
+/** Radio del elipsoide base (rx,ry,rz) en la dirección unitaria û:
+ *  t = 1 / sqrt((ux/rx)² + (uy/ry)² + (uz/rz)²). */
+function radioElipsoide(
+  ux: number, uy: number, uz: number, rx: number, ry: number, rz: number,
+): number {
+  return 1 / Math.sqrt((ux / rx) ** 2 + (uy / ry) ** 2 + (uz / rz) ** 2);
+}
+
+/** T130 — MALLA DE METEORITO: esfera UV (22×30) deformada radialmente por
+ *  factorMeteorito. Sin caras planas: la normal varía de forma continua y la
+ *  silueta ondula (radio distinto en cada ángulo). Winding hacia FUERA
+ *  (u×v con u=φ, v=θ), UV esférico (los plugins de estratos/clima son
+ *  triplanar por posición de mundo: la piedra lee con el MISMO shader del
+ *  muro), normales por área ponderada. maxDesp = mayor excursión radial. */
+export function tallaGeometriaMeteorito(
+  w: number, h: number, d: number, sem: number,
+): GeometriaTallada {
+  const rx = w / 2, ry = h / 2, rz = (d / 2) * PROFUNDIDAD_METEORITO;
+  const NS = 22, NP = 30;
+  const positions: number[] = [], uvs: number[] = [], indices: number[] = [];
+  let maxDesp = 0;
+  for (let i = 0; i <= NS; i++) {
+    const th = (i / NS) * Math.PI;                    // 0 = polo +Y, π = polo −Y
+    const st = Math.sin(th), ct = Math.cos(th);
+    for (let j = 0; j <= NP; j++) {
+      const ph = (j / NP) * Math.PI * 2;
+      const ux = st * Math.cos(ph), uy = ct, uz = st * Math.sin(ph);
+      const f = factorMeteorito(ux, uy, uz, sem);
+      const t = radioElipsoide(ux, uy, uz, rx, ry, rz) * f;
+      positions.push(ux * t, uy * t, uz * t);
+      maxDesp = Math.max(maxDesp, Math.abs(t - radioElipsoide(ux, uy, uz, rx, ry, rz)));
+      uvs.push(j / NP, i / NS);
+    }
+  }
+  const fila = NP + 1;
+  for (let i = 0; i < NS; i++) {
+    for (let j = 0; j < NP; j++) {
+      const a = i * fila + j, b = a + 1, c = a + fila, dd = c + 1;
+      // u = +φ (b), v = +θ (c) → normal u×v hacia FUERA
+      indices.push(a, b, c, b, dd, c);
+    }
+  }
+  return {
+    positions, uvs, indices,
+    normals: normalesPorArea(positions, indices),
+    maxDesp,
+  };
+}
+
+/** T130 — GLUE de presas sobre el meteorito: dirección hacia (lx, ly, −rz)
+ *  (la región de cara que ocupaba la presa), radio del elipsoide × EL MISMO
+ *  factorMeteorito de la malla, retrocediendo sal metros (PRESA_SALIENTE)
+ *  por la dirección → el centro de la presa queda medio embebido, como en la
+ *  cara plana. Devuelve el punto LOCAL (x,y,z) en el nodo del bloque. */
+export function puntoSuperficieMeteorito(
+  w: number, h: number, d: number, sem: number,
+  lx: number, ly: number, sal: number,
+): [number, number, number] {
+  const rx = w / 2, ry = h / 2, rz = (d / 2) * PROFUNDIDAD_METEORITO;
+  const vx = lx, vy = ly, vz = -rz;
+  const L = Math.hypot(vx, vy, vz);
+  const ux = vx / L, uy = vy / L, uz = vz / L;
+  const t = radioElipsoide(ux, uy, uz, rx, ry, rz) * factorMeteorito(ux, uy, uz, sem) - sal;
+  return [ux * t, uy * t, uz * t];
+}

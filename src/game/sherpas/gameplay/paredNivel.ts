@@ -110,8 +110,9 @@ import {
   type RockwallStyle,
 } from "../world/rockwall";
 import {
-  despZSuperficieRoca, tallaGeometriaRocaSuspensa, type CampoPiedra,
-} from "../world/tallaPiedra"; // T127 + T129 roca suspensa orgánica
+  despZSuperficieRoca, puntoSuperficieMeteorito, tallaGeometriaMeteorito,
+  tallaGeometriaRocaSuspensa, type CampoPiedra,
+} from "../world/tallaPiedra"; // T127/T129 + T130 meteoritos
 import { PointerDrag } from "../input/drag";
 import { arbitraClic, type CandidatoClic } from "../input/clicPrioridad"; // T96: arbitraje mano-vs-mochila
 import type { InputManager } from "../input/input";
@@ -160,18 +161,16 @@ export const CUERDA_LEN = 5.0;    // separación máxima entre los dos sherpas (
  *  que vuelven a aparecer otros 5 segundos para volver a desaparecer»):
  *  cada cobro reencende la vela ESTRELLA_DURACION_S; sin cobros, se apaga. */
 export const ESTRELLA_DURACION_S = 5;
-/** T126/T129 — GEOMETRÍA DE PIEDRA REAL y EXAGERADA de los bloques (dictado:
- *  «que parezcan piedras con ese shader pero aún más desplazado, más
- *  exagerado, tienen que parecer rocas suspendidas por las que poder
- *  trepar»): amplitud del campo de altura horneado en los vértices — 12 cm
- *  (el doble del T126) es relieve de islote a la vista; las presas se PEGAN
- *  a la superficie tallada (despZSuperficieRoca) así que los bultos no las
- *  sepultan, y el hueco entre filas (0,4 m) sigue holgado (bulto máx ≈ 0,21
- *  < 0,4). */
+/** T126→T130 — GEOMETRÍA ORGÁNICA DE LOS BLOQUES (peticiones del jugador:
+ *  «que parezcan piedras con ese shader pero aún más desplazado» y luego
+ *  «formas más orgánicas con partes curvas, piensa en formas de
+ *  meteoritos»): desde T130 los bloques de escalada son METEORITOS (esfera
+ *  UV deformada radialmente, tallaGeometriaMeteorito) — estas amplitudes
+ *  quedan para la talla roca-caja T129 de la PLATAFORMA de bono "caja",
+ *  cuyo racimo de presas rodea todas sus caras. */
 export const PIEDRA_DESP_M = 0.12;
-/** T129 — LÓBULOS ORGÁNICOS: amplitud del campo vectorial 3D (ruido de valor
- *  ~42 cm, tres canales x/y/z por posición de mundo) que ondula la silueta
- *  y mata el prisma: el bloque lee como un ISLOTE de roca suspendido. */
+/** T129 — LÓBULOS ORGÁNICOS de la roca-caja de bono: amplitud del campo
+ *  vectorial 3D (ruido de valor ~42 cm, tres canales x/y/z). */
 export const ROCA_BULTO_M = 0.09;
 /** T129 — semilla del canal base del bulto (los canales y/z derivan +101 /
  *  +202; la variación POR BLOQUE la pone semillaDeId(spec.id)). */
@@ -894,21 +893,21 @@ function semillaDeId(id: string): number {
   return h >>> 0;
 }
 
-/** T129 — REPARTO NO UNIFORME de las presas (petición del jugador: «los
+/** T129/T130 — REPARTO NO UNIFORME de las presas (petición del jugador: «los
  *  anclajes tampoco tienen que tener una distribución uniforme, solo
  *  asegurar de que son alcanzables para no bloquear el juego»): rejilla base
  *  por anchura + tambaleo determinista por semilla del id, con:
- *  · MARGEN 0,26 m del borde de la cara (la roca ondula ±~0,21 m);
+ *  · MARGEN 0,26 m del borde de la cara (la piedra ondula);
  *  · separación mínima 0,34 m entre presas (caben dos manos);
  *  · COBERTURA: al menos una presa en la franja superior y otra en la
  *    inferior de la cara — el hueco entre filas (0,4 m) encadena SIEMPRE
  *    (alcanzabilidad garantizada por construcción, la misma que T92).
- *  Con ctx (campo de la textura del bloque), cada presa se PEGA a la
- *  superficie tallada: z = zLocalPresa + despZSuperficieRoca (glue T129).
- *  Las plataformas de bonificación conservan su racimo diseñado. */
+ *  Con ctx (dimensiones + semilla del METEORITO), cada presa se PROYECTA
+ *  sobre la superficie curva (glue radial T130). Las plataformas de
+ *  bonificación conservan su racimo diseñado en todas sus caras. */
 function localsDeBloque(
   spec: BloqueSpec,
-  ctx?: { c: CampoPiedra; ampHF: number; ampBulto: number; sem: number },
+  ctx?: { w: number; h: number; d: number; sem: number },
 ): V3[] {
   if (spec.bono && (spec.forma === "hex" || spec.forma === "cil" || spec.forma === "caja")) {
     return localsDePlataforma(spec.forma, spec.d);
@@ -942,12 +941,19 @@ function localsDeBloque(
   const ys = pts.map((p) => p[1]!);
   if (Math.max(...ys) < hh - 0.45) pts[0]![1] = hh - 0.38;
   if (Math.min(...ys) > -(hh - 0.45)) pts[pts.length - 1]![1] = -(hh - 0.38);
-  // GLUE T129: pegar cada presa a la superficie tallada de su roca
-  const despZ = ctx
-    ? (lx: number, ly: number): number =>
-      despZSuperficieRoca(ctx.c, ctx.ampHF, ctx.ampBulto, spec.x, spec.y, lx, ly, -spec.d / 2, ctx.sem)
-    : (): number => 0;
-  return pts.map(([lx, ly]): V3 => v3(lx, ly, zLocalPresa(spec.d) + despZ(lx, ly)));
+  // GLUE T130 (meteorito): cada presa se PROYECTA sobre la superficie curva
+  // de su piedra — dirección hacia (lx, ly, −rz) × radio del elipsoide × EL
+  // MISMO factorMeteorito de la malla, menos PRESA_SALIENTE por la dirección
+  // → medio embebida en la piedra curva, ni hundida ni flotando. Las (lx,ly)
+  // del reparto no uniforme deciden la DIRECCIÓN (x/y se compriman ~0,75 en
+  // los cantos: la cara es curva); cobertura y separación siguen válidas.
+  if (!ctx) {
+    return pts.map(([lx, ly]): V3 => v3(lx, ly, zLocalPresa(spec.d)));
+  }
+  return pts.map(([lx, ly]): V3 => {
+    const [px, py, pz] = puntoSuperficieMeteorito(ctx.w, ctx.h, ctx.d, ctx.sem, lx, ly, PRESA_SALIENTE);
+    return v3(px, py, pz);
+  });
 }
 
 /** T92 — punto LOCAL (en el nodo) donde cuelga la cuerda del saco bonus. */
@@ -955,13 +961,29 @@ function hangDePlataforma(forma: "hex" | "cil" | "caja" | "cubo" | undefined): n
   return forma === "hex" ? -0.84 : -0.52;
 }
 
-/** T127/T129 — EL MATERIAL CON DESPLAZAMIENTO DEL MURO, EXAGERADO Y ORGÁNICO:
- *  la receta vive en el módulo PURO world/tallaPiedra.ts (testeable sin
- *  Babylon, D20). T129: tallaGeometriaRocaSuspensa (campo de altura ±PIEDRA-
- *  _DESP_M + lóbulos 3D ±ROCA_BULTO_M por posición de mundo, semilla por
- *  bloque) — islote de roca, no caja. Aquí solo el adaptador que aplica la
- *  geometría al mesh. */
-function tallaBloquePiedra(
+/** T130 — METEORITO: la malla del bloque ES una gran piedra flotante (esfera
+ *  UV deformada radialmente por 3 octavas de ruido, semilla por bloque) con
+ *  partes curvas, lóbulos y cráteres — sin caras planas ni aristas rectas
+ *  (petición del jugador al T129: «siguen pareciendo bloques cuadrados...
+ *  piensa en formas de meteoritos»). La receta vive en el módulo PURO
+ *  world/tallaPiedra.ts (testeable sin Babylon, D20); aquí solo el adaptador
+ *  que aplica la geometría al mesh. */
+function tallaBloquePiedra(mesh: Mesh, w: number, h: number, d: number, sem: number): number {
+  const g = tallaGeometriaMeteorito(w, h, d, sem);
+  const vd = new VertexData();
+  vd.positions = g.positions;
+  vd.uvs = g.uvs;
+  vd.indices = g.indices;
+  vd.normals = g.normals;
+  vd.applyToMesh(mesh, false);
+  mesh.refreshBoundingInfo();
+  return g.maxDesp;
+}
+
+/** T129 — las plataformas de bono "caja" conservan la talla de roca-caja
+ *  (campo de altura del muro + lóbulos): su racimo de presas rodea TODAS las
+ *  caras y el meteorito las dejaría flotando fuera de la piedra. */
+function tallaBonoCajaOrg(
   mesh: Mesh, w: number, h: number, d: number, c: CampoPiedra,
   amplitud: number, ampBulto: number, wx: number, wy: number, sem: number,
 ): number {
@@ -1400,21 +1422,27 @@ export class ParedNivel {
         : MeshBuilder.CreateBox(`blkM_${spec.id}`, { width: spec.w, height: spec.h, depth: spec.d }, scene);
       if (spec.bono && spec.forma === "hex") mesh.rotation.x = Math.PI / 2;   // cara hexagonal de frente
       if (spec.bono && spec.forma === "cil") mesh.rotation.z = Math.PI / 2;   // tambor tumbado (eje X)
-      // T127 — EL MATERIAL CON DESPLAZAMIENTO DEL MURO (corrección del jugador
-      // al T126: «quiero los bloques con el material con desplazamiento del
-      // muro de escalada») + T128 EL MISMO SHADER (corrección al T127: «los
-      // bloques con el mismo shader donde se colocan los anclajes»): la caja
-      // se TALLA con el campo de altura de la MISMA textura del muro (retícula
-      // ~12 cm + Δz −Z por (x,y) mundial + UVs alineados al mundo en las caras
-      // ±Z) y su material lleva LAS MISMAS CAPAS DE SHADER que los chunks
-      // (estratos triplanar + clima). Cada bulto de geometría coincide con su
-      // sombra del normal map: los bloques leen como la roca del muro, sin
-      // pared trasera ninguna. Las presas sobresalen ≫ PIEDRA_DESP_M:
-      // siguen leyéndose sobre el relieve.
-      // (los cilindros de bono traen sus UV cilíndricos propios: fuera)
-      if (this.campoPiedra && (!spec.bono || (spec.forma !== "hex" && spec.forma !== "cil"))) {
+      // T127 → T130 — DE ROCA TALLADA A METEORITO (correcciones del jugador:
+      // T126 «quiero los bloques con el material con desplazamiento del muro»
+      // → T129 «volúmenes irregulares... islotes suspendidos» → T130 «siguen
+      // pareciendo bloques cuadrados... formas más orgánicas con partes
+      // curvas, piensa en formas de meteoritos»): los bloques de escalada YA
+      // NO son cajas deformadas — su malla ES una gran piedra flotante
+      // (esfera UV deformada radialmente por 3 octavas de ruido, semilla por
+      // bloque) con partes curvas, lóbulos y cráteres, SIN una sola cara
+      // plana ni arista recta. El material conserva LAS MISMAS CAPAS DE
+      // SHADER que los chunks del muro (estratos triplanar + clima, por
+      // posición de mundo) y las presas se PROYECTAN sobre la superficie
+      // curva (glue radial). Las presas sobresalen de la piedra: siguen
+      // leyéndose. (los cilindros de bono traen sus UV cilíndricos propios:
+      // fuera; la caja de bono conserva la talla T129: racimo multi-cara)
+      if (this.campoPiedra && !spec.bono) {
         this.despPiedraMax = Math.max(this.despPiedraMax,
-          tallaBloquePiedra(mesh,
+          tallaBloquePiedra(mesh, spec.w, spec.h, spec.d,
+            (semillaDeId(spec.id) ^ ROCA_SEMILLA_BULTO) >>> 0));
+      } else if (this.campoPiedra && spec.forma !== "hex" && spec.forma !== "cil") {
+        this.despPiedraMax = Math.max(this.despPiedraMax,
+          tallaBonoCajaOrg(mesh,
             spec.bono ? 1.6 : spec.w, spec.bono ? 1.0 : spec.h, spec.bono ? 0.9 : spec.d,
             this.campoPiedra, PIEDRA_DESP_M, ROCA_BULTO_M,
             spec.x, spec.y, (semillaDeId(spec.id) ^ ROCA_SEMILLA_BULTO) >>> 0));
@@ -1430,12 +1458,13 @@ export class ParedNivel {
       // la rotación la manda el cuaternión (yaw·pitch·roll compuestos —
       // el giro verde vive en el roll)
       node.rotationQuaternion = bloque.q;
-      // T129 — presas con reparto NO UNIFORME determinista (tambaleo por
-      // semilla del id) y PEGADAS a la superficie tallada (glue): alcanzables
-      // por construcción (cobertura arriba/abajo + separación mínima)
+      // T130 — presas con reparto NO UNIFORME determinista (tambaleo por
+      // semilla del id) PROYECTADAS sobre la superficie curva del meteorito
+      // (glue radial): alcanzables por construcción (cobertura arriba/abajo
+      // + separación mínima)
       const locals = this.campoPiedra
         ? localsDeBloque(spec, {
-          c: this.campoPiedra, ampHF: PIEDRA_DESP_M, ampBulto: ROCA_BULTO_M,
+          w: spec.w, h: spec.h, d: spec.d,
           sem: (semillaDeId(spec.id) ^ ROCA_SEMILLA_BULTO) >>> 0,
         })
         : localsDeBloque(spec);

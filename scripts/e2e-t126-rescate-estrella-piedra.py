@@ -70,11 +70,11 @@ try:
         assert s and s["bloques"] > 0, f"el nivel no arrancó: {s}"
         tag = page.evaluate("document.querySelector('[data-e=buildTag]')?.textContent")
         print(f"nivel arriba: bloques={s['bloques']} buildtag={tag} piedra={s.get('piedra')}", flush=True)
-        check("S0.buildtag vT106", tag == "vT106", f"{tag}")
+        check("S0.buildtag vT107", tag == "vT107", f"{tag}")
 
         # ---------- C1: BLOQUES = VOLUMENES DE PIEDRA (caras NO planas) ----------
-        check("C1.piedra: vértices desplazados (max |desp| ≈ 0,21 m, no cajas planas)",
-              0.08 <= (s.get("piedra") or 0) <= 0.22, f"piedra={s.get('piedra')}")
+        check("C1.piedra: vértices desplazados (max |desp| ≈ 0,3 m (meteorito), no cajas planas)",
+              0.10 <= (s.get("piedra") or 0) <= 0.40, f"piedra={s.get('piedra')}")
         detalle = page.evaluate("""() => {
             const S = window.__PARED.d.scene.scene;
             const m = S.meshes.find(mm => mm.name.startsWith('blkM_'));

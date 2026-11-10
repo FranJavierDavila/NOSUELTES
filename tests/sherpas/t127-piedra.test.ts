@@ -13,8 +13,10 @@ import {
   generateChunk, rockwallStyleFromData, ROCKWALL_SEED,
 } from "../../src/game/sherpas/world/rockwall";
 import {
-  despZSuperficieRoca, PASO_TALLA_M, ruidoRoca3, sampleAlturaCampo,
-  tallaGeometriaPiedra, tallaGeometriaRocaSuspensa, type CampoPiedra,
+  despZSuperficieRoca, factorMeteorito, PASO_TALLA_M,
+  puntoSuperficieMeteorito, ruidoRoca3, sampleAlturaCampo,
+  tallaGeometriaMeteorito, tallaGeometriaPiedra, tallaGeometriaRocaSuspensa,
+  type CampoPiedra,
 } from "../../src/game/sherpas/world/tallaPiedra";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -155,7 +157,7 @@ describe("T127 · cableado en paredNivel (fuente, sin Babylon)", () => {
   const srcScene = readFileSync(join(process.cwd(), "src/game/sherpas/presentation/scene.ts"), "utf8");
 
   it("los bloques se tallan con el campo de altura del muro (T129: orgánico y exagerado)", () => {
-    expect(src).toContain("despZSuperficieRoca, tallaGeometriaRocaSuspensa, type CampoPiedra,");
+    expect(src).toContain("puntoSuperficieMeteorito, tallaGeometriaMeteorito,");
     expect(src).toContain("this.campoPiedra, PIEDRA_DESP_M, ROCA_BULTO_M,");
     expect(src).toContain("h: res.height, W: res.W, H: res.H"); // el campo ya no se descarta
   });
@@ -168,13 +170,21 @@ describe("T127 · cableado en paredNivel (fuente, sin Babylon)", () => {
     expect(src).toContain("(semillaDeId(spec.id) ^ ROCA_SEMILLA_BULTO) >>> 0");
   });
 
-  it("T129 — presas NO UNIFORMES, pegadas a la roca y alcanzables", () => {
+  it("T129/T130 — presas NO UNIFORMES, PROYECTADAS sobre el meteorito y alcanzables", () => {
     expect(src).toContain("function semillaDeId(id: string)"); // determinismo por id
     expect(src).toContain("mulberry32((semillaDeId(spec.id) ^ ROCA_SEMILLA_BULTO) >>> 0)");
     expect(src).toContain("const MARGEN = 0.26, MIN_SEP = 0.34, TAMB = 0.17");
-    expect(src).toContain("despZSuperficieRoca(ctx.c, ctx.ampHF, ctx.ampBulto"); // glue
+    expect(src).toContain("puntoSuperficieMeteorito(ctx.w, ctx.h, ctx.d, ctx.sem, lx, ly, PRESA_SALIENTE)"); // glue radial
     expect(src).toContain("hh - 0.45"); // cobertura: franja superior e inferior
     expect(src).toContain("localsDeBloque(spec, {");
+  });
+
+  it("T130 — METEORITOS: los bloques de escalada YA NO son cajas", () => {
+    expect(src).toContain("puntoSuperficieMeteorito, tallaGeometriaMeteorito,"); // import
+    expect(src).toContain("tallaBloquePiedra(mesh, spec.w, spec.h, spec.d,"); // sin campo: procedural
+    expect(src).toContain("if (this.campoPiedra && !spec.bono) {"); // TODOS los de escalada
+    expect(src).toContain("tallaBonoCajaOrg(mesh,"); // bono caja conserva la talla T129
+    expect(src).toContain("function tallaBloquePiedra(mesh: Mesh, w: number, h: number, d: number, sem: number)"); // meteorito puro
   });
 
   it("T128 — SIN pared vertical trasera: el macizo no existe", () => {
@@ -258,5 +268,94 @@ describe("T129 · roca suspensa orgánica (módulo puro, headless)", () => {
       }
     }
     expect(parejas).toBeGreaterThanOrEqual((nx + 1) * (ny + 1)); // TODA la retícula pegada
+  });
+});
+
+describe("T130 · METEORITOS — grandes piedras flotantes con partes curvas (módulo puro)", () => {
+  const SEM = 0x5a29;
+
+  it("factorMeteorito: determinista y dentro de la envolvente 0,64..1,36 en toda dirección", () => {
+    for (const [x, y, z] of [[1, 0, 0], [0, 1, 0], [0, 0, 1], [0.707, 0.707, 0], [-0.5, -0.5, -0.707], [0.3, 0.9, -0.3]] as const) {
+      const L = Math.hypot(x, y, z), ux = x / L, uy = y / L, uz = z / L;
+      const f = factorMeteorito(ux, uy, uz, SEM);
+      expect(f).toBe(factorMeteorito(ux, uy, uz, SEM)); // determinista
+      expect(f).toBeGreaterThanOrEqual(0.64);
+      expect(f).toBeLessThanOrEqual(1.36);
+    }
+  });
+
+  it("SIN CARAS PLANAS NI ESFERA LISA: el radio varía de forma CONTINUA con la dirección (meteorito, no caja)", () => {
+    const g = tallaGeometriaMeteorito(1.8, 1.5, 0.5, SEM);
+    const radios: number[] = [];
+    for (let v = 0; v < g.positions.length / 3; v++) {
+      const r = Math.hypot(g.positions[v * 3]!, g.positions[v * 3 + 1]!, g.positions[v * 3 + 2]!);
+      radios.push(r);
+    }
+    const rMax = Math.max(...radios), rMin = Math.min(...radios);
+    expect(rMax - rMin).toBeGreaterThan(0.12); // silueta irregular (ni caja ni elipsoide liso)
+    // y la VARIACIÓN no es un escalón de caja: hay muchos radios intermedios
+    const intermedios = radios.filter((r) => r > rMin + 0.02 && r < rMax - 0.02).length;
+    expect(intermedios).toBeGreaterThan(radios.length * 0.5); // transición suave y curva
+  });
+
+  it("ENVOLVENTE: cada vértice vive entre r_e(û)×0,64 y r_e(û)×1,36 (elipsoide base ± ruido)", () => {
+    const w = 1.8, h = 1.5, d = 0.5;
+    const rx = w / 2, ry = h / 2, rz = (d / 2) * 1.8; // PROFUNDIDAD_METEORITO
+    const g = tallaGeometriaMeteorito(w, h, d, SEM);
+    for (let v = 0; v < g.positions.length / 3; v += 5) {
+      const px = g.positions[v * 3]!, py = g.positions[v * 3 + 1]!, pz = g.positions[v * 3 + 2]!;
+      const r = Math.hypot(px, py, pz);
+      const t = 1 / Math.sqrt((px / r / rx) ** 2 + (py / r / ry) ** 2 + (pz / r / rz) ** 2);
+      expect(r).toBeGreaterThanOrEqual(t * 0.64 - 1e-9);
+      expect(r).toBeLessThanOrEqual(t * 1.36 + 1e-9);
+    }
+  });
+
+  it("ISLOTE 3D: el canto del bloque de 0,5 m se hincha (~0,9 m), sin caras planas frontales", () => {
+    const g = tallaGeometriaMeteorito(1.8, 1.5, 0.5, SEM);
+    let maxZ = 0, plano = 0;
+    for (let v = 0; v < g.positions.length / 3; v++) {
+      maxZ = Math.max(maxZ, Math.abs(g.positions[v * 3 + 2]!));
+      if (Math.abs(g.positions[v * 3 + 2]! - (-0.45)) < 1e-6) plano++;
+    }
+    expect(maxZ).toBeGreaterThan(0.34); // más profundo que la losa d/2 = 0,25
+    expect(maxZ).toBeLessThanOrEqual(0.45 * 1.36 + 1e-9);
+    expect(plano).toBeLessThan(g.positions.length / 30); // NO hay cara en un plano fijo
+  });
+
+  it("NORMALES HACIA FUERA (forma estrellada): dot(n, p) ≥ 0 salvo degenerados de polo", () => {
+    const g = tallaGeometriaMeteorito(1.8, 1.5, 0.5, SEM);
+    let neg = 0, minDot = 1;
+    for (let v = 0; v < g.positions.length / 3; v++) {
+      const dot = g.positions[v * 3]! * g.normals[v * 3]!
+        + g.positions[v * 3 + 1]! * g.normals[v * 3 + 1]!
+        + g.positions[v * 3 + 2]! * g.normals[v * 3 + 2]!;
+      if (dot <= 0) neg++;
+      minDot = Math.min(minDot, dot);
+    }
+    expect(minDot).toBeGreaterThan(-0.01); // sin caras invertidas (winding OK)
+    expect(neg).toBeLessThanOrEqual(g.positions.length / 300); // solo polos degenerados
+  });
+
+  it("GLUE radial: la presa cae EN la superficie curva (misma dirección, mismo factor) y media embebida", () => {
+    const w = 1.8, h = 1.5, d = 0.5, SAL = 0.07;
+    const rz = (d / 2) * 1.8;
+    const g = tallaGeometriaMeteorito(w, h, d, SEM);
+    for (const [lx, ly] of [[-0.64, 0.5], [0.5, 0.3], [0, -0.4], [0.3, 0], [-0.3, -0.5]] as const) {
+      const [px, py, pz] = puntoSuperficieMeteorito(w, h, d, SEM, lx, ly, SAL);
+      const r = Math.hypot(px, py, pz);
+      const ux = px / r, uy = py / r, uz = pz / r; // la dirección del punto devuelto
+      const re = 1 / Math.sqrt((ux / (w / 2)) ** 2 + (uy / (h / 2)) ** 2 + (uz / rz) ** 2);
+      expect(Math.abs(r - (re * factorMeteorito(ux, uy, uz, SEM) - SAL))).toBeLessThan(1e-9);
+      // y la MALLA pasa por ahí: el vértice más alineado con û tiene radio ~igual
+      let mejor = -2, rV = 0;
+      for (let v = 0; v < g.positions.length / 3; v++) {
+        const vx = g.positions[v * 3]!, vy = g.positions[v * 3 + 1]!, vz = g.positions[v * 3 + 2]!;
+        const rv = Math.hypot(vx, vy, vz);
+        const alin = (vx / rv) * ux + (vy / rv) * uy + (vz / rv) * uz;
+        if (alin > mejor) { mejor = alin; rV = rv; }
+      }
+      expect(Math.abs(rV - (re * factorMeteorito(ux, uy, uz, SEM)))).toBeLessThan(0.06);
+    }
   });
 });

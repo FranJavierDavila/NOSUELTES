@@ -195,7 +195,7 @@ describe("T126 · fuente: 25 cm por defecto y bloques de piedra desnivelada", ()
     // (world/tallaPiedra.ts, testeada en t127-piedra.test.ts) aplicada a los
     // bloques con el campo de altura de la MISMA textura. T128: el macizo
     // trasero se ELIMINÓ y los materiales llevan LAS CAPAS DE SHADER del muro
-    expect(src).toContain("despZSuperficieRoca, tallaGeometriaRocaSuspensa, type CampoPiedra,");
+    expect(src).toContain("puntoSuperficieMeteorito, tallaGeometriaMeteorito,");
     expect(src).toContain("this.campoPiedra, PIEDRA_DESP_M, ROCA_BULTO_M,");
     expect(src).not.toContain("desplazaVerticesPiedra");
     expect(src).toContain("refreshBoundingInfo()");
