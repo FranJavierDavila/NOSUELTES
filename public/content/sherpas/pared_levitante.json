@@ -1,0 +1,40 @@
+{
+  "campo": {
+    "seed": 7,
+    "centroX": 11.5,
+    "laneGapX": 2.2,
+    "zBloque": -0.26,
+    "yInicial": 0.9,
+    "pasoY": 1.0,
+    "filas": 20,
+    "tamX": 1.0,
+    "tamY": 1.0,
+    "tamZ": 1.0,
+    "respiroCada": 5,
+    "metaFilas": 2,
+    "saltoAlcanceM": 1.35,
+    "lateralOffsetX": 1.05,
+    "catalogos": [
+      { "patrones": { "vertical": 3, "horizontal": 2, "circular": 2, "rotacion": 1 } },
+      { "patrones": { "vertical": 2, "horizontal": 3, "circular": 1, "rotacion": 2 } }
+    ],
+    "rangos": {
+      "quieto": { "ampMin": 0, "ampMax": 0, "perMin": 1, "perMax": 1 },
+      "vertical": { "ampMin": 0.12, "ampMax": 0.3, "perMin": 2.6, "perMax": 4.2 },
+      "horizontal": { "ampMin": 0.12, "ampMax": 0.28, "perMin": 2.4, "perMax": 4.0 },
+      "circular": { "ampMin": 0.1, "ampMax": 0.22, "perMin": 3.0, "perMax": 4.8 },
+      "rotacion": { "ampMin": 8, "ampMax": 20, "perMin": 2.8, "perMax": 4.4 }
+    }
+  },
+  "reaccion": {
+    "sagM": 0.22,
+    "oscilacionM": 0.1,
+    "omega": 5.2,
+    "amortiguacion": 1.6,
+    "ataqueS": 0.18,
+    "inclinacionMaxDeg": 6
+  },
+  "cuerda": { "maxM": 5.0 },
+  "respawn": { "margenCaidaM": 1.2 },
+  "meta": { "aguantarS": 0.0 }
+}
