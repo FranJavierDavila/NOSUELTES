@@ -188,11 +188,15 @@ describe("T126 · fuente: 25 cm por defecto y bloques de piedra desnivelada", ()
     expect(src).toContain("hold.pos.y >= cintura.y - 0.2");
   });
 
-  it("paredNivel desplaza los vértices de TODOS los bloques y expone la sonda piedra", () => {
+  it("paredNivel TALLA los bloques con el campo de altura del muro y expone la sonda piedra (T127 corrige la talla T126)", () => {
     const src = srcNivel();
     expect(src).toContain("export const PIEDRA_DESP_M = 0.06");
-    expect(src).toContain("function desplazaVerticesPiedra(mesh: Mesh, seed: number, amplitud: number): number");
-    expect(src).toContain("desplazaVerticesPiedra(mesh, semilla, PIEDRA_DESP_M)");
+    // T127 — el desplazamiento ya no son 24 esquinas: es la receta del muro
+    // (world/tallaPiedra.ts, testeada en t127-piedra.test.ts) aplicada a
+    // bloques y macizo con el campo de altura de la MISMA textura
+    expect(src).toContain("tallaGeometriaPiedra, type CampoPiedra } from \"../world/tallaPiedra\"");
+    expect(src).toContain("this.campoPiedra, PIEDRA_DESP_M, spec.x, spec.y)");
+    expect(src).not.toContain("desplazaVerticesPiedra");
     expect(src).toContain("refreshBoundingInfo()");
     expect(src).toContain("piedra: +this.despPiedraMax.toFixed(4)");
     // el material de los bloques sigue siendo el del muro (shader escalable):

@@ -92,6 +92,7 @@
 import {
   Color3, Matrix, Mesh, MeshBuilder, PBRMaterial, Quaternion, RawTexture,
   SceneLoader, StandardMaterial, Texture, TransformNode, Vector3, VertexBuffer,
+  VertexData,
 } from "@babylonjs/core";
 import { assetUrl } from "../../assetPath"; // T88: bolsadinero.glb / dollar.glb
 import "@babylonjs/loaders/glTF"; // T88: registro del cargador .glb también desde este módulo
@@ -108,6 +109,7 @@ import {
   generateChunk, rockwallStyleFromData, ROCKWALL_SEED,
   type RockwallStyle,
 } from "../world/rockwall";
+import { tallaGeometriaPiedra, type CampoPiedra } from "../world/tallaPiedra"; // T127
 import { PointerDrag } from "../input/drag";
 import { arbitraClic, type CandidatoClic } from "../input/clicPrioridad"; // T96: arbitraje mano-vs-mochila
 import type { InputManager } from "../input/input";
@@ -890,65 +892,23 @@ function hangDePlataforma(forma: "hex" | "cil" | "caja" | "cubo" | undefined): n
   return forma === "hex" ? -0.84 : -0.52;
 }
 
-/** T125 — densidad de textura POR CARA (queja del jugador: los bloques
- *  «deben tener por todas sus caras el material en 3d con relieve para que
- *  no parezca planos»): el material comparte uScale/vScale calibrados para
- *  la cara de 1,8 m — las caras de 1,0 o 0,5 m mostraban la MISMA porción de
- *  textura ESTIRADA (plana y borrosa). Reescala los UV de cada cara por su
- *  tamaño REAL (normal ±z → w×h, ±x → d×h, ±y → w×d) para que TODAS las
- *  caras muestren el relieve a la MISMA densidad de texels que el muro
- *  (512 px = 6,4 m; el material aporta el factor común 1,8/6,4). La cara es
- *  el plano de 4 vértices que comparte normal — no depende del orden de
- *  caras de CreateBox. */
-function normalizaUVCaras(mesh: Mesh, w: number, h: number, d: number): void {
-  const uv = mesh.getVerticesData(VertexBuffer.UVKind);
-  const nor = mesh.getVerticesData(VertexBuffer.NormalKind);
-  if (!uv || !nor || uv.length !== (nor.length / 3) * 2) return;
-  const out = uv.slice();
-  for (let v = 0; v < nor.length; v += 3) {
-    const nx = Math.abs(nor[v]), ny = Math.abs(nor[v + 1]), nz = Math.abs(nor[v + 2]);
-    let su: number, sv: number;
-    if (nz >= nx && nz >= ny) { su = w / 1.8; sv = h / 1.8; }  // front/back
-    else if (nx >= ny)        { su = d / 1.8; sv = h / 1.8; }  // laterales
-    else                      { su = w / 1.8; sv = d / 1.8; }  // techo/suelo
-    out[v / 3 * 2] *= su;
-    out[v / 3 * 2 + 1] *= sv;
-  }
-  mesh.setVerticesData(VertexBuffer.UVKind, out);
-}
-
-/** T126 — VERDADERA GEOMETRÍA 3D DE PIEDRA (dictado: «los bloques que tenemos
- *  no sean planos sino que sean bloques con el shader del muro escalable y que
- *  no sean caras planas»): desplaza cada vértice a lo largo de SU NORMAL con
- *  un ruido senoidal determinista de 3 octavas (bultos grandes + facetas
- *  medianas + grano fino). El ruido depende SOLO de la posición y la semilla
- *  del bloque: los vértices duplicados de las aristas (CreateBox repite 4
- *  vértices por cara) reciben el MISMO desplazamiento → la malla sigue
- *  cerrada (watertight), sin rendijas en las aristas. El material NO cambia:
- *  es el del muro escalable (misma receta generateChunk) — lo que antes era
- *  una caja perfecta ahora ES un volumen de piedra desnivelado por dentro y
- *  por fuera, como la roca del primer muro.
- *  Devuelve el desplazamiento máximo aplicado (sonda E2E: ≠ 0 → no planos). */
-function desplazaVerticesPiedra(mesh: Mesh, seed: number, amplitud: number): number {
-  const pos = mesh.getVerticesData(VertexBuffer.PositionKind);
-  const nor = mesh.getVerticesData(VertexBuffer.NormalKind);
-  if (!pos || !nor || pos.length !== nor.length) return 0;
-  const out = pos.slice();
-  let maxDesp = 0;
-  for (let v = 0; v < pos.length; v += 3) {
-    const x = pos[v], y = pos[v + 1], z = pos[v + 2];
-    const n1 = Math.sin(x * 1.7 + y * 2.3 + z * 1.1 + seed * 0.618);
-    const n2 = Math.sin(x * 3.9 - y * 2.7 + z * 4.1 + seed * 1.309);
-    const n3 = Math.sin(x * 8.3 + y * 7.1 - z * 6.7 + seed * 2.117);
-    const desp = amplitud * (0.5 * n1 + 0.3 * n2 + 0.2 * n3);
-    out[v] = x + nor[v] * desp;
-    out[v + 1] = y + nor[v + 1] * desp;
-    out[v + 2] = z + nor[v + 2] * desp;
-    maxDesp = Math.max(maxDesp, Math.abs(desp));
-  }
-  mesh.setVerticesData(VertexBuffer.PositionKind, out);
+/** T127 — EL MATERIAL CON DESPLAZAMIENTO DEL MURO DE ESCALADA: la receta
+ *  (retícula ~12 cm + Δz −Z por (x,y) de mundo + UVs alineados al mundo en las
+ *  caras ±Z) vive en el módulo PURO world/tallaPiedra.ts (testeable sin
+ *  Babylon, D20). Aquí solo el adaptador que aplica la geometría al mesh. */
+function tallaBloquePiedra(
+  mesh: Mesh, w: number, h: number, d: number, c: CampoPiedra,
+  amplitud: number, wx: number, wy: number,
+): number {
+  const g = tallaGeometriaPiedra(w, h, d, c, amplitud, wx, wy);
+  const vd = new VertexData();
+  vd.positions = g.positions;
+  vd.uvs = g.uvs;
+  vd.indices = g.indices;
+  vd.normals = g.normals;
+  vd.applyToMesh(mesh, false);
   mesh.refreshBoundingInfo();
-  return maxDesp;
+  return g.maxDesp;
 }
 
 /** T121 B5: partículas del CUERPO que se hunden tirando de la mochila (todas
@@ -1056,9 +1016,13 @@ export class ParedNivel {
   private entrega: { t: number; dur: number; from: V3; ctrl: V3; to: V3; yaw0: number } | null = null;
   private rafagaHecha = false;
   private estrellaHasta = [0, 0];
-  /** T126 — desplazamiento máximo de vértices aplicado a los bloques (sonda
-   *  E2E: > 0 certifica que las caras NO son planas). */
+  /** T126/T127 — desplazamiento máximo de vértices aplicado a los bloques
+   *  (sonda E2E: > 0 certifica que las caras NO son planas). */
   private despPiedraMax = 0;
+  /** T127 — campo de altura de la textura del muro (generateChunk.height):
+   *  el «desplazamiento del muro de escalada» que se hornea en bloques y
+   *  macizo (tallaBloquePiedra). */
+  private campoPiedra: CampoPiedra | null = null;
   // HUD del interior de la mochila, la barra/flecha de la goma y los avisos
   private elMochilaWin: HTMLElement | null = null;
   private elGoma: HTMLElement | null = null;
@@ -1161,6 +1125,19 @@ export class ParedNivel {
         origin: { x: 40, y: 260 },
         style,
       });
+      // T127 — CAMPO DE ALTURA DE LA MISMA TEXTURA (antes se descartaba): el
+      // «desplazamiento del muro de escalada» se hornea en la geometría de los
+      // bloques con ESTE campo (tallaBloquePiedra), con la misma fase que el
+      // albedo/bump → cada bulto de la malla coincide con su sombra del mapa.
+      let hMin = Infinity, hMax = -Infinity;
+      for (let i = 0; i < res.height.length; i++) {
+        hMin = Math.min(hMin, res.height[i]!);
+        hMax = Math.max(hMax, res.height[i]!);
+      }
+      this.campoPiedra = {
+        h: res.height, W: res.W, H: res.H, cell: 6.4 / 512,
+        ox: 40, oy: 260, tile: 6.4, hMin, hMax,
+      };
       const m = new PBRMaterial("paredBloqueM", scene);
       const cm = RawTexture.CreateRGBATexture(res.colorMap, res.W, res.H, scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
       cm.wrapU = Texture.WRAP_ADDRESSMODE;
@@ -1176,14 +1153,9 @@ export class ParedNivel {
       // normal map a nivel 1,05 se perdía a distancia; 1,3 lo deja legible
       // en todas las caras (comparte textura con rojizo/verde/azul: sube para todos)
       m.bumpTexture.level = 1.3;
-      // cada cara del bloque (1,8 m) muestra 1,8 m de textura — MISMA densidad de
-      // detalle que el muro (512 px = 6,4 m): uScale = 1,8/6,4.
-      const alb = m.albedoTexture as Texture;
-      alb.uScale = 1.8 / 6.4;
-      alb.vScale = 1.8 / 6.4;
-      const bmp = m.bumpTexture as Texture;
-      bmp.uScale = 1.8 / 6.4;
-      bmp.vScale = 1.8 / 6.4;
+      // T127 — uScale/vScale = 1 (por defecto): la densidad de texels por cara
+      // la lleva HORNEADA cada malla (UVs de tallaBloquePiedra) — las 4
+      // compartían la textura y el último uScale pisaba a los demás.
       m.albedoColor = new Color3(1.14, 0.76, 0.62); // EL MISMO tinte del muro (T110)
       m.metallic = 0;
       m.roughness = 0.93;
@@ -1205,12 +1177,6 @@ export class ParedNivel {
       const r = new PBRMaterial("paredBloqueRojizoM", scene);
       r.albedoTexture = base.albedoTexture;
       r.bumpTexture = base.bumpTexture;
-      const alb = r.albedoTexture as Texture;
-      alb.uScale = 1.8 / 6.4;
-      alb.vScale = 1.8 / 6.4;
-      const bmp = r.bumpTexture as Texture;
-      bmp.uScale = 1.8 / 6.4;
-      bmp.vScale = 1.8 / 6.4;
       r.albedoColor = new Color3(1.55, 0.34, 0.26); // rojizo intenso
       r.metallic = 0;
       r.roughness = 0.85;
@@ -1224,12 +1190,6 @@ export class ParedNivel {
       const g = new PBRMaterial("paredBloqueVerdeM", scene);
       g.albedoTexture = base.albedoTexture;
       g.bumpTexture = base.bumpTexture;
-      const alb = g.albedoTexture as Texture;
-      alb.uScale = 1.2 / 6.4;
-      alb.vScale = 1.2 / 6.4;
-      const bmp = g.bumpTexture as Texture;
-      bmp.uScale = 1.2 / 6.4;
-      bmp.vScale = 1.2 / 6.4;
       g.albedoColor = new Color3(0.36, 1.35, 0.5); // verde intenso
       g.metallic = 0;
       g.roughness = 0.85;
@@ -1242,12 +1202,6 @@ export class ParedNivel {
       const a = new PBRMaterial("paredBloqueAzulM", scene);
       a.albedoTexture = base.albedoTexture;
       a.bumpTexture = base.bumpTexture;
-      const alb = a.albedoTexture as Texture;
-      alb.uScale = 1.4 / 6.4;
-      alb.vScale = 1.4 / 6.4;
-      const bmp = a.bumpTexture as Texture;
-      bmp.uScale = 1.4 / 6.4;
-      bmp.vScale = 1.4 / 6.4;
       a.albedoColor = new Color3(0.34, 0.62, 1.45); // azul intenso
       a.metallic = 0;
       a.roughness = 0.85;
@@ -1344,7 +1298,14 @@ export class ParedNivel {
     const macizo = MeshBuilder.CreateBox("paredMacizo", { width: 5.2, height: y1 - y0, depth: 0.12 }, esc);
     macizo.position.set(0, (y0 + y1) / 2, Z_PRESA + 0.58); // 8 cm tras las espaldas: sin z-fight
     macizo.material = this.ensureMaterials().bloque;
-    normalizaUVCaras(macizo, 5.2, y1 - y0, 0.12); // densidad de texels correcta también aquí
+    // T127 — EL MACIZO TAMBIÉN SE TALLA con el campo de altura del muro: los
+    // huecos entre bloques muestran roca desnivelada CONTINUA con los bloques
+    // (mismo (x,y) mundial → mismo desplazamiento). La talla respeta las 8 cm
+    // de holgura: protrusión ≤ PIEDRA_DESP_M (0,06) hacia el escalador.
+    if (this.campoPiedra) {
+      tallaBloquePiedra(macizo, 5.2, y1 - y0, 0.12, this.campoPiedra, PIEDRA_DESP_M,
+        0, (y0 + y1) / 2);
+    }
     macizo.isPickable = false;
     macizo.receiveShadows = true;
     macizo.freezeWorldMatrix();
@@ -1385,20 +1346,21 @@ export class ParedNivel {
         : MeshBuilder.CreateBox(`blkM_${spec.id}`, { width: spec.w, height: spec.h, depth: spec.d }, scene);
       if (spec.bono && spec.forma === "hex") mesh.rotation.x = Math.PI / 2;   // cara hexagonal de frente
       if (spec.bono && spec.forma === "cil") mesh.rotation.z = Math.PI / 2;   // tambor tumbado (eje X)
-      // T125 — relieve REAL en TODAS las caras: densidad de textura por cara
+      // T127 — EL MATERIAL CON DESPLAZAMIENTO DEL MURO (corrección del jugador
+      // al T126: «quiero los bloques con el material con desplazamiento del
+      // muro de escalada»): la caja se TALLA con el campo de altura de la
+      // MISMA textura del muro (retícula ~12 cm + Δz −Z por (x,y) mundial +
+      // UVs alineados al mundo en las caras ±Z) — la receta EXACTA de
+      // buildRockChunkMesh: cada bulto de geometría coincide con su sombra del
+      // normal map y bloques/macizo leen como UNA roca continua. Las presas
+      // sobresalen ≫ PIEDRA_DESP_M: siguen leyéndose sobre el relieve.
       // (los cilindros de bono traen sus UV cilíndricos propios: fuera)
-      if (!spec.bono || (spec.forma !== "hex" && spec.forma !== "cil")) {
-        normalizaUVCaras(mesh, spec.bono ? 1.6 : spec.w, spec.bono ? 1.0 : spec.h, spec.bono ? 0.9 : spec.d);
+      if (this.campoPiedra && (!spec.bono || (spec.forma !== "hex" && spec.forma !== "cil"))) {
+        this.despPiedraMax = Math.max(this.despPiedraMax,
+          tallaBloquePiedra(mesh,
+            spec.bono ? 1.6 : spec.w, spec.bono ? 1.0 : spec.h, spec.bono ? 0.9 : spec.d,
+            this.campoPiedra, PIEDRA_DESP_M, spec.x, spec.y));
       }
-      // T126 — VOLUMEN DE PIEDRA REAL (dictado: «que no sean caras planas»):
-      // los vértices se desnivelan a lo largo de su normal — el bloque deja de
-      // ser una caja perfecta y ES un volumen de piedra. Semilla por bloque
-      // (id + posición) → cada piedra es distinta y determinista. Las presas
-      // sobresalen ≫ PIEDRA_DESP_M: siguen leyéndose sobre la cara ondulada.
-      const semilla = [...spec.id].reduce((a, c) => a + c.charCodeAt(0), 0)
-        + spec.x * 13 + spec.y * 29 + spec.z * 7;
-      this.despPiedraMax = Math.max(this.despPiedraMax,
-        desplazaVerticesPiedra(mesh, semilla, PIEDRA_DESP_M));
       mesh.material = spec.verde ? mats.verde : spec.azul ? mats.azul : spec.destructible ? mats.rojizo : mats.bloque;
       mesh.parent = node;
       const bloque: Bloque = {
