@@ -14,14 +14,51 @@ export type RichManState =
   | "de_pie" | "caminando" | "aplaudiendo" | "brindando" | "mirando"
   // POSTURAS CÓMICAS (petición del jugador: dormir acostado, bailecito,
   // leer, llamar por teléfono):
-  | "durmiendo" | "bailando" | "leyendo" | "telefono";
+  | "durmiendo" | "bailando" | "leyendo" | "telefono"
+  // T111 (petición: «más variedad de poses y gestos, está muy soso»): cuenta
+  // fajos, se ríe de los escaladores, pose de poder, selfie, mira el reloj
+  // y carcajada.
+  | "contando" | "senialando" | "pose_poder" | "selfie" | "reloj" | "risa";
 
 /** estados que se dibujan como GESTO cinemático sobre la pose sentada. */
 const GESTURE_STATES: RichManState[] = [
   "dormitando", "insultando", "comiendo", "tirando_basura",
   "aplaudiendo", "brindando", "mirando", "pataleando",
   "durmiendo", "bailando", "leyendo", "telefono",
+  "contando", "senialando", "pose_poder", "selfie", "reloj", "risa",
 ];
+
+/** T111 — GRACIAS SENTADO con PESOS (reparto variado: nada de ver siempre lo
+ *  mismo). durmiendo y contando siguen siendo las favoritas; el resto reparte
+ *  el espectro cómico (pose de poder, carcajada, señal+burla, selfie, reloj,
+ *  teléfono, libro, copa, palmas, prismáticos, baile). */
+const GRACIAS: { state: RichManState; w: number }[] = [
+  { state: "durmiendo", w: 1.5 },   // la siesta tumbada, favorita
+  { state: "contando", w: 1.4 },    // contando fajos (le va al personaje)
+  { state: "pose_poder", w: 1.1 },
+  { state: "risa", w: 1.1 },
+  { state: "bailando", w: 1.0 },
+  { state: "telefono", w: 1.0 },
+  { state: "senialando", w: 0.9 },
+  { state: "leyendo", w: 0.9 },
+  { state: "selfie", w: 0.9 },
+  { state: "brindando", w: 0.8 },
+  { state: "reloj", w: 0.8 },
+  { state: "mirando", w: 0.7 },
+  { state: "aplaudiendo", w: 0.6 },
+];
+
+/** Elige una gracia con los pesos de GRACIAS (rng determinista). */
+function pickGracia(rng: Rng): RichManState {
+  let total = 0;
+  for (const g of GRACIAS) total += g.w;
+  let r = rng.next() * total;
+  for (const g of GRACIAS) {
+    r -= g.w;
+    if (r <= 0) return g.state;
+  }
+  return GRACIAS[0]!.state;
+}
 
 export interface RichManDeps {
   machines: MachinesData;
@@ -125,29 +162,15 @@ export class RichManBrain {
       // quedarse sin gracias el resto del ciclo (que duraba 8-16 s).
       this.boredAt = this.stateTime + 4 + this.deps.rng.next() * 3;
       const r = this.deps.rng.next();
-      if (r < 0.2) this.enter("de_pie");
-      else if (r < 0.31) this.enter("aplaudiendo");
-      else if (r < 0.42) this.enter("brindando");
-      else if (r < 0.51) this.enter("mirando");
-      else if (r < 0.65) this.enter("durmiendo");      // siesta TUMBADO (favorita)
-      else if (r < 0.75) this.enter("bailando");       // bailecito
-      else if (r < 0.85) this.enter("leyendo");        // libro
-      else if (r < 0.94) this.enter("telefono");       // llamada
-      // el resto: se queda tan ancho, sigue mirando el paisaje
+      if (r < 0.14) this.enter("de_pie");
+      else this.enter(pickGracia(this.deps.rng));
     }
     if (this.stateTime >= this.stateDuration) {
       if (this.state === "colgando") {
         // del rollo sentado sale VARIADO (respaldo del aburrimiento)
         const r = this.deps.rng.next();
-        if (r < 0.16) this.enter("de_pie");
-        else if (r < 0.28) this.enter("aplaudiendo");
-        else if (r < 0.4) this.enter("brindando");
-        else if (r < 0.5) this.enter("mirando");
-        else if (r < 0.62) this.enter("durmiendo");
-        else if (r < 0.72) this.enter("bailando");
-        else if (r < 0.82) this.enter("leyendo");
-        else if (r < 0.92) this.enter("telefono");
-        else if (st.next) this.enter(st.next as RichManState);
+        if (r < 0.12) this.enter("de_pie");
+        else this.enter(pickGracia(this.deps.rng));
       } else if (this.state === "de_pie") {
         // de pie: si aún no paseó, le pica caminar; si ya paseó, se sienta
         this.enter(!this.walkedThisBout && this.deps.rng.next() < 0.75 ? "caminando" : "colgando");

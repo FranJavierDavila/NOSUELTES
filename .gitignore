@@ -16,6 +16,7 @@ node_modules
 # next.js
 /.next/
 /out/
+/.next-export/
 
 # production
 /build
@@ -56,3 +57,14 @@ server.log
 # tool result cache
 tool-results/
 __pycache__/
+.token-github
+
+# T99 — artefactos locales fuera del repo (el historial ya pesa 453 MB:
+# 330 MB eran PNG de capturas). Los ficheros siguen en el workspace.
+/download/
+/visor_bundle.js
+/backups/
+/db/
+
+# subidas del usuario (videos/capturas de evidencia): no trackear en el repo
+/upload/

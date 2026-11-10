@@ -31,10 +31,11 @@ import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { Quaternion } from "@babylonjs/core/Maths/math.vector";
 import {
-  buildBinds, computePuppetPose, normPoseQuat, PIECE_SPECS,
+  buildBinds, computePuppetPose, normPoseQuat, PIECE_SPECS, CANON,
   type PieceBind, type PuppetBinds,
 } from "./sherpaPuppet";
-import { v3t, type QuatT, type V3T } from "./climberPoseMath";
+import { v3t, vLen, vNorm, vSub, type QuatT, type V3T } from "./climberPoseMath";
+import { assetUrl } from "../../assetPath";
 
 export interface PuppetDiag {
   pieces: number;        // piezas encontradas en el .glb
@@ -65,7 +66,7 @@ export class SherpaPuppetFactory {
   ) {}
 
   static async load(scene: Scene, url: string): Promise<SherpaPuppetFactory> {
-    const container = await SceneLoader.LoadAssetContainerAsync("", url, scene);
+    const container = await SceneLoader.LoadAssetContainerAsync("", assetUrl(url), scene);
     // Diagnóstico: alto del modelo + nombres de los nodos raíz del asset.
     let minY = Infinity, maxY = -Infinity, meshes = 0;
     for (const m of container.meshes) {
@@ -251,12 +252,41 @@ function collectMeshes(roots: TransformNode[]): AbstractMesh[] {
 
 /** Un escalador por piezas instanciado (P0 o P1). pose() una vez por frame. */
 export class SherpaPuppetInstance {
+  // T89 — GOMA DEL ANTEBRAZO: las DOS piezas de antebrazo se ESCALAN a lo
+  // largo de su hueso cuando la mano clavada queda lejos (el dictado del
+  // jugador: los antebrazos son la goma; el brazo NO cambia de escala).
+  // [nombre, nodo, escala base, eje largo del hueso, iProx, iDist, reposo m]
+  private elasticos: [string, TransformNode, [number, number, number], 0 | 1 | 2, number, number, number][] = [];
+
   constructor(
     readonly rootNodes: TransformNode[],
     private nodes: Map<string, TransformNode>,
     private binds: PuppetBinds,
     readonly meshes: AbstractMesh[],
-  ) {}
+  ) {
+    for (const spec of binds.specs) {
+      if (spec.kind !== "limb" || !spec.prox !== !spec.dist) continue;
+      if (!spec.name.startsWith("pieza_antebrazo")) continue; // SOLO antebrazos
+      const node = nodes.get(spec.name);
+      const bind = binds.byName.get(spec.name);
+      if (!node || !bind) continue;
+      // dirección de reposo del hueso en el espacio LOCAL del nodo:
+      // bind.rotM (fila-major) mapea local→mundo, así que la inversa es su traspuesta.
+      const w = vNorm(vSub(CANON[spec.dist!], CANON[spec.prox!]));
+      const loc = [
+        bind.rotM[0]! * w.x + bind.rotM[4]! * w.y + bind.rotM[8]! * w.z,
+        bind.rotM[1]! * w.x + bind.rotM[5]! * w.y + bind.rotM[9]! * w.z,
+        bind.rotM[2]! * w.x + bind.rotM[6]! * w.y + bind.rotM[10]! * w.z,
+      ];
+      const eje = (Math.abs(loc[0]) >= Math.abs(loc[1]) && Math.abs(loc[0]) >= Math.abs(loc[2]) ? 0
+        : Math.abs(loc[1]) >= Math.abs(loc[2]) ? 1 : 2) as 0 | 1 | 2;
+      const s = node.scaling;
+      this.elasticos.push([
+        spec.name, node, [s.x, s.y, s.z], eje, spec.prox!, spec.dist!,
+        Math.max(1e-4, vLen(vSub(CANON[spec.dist!], CANON[spec.prox!]))),
+      ]);
+    }
+  }
 
   /** Bind de una pieza (sonda E2E: pivote/rotación capturados del nodo). */
   bindOf(name: string): PieceBind | null {
@@ -282,6 +312,16 @@ export class SherpaPuppetInstance {
       const q = normPoseQuat(p.quat);
       if (!node.rotationQuaternion) node.rotationQuaternion = new Quaternion(q.x, q.y, q.z, q.w);
       else node.rotationQuaternion.set(q.x, q.y, q.z, q.w);
+    }
+    // T89 — la GOMA: escala longitudinal de SOLO los antebrazos según el
+    // vano real codo→mano (≥ reposo: nunca encoge; tope 9 por seguridad).
+    for (const [, node, base, eje, iProx, iDist, rest] of this.elasticos) {
+      const a = parts[iProx], b = parts[iDist];
+      const span = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+      const k = Math.max(1, Math.min(9, span / rest));
+      if (eje === 0) node.scaling.set(base[0] * k, base[1], base[2]);
+      else if (eje === 1) node.scaling.set(base[0], base[1] * k, base[2]);
+      else node.scaling.set(base[0], base[1], base[2] * k);
     }
   }
 

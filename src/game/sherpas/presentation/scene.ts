@@ -38,6 +38,7 @@ import { RICH_FACES, RICH_FACE_YAW, isRichFace, stepRichFaceHold, type RichFaceN
 import { richJoints15, RICH_DIMS_DEFAULT, type RichJointDims } from "./richJoints"; // T62/T76: ricachón poseído (dims del modelo)
 import { SceneLoader } from "@babylonjs/core/Loading/sceneLoader"; // T76: carga de las caras expresivas
 import "@babylonjs/loaders/glTF"; // registro del cargador .glb (caras T76)
+import { assetUrl } from "../../assetPath"; // T85: prefijo de assets en despliegue en subruta
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { Material } from "@babylonjs/core/Materials/material"; // T61: PBR|Standard en huesos · T76: winding de las caras
 import { MultiMaterial } from "@babylonjs/core/Materials/multiMaterial"; // T76: materiales de las caras del ricachón
@@ -47,12 +48,14 @@ import { HDRCubeTexture } from "@babylonjs/core/Materials/Textures/hdrCubeTextur
 import "@babylonjs/core/Materials/Textures/Loaders/hdrTextureLoader"; // T61: plugin .hdr (panorama RGBE)
 import { PointLight } from "@babylonjs/core/Lights/pointLight"; // T61: frontal nocturno (escaladas de noche)
 import { ParticleSystem } from "@babylonjs/core/Particles/particleSystem";
+import type { Particle } from "@babylonjs/core/Particles/particle"; // T113: updater propio de la pluma
 import { generateSkyHdrBytes } from "./hdrSky"; // T61: HDRI procedural (puro)
 import { resolveDayPreset, DAY_PRESETS, type DayPreset, type DaytimeId } from "../gameplay/daycycle"; // T61: hora del día
 import type { FallingKind } from "../events/falling"; // T61: objetos que caen (dibujo)
 import { FALLING_KINDS } from "../events/falling";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
+import { HighlightLayer } from "@babylonjs/core/Layers/highlightLayer"; // T96: outline de la mochila al pasar el ratón
 import { Vector3, Quaternion, Matrix } from "@babylonjs/core/Maths/math.vector";
 import "@babylonjs/core/Culling/ray";
 import "@babylonjs/core/Culling/ray.core";
@@ -82,11 +85,11 @@ import {
   type ReliefCell, type ReliefData, type ReliefResolved, type Rect,
 } from "../world/wallRelief";
 import {
-  buildRockChunk, makeRockField, rockFromData, rockNormalRGBA, rockTextureRGBA, ROCK_SEED,
+  buildRockChunk, buildRockWing, makeRockField, rockFromData, rockNormalRGBA, rockTextureRGBA, rockZAt, ROCK_SEED,
   type RockData, type RockField, type RockResolved,
 } from "../world/wallRock";
 import {
-  buildSideSkirts, ROCKWALL_SEED, rockwallStyleFromData, sampleRegion,
+  buildSideSkirts, generateChunk, ROCKWALL_SEED, rockwallStyleFromData, sampleRegion,
   type RockwallAnchorIn, type RockwallFeature, type RockwallRegionResult, type RockwallStyle,
 } from "../world/rockwall"; // T43: módulo del jugador (diaclasas) + worker
 import { createRockwallPool, defaultPoolSize, type RockwallPool } from "../world/rockwallPool"; // T67: pool de workers
@@ -104,13 +107,13 @@ import { SkinnedClimberFactory, type ClimberInstance } from "./skinnedClimber"; 
 import { SherpaPuppetFactory, type SherpaPuppetInstance } from "./sherpaPuppetFactory"; // T57: Sherpa.glb POR PIEZAS (marioneta)
 import { PartsSmoother } from "./poseSmoothing"; // T85-SMOOTH: interpolación entre movimientos (adiós marioneta)
 import {
-  buildScreeGeometry, buildSpurGeometry, resolveBaseCampCfg, scatterRocks,
+  buildScreeGeometry, resolveBaseCampCfg,
   type BaseCampCfg, type GeomData,
 } from "../world/baseCamp"; // T56: faldones de continuidad + pedriz
-import { buildCabinSpec, flagRopePoint, type CabinMat, type CabinSpec } from "../world/cabin"; // T56: cabaña sherpa
 import {
-  buildSideMassifGeometry, resolveSideMassifCfg, type SideMassifCfg,
-} from "../world/sideMassif"; // T62: macizos naturales (cortinas desplazadas)
+  cabinBoulderRing, computeGroundTint, resolveGroundTintCfg, scatterDrifts,
+  type GroundTintCtx,
+} from "../world/groundTint"; // T98: suelo alpino integrado (nieve+hielo+piedra)
 import { generateRopeColor, generateRopeNormalRGBA } from "../world/ropeTexture"; // T62: cuerda con bandas
 import { generateWoodColor, generateWoodNormalRGBA } from "../world/woodTexture"; // T62: madera del tablón
 import {
@@ -121,12 +124,14 @@ interface Bone { a: number; b: number; mesh: Mesh; rest: number; offY?: number }
 interface RigVisual { bones: Bone[]; head: Mesh; roots: Mesh[] }
 
 const TYPE_COLORS: Record<string, string> = {
-  rock_firm: "#8d99ae", rock_loose: "#b08968", ice: "#9ad1e8",
+  // T111 — roca FIRME y SUELTA en la familia TERRACOTA del muro (#bd7e6e):
+  // los agarres nacen de la misma piedra que se escala (antes destonaban).
+  rock_firm: "#c48a6f", rock_loose: "#a86848", ice: "#9ad1e8",
   ice_thin: "#d0f4f7", snow: "#f3f7f4", ice_urine: "#d9e8a3",
   ice_plate: "#eaf9ff", surprise_fart: "#3fd46a",
 };
 
-const SHERPA_COLORS = [{ body: "#d97b2f", strap: "#e8542f" }, { body: "#2f9bd9", strap: "#1f6fb0" }];
+const SHERPA_COLORS = [{ body: "#3fae5a", strap: "#2f7d43" }, { body: "#e05245", strap: "#a33327" }];
 
 function mat(scene: Scene, name: string, hex: string, opts?: { alpha?: number }): StandardMaterial {
   const m = new StandardMaterial(name, scene);
@@ -200,6 +205,21 @@ export class SherpaScene {
     this.camPin = p ? new Vector3(p.x, p.y, p.z) : null;
     this.camPinDist = (p && Number.isFinite(dist)) ? dist! : null;
   }
+
+  /** T117 — ÓRBITA AL FRENTE (petición del jugador: «cuando le das a tutorial
+   *  te aparece una losa gris que no sé qué es»): el menú deja la órbita donde
+   *  la dejara el jugador (o su deriva) y el primer plano del tutorial
+   *  amanecía DE CANTO o tras la pared — una losa ilegible. Yaw 0 = cámara
+   *  delante de la cara de escalada (convención del updateCamera). */
+  resetOrbitFront(): void {
+    this.orbitYaw = 0;
+    this.orbitYawGoal = 0;
+    this.orbitPitch = 0;
+    this.orbitPitchGoal = 0;
+    this.orbitIdle = 0;
+    this.freeViewOn = false;
+    this.fvReturn = false;
+  }
   private camDist = 7;
   private shakeAmp = 0;
   /** ÓRBITA LATERAL (T45) + VERTICAL y AUTO-RETORNO (T46): yaw/pitch actual y
@@ -224,6 +244,8 @@ export class SherpaScene {
   private sunRel = new Vector3(3.5, 9, -6.5);
   private holdMeshes = new Map<string, Mesh>();
   private holdMasters = new Map<string, Mesh>();
+  /** T92: master del empotrador portátil (placa + argolla metálicas). */
+  private portableMaster: Mesh | null = null;
   // T65/T66-FB/T69 — anillos sobre las presas: la presa AGARRADA POR LAS MANOS
   // lleva el anillo de FATIGA en dos piezas (T69, petición del jugador: "la
   // fatiga para llegar al descuelgue debe ser del 100%, lo que se corresponde
@@ -438,6 +460,14 @@ export class SherpaScene {
   private perfFrames = 0;
   private perfWarm = 0;
   private lastRenderNow = 0;
+  /** T107a ANTI-OSCILACIÓN: el gobernador solo actúa con DOS ventanas seguidas
+   *  votando lo mismo y respetando un cooldown desde el último cambio. Cada
+   *  setHardwareScalingLevel realoca el buffer del canvas y Chromium presenta
+   *  un frame NEGRO un instante (el "parpadeo cada ~2 s" del invitado: su GPU
+   *  vive justo en el umbral y la escala ping-pongeaba 1.0↔1.1 en cada
+   *  ventana de checkSeconds). */
+  private perfStreak: 0 | 1 | -1 = 0; // 1 = pide render más barato, -1 = más fino
+  private lastScaleChangeMs = -1e9;
   private dtSmoothed = 16.7; // ms/frame suavizado (medición PROPIA: el engine
   // no actualiza _fps/_deltaTime sin beginFrame, y scene.render() no lo llama)
   private lastDrawTotal = 0;
@@ -451,6 +481,9 @@ export class SherpaScene {
   // cámara (chunks LRU) para optimizar el dibujado.
   private reliefCfg: ReliefResolved | null = null;
   private reliefHolds: { x: number; y: number }[] = [];
+  /** PARED INTOCABLE: la hornada de semillas solo ocurre UNA vez (antes de la
+   *  primera losa); después ninguna presa vuelve a moldear la pared. */
+  private reliefBaked = false;
   private reliefMeshes = new Map<number, { mesh: Mesh; plants?: Mesh; plantsN?: number; cells: number; tris: number }>();
   private reliefHoleRects: Rect[] = [];
   private reliefSalientRects: Rect[] = [];
@@ -497,9 +530,13 @@ export class SherpaScene {
   // T56 — BASE CAMP: faldones de continuidad lateral + pedriz de piedra + cabaña
   private baseCampCfg: BaseCampCfg | null = null;
   private baseRockMat: PBRMaterial | null = null; // material COMPARTIDO pedriz+faldones
+  // T110 — CARGA REAL: se resuelve cuando la cabaña GLB termina (bien o mal):
+  // la pantalla de carga espera a esto antes de descubrir la escena.
+  whenReady: Promise<void> = Promise.resolve();
+  private baseCampReadyResolve: (() => void) | null = null;
   private flagWind: PlantWindPlugin | null = null; // viento propio de los banderines
-  private flagMat: PBRMaterial | null = null;
-  private baseCampStats = { enabled: false, screeTris: 0, spurTris: 0, rocks: 0, cabinPieces: 0, flags: 0, smoke: false, pedrizaTex: false, massifTris: 0 };
+  private baseCampStats = { enabled: false, screeTris: 0, wingTris: 0, rocks: 0, cabinPieces: 0, flags: 0, smoke: false, pedrizaTex: false, massifTris: 0, snowTiles: 0, cabinTex: false, smokePos: null as { x: number; y: number; z: number } | null };
+  private groundTintCtx: GroundTintCtx | null = null; // T98: contexto del suelo alpino (franja de caída + campamento)
   /** T55 SONDA E2E: nº de chunks de roca con tinte por vértice aplicado. */
   rockTintChunks = 0;
   /** materiales PBR de roca creados (sonda E2E: material/triplanar/normales). */
@@ -816,6 +853,17 @@ export class SherpaScene {
   setWind(dir: number, level: number, dt = 1 / 60): void {
     this.plantWind?.setWindState(dir, level); // T55: las matas también lo sienten
     this.flagWind?.setWindState(dir, level); // T56: los banderines de la cabaña
+    // T111 — el HUMO de la chimenea lo empuja la MISMA racha: gravity.x es
+    // fuerza lateral viva sobre TODAS las partículas (la columna se dobla
+    // entera con la racha); entre rachas una brisa suave lo mece.
+    if (this.chimneySmoke) {
+      const t = Date.now() / 1000;
+      const breeze = 0.09 * Math.sin(t * 0.45) + 0.05 * Math.sin(t * 1.27);
+      const sgn = Math.sign(dir) || 1;
+      this.chimneySmoke.gravity.set(sgn * level * 1.8 + breeze, 0.08, 0.03 * Math.sin(t * 0.8));
+      this.chimneySmoke.direction1.x = -0.05 + sgn * level * 0.35 + breeze * 0.4;
+      this.chimneySmoke.direction2.x = 0.09 + sgn * level * 0.55 + breeze * 0.4;
+    }
     const cam = this.camera.position;
     // nieve ambiental: deriva lateral con la racha (ventisca)
     const on = level > 0.02;
@@ -948,7 +996,11 @@ export class SherpaScene {
     // respirando: el techo del relieve natural (zCeilM) manda ENTRE anclajes.
     const bodyBack = this.rockCtx ? this.rockCtx.style.bodyBackM : 0;
     // T61: cuerpo del muro en PBR (el albedo plano + HDRI sustituyen al lambert)
-    const rock = matPBR(this.scene, "rock", rc ? rc.backColor : "#3c4652", { rough: 0.95 });
+    // T111 — PARED DE RESPALDO: el cuerpo tras el muro paramétrico, si algún
+    // día se asoma (grietas profundas, canto, órbita), es NIEVE (petición:
+    // «blanquecino con tonalidades azuladas») — nunca el gris azulado oscuro
+    // de antes, que leía como cemento.
+    const rock = matPBR(this.scene, "rock", rc ? rc.backColor : "#e7edf6", { rough: 0.95 });
     // PERF (60 FPS): la roca estática se FUNDE en un mesh por material — 1 draw
     // call y 1 renderizador de aristas en vez de uno por bloque (con ~12
     // entrantes eran 50+ mallas × 2 pasadas). El merge hornea las matrices y
@@ -1054,11 +1106,31 @@ export class SherpaScene {
       this.shadowGen?.addShadowCaster(merged, false);
     }
 
-    const floor = MeshBuilder.CreateGround("floor", { width: 40, height: 24 }, this.scene);
+    const floor = MeshBuilder.CreateGround("floor", { width: 40, height: 24, subdivisionsX: 64, subdivisionsY: 40 }, this.scene);
     floor.position.y = -0.02;
-    // T63 — VIVEZA: pradera alpina bajo la pared (antes losa lavada #dfe8ee que
-    // sumaba al conjunto plano y uniforme). La nevada la ENCALA (setSnowVisual).
-    this.floorMat = matPBR(this.scene, "snowFloor", "#79a054", { rough: 0.9 });
+    // T98 — SUELO ALPINO INTEGRADO (petición: «el suelo verde parece un
+    // remiendo… estamos en una zona alta de montaña con el suelo nevado y zona
+    // rocosa»): la pradera #79a054 muere. El tono lo portan COLORES POR
+    // VÉRTICE (groundTint.ts): nieve alpina dominante, parches de piedra de la
+    // familia de la cabaña (talud al pie del muro + anillo del campamento) y
+    // placas de hielo en depresiones. La franja de caída sigue más limpia
+    // (aterrizaje legible). El encalado T63 sigue vivo (base casi blanca).
+    const bcFloor = resolveBaseCampCfg((this.reliefRaw as { baseCamp?: unknown } | null)?.baseCamp);
+    const gCfg = resolveGroundTintCfg((this.reliefRaw as { groundTint?: unknown } | null)?.groundTint);
+    // T106: el mosaico de parcelas cubre TODO el suelo — los parches de piedra
+    // del tinte (anillo del campamento) ya solo se verían asomando por los
+    // valles del relieve y leen como tierra; el suelo que asome debe ser NIEVE.
+    gCfg.stoneCover = 0;
+    this.groundTintCtx = {
+      wallZ: this.reliefFaceZ,
+      corridor: { halfX: bcFloor.fallFlatXM + 0.6, zMin: bcFloor.fallFlatZMinM - 0.6, zMax: bcFloor.fallFlatZMaxM + 0.6 },
+      cabin: { x: SherpaScene.BASE_POS.x, z: SherpaScene.BASE_POS.z, r: 2.4 },
+    };
+    const fpos = floor.getVerticesData(VertexBuffer.PositionKind);
+    if (fpos) floor.setVerticesData(VertexBuffer.ColorKind, computeGroundTint(fpos, gCfg, this.groundTintCtx));
+    // T101: albedo con PUNTO AZUL (la textura de Base.glb es azul glaciar):
+    // el tinte por vértice manda, este sesgo refuerza la familia del GLB.
+    this.floorMat = matPBR(this.scene, "snowFloor", "#e8eef7", { rough: 0.88 });
     this.floorBase = this.floorMat.albedoColor.clone();
     floor.material = this.floorMat;
     floor.receiveShadows = true;
@@ -1123,61 +1195,59 @@ export class SherpaScene {
     // T56 — BASE CAMP: faldones de continuidad lateral + pedriz de piedra +
     // cabaña sherpa de partida (todo estático y fusionado: coste por frame ≈ 0).
     this.buildBaseCamp();
+    // T104 — SUELOS NEVADOS GLB (petición del jugador): las dos láminas de
+    // terreno nevado solapadas que visten el suelo procedural.
+    this.buildSnowGroundTiles();
     // T61 — MACIZOS LATERALES: sella los huecos que quedaban A LOS LADOS de la
     // pared (al orbitar a ±75° se veía el vacío tras el canto de la pared: la
     // montaña continúa a ambos lados). Ver abajo; sonda E2E en getBaseCampInfo.
-    this.buildSideMassifs(wallW / 2, wallFaceZ, wallTop);
+    // T111 — FUERA los dos bloques en forma de columna (petición del jugador,
+    // marcados con X en la captura: «ahora que hemos extendido la pared no
+    // tiene mucho sentido»): los cortinas laterales desaparecen y queda solo
+    // la PARED DE RESPALDO nevada detrás (ver buildSideBackdrop).
+    this.buildSideBackdrop(wallW / 2, wallFaceZ, wallTop);
   }
 
-  /** T62 — MACIZOS LATERALES NATURALES (petición del jugador: las piezas T61
-   *  "parecen dos columnas, quitarlas" y "el relleno hacia los laterales que
-   *  tenga la misma textura… con un poco de desplazamiento"). FUERA cajas y
-   *  contrafuertes: ahora cada lado es UNA CORTINA DE ROCA continua (módulo
-   *  puro sideMassif.ts) que nace enterrada en el muro, con DESPLAZAMIENTO
-   *  real por vértice, cresta que decae hacia fuera y repliegue que envuelve
-   *  el canto hacia atrás. MISMO material que faldones/pedriz (pedriza +
-   *  estratos triplanar en espacio mundo) y MISMAS UVs de mundo: toda la
-   *  familia lateral se lee como UNA montaña. La tapa trasera se queda
-   *  (vista libre alta). Sonda E2E en getBaseCampInfo. */
-  private buildSideMassifs(halfW: number, faceZ: number, topY: number): void {
+  /** T111 — PARED DE RESPALDO NEVADA (petición: «si en algún momento la pared
+   *  de respaldo que queda detrás del muro paramétrico se ve, que sea de
+   *  color blanquecino con tonalidades azuladas para simular nieve»). Sustituye
+   *  a los macizos laterales (T62, fuera por columna): una única lámina ancha
+   *  detrás del muro que cierra la vista por detrás/al orbitar — SIEMPRE
+   *  blanquecina azulada, con tinte por vértice suave (variación + AO al pie)
+   *  para que no lea como un plano linterna. La nevada T62 sigue aplicando
+   *  encima (massifSnow). Sonda E2E: massifTris = triángulos del respaldo. */
+  private buildSideBackdrop(halfW: number, faceZ: number, topY: number): void {
     const baseMat = this.ensureBaseRockMaterial();
-    const rawCfg = ((this.reliefRaw as { sideMassif?: unknown } | null)?.sideMassif
-      ?? (this.reliefRaw as { baseCamp?: unknown; sideMassif?: unknown } | null)?.sideMassif) as unknown;
-    const cfg: SideMassifCfg = resolveSideMassifCfg(rawCfg);
-    const parts: Mesh[] = [];
-    for (const dir of [-1, 1] as const) {
-      const g = buildSideMassifGeometry(dir, {
-        ...cfg,
-        innerM: halfW - 0.35, // enterrado en el muro: sin rendija
-        outerM: halfW + 7.4,
-        faceZ,
-        yTop: topY + 8,
-      });
-      const curtain = this.geomToMesh(`sideMassifCurtain${dir}`, g);
-      curtain.material = baseMat;
-      curtain.receiveShadows = true;
-      curtain.freezeWorldMatrix();
-      parts.push(curtain);
-    }
-    // TAPA TRASERA: cierra la vista por detrás de la pared (vista libre alta).
-    // Colores blancos explícitos: el merge conserva el buffer de color de las
-    // cortinas (la nevada T62 lo retinta por vértice).
+    // T116 — SIN PANELES DE FONDO (petición del jugador con captura: «las
+    // paredes del fondo que dijimos de suprimir siguen ahí»): el respaldo
+    // medía (halfW+7,4)·2 — 7,4 m de pared rayada asomando por CADA lado del
+    // muro (7,8 m) más allá de las alas. Ahora solo 1,6 m de margen: queda
+    // OCULTO tras el muro y las alas (cierra los nichos igual) y a los lados
+    // se ve el cielo, no más paneles.
+    const width = (halfW + 1.6) * 2;
     const height = topY + 8;
-    const back = MeshBuilder.CreateBox("massifBack", { width: (halfW + 7.4) * 2, height: height + 2, depth: 2.6 }, this.scene);
+    const back = MeshBuilder.CreateBox("massifBack", { width, height: height + 2, depth: 2.6 }, this.scene);
     back.position.set(0, (height + 2) / 2 - 2, 5.2);
-    back.setVerticesData(VertexBuffer.ColorKind, new Float32Array(back.getTotalVertices() * 4).fill(1));
+    // BLANCO AZULADO (nieve en sombra): base casi blanca con variación fría
+    // por vértice y AO suave al pie — nunca un plano plano.
+    const n = back.getTotalVertices();
+    const col = new Float32Array(n * 4);
+    const pos = back.getVerticesData(VertexBuffer.PositionKind) ?? [];
+    for (let v = 0; v < n; v++) {
+      const x = pos[v * 3]!, y = pos[v * 3 + 1]!;
+      const vary = 1 + 0.05 * Math.sin(x * 0.9 + y * 0.5) + 0.03 * Math.sin(y * 1.7 - x * 0.4);
+      const foot = 1 - 0.12 * Math.max(0, Math.min(1, (2.4 - y) / 2.4)); // AO al pie
+      col[v * 4] = 0.97 * vary * foot;      // R
+      col[v * 4 + 1] = 0.985 * vary * foot; // G (por encima de R: frío)
+      col[v * 4 + 2] = 1.04 * vary * foot;  // B (azulado: nieve)
+      col[v * 4 + 3] = 1;
+    }
+    back.setVerticesData(VertexBuffer.ColorKind, col);
     back.receiveShadows = true;
     back.material = baseMat;
     back.freezeWorldMatrix();
-    parts.push(back);
-    const merged = Mesh.MergeMeshes(parts, true, true, undefined, false, false)!;
-    merged.name = "sideMassifs";
-    merged.material = baseMat;
-    merged.receiveShadows = true;
-    merged.freezeWorldMatrix();
-    this.baseCampStats.massifTris = Math.round(merged.getTotalIndices() / 3);
-    // T62: la NEVADA blanquea también el macizo (base restaurable al despejar)
-    this.massifSnow = { mesh: merged, base: null };
+    this.baseCampStats.massifTris = Math.round(back.getTotalIndices() / 3);
+    this.massifSnow = { mesh: back, base: null };
   }
 
   // ---------- T56 BASE CAMP: pedriz + faldones + cabaña sherpa ----------
@@ -1185,10 +1255,15 @@ export class SherpaScene {
   // LADO VISIBLE: la cámara del juego vive en z NEGATIVO mirando a +z — la
   // cabaña tiene que estar en -z (delante del muro, junto a la zona de caída)
   // o quedaría DETRÁS de la pared (invisible; bug visto en la E2E T56).
-  // (2.9, -3.6): en pantalla cae a la derecha del centro (no bajo el minimapa),
-  // fuera de la línea de caída (el ricachón aterriza en x≈0.8..1.7, z≈-1.2) y
-  // de la abombadera del faldón (x≥3.2). Giro 3.49 rad: puerta a la cámara.
-  private static readonly CABIN_POS = { x: 2.9, z: -3.6, ry: 3.49 };
+  // T93 (petición del jugador: «la base prácticamente no se ve, debería estar
+  // más pegada a la pared para que entre en plano»): de (7.9, -5.2) a
+  // (4.8, -2.9) — el dorso del modelo (fondo local z≈+2.7 con escala 5.2)
+  // queda a ~0.3 m de la cara del muro y el conjunto entra en el encuadre
+  // (borde derecho ≈ x 7.4, dentro del semiancho visible ~7.7@16:9); sigue
+  // fuera de la línea de caída (el ricachón aterriza en x≈0.8..1.7, z≈-1.2).
+  // El pie derecho se apoya contra el faldón (abombadera x≥3.2): campamento
+  // arrimado a la roca, sin huecos flotantes. Giro π: la cara del GLB a cámara.
+  private static readonly BASE_POS = { x: 4.8, z: -2.9, ry: Math.PI + Math.PI / 4, scale: 5.2 }; // T90: campamento GLB · T93 pegado a la pared · T111: giro HORARIO 45° (la puerta casi frontal a cámara; verificado con primer plano)
 
   /** VertexData de un GeomData puro (baseCamp.ts) → malla de Babylon. */
   private geomToMesh(name: string, g: GeomData): Mesh {
@@ -1208,7 +1283,11 @@ export class SherpaScene {
    *  Todo con la MISMA capa triplanar de estratos que la pared (el patrón de
    *  estratos vive en espacio mundo → continuidad de tono sin costuras). */
   private buildBaseCamp(): void {
+    // T110 — CARGA REAL: la pantalla de carga no se retira hasta que el
+    // campamento GLB (cabaña) está cargado (o ha fallado: la escena sigue).
+    this.whenReady = new Promise<void>((res) => { this.baseCampReadyResolve = res; });
     const cfg = resolveBaseCampCfg((this.reliefRaw as { baseCamp?: unknown } | null)?.baseCamp);
+    if (!cfg.enabled) this.baseCampReadyResolve?.();
     this.baseCampCfg = cfg;
     this.baseCampStats.enabled = cfg.enabled; // sonda E2E: refleja el estado REAL
     if (!cfg.enabled) return;
@@ -1219,7 +1298,7 @@ export class SherpaScene {
     // colisión física sigue siendo el plano y=0 de siempre)
     const scree = buildScreeGeometry({
       cfg,
-      cabin: { x: SherpaScene.CABIN_POS.x, z: SherpaScene.CABIN_POS.z, r: 2.1 },
+      cabin: { x: SherpaScene.BASE_POS.x, z: SherpaScene.BASE_POS.z, r: 4.2 }, // T90: explanada del campamento
     });
     const screeMesh = this.geomToMesh("screeFloor", scree);
     screeMesh.material = baseMat;
@@ -1227,52 +1306,150 @@ export class SherpaScene {
     screeMesh.freezeWorldMatrix();
     this.baseCampStats.screeTris = scree.tris;
 
-    // FALDONES: espolón por lado que nace del borde del muro y muere en el
-    // pedriz. La costura arranca SOLAPADA 0.18 m dentro del muro (enterrada,
-    // invisible) y el material es el mismo → continuidad de color/estratos.
-    const spurs: GeomData[] = [
-      buildSpurGeometry({ dir: -1, xEdge: this.reliefWallW / 2, zFace: faceZ, topY: Math.max(6, this.reliefTopY), cfg }),
-      buildSpurGeometry({ dir: 1, xEdge: this.reliefWallW / 2, zFace: faceZ, topY: Math.max(6, this.reliefTopY), cfg }),
-    ];
-    const spurMesh = this.geomToMesh("spurs", mergeGeoms(spurs));
-    spurMesh.material = baseMat;
-    spurMesh.receiveShadows = true;
-    this.castShadow(spurMesh); // el espolón proyecta sombra sobre el pedriz
-    spurMesh.freezeWorldMatrix();
-    this.baseCampStats.spurTris = spurs.reduce((s, g) => s + g.tris, 0);
+    // T112 — DOS PAREDES LATERALES NO ESCALABLES (peticiones T111+T112 del
+    // jugador: los faldones-espolón eran «bloques de relleno» — «deben
+    // desaparecer de una vez y ser sustituidos por dos paredes verticales que
+    // salen en ángulo abierto hacia adelante con el mismo tratamiento del muro
+    // escalable»). buildRockWing: una superficie de roca CONTINUA más allá de
+    // cada canto y se dobla ~28° hacia la cámara (V abierta a los jugadores),
+    // con el MISMO material paramétrico del muro (loseta generateChunk 6,4 m +
+    // tinte de los chunks + estratos + clima) — la pared «sigue» visualmente
+    // hacia los lados. Sin presas ni registro de chunks: no se puede escalar
+    // por construcción. (El juego real usa el muro DIACLASADO por worker:
+    // this.rockField es del modo estratificado y suele ser null — el ala lleva
+    // su propio campo determinista solo para el relieve de la silueta.)
+    {
+      const wingField = this.rockField
+        ?? makeRockField(rockFromData(null), this.reliefWallW, this.reliefFaceZ);
+      const wingAngle = -0.49; // T115: inclinadas HACIA ATRÁS (antes +0.49, a cámara)
+      const wingLen = Math.max(2.6, this.reliefWallW * 0.32);
+      const wingY1 = Math.max(6, this.reliefTopY);
+      // T117 — LA MISMA PIEDRA QUE EL MURO (petición EXPLÍCITA del jugador:
+      // «nunca dije laterales lisos, todo lo contrario: mismo material que la
+      // pared escalable»): la loseta horneada generateChunk (la del muro) con
+      // su relieve por píxel + tinte por vértice (AO/macizo/líquenes). Las
+      // alas NO son escalables (sin presas ni registro de chunks) pero la
+      // piedra se ve IGUAL que la pared jugable.
+      const wingMat = this.ensureMassifRockMaterial();
+      const TILE_M = 6.4; // loseta horneada del material: UVs en metros → losetas
+      let wingTris = 0;
+      for (const side of [-1, 1] as const) {
+        // paso 18 cm: el relieve de la silueta no necesita la retícula fina del
+        // muro jugable (1,2 cm) — 7× menos triángulos estáticos por ala.
+        // T115 (petición del jugador con captura): las alas se INCLINAN HACIA
+        // ATRÁS (wingAngle negativo: u=(side·cosA, 0, +|sinA|) se aleja de la
+        // cámara) — como están ahora (V abierta adelante) la derecha se ve de
+        // canto desde el campamento como una LOSA VERTICAL A PLOMO detrás de
+        // la cabaña. Inclinadas hacia atrás leen como valle y la cara interior
+        // mira a los jugadores. T115 — overlapM 1,2 (la junta ala-muro nace
+        // MÁS enterrada: la costura nunca se ve ni con la nueva inclinación) y
+        // thicknessM 0,9 (más volumen 3D, «que dé la sensación de pared»).
+        // T117 — dScale 0,22 (como T113/T115): desplazamiento GEOMÉTRICO del
+        // campo — la cara de las alas abomba y se hunde como la del muro
+        // escalable (petición explícita: «mismo material», y el desplazamiento
+        // era la queja original). Overlap 1,2 y thickness 0,9 se quedan.
+        const g = buildRockWing(wingField, side, wingAngle, wingLen, -0.5, wingY1, 0.18, 0.22, 1.2, 0.9,
+          this.rockTintCfg?.enabled ? this.rockTintCfg : undefined, side === 1 ? 901 : 902);
+        for (let k = 0; k < g.uvs.length; k++) g.uvs[k]! /= TILE_M;
+        const wm = new Mesh(`sideWall${side < 0 ? "L" : "R"}`, this.scene);
+        const wv = new VertexData();
+        wv.positions = new Float32Array(g.positions);
+        wv.normals = new Float32Array(g.normals);
+        // EL MISMO TRATAMIENTO que el muro: el tinte por vértice
+        // (computeRockTint: AO de concavidad + variación de macizo + líquenes)
+        // lo aplica buildRockWing DENTRO (así también colorea trasera y tapas
+        // del volumen 3D) sobre la loseta horneada del muro.
+        wv.colors = new Float32Array(g.colors);
+        wv.uvs = new Float32Array(g.uvs);
+        wv.indices = g.indices;
+        wv.applyToMesh(wm);
+        wm.material = wingMat;
+        wm.receiveShadows = true;
+        wm.isPickable = false;
+        wm.freezeWorldMatrix();
+        wingTris += g.tris;
+      }
+      this.baseCampStats.wingTris = wingTris;
+    }
 
-    // ROCAS SUELTAS: 3 masters low-poly deformados + instancias sembradas
-    // (fuera de la franja de caída y de la cabaña): 3 draw calls.
-    const rockMat = matPBR(this.scene, "screeRockM", "#6f6a62", { rough: 0.95 });
-    const masters: Mesh[] = [];
-    const rngR = makeRng((cfg.seed ^ 0x0770) >>> 0);
-    for (let k = 0; k < 3; k++) {
-      const m = MeshBuilder.CreateIcoSphere(`screeRockM${k}`, { radius: 1, subdivisions: 1 }, this.scene);
-      const p = m.getVerticesData(VertexBuffer.PositionKind);
+    // T107b — ROCAS SUELTAS PROCEDURALES ELIMINADAS (petición del jugador:
+    // «eliminar las piedras sueltas que has metido tú, que no tienen textura
+    // y desentonan»): las icoSpheres de color plano #6e7078 (screeRockM/R)
+    // y los tarrones de campo (fieldBoulder) desentonaban con las LOSAS GLB
+    // del jugador que desde T106 cubren TODO el suelo con su piedra real.
+    // El anillo de bloques de la cabaña y los tarrones de nieve (texturizados
+    // con la pedriza de la montaña) se quedan: integran la Base.glb.
+
+    // T98 — EL CAMPO DE BLOQUES DEL CAMPAMENTO: la Base.glb vive rodeada de
+    // rocas grises y nieve; en el pedriz liso «flotaba» (petición: «parece un
+    // pegote»). Anillo de bloques de la MISMA familia (mismos masters+material
+    // que el pedriz) abrazando el GLB + GORRO DE NIEVE en los grandes (el
+    // lenguaje material del modelo extendido al terreno) — 0 coste de material.
+    const driftMat = matPBR(this.scene, "driftSnowM", "#f1f5f9", { rough: 0.72 });
+    const snowCapMaster = MeshBuilder.CreateIcoSphere("snowCapM", { radius: 1, subdivisions: 1 }, this.scene);
+    snowCapMaster.material = driftMat;
+    snowCapMaster.isVisible = false;
+    snowCapMaster.isPickable = false;
+    const gTint = resolveGroundTintCfg((this.reliefRaw as { groundTint?: unknown } | null)?.groundTint);
+    const rngR = makeRng((cfg.seed ^ 0x0770) >>> 0); // variación determinista del anillo
+    // T98 — master de BLOQUES con el material del pedriz: textura de clastos +
+    // estratos triplanar en ESPACIO MUNDO (el patrón continúa por roca y
+    // terreno: la piedra del campamento es la MISMA piedra que la montaña, no
+    // un pegote gris liso).
+    const boulderMaster = MeshBuilder.CreateIcoSphere("boulderM", { radius: 1, subdivisions: 2 }, this.scene);
+    {
+      const p = boulderMaster.getVerticesData(VertexBuffer.PositionKind);
       if (p) {
         const out = new Array<number>(p.length);
         for (let i = 0; i < p.length; i += 3) {
-          const f = 0.72 + rngR.next() * 0.55;
+          const f = 0.68 + rngR.next() * 0.6;
           out[i] = p[i]! * f;
-          out[i + 1] = p[i + 1]! * (0.5 + rngR.next() * 0.5);
+          out[i + 1] = p[i + 1]! * (0.55 + rngR.next() * 0.45);
           out[i + 2] = p[i + 2]! * f;
         }
-        m.updateVerticesData(VertexBuffer.PositionKind, out);
+        boulderMaster.updateVerticesData(VertexBuffer.PositionKind, out);
       }
-      m.material = rockMat;
-      m.isVisible = false; // solo es semilla (las instancias siguen visibles)
-      m.isPickable = false;
-      masters.push(m);
     }
-    const rocks = scatterRocks(cfg, SherpaScene.CABIN_POS.x, SherpaScene.CABIN_POS.z, 2.3);
-    for (const [rx, , rz, s] of rocks) {
-      const inst = masters[Math.floor(rngR.next() * masters.length) % masters.length]!.createInstance(`screeRock${this.baseCampStats.rocks}`);
-      inst.position.set(rx, s * 0.28, rz);
-      inst.scaling.set(s * (0.8 + rngR.next() * 0.7), s * (0.55 + rngR.next() * 0.5), s * (0.8 + rngR.next() * 0.7));
-      inst.rotation.y = rngR.next() * Math.PI * 2;
-      inst.freezeWorldMatrix();
-      this.castShadow(inst); // sombritas cortas sobre el pedriz
-      this.baseCampStats.rocks++;
+    boulderMaster.material = baseMat;
+    boulderMaster.isVisible = false;
+    boulderMaster.isPickable = false;
+    if (this.groundTintCtx) {
+      const ring = cabinBoulderRing(SherpaScene.BASE_POS.x, SherpaScene.BASE_POS.z, 2.4, this.groundTintCtx);
+      for (const [bx, bz, bs] of ring) {
+        const inst = boulderMaster.createInstance(`campBoulder${this.baseCampStats.rocks}`);
+        inst.position.set(bx, bs * 0.34, bz);
+        inst.scaling.set(bs * (0.9 + rngR.next() * 0.5), bs * (0.6 + rngR.next() * 0.45), bs * (0.9 + rngR.next() * 0.5));
+        inst.rotation.y = rngR.next() * Math.PI * 2;
+        inst.freezeWorldMatrix();
+        this.castShadow(inst);
+        this.baseCampStats.rocks++;
+        if (bs >= 0.42) {
+          const cap = snowCapMaster.createInstance(`snowCap${this.baseCampStats.rocks}`);
+          cap.position.set(bx, bs * 0.72, bz);
+          cap.scaling.set(bs * 0.62, bs * 0.22, bs * 0.58);
+          cap.rotation.y = rngR.next() * Math.PI;
+          cap.freezeWorldMatrix();
+        }
+      }
+      // TARRONES DE NIEVE: falda alrededor del campamento + cordón al pie del
+      // muro + salteados en el campo — UNA malla fusionada (1 draw call).
+      const driftParts: Mesh[] = [];
+      for (const [dx, dz, ds] of scatterDrifts(gTint, this.groundTintCtx)) {
+        const p = MeshBuilder.CreateIcoSphere(`drift${driftParts.length}`, { radius: ds, subdivisions: 1 }, this.scene);
+        p.position.set(dx, ds * 0.14, dz);
+        p.scaling.y = 0.3;
+        p.material = driftMat;
+        p.receiveShadows = true;
+        driftParts.push(p);
+      }
+      if (driftParts.length) {
+        const merged = Mesh.MergeMeshes(driftParts, true, true, undefined, false, false)!;
+        merged.name = "snowDrifts";
+        merged.freezeWorldMatrix();
+      }
+      // T107b: los TARRONES DE CAMPO (T101) desaparecen — con las losas GLB
+      // del jugador cubriendo todo el suelo sobraban (piedra procedural sobre
+      // piedra real, medio enterrados en las losas).
     }
 
     // CABAÑA SHERPA (relleno temporal; luego modelos propios del jugador)
@@ -1296,7 +1473,9 @@ export class SherpaScene {
     ped.wrapV = Texture.WRAP_ADDRESSMODE;
     ped.anisotropicFilteringLevel = 4;
     m.albedoTexture = ped;
-    m.albedoColor = new Color3(0.98, 0.96, 0.92); // casi blanco: manda la textura
+    // T109e: multiplicador ROJIZO-MARRÓN (petición: laterales/pedriz con el
+    // tono de las piedras del suelo — desprendimientos de la misma pared).
+    m.albedoColor = new Color3(1.0, 0.87, 0.78);
     this.baseCampStats.pedrizaTex = true;
     m.metallic = 0;
     m.roughness = 0.95;
@@ -1325,187 +1504,390 @@ export class SherpaScene {
     return m;
   }
 
-  /** T56 — CABAÑA SHERPA: piezas de cabin.ts → 1 mesh fusionado por material
-   *  (5 draw calls), cuerda + BANDERINES de rezo con viento (plugin T55) y
-   *  humo de chimenea (partículas baratas). Todo colgando de un TransformNode
-   *  (posición/giro del conjunto en un solo sitio). */
-  private buildCabin(): void {
-    const spec: CabinSpec = buildCabinSpec();
-    const root = new TransformNode("cabinRoot", this.scene);
-    root.position.set(SherpaScene.CABIN_POS.x, 0, SherpaScene.CABIN_POS.z);
-    root.rotation.y = SherpaScene.CABIN_POS.ry;
-
-    // materiales compartidos (T61: PBR con HDRI; el cristal conserva alfa)
-    const mats: Record<CabinMat, StandardMaterial | PBRMaterial> = {
-      stone: matPBR(this.scene, "cabinStone", "#8a8378", { rough: 0.92 }),
-      wood: matPBR(this.scene, "cabinWood", "#7a5a3a", { rough: 0.8 }),
-      woodDark: matPBR(this.scene, "cabinWoodDark", "#4f3a28", { rough: 0.85 }),
-      roof: matPBR(this.scene, "cabinRoof", "#45403b", { rough: 0.9 }),
-      glass: (() => {
-        const g = mat(this.scene, "cabinGlass", "#9fc7d8", { alpha: 0.55 });
-        g.emissiveColor = new Color3(0.12, 0.16, 0.18); // luz interior tenue
-        return g;
-      })(),
-    };
-
-    // piezas → mesh local, agrupadas por material para el MERGE
-    const byMat = new Map<CabinMat, Mesh[]>();
-    for (const p of spec.pieces) {
-      let m: Mesh;
-      if (p.kind === "cyl") {
-        m = MeshBuilder.CreateCylinder(p.name, { diameterTop: p.size[0], diameterBottom: p.size[1], height: p.size[2], tessellation: 9 }, this.scene);
-      } else if (p.kind === "tri") {
-        m = new Mesh(p.name, this.scene);
-        const vd = new VertexData();
-        vd.positions = [...p.a!, ...p.b!, ...p.c!];
-        vd.indices = [0, 1, 2, 0, 2, 1]; // doble cara (gable visto por detrás)
-        const nrm = new Float32Array(9);
-        VertexData.ComputeNormals(vd.positions as number[], vd.indices as number[], nrm);
-        vd.normals = nrm;
-        // UVs también: el MERGE por material exige el MISMO set de atributos
-        vd.uvs = [0, 0, 1, 0, 0, 1];
-        vd.applyToMesh(m);
-      } else {
-        m = MeshBuilder.CreateBox(p.name, { width: p.size[0], height: p.size[1], depth: p.size[2] }, this.scene);
-      }
-      m.position.set(p.pos[0], p.pos[1], p.pos[2]);
-      if (p.rotDeg.some((r) => r !== 0)) m.rotation.set(p.rotDeg[0] * Math.PI / 180, p.rotDeg[1] * Math.PI / 180, p.rotDeg[2] * Math.PI / 180);
-      m.isPickable = false;
-      const list = byMat.get(p.mat) ?? [];
-      list.push(m);
-      byMat.set(p.mat, list);
-    }
-
-    // CUERDA de los banderines: segmentos finos en el grupo woodDark
-    const ropePts = 12;
-    for (let i = 0; i < ropePts; i++) {
-      const t0 = i / ropePts;
-      const t1 = (i + 1) / ropePts;
-      const a = flagRopePoint(spec.rope, t0);
-      const b = flagRopePoint(spec.rope, t1);
-      const seg = MeshBuilder.CreateCylinder(`flagRope${i}`, { diameter: 0.022, height: 1, tessellation: 5 }, this.scene);
-      seg.position.set((a[0]! + b[0]!) / 2, (a[1]! + b[1]!) / 2, (a[2]! + b[2]!) / 2);
-      const dx = b[0]! - a[0]!, dy = b[1]! - a[1]!, dz = b[2]! - a[2]!;
-      const len = Math.hypot(dx, dy, dz) || 1e-6;
-      seg.scaling.y = len;
-      if (!seg.rotationQuaternion) seg.rotationQuaternion = Quaternion.Identity();
-      Quaternion.FromUnitVectorsToRef(Vector3.Up(), new Vector3(dx / len, dy / len, dz / len), seg.rotationQuaternion);
-      const list = byMat.get("woodDark")!;
-      list.push(seg);
-    }
-
-    // MERGE por material (1 draw call por material) + sombras
-    for (const [k, list] of byMat) {
-      if (!list.length) continue;
-      const merged = Mesh.MergeMeshes(list, true, true, undefined, false, false);
-      if (!merged) continue;
-      merged.name = `cabin_${k}`;
-      merged.material = mats[k];
-      merged.parent = root;
-      merged.receiveShadows = true;
-      this.castShadow(merged);
-    }
-
-    // BANDERINES de rezo: UNA malla con vertex colors (tibetanos) + buffer
-    // plantBend (bend 0 atado a la cuerda / 1 borde libre) — ondean con el
-    // viento REAL del juego vía el plugin de la vegetación (T55).
-    const flags = spec.flagPendants;
-    const fp = new Float32Array(flags.length * 4 * 3);
-    const fc = new Float32Array(flags.length * 4 * 4);
-    const fi = new Uint32Array(flags.length * 6);
-    const fb = new Float32Array(flags.length * 4 * 2);
-    flags.forEach((f, i) => {
-      const v = i * 4;
-      const set = (k: number, p: [number, number, number], bend: number): void => {
-        fp[(v + k) * 3] = p[0]!;
-        fp[(v + k) * 3 + 1] = p[1]!;
-        fp[(v + k) * 3 + 2] = p[2]!;
-        fc[(v + k) * 4] = f.color[0]!;
-        fc[(v + k) * 4 + 1] = f.color[1]!;
-        fc[(v + k) * 4 + 2] = f.color[2]!;
-        fc[(v + k) * 4 + 3] = 1;
-        fb[(v + k) * 2] = bend;
-        fb[(v + k) * 2 + 1] = f.phase;
-      };
-      set(0, f.tL, 0);
-      set(1, f.tR, 0);
-      set(2, f.bL, 1);
-      set(3, f.bR, 1);
-      fi[i * 6] = v; fi[i * 6 + 1] = v + 1; fi[i * 6 + 2] = v + 3;
-      fi[i * 6 + 3] = v; fi[i * 6 + 4] = v + 3; fi[i * 6 + 5] = v + 2;
-    });
-    const fm = new Mesh("cabinFlags", this.scene);
-    const fvd = new VertexData();
-    fvd.positions = fp;
-    fvd.indices = fi;
-    const fnrm = new Float32Array(fp.length);
-    VertexData.ComputeNormals(fp as unknown as number[], fi as unknown as number[], fnrm);
-    fvd.normals = fnrm;
-    fvd.colors = fc;
-    fvd.applyToMesh(fm);
-    fm.setVerticesBuffer(new VertexBuffer(this.scene.getEngine(), fb, "plantBend", false, false, 2));
-    fm.material = this.ensureFlagMaterial();
-    fm.parent = root;
-    fm.isPickable = false;
-    this.castShadow(fm);
-    this.baseCampStats.flags = flags.length;
-    this.baseCampStats.cabinPieces = spec.pieces.length;
-
-    // HUMO de la chimenea (≤ 24 partículas, coste ≈ 0: campamento vivo)
-    const smoke = new ParticleSystem("cabinSmoke", 24, this.scene);
-    smoke.particleTexture = this.fxTexture;
-    smoke.emitter = this.cabinLocalToWorld(spec.smokePos);
-    smoke.minEmitBox = new Vector3(-0.06, 0, -0.06);
-    smoke.maxEmitBox = new Vector3(0.06, 0.04, 0.06);
-    smoke.color1 = new Color4(0.82, 0.82, 0.85, 0.5);
-    smoke.color2 = new Color4(0.7, 0.7, 0.74, 0.4);
-    smoke.colorDead = new Color4(0.75, 0.75, 0.8, 0);
-    smoke.minSize = 0.09;
-    smoke.maxSize = 0.32;
-    smoke.minLifeTime = 1.4;
-    smoke.maxLifeTime = 2.4;
-    smoke.emitRate = 9;
-    smoke.blendMode = ParticleSystem.BLENDMODE_STANDARD;
-    smoke.direction1 = new Vector3(-0.06, 0.55, -0.06);
-    smoke.direction2 = new Vector3(0.08, 0.95, 0.08);
-    smoke.minEmitPower = 0.35;
-    smoke.maxEmitPower = 0.8;
-    smoke.gravity = new Vector3(0, 0.12, 0);
-    smoke.start();
-    this.baseCampStats.smoke = true;
-  }
-
-  /** Material de los BANDERINES: PBR vertex-color doble cara con SU plugin de
-   *  viento (tela ligera: ondea el doble que las matas de la pared). */
-  private ensureFlagMaterial(): PBRMaterial {
-    if (this.flagMat) return this.flagMat;
-    const m = new PBRMaterial("cabinFlagM", this.scene);
-    m.albedoColor = new Color3(1, 1, 1); // el color real va en VERTEX COLORS
+  /** T111 — MATERIAL ROJIZO DE LAS PRESAS (petición: «los agarres de la pared
+   *  ahora desentonan un poco al no ser rojizos»): el mismo horno que la roca
+   *  base (pedriza + normales) pero con el TINTE TERRACOTA DEL MURO
+   *  (1,14/0,76/0,62 = la piedra #bd7e6e de los suelos nevados) — la presa
+   *  nace de la misma roca que escala, no de la grava del suelo. */
+  private holdRockMat: PBRMaterial | null = null;
+  private ensureHoldRockMaterial(): PBRMaterial {
+    if (this.holdRockMat) return this.holdRockMat;
+    const base = this.ensureBaseRockMaterial();
+    const m = new PBRMaterial("holdRockM", this.scene);
+    m.albedoTexture = base.albedoTexture ?? null;
+    m.albedoColor = new Color3(1.14, 0.76, 0.62); // EL MISMO tinte terracota del muro
     m.metallic = 0;
     m.roughness = 0.9;
-    m.backFaceCulling = false;
-    this.flagMat = m;
-    this.flagWind = new PlantWindPlugin(m);
-    const viento = resolvePlantWindCfg((this.reliefRaw as { vegetacion?: { viento?: unknown } } | null)?.vegetacion?.viento);
-    this.flagWind.configure({
-      ...viento,
-      breezeAmpM: Math.min(0.12, Math.max(0.05, viento.breezeAmpM * 2.6)),
-      pushM: Math.min(0.3, Math.max(0.1, viento.pushM * 2.2)),
-    });
+    m.bumpTexture = base.bumpTexture ?? null;
+    m.bumpTexture!.level = 0.9;
+    this.holdRockMat = m;
     return m;
   }
 
-  /** Local → mundo de la cabaña (rotación Y + traslación del conjunto). */
-  private cabinLocalToWorld(p: [number, number, number]): Vector3 {
-    const pos = SherpaScene.CABIN_POS;
-    const c = Math.cos(pos.ry);
-    const s = Math.sin(pos.ry);
-    return new Vector3(pos.x + p[0]! * c + p[2]! * s, p[1], pos.z - p[0]! * s + p[2]! * c);
+  /** T90 — BASE CAMP del jugador (public/models/base.glb): sustituye a la
+   *  cabaña paramétrica de T56. El GLB (nodo único de Tripo con rotación X+90
+   *  propia) apoya en su origen: y∈[0, 0.55] y huella ~1×1 m en unidades
+   *  métricas — con y=0 del root queda SENTADO en el pedriz (el terreno en
+   *  BASE_POS está a nivel 0, como la cabaña vieja). Escala 7 → ~3,9 m de alto.
+   *  Si el fichero falta o está roto, la escena sigue sin él (solo pedriz) y
+   *  queda avisado en consola — igual que las caras expresivas (T76). */
+  private buildCabin(): void {
+    void SceneLoader.ImportMeshAsync("", assetUrl("/models/base.glb"), undefined, this.scene)
+      .then((res) => {
+        const s = SherpaScene.BASE_POS.scale;
+        const root = new TransformNode("baseCampRoot", this.scene);
+        root.position.set(SherpaScene.BASE_POS.x, 0, SherpaScene.BASE_POS.z);
+        root.rotation.y = SherpaScene.BASE_POS.ry;
+        root.scaling.setAll(s);
+        for (const m of res.meshes) {
+          m.isPickable = false;
+          m.receiveShadows = true;
+          this.castShadow(m);
+        }
+        // los nodos de cima del GLB cuelgan del campamento; el resto conserva
+        // su jerarquía interna intacta
+        for (const n of [...res.transformNodes, ...res.meshes]) {
+          if (!n.parent) n.parent = root;
+        }
+        this.baseCampStats.cabinPieces = res.meshes.length;
+        // T109d — TEXTURA NUEVA DE LA CABAÑA (petición: "te actualizo la
+        // textura (base.jpg) de la cabaña"): el horneado de Tripo que trae el
+        // GLB se SUSTITUYE por la textura del usuario en todos los materiales.
+        try {
+          const tex = new Texture(assetUrl("/models/base_cabana.jpg"), this.scene, true, false);
+          tex.anisotropicFilteringLevel = 4;
+          const seen = new Set<string>();
+          let painted = 0;
+          for (const m of res.meshes) {
+            const mat = m.material as PBRMaterial | null;
+            if (!mat || seen.has(mat.id)) continue;
+            seen.add(mat.id);
+            const pm = mat as PBRMaterial;
+            if (typeof pm.albedoTexture !== "undefined") { pm.albedoTexture = tex; pm.metallic = 0; painted++; }
+            else if ("diffuseTexture" in mat) { (mat as unknown as { diffuseTexture: Texture }).diffuseTexture = tex; painted++; }
+          }
+          this.baseCampStats.cabinTex = painted > 0;
+        } catch (err) { console.warn("[basecamp] textura base_cabana.jpg no aplicada:", err); }
+        // T110 — HUMO DE LA CHIMENEA en SU SITIO (petición: «el humo debe salir
+        // perfectamente de la chimenea de la caseta»). El GLB de Tripo es UNA
+        // malla horneada con DOS mástiles: el TUBO de la chimenea (grueso, con
+        // tapa) y el POSTE de banderines (fino y más alto). T114 medía el
+        // clúster del techo por encima de maxY−0,25 y PILLÓ EL POSTE (captura
+        // del jugador con X roja: el humo salía de las banderillas). T115 — la
+        // boca es lo GRUESO que sobresale: franjas de 8 cm por debajo del pico,
+        // clúster xz conectado por franja; el tubo es el que en su franja más
+        // alta tiene una huella REDONDA y ANCHA (min span ≥ 0,18 m — la tapa
+        // mide ~0,3; el poste ≤ 0,17) y persiste ≥ 2 franjas con centro fijo.
+        try {
+          root.computeWorldMatrix(true);
+          // la hornada buena es la de MÁS VÉRTICES (la cabaña horneada;
+          // meshes[0] puede ser una pieza auxiliar).
+          const mesh0 = res.meshes.reduce(
+            (a, b) => (b.getTotalVertices() > a.getTotalVertices() ? b : a),
+            res.meshes[0]!,
+          );
+          mesh0?.computeWorldMatrix(true);
+          let mouth: Vector3 | null = null;
+          if (mesh0) {
+            const pos = mesh0.getVerticesData("position");
+            if (pos && pos.length >= 30) {
+              const M = mesh0.getWorldMatrix().m; // fila-mayor; v' = M·v
+              const wv: { x: number; y: number; z: number }[] = [];
+              let maxY = -1e9;
+              for (let i = 0; i < pos.length; i += 3) {
+                const x = pos[i]!, y = pos[i + 1]!, z = pos[i + 2]!;
+                const v = {
+                  x: M[0] * x + M[4] * y + M[8] * z + M[12],
+                  y: M[1] * x + M[5] * y + M[9] * z + M[13],
+                  z: M[2] * x + M[6] * y + M[10] * z + M[14],
+                };
+                wv.push(v);
+                if (v.y > maxY) maxY = v.y;
+              }
+              // clústeres conectados de una franja (celdas de 7 cm, 8-vecinos)
+              const CELL = 0.07, FRANJA = 0.08;
+              const clustersOf = (lo: number, hi: number): { cx: number; cz: number; top: number; minSpan: number; ratio: number; n: number }[] => {
+                const pts = wv.filter((v) => v.y > lo && v.y <= hi);
+                if (pts.length < 4) return [];
+                const grid = new Map<string, { x: number; z: number }[]>();
+                for (const p of pts) {
+                  const k = `${Math.round(p.x / CELL)}:${Math.round(p.z / CELL)}`;
+                  (grid.get(k) ?? grid.set(k, []).get(k)!).push({ x: p.x, z: p.z });
+                }
+                const seen = new Set<string>();
+                const out: { cx: number; cz: number; top: number; minSpan: number; ratio: number; n: number }[] = [];
+                for (const k of grid.keys()) {
+                  if (seen.has(k)) continue;
+                  const stack = [k]; seen.add(k);
+                  let sx = 0, sz = 0, n = 0, mnx = 1e9, mxx = -1e9, mnz = 1e9, mxz = -1e9;
+                  while (stack.length) {
+                    const ck = stack.pop()!;
+                    for (const p of grid.get(ck)!) {
+                      sx += p.x; sz += p.z; n++;
+                      if (p.x < mnx) mnx = p.x; if (p.x > mxx) mxx = p.x;
+                      if (p.z < mnz) mnz = p.z; if (p.z > mxz) mxz = p.z;
+                    }
+                    const [cx, cz] = ck.split(":").map(Number);
+                    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+                      const nk = `${cx + dx}:${cz + dz}`;
+                      if (grid.has(nk) && !seen.has(nk)) { seen.add(nk); stack.push(nk); }
+                    }
+                  }
+                  if (n >= 4) {
+                    const spx = mxx - mnx, spz = mxz - mnz;
+                    out.push({ cx: sx / n, cz: sz / n, top: hi, minSpan: Math.min(spx, spz), ratio: Math.max(spx, spz) / Math.max(0.01, Math.min(spx, spz)), n });
+                  }
+                }
+                return out.sort((a, b) => b.n - a.n).slice(0, 4);
+              };
+              // el TUBO: en su franja más alta su huella es una TAPA redonda
+              // (ratio ≤ 1,6 — una bandera cuelga alargada, ratio ~2) y ancha
+              // (0,18–0,5 m); persiste ≥ 2 franjas (es un tubo, no un encaje).
+              // Los candidatos se emparejan por PROXIMIDAD (≤ 12 cm): por
+              // retícula, dos franjas del mismo tubo caen en celdas distintas
+              // y el tubo muere con hits=1 (bug T115 detectado en la E2E).
+              type Cand = { x: number; z: number; top: number; topMinSpan: number; hits: number };
+              const cands: Cand[] = [];
+              for (let top = maxY; top > maxY - 0.9; top -= FRANJA) {
+                for (const c of clustersOf(top - FRANJA, top)) {
+                  const cur = cands.find(
+                    (q) => Math.hypot(q.x - c.cx, q.z - c.cz) < 0.12);
+                  if (!cur) {
+                    cands.push({ x: c.cx, z: c.cz, top: c.top, topMinSpan: c.minSpan, hits: 1 });
+                    continue;
+                  }
+                  if (c.top > cur.top) { cur.top = c.top; cur.topMinSpan = c.minSpan; cur.x = c.cx; cur.z = c.cz; }
+                  cur.hits++;
+                }
+              }
+              let best: Cand | null = null;
+              for (const c of cands) {
+                if (c.hits < 2 || c.topMinSpan < 0.18 || c.topMinSpan > 0.5) continue;
+                const fr = clustersOf(c.top - FRANJA, c.top).find(
+                  (q) => Math.hypot(q.cx - c.x, q.cz - c.z) < 0.12);
+                if (!fr || fr.ratio > 1.6) continue;
+                if (!best || c.topMinSpan > best.topMinSpan) best = c;
+              }
+              if (best && maxY > 0.5) {
+                // la boca queda EN la tapa: un pelín por encima del borde alto
+                mouth = new Vector3(best.x, best.top + 0.05, best.z);
+              }
+            }
+          }
+          if (!mouth) {
+            // red de seguridad (GLB distinto): punto local horneado de T110
+            // (0.190, −0.090, −0.994) con la matriz MUNDIAL DEL MESH (el mesh
+            // cuelga del nodo Tripo con SU rotación X+90° propia — sin ella el
+            // punto cae fuera de la cabaña, T109), corregida −2.0 m (T113).
+            const CHIMNEY_LOCAL = new Vector3(-0.19, -0.09, -0.994);
+            mouth = mesh0
+              ? Vector3.TransformCoordinates(CHIMNEY_LOCAL, mesh0.getWorldMatrix()).subtract(new Vector3(0, 2.0, 0))
+              : new Vector3(0, -1, 0);
+          }
+          if (Number.isFinite(mouth.y) && mouth.y > 0.5) {
+            this.startChimneySmoke(mouth);
+            this.baseCampStats.smoke = true;
+            this.baseCampStats.smokePos = { x: +mouth.x.toFixed(3), y: +mouth.y.toFixed(3), z: +mouth.z.toFixed(3) };
+          } else {
+            // red de seguridad: pico del GLB (heurística antigua)
+            let topY = -1e9, cx = 0, cz = 0, n = 0;
+            for (const m of res.meshes) {
+              m.computeWorldMatrix(true);
+              const c = m.getBoundingInfo().boundingBox.centerWorld;
+              const y = m.getBoundingInfo().boundingBox.maximumWorld.y;
+              cx += c.x; cz += c.z; n++;
+              if (y > topY) topY = y;
+            }
+            if (n > 0 && topY > 0) {
+              this.startChimneySmoke(new Vector3(cx / n, topY - 0.15, cz / n));
+              this.baseCampStats.smoke = true;
+            }
+          }
+        } catch (err) { console.warn("[basecamp] humo de chimenea no arrancó:", err); }
+        this.baseCampReadyResolve?.(); // T110: campamento listo (la carga puede acabar)
+      })
+      .catch((err) => {
+        console.warn("[basecamp] base.glb no cargó:", err);
+        this.baseCampReadyResolve?.(); // T110: falló, pero la carga NO se cuelga
+      });
+  }
+
+  /** T113 — PLUMA BOYANTE REALISTA (petición: «quiero un sistema de partículas
+   *  más realista que parezca humos de verdad… debe evolucionar como partículas
+   *  que decaen con la altura hasta desaparecer, pero por lo menos deben subir
+   *  3 o 4 metros, y reaccionar con las rachas de viento»; antes: puffs que
+   *  flotaban lineales y un pegote blanco nacido en el aire). Física de pluma
+ *  boyante (Morton, Taylor & Turner 1956, J. Fluid Mech. 10:201 — el modelo
+ *  clásico de chimeneas): (1) nace estrecha y rápida en la boca; (2) se FRENA
+ *  al entrainar aire frío — v ≈ v0 − k·t con piso ~0,24 m/s; (3) se ENSANCHA
+ *  como cono de ~14°: r ≈ r0·(0,62+0,24·Δz); (4) la opacidad DECAE
+ *  EXPONENCIALMENTE con la ALTURA (T116: α ∝ e^(−Δz/5,2) — disipación lenta:
+ *  la columna sube ~8 m sin cortarse; antes moría a 4,2 m y a 3 m ya era
+ *  invisible); (5) turbulencia: remolino sinusoidal por
+   *  partícula que crece con Δz; (6) la RACHA (setWind → gravity.x en vivo)
+   *  dobla la pluma MÁS arriba que abajo (el humo viejo es liviano) y entre
+   *  rachas la mece la brisa. updater propio: el de Babylon no sabe frenar,
+   *  ensanchar ni disipar por cota. */
+  private startChimneySmoke(worldPos: Vector3): void {
+    if (!this.scene || this.chimneySmoke) return;
+    // T116 — COLUMNA CONTINUA (petición del jugador: «el humo empieza bien
+    // pero desaparece»): antes moría por cota 4,2 m y la opacidad caía con
+    // e^(−Δz/1,35) — a 3 m ya era invisible. Ahora la pluma sube ~8 m en una
+    // columna que NO se corta: vida 13-17 s (capacidad 22/s·17 s ≈ 400),
+    // disipación lenta e^(−Δz/5,2) y muerte por cota 13 m (mucho más arriba
+    // de lo que alcanza a verse desde el campamento). El frenado por
+    // entrainment y el cono se quedan (T113).
+    const ps = new ParticleSystem("chimenea", 460, this.scene);
+    ps.particleTexture = this.fxTexture;
+    const y0 = worldPos.y - 0.05;
+    ps.emitter = new Vector3(worldPos.x, y0, worldPos.z); // EN la boca del tubo
+    ps.minEmitBox = new Vector3(-0.04, 0, -0.04);
+    ps.maxEmitBox = new Vector3(0.04, 0.05, 0.04);
+    ps.minSize = 0.22; ps.maxSize = 0.4; // nace ESTRECHA: el cono hace el resto
+    ps.minLifeTime = 13; ps.maxLifeTime = 17;
+    ps.emitRate = 22; // hilo CONTINUO: siempre hay humo saliendo
+    ps.blendMode = ParticleSystem.BLENDMODE_STANDARD;
+    ps.direction1 = new Vector3(-0.04, 0.92, -0.03);
+    ps.direction2 = new Vector3(0.07, 1.18, 0.05);
+    ps.minEmitPower = 0.85; ps.maxEmitPower = 1.05; // v0 ≈ 0,9-1,2 m/s
+    ps.gravity = new Vector3(0, 0, 0); // la RACHA entra por gravity.x (setWind)
+    ps.updateSpeed = 0.01;
+    type Meta = { base: number; phase: number };
+    const meta = new WeakMap<object, Meta>();
+    const inner = ps as unknown as {
+      _scaledUpdateSpeed: number;
+      recycleParticle: (p: Particle) => void;
+    };
+    ps.updateFunction = (particles: Particle[]): void => {
+      const dt = inner._scaledUpdateSpeed || ps.updateSpeed * 1.67;
+      const gx = ps.gravity.x; // racha EN VIVO (setWind lo escribe)
+      for (let index = 0; index < particles.length; index++) {
+        const p = particles[index]!;
+        let m = meta.get(p);
+        if (!m) { m = { base: p.size, phase: Math.random() * 6.283 }; meta.set(p, m); }
+        const dz = p.position.y - y0;
+        // (2) frenado por entrainment con piso (nunca se para del todo)
+        p.direction.y = Math.max(0.24, p.direction.y - dt * 0.115);
+        // (5)+(6) remolino + viento amplificado por altura (pluma liviana arriba)
+        const turb = Math.sin(m.phase + dz * 1.9 + p.age * 1.4);
+        const gustK = gx * (0.45 + Math.min(1.1, Math.max(0, dz) * 0.28));
+        p.direction.x += (gustK + turb * 0.09 * Math.min(1.2, 0.25 + Math.max(0, dz))) * dt;
+        p.direction.z += Math.cos(m.phase * 1.7 + p.age * 1.1) * 0.05 * dt;
+        p.position.x += p.direction.x * dt;
+        p.position.y += p.direction.y * dt;
+        p.position.z += p.direction.z * dt;
+        // (3) cono de ensanchamiento + giro perezoso del billboard
+        p.size = Math.min(2.9, m.base * (0.62 + 0.24 * Math.max(0, dz)));
+        p.angle += dt * 0.5;
+        // (4) opacidad por COTA: entrada 0,25 s → e^(−Δz/5,2) (T116: disipación
+        // LENTA — la columna sigue visible a 6-8 m) → cierre final
+        const fadeIn = Math.min(1, p.age / 0.25);
+        const endFade = Math.max(0, Math.min(1, (p.lifeTime - p.age) / 0.6));
+        const a = 0.82 * fadeIn * Math.exp(-Math.max(0, dz) / 5.2) * endFade;
+        const cool = Math.min(1, Math.max(0, dz) / 4); // se enfría: azul tenue arriba
+        p.color.r = 0.84 - 0.04 * cool;
+        p.color.g = 0.85 - 0.02 * cool;
+        p.color.b = 0.88 + 0.05 * cool;
+        p.color.a = a;
+        p.age += dt;
+        // muerte por COTA (13 m, T116) o por vida → reciclar (idioma del
+        // updater por defecto: swap con la última + respawn)
+        if (p.age >= p.lifeTime || dz > 13) {
+          p.age = p.lifeTime;
+          inner.recycleParticle(p);
+          index--;
+        }
+      }
+    };
+    ps.start();
+    this.chimneySmoke = ps;
+  }
+
+  private chimneySmoke: ParticleSystem | null = null;
+
+  /** T106 — MOSAICO DE PARCELAS NEVADAS A ESCALA 1/10 SIN APLANAR (petición:
+   *  "debe conservar su geometría 3D original y cubrir completamente el suelo,
+   *  no dejar zonas libres… mantener ese tamaño pero que se vean los volúmenes
+   *  3D originales que es donde está la gracia").
+   *  Causa del T105 corregida: los GLB NO son cuadrados — huella local medida
+   *  (bbox POSITION) 0.710×1.058 (v1) y 0.696×1.054 (v2) → a S=4 cada parcela
+   *  mide ~2.84×4.23 m; la retícula antigua espaciaba 4.0 m en X y dejaba
+   *  franjas de suelo desnudo de ~1.2 m (las zonas rojas de la captura). Ahora
+   *  el paso se calcula desde la huella REAL con solape de ~10 cm: cero huecos.
+   *  Escala UNIFORME (S en los 3 ejes): los volúmenes originales — piedras
+   *  asomando ~30 cm sobre el dorso de la lámina — se leen tal cual. La cota
+   *  (TOP_MEAN 0.16) se fija para que los VALLES del relieve de la lámina 1
+   *  (ondulación local ±0.04 → ±0.16 m a escala 1/10) rocen el suelo plano sin
+   *  hundirse: con la cota baja T105 la mitad de cada parcela quedaba bajo la
+   *  nieve y el suelo tintado asomaba como llanuras de tierra. La base queda
+   *  bien enterrada (nada flota). Cobertura = TODO el suelo procedural (40×24:
+   *  x −20..20, z −12..12) con margen. Instancias por hardware (malla semilla
+   *  invisible + instancias): geometría y textura una vez por variante, ~1.1M
+   *  tris estáticos en 2 draw calls, sin coste por frame. */
+  private buildSnowGroundTiles(): void {
+    const S = 4.0;            // 1/10 de la escala T104, IGUAL en los 3 ejes
+    const TOP_MEAN = 0.16;    // dorso medio: los valles rozan la nieve plana
+    // huella real (bbox de los GLB) × S. T108c — el usuario seguía viendo
+    // suelo desnudo: el solape de T106 (10-12 cm) no bastaba (el BORDE de la
+    // lámina baja por debajo de la nieve antes de llegar a su bbox) y el área
+    // 40×24 se quedaba corta hacia los laterales/fondo del pedriz. Ahora:
+    // solape generoso (35-45 cm, los bordes quedan ENTERRADOS bajo el vecino)
+    // y área 52×32 con margen; además las filas se ESCALONAN media celda
+    // (aparato de ladrillo) para que las juntas nunca queden alineadas.
+    const FOOT_X = 0.7101 * S;  // 2.84 m (v1, la más ancha)
+    const FOOT_Z = 1.0544 * S;  // 4.22 m (v2, la más corta en fondo)
+    const SX = FOOT_X - 0.35;
+    const SZ = FOOT_Z - 0.45;
+    const AREA_X = 52;        // el suelo visible llega más allá del procedural
+    const AREA_Z = 32;
+    const nCols = Math.ceil(AREA_X / SX) + 2;
+    const nRows = Math.ceil(AREA_Z / SZ) + 2;
+    const x0 = -AREA_X / 2 - ((nCols - 1) * SX - AREA_X) / 2; // centrado, sobra margen
+    const z0 = -AREA_Z / 2 - ((nRows - 1) * SZ - AREA_Z) / 2;
+    const cells: { x: number; z: number; v: 0 | 1; ry: number }[] = [];
+    for (let r = 0; r < nRows; r++) {
+      const rowShift = (r % 2) * SX * 0.5; // T108c: escalonado (sin costuras alineadas)
+      for (let c = 0; c < nCols; c++) {
+        const alt = (r + c) % 2 === 1;
+        cells.push({ x: x0 + c * SX + rowShift, z: z0 + r * SZ, v: alt ? 1 : 0, ry: alt ? Math.PI : 0 });
+      }
+    }
+    // dorso medio medido en T104 (y local): v1 +0.044, v2 −0.002 → los valles
+    // de la lámina 1 rozan la nieve y las piedras asoman ~25-40 cm
+    const MEAN_Y: [number, number] = [0.044, -0.002];
+    for (let v = 0; v <= 1; v++) {
+      const mine = cells.filter((cl) => cl.v === v);
+      const file = v === 0 ? "/models/suelonevado1.glb" : "/models/suelonevado2.glb";
+      void SceneLoader.ImportMeshAsync("", assetUrl(file), undefined, this.scene)
+        .then((res) => {
+          const src = res.meshes.find((m) => m.getTotalVertices() > 0) as Mesh | undefined;
+          if (!src) return;
+          src.parent = null; // la malla ES el portador (las parcelas: instancias)
+          for (const n of res.transformNodes) n.dispose();
+          // dieléctrico limpio (nieve): sin brillos metálicos espurios
+          const mat = src.material as PBRMaterial | null;
+          if (mat) { mat.metallic = 0; mat.roughness = Math.max(0.9, mat.roughness ?? 0.95); }
+          src.isPickable = false;
+          src.isVisible = false; // solo semilla (patrón de las rocas del pedriz)
+          const py = TOP_MEAN - MEAN_Y[v] * S;
+          for (const [i, cl] of mine.entries()) {
+            const inst = src.createInstance(`snowParcel_v${v}_${i}`);
+            inst.position.set(cl.x, py, cl.z);
+            inst.scaling.set(S, S, S); // UNIFORME: volumen 3D original intacto
+            inst.rotation.y = cl.ry;
+            inst.isPickable = false;
+            inst.receiveShadows = true; // cabaña/rocas proyectan sobre las parcelas
+            inst.freezeWorldMatrix(); // terreno estático
+          }
+          this.baseCampStats.snowTiles += mine.length;
+        })
+        .catch((err) => console.warn(`[snowtiles] ${file} no cargó:`, err));
+    }
   }
 
   /** T56 SONDA E2E: estado del base camp (pedriz/faldones/cabaña/banderines).
    *  T61: añade el sellado lateral (massifTris). */
-  getBaseCampInfo(): { enabled: boolean; screeTris: number; spurTris: number; rocks: number; cabinPieces: number; flags: number; smoke: boolean; pedrizaTex: boolean; flagWindActive: boolean; massifTris: number } {
+  getBaseCampInfo(): { enabled: boolean; screeTris: number; wingTris: number; rocks: number; cabinPieces: number; flags: number; smoke: boolean; pedrizaTex: boolean; flagWindActive: boolean; massifTris: number; snowTiles: number; cabinTex: boolean; smokePos: { x: number; y: number; z: number } | null } {
     return { ...this.baseCampStats, flagWindActive: this.flagWind?.debugInfo().active ?? false };
   }
 
@@ -1579,6 +1961,75 @@ export class SherpaScene {
     }
   }
 
+  /** T117 — MATERIAL DE LAS ALAS LATERALES: LA MISMA LOSETA HORNEADA DEL MURO
+   *  (petición explícita del jugador: «mismo material que la pared escalable»,
+   *  revoca el liso del T116). generateChunk con la MISMA semilla/celda que
+   *  usaba el ala en T113–T115: colorMap + normalMap de la piedra del muro,
+   *  tinte idéntico y roughness de roca. Sin plugins triplanar (en la
+   *  superficie casi vertical proyectaban bandas — T112 A/B). */
+  private massifRockMat: PBRMaterial | null = null;
+  private ensureMassifRockMaterial(): PBRMaterial {
+    if (this.massifRockMat) return this.massifRockMat;
+    const style = rockwallStyleFromData((this.reliefRaw as { rockwall?: Partial<RockwallStyle> } | null)?.rockwall ?? null);
+    const res = generateChunk({
+      seed: (ROCKWALL_SEED ^ 0x51a7) >>> 0,
+      cell: 6.4 / 512, // 512 px → 6,4 m (detalle ~1,25 cm/px, como los chunks)
+      W: 512, H: 512,
+      origin: { x: 40, y: 260 }, // región genérica: sin presas ni salientes
+      style,
+    });
+    const m = new PBRMaterial("massifRockM", this.scene);
+    const cm = RawTexture.CreateRGBATexture(res.colorMap, res.W, res.H, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
+    cm.wrapU = Texture.WRAP_ADDRESSMODE;
+    cm.wrapV = Texture.WRAP_ADDRESSMODE;
+    cm.anisotropicFilteringLevel = 4;
+    m.albedoTexture = cm;
+    const nmt = RawTexture.CreateRGBATexture(res.normalMap, res.W, res.H, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
+    nmt.wrapU = Texture.WRAP_ADDRESSMODE;
+    nmt.wrapV = Texture.WRAP_ADDRESSMODE;
+    nmt.anisotropicFilteringLevel = 4;
+    m.bumpTexture = nmt;
+    m.bumpTexture.level = 1.05;
+    m.albedoColor = new Color3(1.14, 0.76, 0.62); // EL MISMO tinte del muro (T110)
+    m.metallic = 0;
+    m.roughness = 0.93;
+    m.backFaceCulling = false; // las alas se ven por detrás al orbitar
+    this.massifRockMat = m;
+    return m;
+  }
+
+  /** T112 — MATERIAL DE LA ROCA DEL MURO (antes inline en reliefBuildChunk):
+   *  extraído para que las ALAS LATERALES (buildRockWing) compartan la MISMA
+   *  instancia aunque se construyan antes que el primer chunk de roca. */
+  private ensureRockMaterial(): void {
+    if (this.rockMat || !this.rockField) return;
+    const m = new StandardMaterial("rockM", this.scene);
+    const size = this.rockField.cfg.textureSizePx;
+    const grain = this.rockField.cfg.grainVar;
+    const data = rockTextureRGBA(size, ROCK_SEED ^ 0x7a3f11, this.rockField.cfg.textureContrast, grain);
+    const tex = RawTexture.CreateRGBATexture(data, size, size, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
+    tex.wrapU = Texture.WRAP_ADDRESSMODE;
+    tex.wrapV = Texture.WRAP_ADDRESSMODE;
+    m.diffuseTexture = tex; // mapa de roca (grano + manchas + vetas + poros)
+    // MAPA NORMAL (T41, "más definición"): relieve POR PÍXEL — cantos,
+    // estratos finos, vetas y grano captan la luz direccional sin un solo
+    // triángulo más. Con anisotropía la piedrina se ve nítida en ángulo.
+    const nrm = rockNormalRGBA(size, ROCK_SEED ^ 0x2c9f5e, this.rockField.cfg.bumpStrength);
+    const nTex = RawTexture.CreateRGBATexture(nrm, size, size, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
+    nTex.wrapU = Texture.WRAP_ADDRESSMODE;
+    nTex.wrapV = Texture.WRAP_ADDRESSMODE;
+    m.bumpTexture = nTex;
+    m.bumpTexture.level = 1.35; // intensidad del relieve por píxel
+    // T58-A DEFINICIÓN: anisotropía en AMBOS mapas — la piedra se ve
+    // nítida en ángulo raso (la cámara vive casi siempre en ángulo).
+    tex.anisotropicFilteringLevel = 8;
+    nTex.anisotropicFilteringLevel = 8;
+    m.diffuseColor = new Color3(1, 1, 1); // el tono final = textura × vertex colors
+    m.specularColor = new Color3(0.035, 0.034, 0.03); // micro-brillo en cantos (rugosidad viva)
+    m.backFaceCulling = true; // cara frontal con winding consistente
+    this.rockMat = m;
+  }
+
   /** Construye la losa de relieve del chunk c. ROCA ESTRATIFICADA (T40):
    *  retícula de campo de altura fractal con UVs y textura de roca. MODO
    *  CLÁSICO: semillas (anclajes + relleno), teselación (Voronoi o tectónica),
@@ -1596,33 +2047,7 @@ export class SherpaScene {
     if (this.rockField) {
       const geom = buildRockChunk(this.rockField, yMin, yMax);
       if (!geom.positions.length) { mesh.dispose(); return false; }
-      if (!this.rockMat) {
-        const m = new StandardMaterial("rockM", this.scene);
-        const size = this.rockField.cfg.textureSizePx;
-        const grain = this.rockField.cfg.grainVar;
-        const data = rockTextureRGBA(size, ROCK_SEED ^ 0x7a3f11, this.rockField.cfg.textureContrast, grain);
-        const tex = RawTexture.CreateRGBATexture(data, size, size, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
-        tex.wrapU = Texture.WRAP_ADDRESSMODE;
-        tex.wrapV = Texture.WRAP_ADDRESSMODE;
-        m.diffuseTexture = tex; // mapa de roca (grano + manchas + vetas + poros)
-        // MAPA NORMAL (T41, "más definición"): relieve POR PÍXEL — cantos,
-        // estratos finos, vetas y grano captan la luz direccional sin un solo
-        // triángulo más. Con anisotropía la piedrina se ve nítida en ángulo.
-        const nrm = rockNormalRGBA(size, ROCK_SEED ^ 0x2c9f5e, this.rockField.cfg.bumpStrength);
-        const nTex = RawTexture.CreateRGBATexture(nrm, size, size, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
-        nTex.wrapU = Texture.WRAP_ADDRESSMODE;
-        nTex.wrapV = Texture.WRAP_ADDRESSMODE;
-        m.bumpTexture = nTex;
-        m.bumpTexture.level = 1.35; // intensidad del relieve por píxel
-        // T58-A DEFINICIÓN: anisotropía en AMBOS mapas — la piedra se ve
-        // nítida en ángulo raso (la cámara vive casi siempre en ángulo).
-        tex.anisotropicFilteringLevel = 8;
-        nTex.anisotropicFilteringLevel = 8;
-        m.diffuseColor = new Color3(1, 1, 1); // el tono final = textura × vertex colors
-        m.specularColor = new Color3(0.035, 0.034, 0.03); // micro-brillo en cantos (rugosidad viva)
-        m.backFaceCulling = true; // cara frontal con winding consistente
-        this.rockMat = m;
-      }
+      this.ensureRockMaterial();
       const vd = new VertexData();
       vd.positions = new Float32Array(geom.positions);
       vd.normals = new Float32Array(geom.normals);
@@ -1909,7 +2334,13 @@ export class SherpaScene {
     nmt.anisotropicFilteringLevel = 4;
     mat.bumpTexture = nmt; // DETALLE FINO: normales horneadas a 1 cm
     mat.bumpTexture.level = 1.15;
-    mat.albedoColor = new Color3(1, 1, 1); // el tono final = colorMap horneado
+    // T110 — TONO ROJIZO DE LAS PIEDRAS DEL SUELO (petición: «el color de la
+    // piedra del muro que escalamos que tenga el tono rojizo igual de las
+    // piedras del suelo que están sobre la nieve (de los modelos glb)»): las
+    // piedras de los GLB del suelo miden #bd7e6e (0.743, 0.496, 0.432) —
+    // medido en scripts/t110_glb_analysis.py. El tinte multiplicador lleva el
+    // colorMap horneado hacia ESA terracota (T109e era demasiado suave).
+    mat.albedoColor = new Color3(1.14, 0.76, 0.62); // el tono final = colorMap horneado × tinte piedra
     mat.metallic = 0; // piedra: sin reflejo metálico
     mat.roughness = 0.93; // rugosidad de roca (micro-brillo solo en cantos)
     mat.backFaceCulling = true;
@@ -2145,6 +2576,32 @@ export class SherpaScene {
       this.climaTex = null; // la pared funciona sin la capa
       return null;
     }
+  }
+
+  /** T128 — LAS CAPAS DE SHADER DEL MURO ESCALABLE para un material de la
+   *  partida (los bloques del nivel pared): MISMA estratificación triplanar
+   *  (TriPlanarStrataPlugin) y MISMA meteorización climática (ClimateRock-
+   *  Plugin) que los chunks donde se colocan los anclajes — texturas
+   *  compartidas de escena y los mismos parámetros del horno. Petición del
+   *  jugador: «solo quiero que los bloques tengan el mismo shader donde se
+   *  colocan los anclajes». El material entra con su albedo/bump horneados;
+   *  aquí se le enganchan las DOS capas de shader y se rehace el layout del
+   *  UBO (T69-FIX 3). Los plugins entran en strataPlugins/climaPlugins, así
+   *  que syncNow() del render los mantiene sincronizados cada frame. */
+  applyWallRockShaderLayers(mat: PBRMaterial): void {
+    const strata = this.ensureStrataTexture();
+    if (strata) {
+      const plugin = new TriPlanarStrataPlugin(mat);
+      plugin.configure(strata, this.strataCfg!.scale, this.strataCfg!.strength, this.strataCfg!.detail);
+      this.strataPlugins.push(plugin);
+    }
+    const clima = this.ensureClimateTextures();
+    if (clima) {
+      const plugin = new ClimateRockPlugin(mat);
+      plugin.configure(clima.fields, clima.normal, clima.scale, clima.strength, clima.freezeY);
+      this.climaPlugins.push(plugin);
+    }
+    if (this.strataPlugins.length || this.climaPlugins.length) this.refreshMaterialUboLayout(mat);
   }
 
   /** T69 SONDA E2E: estado de la capa climática de la piedra (campos horneados
@@ -2581,50 +3038,56 @@ export class SherpaScene {
 
   addHolds(holds: HoldInstance[], colors: Record<string, string>): void {
     // RELIEVE (T39): los anclajes son SEMILLAS de la teselación — cada presa
-    // genera SU piedra (cara centrada en ella, fractura a su alrededor). Si la
-    // losa ya estaba construida sin ellas, se reconstruye.
-    // ROCA (T40): cada presa APLANA el campo a SU cota (la piedra descansa en
-    // la roca: superficie 12 mm por detrás del centro de la presa).
+    // genera SU piedra (cara centrada en ella, fractura a su alrededor).
+    // PARED INTOCABLE (petición del jugador: "la pared no se modifica, solo el
+    // anclaje, que tendrá la profundidad precisa para llegar hasta la pared"):
+    // la hornada INICIAL moldea la pared una sola vez (antes de que exista
+    // cualquier losa). Cualquier presa que llegue DESPUÉS NO recalc ni
+    // redibuja NADA: ya no se destruyen chunks ni se funde la roca — era el
+    // redibujado que hacía desaparecer la pared antes de volver a aparecer.
+    // La presa tardía se ASENTA sobre la superficie que YA hay: su malla baja
+    // hasta la cota real de la roca en su (x, y) (profundidad precisa).
     if (this.reliefCfg && holds.length) {
-      let minY = Infinity, maxY = -Infinity;
-      for (const h of holds) {
-        this.reliefHolds.push({ x: h.pos.x, y: h.pos.y });
-        if (this.rockField) {
-          this.rockField.anchors.push({
-            x: h.pos.x, y: h.pos.y,
-            dz: this.reliefFaceZ - (h.pos.z + this.rockField.cfg.anchorBackM),
-          });
+      const primeraHornada = !this.reliefBaked && !this.reliefMeshes.size;
+      if (primeraHornada) {
+        for (const h of holds) {
+          this.reliefHolds.push({ x: h.pos.x, y: h.pos.y });
+          if (this.rockField) {
+            this.rockField.anchors.push({
+              x: h.pos.x, y: h.pos.y,
+              dz: this.reliefFaceZ - (h.pos.z + this.rockField.cfg.anchorBackM),
+            });
+          }
+          // DIACLASAS (T43): cada presa FUNDE la roca a su cota. T68: el asiento
+          // queda anchorBackM DETRÁS del centro de la presa (mesh z = h.pos.z −
+          // anchorBackM), como dictaba el contrato T40 — la presa se ve MONTADA
+          // SOBRE su piedra y no a media tapa (el knob sigue mordiendo la pared
+          // por detrás del asiento, T41). r modera la atenuación de grietas.
+          if (this.rockCtx) {
+            this.rockCtx.anchors.push({
+              x: h.pos.x, y: h.pos.y,
+              hz: this.reliefFaceZ - (h.pos.z - this.rockCtx.style.anchorBackM),
+              r: Math.min(0.12, Math.max(0.05, h.radius)),
+              kind: "hand", // magnesio en todas las presas visibles
+            });
+          }
         }
-        // DIACLASAS (T43): cada presa FUNDE la roca a su cota. T68: el asiento
-        // queda anchorBackM DETRÁS del centro de la presa (mesh z = h.pos.z −
-        // anchorBackM), como dictaba el contrato T40 — la presa se ve MONTADA
-        // SOBRE su piedra y no a media tapa (el knob sigue mordiendo la pared
-        // por detrás del asiento, T41). r modera la atenuación de grietas.
-        if (this.rockCtx) {
-          this.rockCtx.anchors.push({
-            x: h.pos.x, y: h.pos.y,
-            hz: this.reliefFaceZ - (h.pos.z - this.rockCtx.style.anchorBackM),
-            r: Math.min(0.12, Math.max(0.05, h.radius)),
-            kind: "hand", // magnesio en todas las presas visibles
-          });
-        }
-        if (h.pos.y < minY) minY = h.pos.y;
-        if (h.pos.y > maxY) maxY = h.pos.y;
+        this.reliefBaked = true;
       }
-      const ch = this.reliefCfg.chunkHeightM;
-      for (const [c, entry] of this.reliefMeshes) {
-        if (c * ch <= maxY + 0.55 && (c + 1) * ch >= minY - 0.55) {
-          entry.plants?.dispose(); // T48: la vegetación muere con su chunk
-          this.plantasSpots.delete(c);
-          this.plantasTotal -= entry.plantsN ?? 0;
-          entry.mesh.dispose(false, this.rockCtx !== null); // T43: material+texturas propios
-          this.reliefMeshes.delete(c);
-        }
-        this.cancelRockJob(c);
-      }
+      // SIN disposición de chunks jamás: el ciclo de vida de las losas manda
+      // SOLO el streaming por cámara (updateRelief), nunca un anclaje.
     }
     for (const h of holds) {
       if (this.holdMeshes.has(h.id)) continue;
+      // T92 — ANCLAJE PORTÁTIL: empotrador metálico propio (placa + argolla),
+      // NO usa la receta de presa natural. Se agarra igual (rock_firm).
+      if (h.portable) {
+        const instP = this.ensurePortableMaster().createInstance(`hold_${h.id}`);
+        instP.position.set(h.pos.x, h.pos.y, h.pos.z);
+        instP.metadata = { holdType: "rock_firm", holdRadius: h.radius, portable: true };
+        this.holdMeshes.set(h.id, instP as unknown as Mesh);
+        continue;
+      }
       const typeHex = colors[h.type] ?? TYPE_COLORS[h.type] ?? "#8d99ae";
       // T63 — PRESAS NATURALES: la forma sale de la receta del tipo y la
       // VARIANTE del hash del id (3 siluetas por tipo: la pared no se clona).
@@ -2636,7 +3099,11 @@ export class SherpaScene {
         this.holdMasters.set(key, master);
       }
       const inst = master.createInstance(`hold_${h.id}`);
-      inst.position.set(h.pos.x, h.pos.y, h.pos.z);
+      // PROFUNDIDAD PRECISA (petición del jugador): la presa llega HASTA la
+      // pared — si la roca de su columna está más atrás que el plano de juego,
+      // el knob se hunde hasta la superficie existente (nunca al revés).
+      const zWall = this.rockField ? rockZAt(this.rockField, h.pos.x, h.pos.y) : h.pos.z;
+      inst.position.set(h.pos.x, h.pos.y, Math.min(h.pos.z, zWall));
       inst.metadata = { holdType: h.type, holdRadius: h.radius }; // T61 swaps + T66-FB anillos
       // PRESAS PROFUNDAS (T41, petición del jugador: "hacer los puntos de
       // agarre más profundos"): el knob se ESTIRA en z hasta morder la pared —
@@ -2843,6 +3310,26 @@ export class SherpaScene {
    *  COLOR POR VÉRTICE: tinte del trozo, magnesio blanco, grietas oscuras).
    *  La roca usa el MATERIAL DEL MURO (UV triplanar de mundo → la presa ES
    *  piedra de la misma pared); hielo/nieve/brillo llevan material propio. */
+  /** T92 — MASTER del anclaje portátil: placa + argolla metálicas fusionadas
+   *  (empotrador). Instancias por presa colocada; agarrable como rock_firm. */
+  private ensurePortableMaster(): Mesh {
+    if (this.portableMaster) return this.portableMaster;
+    const plate = MeshBuilder.CreateCylinder("pa_plate", { diameter: 0.17, height: 0.035, tessellation: 12 }, this.scene);
+    plate.rotation.x = Math.PI / 2; // eje del cilindro hacia la cámara (pared en z)
+    const ring = MeshBuilder.CreateTorus("pa_ring", { diameter: 0.11, thickness: 0.028, tessellation: 12 }, this.scene);
+    ring.position.z = 0.035;
+    const merged = Mesh.MergeMeshes([plate, ring], true, true, undefined, false, false)!;
+    merged.name = "portableMaster";
+    merged.isVisible = false;
+    merged.receiveShadows = true;
+    const m = matPBR(this.scene, "portableM", "#c9ccd1", { rough: 0.35, metal: 0.8 });
+    m.emissiveColor = new Color3(0.05, 0.05, 0.06);
+    merged.material = m;
+    merged.metadata = { holdType: "rock_firm", natural: true };
+    this.portableMaster = merged;
+    return merged;
+  }
+
   private buildHoldMaster(type: string, key: string, rec: HoldShapeRecipe, typeHex: string): Mesh {
     const parts: Mesh[] = [];
     for (const p of rec.parts) {
@@ -2876,9 +3363,9 @@ export class SherpaScene {
     merged.isVisible = false;
     merged.receiveShadows = true;
     if (holdUsesWallRock(type)) {
-      // MISMA piedra que el muro (UV de mundo: continuidad total de textura);
-      // el tinte por vértice porta la identificación del tipo.
-      merged.material = this.ensureBaseRockMaterial();
+      // T111 — MISMA FAMILIA ROJIZA que el muro (tinte terracota); el tinte
+      // por vértice de la receta porta la identificación del tipo.
+      merged.material = this.ensureHoldRockMaterial();
     } else {
       const m = matPBR(this.scene, `holdM_${key}`, typeHex, { rough: rec.rough, alpha: rec.alpha < 1 ? rec.alpha : undefined });
       if (rec.emissive) m.emissiveColor = new Color3(rec.emissive[0], rec.emissive[1], rec.emissive[2]);
@@ -2993,10 +3480,13 @@ export class SherpaScene {
         cfg.tint[player] ?? "#ffffff", // tinte de JUNTAS/CORREAS (el cuerpo conserva su arte)
         (m) => this.castShadow(m),
         (m) => { this.rockFill?.includedOnlyMeshes.push(m); }, // T44: relleno frío para el PBR
-        // T79 — el SEGUNDO sherpa (P1) lleva el mapa de ropa ROJO del jugador
-        // (upload → public/models/sherpas/sherpa_rojo.jpg): se distinguen de
-        // un vistazo; P0 conserva el arte original.
-        player === 1 ? { bodyTexture: "/models/sherpas/sherpa_rojo.jpg" } : undefined,
+        // T79+T108 — MAPAS DE ROPA POR JUGADOR (assets del usuario en
+        // public/models/sherpas/): P1 = sherpa ROJO (el invitado) y P0 =
+        // sherpa VERDE (el anfitrión, el que escala por la IZQUIERDA; antes
+        // conservaba el arte original del GLB). Se distinguen de un vistazo.
+        player === 1
+          ? { bodyTexture: assetUrl("/models/sherpas/sherpa_rojo.jpg") }
+          : { bodyTexture: assetUrl("/models/sherpas/sherpa_verde.jpg") },
       );
     } catch (err) {
       this.climberState = "error";
@@ -3379,6 +3869,15 @@ export class SherpaScene {
     setChain(this.ropeSegs[1], nodesB);
   }
 
+  /** T93 — MATERIAL DE LA CUERDA (el mismo del puente visual verlet: cáñamo
+   *  con bandas negras de ropeTexture.ts) para los amarres del nivel — el
+   *  lazo del saco de dinero se ata «con el mismo material de la cuerda que
+   *  ya tenemos» (dictado del jugador). */
+  ropeMaterial(): PBRMaterial {
+    this.ensureRopeLines();
+    return this.ropeMat!;
+  }
+
   /** Coloca un segmento de cuerda ENTRE dos puntos (sin el mínimo de escala de
    *  orientCapsule: los tramos son cortos y deben medir exactamente su largo). */
   private orientRopeSeg(mesh: Mesh | InstancedMesh, a: V3, b: V3): void {
@@ -3522,6 +4021,27 @@ export class SherpaScene {
     if (inst) {
       this.richPuppet = inst;
       this.richPoseSmooth.reset(); // T85-SMOOTH: títere nuevo, historia fuera
+      // T95 — TIRANTES FUERA (petición del jugador: «revisa la geometría del
+      // Ricachón que por debajo hay algún objeto que molesta»). Los tirantes
+      // del GLB son cajas planas de 0,6 m (largo en z) en la jerarquía plana:
+      // el rig articulado (T84) les aplica el Δ del marco del torso SENTADO y
+      // acaban apuntando hacia fuera/abajo — se ve una correa suelta flotando
+      // tras la espalda y bajo la tabla (verificado E2E: ocultando tirantes
+      // la escena queda limpia).
+      // T101 — MOCHILA FUERA TAMBIÉN (petición del jugador: «sigue teniendo
+      // algún objeto en su interior que se hace muy evidente cuando cae, una
+      // especie de caja amarilla que no forma parte de nuestro personaje»).
+      // La mochila del GLB del rico es una CAJA lisa de 24 vértices con el
+      // dorado de identidad (#d4af37): al caer el ragdoll y asomar bajo el
+      // torso texturizado se lee como un cajón ajeno al personaje. Las
+      // cuerdas cuelgan de las mochilas de los ESCALADORES (plank.ts), no de
+      // la suya: aquí es decoración y sobra.
+      for (const [name, node] of inst.pieceEntries()) {
+        if (name === "tirante_izq" || name === "tirante_der" || name === "mochila") {
+          for (const m of node.getChildMeshes()) m.isVisible = false;
+          if (node instanceof Mesh) node.isVisible = false;
+        }
+      }
       // T76 — DIMS DESDE EL BIND: los hombros/caderas derivados deben caer
       // DONDE el modelo tiene las articulaciones (el artista esculpió el rico
       // con hombros anchos, ±0.2965: los defaults de la plantilla dejaban las
@@ -3565,7 +4085,7 @@ export class SherpaScene {
     ];
     for (const name of Object.keys(RICH_FACES) as RichFaceName[]) {
       const spec: RichFaceSpec = RICH_FACES[name];
-      void SceneLoader.LoadAssetContainerAsync("", spec.url, this.scene)
+      void SceneLoader.LoadAssetContainerAsync("", assetUrl(spec.url), this.scene)
         .then((cont) => {
           if (this.disposed) { cont.dispose(); return; }
           cont.addAllToScene();
@@ -3778,8 +4298,8 @@ export class SherpaScene {
     if (cached) return cached;
     if (typeof document === "undefined") return null;
     const img = new Image();
-    img.src = `/models/sherpas/emotes/r_${m}.png`;
-    // marcador temporal: hasta que el PNG decodifique, la sonda texReady=false
+    img.src = assetUrl(`/models/sherpas/emotes/r_${m}.webp`);
+    // marcador temporal: hasta que el webp decodifique, la sonda texReady=false
     // y el plano muestra el material base (blanco) — pocas frames a 4 fps.
     img.onload = () => {
       if (this.disposed) return;
@@ -5000,16 +5520,191 @@ export class SherpaScene {
     return { x: (v.x / vp) * 100, y: (v.y / vh) * 100 };
   }
 
+  /** T101 INVENTARIO DE MOCHILA: posición en pantalla (px CSS del canvas) de
+   *  la mochila del escalador (pieza «mochila» del GLB; cápsulas → la caja del
+   *  pack). null si no hay títere o la mochila está fuera de cámara. */
+  backpackScreenPx(player: 0 | 1): { x: number; y: number } | null {
+    const canvas = this.engine.getRenderingCanvas();
+    if (!canvas) return null;
+    let world: Vector3 | null = null;
+    const inst = this.puppet[player];
+    if (inst) {
+      for (const [name, node] of inst.pieceEntries()) {
+        if (name !== "mochila") continue;
+        node.computeWorldMatrix(true);
+        world = node.getAbsolutePosition().clone();
+      }
+    } else {
+      const pack = (this.rigVisuals[player] as (RigVisual & { pack?: Mesh }) | undefined)?.pack;
+      if (pack) {
+        pack.computeWorldMatrix(true);
+        world = pack.getAbsolutePosition().clone();
+      }
+    }
+    if (!world) return null;
+    const pct = this.projectToScreenCss({ x: world.x, y: world.y, z: world.z });
+    if (!Number.isFinite(pct.x) || !Number.isFinite(pct.y)) return null;
+    if (pct.x < -5 || pct.x > 105 || pct.y < -5 || pct.y > 105) return null;
+    return { x: (pct.x / 100) * canvas.clientWidth, y: (pct.y / 100) * canvas.clientHeight };
+  }
+
+  /** T101: ¿el punto (px CSS del canvas) cae sobre la mochila de un escalador?
+   *  Devuelve el escalador MÁS CERCANO dentro del radio de clic, o null. */
+  backpackAt(cssX: number, cssY: number): 0 | 1 | null {
+    const radiusPx = 52; // generoso: la mochila es pequeña en pantalla
+    let best: 0 | 1 | null = null;
+    let bestD = radiusPx * radiusPx;
+    for (const p of [0, 1] as const) {
+      const s = this.backpackScreenPx(p);
+      if (!s) continue;
+      const d = (s.x - cssX) * (s.x - cssX) + (s.y - cssY) * (s.y - cssY);
+      if (d <= bestD) {
+        bestD = d;
+        best = p;
+      }
+    }
+    return best;
+  }
+
+  // ---------- T96: HOVER + OUTLINE de la mochila (dictado: «al pasar el
+  // ratón sobre el objeto mochila se resalte o se cree un outline del objeto
+  // para poder pulsarlo y abrirla») ----------
+
+  private mochilaHL: HighlightLayer | null = null;
+  private mochilaHLActivo: 0 | 1 | null = null;
+  private mochilaMallasCache = new Map<0 | 1, Mesh[]>();
+  /** T96 — brillo ORIGINAL de los materiales de la mochila resaltada (para restaurar). */
+  private mochilaOrigEmiss = new Map<0 | 1, { mesh: Mesh; mat: { emissiveColor?: Color3 }; emissive: Color3 }[]>();
+
+  /** Mallas de la pieza «mochila» del títere (para el outline). */
+  private mochilaMallas(player: 0 | 1): Mesh[] {
+    const cache = this.mochilaMallasCache.get(player);
+    if (cache) return cache;
+    const out: Mesh[] = [];
+    const inst = this.puppet[player];
+    if (inst) {
+      for (const [name, node] of inst.pieceEntries()) {
+        if (name !== "mochila") continue;
+        if ((node as Mesh).geometry) out.push(node as Mesh);
+        for (const h of node.getChildMeshes()) out.push(h as Mesh);
+      }
+    } else {
+      const pack = (this.rigVisuals[player] as (RigVisual & { pack?: Mesh }) | undefined)?.pack;
+      if (pack) out.push(pack);
+    }
+    this.mochilaMallasCache.set(player, out);
+    return out;
+  }
+
+  /** T96 — ZONA de la mochila en pantalla (centro px + radio px) para el
+   *  arbitraje de clic y el hover: la caja envolvente de la pieza PROYECTADA
+   *  (antes un radio fijo de 52 px se tragaba los anclajes vecinos o se
+   *  quedaba corto según la cámara). null si la mochila no está en cámara. */
+  mochilaZona(player: 0 | 1): { x: number; y: number; r: number } | null {
+    const canvas = this.engine.getRenderingCanvas();
+    if (!canvas) return null;
+    const centro = this.backpackScreenPx(player);
+    if (!centro) return null;
+    // centro en MUNDO de la pieza (para proyectar su borde)
+    const inst = this.puppet[player];
+    let world: { x: number; y: number; z: number } | null = null;
+    if (inst) {
+      for (const [name, node] of inst.pieceEntries()) {
+        if (name !== "mochila") continue;
+        node.computeWorldMatrix(true);
+        const ap = node.getAbsolutePosition();
+        world = { x: ap.x, y: ap.y, z: ap.z };
+      }
+    } else {
+      const pack = (this.rigVisuals[player] as (RigVisual & { pack?: Mesh }) | undefined)?.pack;
+      if (pack) {
+        pack.computeWorldMatrix(true);
+        const ap = pack.getAbsolutePosition();
+        world = { x: ap.x, y: ap.y, z: ap.z };
+      }
+    }
+    if (!world) return null;
+    let rW = 0;
+    for (const m of this.mochilaMallas(player)) {
+      m.computeWorldMatrix(true);
+      rW = Math.max(rW, m.getBoundingInfo().boundingSphere.radiusWorld);
+    }
+    if (rW <= 0) rW = 0.22;
+    const c0 = this.projectToScreenCss(world);
+    const c1 = this.projectToScreenCss({ x: world.x + rW, y: world.y, z: world.z });
+    const rPx = Math.abs(c1.x - c0.x) / 100 * canvas.clientWidth;
+    if (!Number.isFinite(rPx) || rPx <= 0) return null;
+    // margen de puntería mínimo: la mochila en plano lejano es de ~20 px
+    return { x: centro.x, y: centro.y, r: Math.max(20, rPx * 1.2) };
+  }
+
+  /** T96 — resalta la mochila del jugador dado al pasar el ratón (dictado:
+   *  «se resalte o se cree un outline del objeto para poder pulsarlo y
+   *  abrirla»). Doble resalte: BRILLO dorado en SU material propio (los
+   *  clones del títere tienen materiales por jugador: no toca al gemelo —
+   *  visible SIEMPRE, también sin post-procesado) + OUTLINE del
+   *  HighlightLayer cuando el motor lo soporta. null = sin resalte. */
+  setMochilaHighlight(player: 0 | 1 | null): void {
+    if (this.mochilaHLActivo === player) return;
+    const previo = this.mochilaHLActivo;
+    this.mochilaHLActivo = player;
+    if (previo !== null) this.resalteMochila(previo, false);
+    if (player !== null) this.resalteMochila(player, true);
+  }
+
+  private resalteMochila(player: 0 | 1, on: boolean): void {
+    if (on && !this.mochilaHL) {
+      try {
+        this.mochilaHL = new HighlightLayer("mochilaHL", this.scene);
+      } catch {
+        this.mochilaHL = null; // sin stencil: queda el BRILLO del material
+      }
+    }
+    const registros = this.mochilaOrigEmiss.get(player) ?? [];
+    if (!on) {
+      // restaurar el brillo original de cada material
+      for (const r of registros) {
+        const anyMat = r.mat as unknown as { emissiveColor?: Color3 };
+        if (anyMat.emissiveColor && r.emissive) anyMat.emissiveColor.copyFrom(r.emissive);
+        this.mochilaHL?.removeMesh(r.mesh);
+      }
+      this.mochilaOrigEmiss.delete(player);
+      return;
+    }
+    if (!this.mochilaOrigEmiss.has(player)) this.mochilaOrigEmiss.set(player, []);
+    const arr = this.mochilaOrigEmiss.get(player)!;
+    const dorado = new Color3(0.42, 0.32, 0.04);
+    for (const mesh of this.mochilaMallas(player)) {
+      const mats: unknown[] = [];
+      const mat = mesh.material as unknown as { emissiveColor?: Color3; subMaterials?: unknown[] } | null;
+      if (!mat) continue;
+      if (mat.subMaterials) { for (const sm of mat.subMaterials) mats.push(sm); }
+      else mats.push(mat);
+      for (const m of mats) {
+        const anyMat = m as { emissiveColor?: Color3 } | null;
+        if (!anyMat?.emissiveColor) continue;
+        if (arr.some((r) => r.mat === anyMat)) continue;
+        arr.push({ mesh, mat: anyMat, emissive: anyMat.emissiveColor.clone() });
+        anyMat.emissiveColor = dorado.clone();
+      }
+      try { this.mochilaHL?.addMesh(mesh, Color3.FromHexString("#ffd75e")); } catch { /* sin stencil */ }
+    }
+  }
+
   /** Métricas de rendimiento para la sonda E2E (se refrescan cada ventana de
    *  checkSeconds; scale = nivel de hardware scaling, 1 = nativo). */
   getPerf(): { fps: number; frameTimeMs: number; activeMeshes: number; drawCalls: number; meshes: number; scale: number } {
     return this.perfStats;
   }
 
-  /** PERF: resolución adaptativa con histéresis — si el fps medio queda por
-   *  debajo del objetivo−10 se renderiza más barato (escala +step); si sobra
-   *  margen (objetivo+3) se recupera hacia 1. Nunca sobremuestrea (min 1).
-   *  Se llama DESPUÉS de scene.render() para leer el estado de ESTE frame. */
+  /** PERF: resolución adaptativa — T107a: la histéresis anterior bastaba para
+   *  la nitidez pero permitía el PING-PONG 1.0↔1.1 (ventanas de checkSeconds
+   *  alternando "sobran fps" y "falta fps"): cada cambio realoca el buffer del
+   *  canvas y Chromium presenta un frame negro → parpadeo periódico (~2 s) en
+   *  el invitado. Ahora: zona muerta amplia (solo baja si fps < objetivo−10,
+   *  solo sube si el coste < 45% del presupuesto Y el vsync sobra), RACHA de
+   *  2 ventanas seguidas con el mismo voto y COOLDOWN de 3 ventanas desde el
+   *  último cambio — el resize pasa de "cada 2 s" a "excepcional". */
   private updatePerf(): void {
     const now = performance.now();
     if (this.lastRenderNow > 0) {
@@ -5024,17 +5719,33 @@ export class SherpaScene {
     this.perfAcc = 0;
     const fps = 1000 / this.dtSmoothed;
     const p = this.perfTuning;
-    // DECISIÓN: subir escala si el fps de vsync cae; BAJAR si el COSTE de
-    // render deja margen (el vsync disimula el sobrante — no basta con fps).
     const budgetMs = 1000 / Math.max(30, p.targetFps);
     if (this.perfWarm < 2) {
       this.perfWarm++; // ignora el arranque (compilación de shaders, jank inicial)
-    } else if (fps < p.targetFps - 10 && this.scaleLevel < p.maxScale) {
-      this.scaleLevel = Math.min(p.maxScale, Math.round((this.scaleLevel + p.step) * 100) / 100);
-      this.engine.setHardwareScalingLevel(hardwareScaleFor(this.scaleLevel, this.dpr, this.perfTuning.dprCap ?? 2));
-    } else if (this.renderCostSmoothed > 0 && this.renderCostSmoothed < budgetMs * 0.55 && this.scaleLevel > p.minScale) {
-      this.scaleLevel = Math.max(p.minScale, Math.round((this.scaleLevel - p.step) * 100) / 100);
-      this.engine.setHardwareScalingLevel(hardwareScaleFor(this.scaleLevel, this.dpr, this.perfTuning.dprCap ?? 2));
+      this.perfStreak = 0;
+    } else {
+      const wantsCheaper = fps < p.targetFps - 10 && this.scaleLevel < p.maxScale;
+      const wantsNicer = this.scaleLevel > p.minScale && this.renderCostSmoothed > 0
+        && this.renderCostSmoothed < budgetMs * 0.45 && fps >= p.targetFps;
+      this.perfStreak = wantsCheaper ? 1 : wantsNicer ? -1 : 0;
+      const cooldownMs = Math.max(6000, windowS * 3000);
+      const streakReady = Math.abs(this.perfStreak) >= 2;
+      if (streakReady && now - this.lastScaleChangeMs >= cooldownMs) {
+        const prev = this.scaleLevel;
+        if (this.perfStreak === 1) {
+          this.scaleLevel = Math.min(p.maxScale, Math.round((this.scaleLevel + p.step) * 100) / 100);
+        } else {
+          this.scaleLevel = Math.max(p.minScale, Math.round((this.scaleLevel - p.step) * 100) / 100);
+        }
+        if (this.scaleLevel !== prev) {
+          this.lastScaleChangeMs = now;
+          this.perfStreak = 0;
+          this.engine.setHardwareScalingLevel(hardwareScaleFor(this.scaleLevel, this.dpr, this.perfTuning.dprCap ?? 2));
+          // repinta YA el buffer realocado: sin esto Chromium puede presentar
+          // el backbuffer vacío (frame negro) hasta el siguiente rAF
+          this.scene.render();
+        }
+      }
     }
     // draw calls del frame = delta del contador del engine / nº de frames
     // (addCount acumula en .current sin fetchNewFrame: crece monótono)

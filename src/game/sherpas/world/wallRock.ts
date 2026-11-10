@@ -33,6 +33,7 @@
 //    sobre la piedra) — el campo se construye PENSANDO en los anclajes, como
 //    pedía la petición original del relieve.
 
+import { computeRockTint } from "./rockTint"; // T113: el ala se tiñe DENTRO (también dorso y tapas)
 // ---------- datos (wall_gen.json relief, algorithm "estratificada") ----------
 
 export interface RockData {
@@ -493,6 +494,9 @@ export interface RockGeom {
   indices: number[];
   verts: number;
   tris: number;
+  /** T112: desplazamiento del campo por vértice (solo buildRockWing) — entra
+   *  en computeRockTint como `h` para el AO de concavidad del ala. */
+  heights?: number[];
 }
 
 /** Malla de un chunk: retícula (nx+1)×(ny+1) desplazada por el campo, con
@@ -558,6 +562,181 @@ export function buildRockChunk(f: RockField, yMin: number, yMax: number, stepM?:
       g.indices.push(a, b, c, a, c, d);
       g.tris += 2;
     }
+  }
+  return g;
+}
+
+/** T112 — ALA LATERAL del macizo (sustituye a los faldones-espolón, que el
+ *  jugador veía como «bloques de relleno»): la SUPERFICIE DEL MURO continúa
+ *  más allá del canto (x = ±wallW/2) y se dobla `angleRad` hacia la cámara
+ *  (V abierta a los jugadores). Mismo campo, mismos colores y MISMA escala de
+ *  textura: la piedra es literalmente la del muro continuada — cero costura.
+ *  NO escalable por construcción: la escena no la registra como chunk ni
+ *  porta presas.
+ *
+ *  Geometría: retícula s∈[0,len] × y∈[y0,y1]; base E=(side·half, faceZ),
+ *  tangente u=(side·cosA, 0, −sinA), normal de plano hacia cámara
+ *  n̂=(−side·sinA, 0, −cosA) (perpendicular a u, con z<0). La muestra del
+ *  campo se toma en la posición «desenrollada» xUn = side·(half + s) para que
+ *  el patrón de piedra SIGA al del muro desde el canto; el desplazamiento d
+ *  empuja la superficie a lo largo de n̂ (equivalente de faceZ−d en el muro).
+ *  Winding según el lado (culling activo): la cara debe quedar mirando a la
+ *  cámara — el signo de (u × ŷ)·n̂ decide si la retícula sale en orden normal
+ *  o invertido. */
+export function buildRockWing(
+  f: RockField, side: -1 | 1, angleRad: number, lenM: number,
+  yMin: number, yMax: number, stepM?: number, dScale = 1,
+  overlapM = 0, thicknessM = 0, tintCfg?: import("./rockTint").RockTintCfg, tintChunk = 0,
+): RockGeom {
+  const c = f.cfg;
+  const step = stepM ?? c.gridStepM;
+  // T113 — overlapM: el ala NACE ANTES del canto (s<0 ⇒ la superficie entra
+  // DENTRO del volumen del muro): la junta ala-muro queda sellada siempre
+  // (petición del jugador: «NUNCA se deben ver esas zonas descubiertas»).
+  const ns = Math.max(1, Math.round((lenM + overlapM) / step));
+  const ny = Math.max(1, Math.round((yMax - yMin) / step));
+  const ss = (lenM + overlapM) / ns, sy = (yMax - yMin) / ny;
+  const W = ns + 1, H = ny + 1;
+  const cosA = Math.cos(angleRad), sinA = Math.sin(angleRad);
+  const ux = side * cosA, uz = -sinA;            // tangente (hacia fuera y a cámara)
+  const nx = -side * sinA, nz = -cosA;           // normal de plano (z<0: a cámara)
+  const half = f.wallW / 2;
+  const tile = Math.max(0.05, c.textureTileM);
+  const g: RockGeom = { positions: [], normals: [], colors: [], uvs: [], indices: [], verts: W * H, tris: 0, heights: [] };
+  // campo desplazado y color por vértice (pasada 1), vértices (pasada 2)
+  const disp = new Float64Array(W * H);
+  const colr = new Float64Array(W * H);
+  const colg = new Float64Array(W * H);
+  const colb = new Float64Array(W * H);
+  for (let j = 0; j < H; j++) {
+    const y = yMin + j * sy;
+    for (let i = 0; i < W; i++) {
+      const s = i * ss - overlapM;
+      const xUn = side * (half + s); // desenrollado: el patrón continúa al del muro
+      const sm = rockSample(f, xUn, y);
+      const idx = j * W + i;
+      disp[idx] = sm.d;
+      colr[idx] = sm.col[0];
+      colg[idx] = sm.col[1];
+      colb[idx] = sm.col[2];
+    }
+  }
+  for (let j = 0; j < H; j++) {
+    const y = yMin + j * sy;
+    for (let i = 0; i < W; i++) {
+      const s = i * ss - overlapM;
+      const idx = j * W + i;
+      const d = disp[idx]!;
+      const dd = d * dScale; // dScale<1: ala MÁS VERTICAL (pared, no cortina)
+      g.positions.push(side * half + ux * s + nx * dd, y, f.faceZ + uz * s + nz * dd);
+      // normal por diferencias finitas sobre la superficie real:
+      // ∂P/∂s = u + n̂·∂d/∂s  ·  ∂P/∂y = ŷ + n̂·∂d/∂y  →  n = (∂P/∂y) × (∂P/∂s)
+      const dl = disp[j * W + Math.max(0, i - 1)]!;
+      const dr = disp[j * W + Math.min(ns, i + 1)]!;
+      const db = disp[Math.max(0, j - 1) * W + i]!;
+      const dt = disp[Math.min(ny, j + 1) * W + i]!;
+      const ds = (dr - dl) / ((Math.min(ns, i + 1) - Math.max(0, i - 1)) * ss);
+      const dy = (dt - db) / ((Math.min(ny, j + 1) - Math.max(0, j - 1)) * sy);
+      const tx = ux + nx * ds, ty = 0, tz = uz + nz * ds;   // ∂P/∂s
+      const bx = nx * dy, by = 1, bz = nz * dy;             // ∂P/∂y
+      let vx = by * tz - bz * ty;
+      let vy = bz * tx - bx * tz;
+      let vz = bx * ty - by * tx;
+      if (vx * nx + vz * nz < 0) { vx = -vx; vy = -vy; vz = -vz; } // hacia cámara
+      const len = Math.hypot(vx, vy, vz) || 1;
+      g.normals.push(vx / len, vy / len, vz / len);
+      g.colors.push(colr[idx]!, colg[idx]!, colb[idx]!, 1);
+      g.heights!.push(dd);
+      g.uvs.push((side * (half + s)) / tile, y / tile);
+    }
+  }
+  // pasada 3: índices — winding según el lado para que la cara mire a cámara
+  // con el culling activo. Regla operativa (la del muro, verificado en
+  // pantalla: retícula i→+x, j→+y con (a,b,c),(a,c,d) sale CCW a cámara):
+  // el ala se proyecta i→u sobre pantalla — ala IZQUIERDA (u hacia −x) queda
+  // CW a cámara en orden normal y exige invertir; la DERECHA no. El signo de
+  // (u × ŷ)·n̂ lo decide: > 0 → invertir.
+  const crossDot = -uz * nx + ux * nz; // componente de (u × ŷ)·n̂ en el plano
+  const flipped = crossDot > 0;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < ns; i++) {
+      const a = j * W + i, b = a + 1, c2 = a + W + 1, d2 = a + W;
+      if (flipped) g.indices.push(a, c2, b, a, d2, c2);
+      else g.indices.push(a, b, c2, a, c2, d2);
+      g.tris += 2;
+    }
+  }
+  // T113 — VOLUMEN 3D (petición: «deberían tener volumen 3d como el muro de
+  // escalada, no quedan bien planas»): cara trasera paralela a t·(−n̂) + tapas
+  // en el canto exterior y arriba. El tinte por vértice (el mismo
+  // computeRockTint del muro: AO + variación + líquenes) se calcula aquí
+  // dentro para poder colorear TAMBIÉN trasera y tapas.
+  if (thicknessM > 0) {
+    if (tintCfg) {
+      const tint = computeRockTint({
+        positions: new Float32Array(g.positions),
+        normals: new Float32Array(g.normals),
+        h: new Float32Array(g.heights!),
+        vw: W, vh: H, cfg: tintCfg, chunkIndex: tintChunk,
+      });
+      for (let v = 0; v < W * H; v++) {
+        g.colors[v * 4] = tint[v * 4]!;
+        g.colors[v * 4 + 1] = tint[v * 4 + 1]!;
+        g.colors[v * 4 + 2] = tint[v * 4 + 2]!;
+        g.colors[v * 4 + 3] = 1;
+      }
+    }
+    const front = W * H;
+    // cara trasera: misma retícula desplazada t·(−n̂), normales invertidas,
+    // tono más oscuro (la luz no la golpea) — winding invertido (culing OFF en
+    // el material, pero correcto por si se activa)
+    for (let v = 0; v < front; v++) {
+      g.positions.push(g.positions[v * 3]! - nx * thicknessM, g.positions[v * 3 + 1]!, g.positions[v * 3 + 2]! - nz * thicknessM);
+      g.normals.push(-g.normals[v * 3]!, -g.normals[v * 3 + 1]!, -g.normals[v * 3 + 2]!);
+      g.colors.push(g.colors[v * 4]! * 0.78, g.colors[v * 4 + 1]! * 0.78, g.colors[v * 4 + 2]! * 0.78, 1);
+      g.uvs.push(g.uvs[v * 2]!, g.uvs[v * 2 + 1]!);
+    }
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < ns; i++) {
+        const a = j * W + i, b = a + 1, c2 = a + W + 1, d2 = a + W;
+        if (flipped) g.indices.push(front + a, front + b, front + c2, front + a, front + c2, front + d2);
+        else g.indices.push(front + a, front + c2, front + b, front + a, front + d2, front + c2);
+        g.tris += 2;
+      }
+    }
+    // tapas: canto exterior (columna i=ns) y corona (fila j=ny). Normales
+    // planas hacia fuera; vértices propios (normales distintas de frente/dorso).
+    const capCol = (src: number, mul: number): void => {
+      g.colors.push(g.colors[src * 4]! * mul, g.colors[src * 4 + 1]! * mul, g.colors[src * 4 + 2]! * mul, 1);
+    };
+    const emitStrip = (frontIdx: (k: number) => number, backIdx: (k: number) => number, count: number, nxS: number, nyS: number, nzS: number, uvOf: (k: number) => [number, number]): void => {
+      const base = g.positions.length / 3;
+      for (let k = 0; k < count; k++) {
+        const vf = frontIdx(k), vb = backIdx(k);
+        g.positions.push(g.positions[vf * 3]!, g.positions[vf * 3 + 1]!, g.positions[vf * 3 + 2]!);
+        g.positions.push(g.positions[vb * 3]!, g.positions[vb * 3 + 1]!, g.positions[vb * 3 + 2]!);
+        g.normals.push(nxS, nyS, nzS, nxS, nyS, nzS);
+        capCol(vf, 0.9); capCol(vf, 0.9);
+        const [u, w] = uvOf(k);
+        g.uvs.push(u, w, u, w);
+      }
+      for (let k = 0; k < count - 1; k++) {
+        const p0 = base + k * 2, p1 = p0 + 1, p2 = p0 + 3, p3 = p0 + 2;
+        g.indices.push(p0, p1, p2, p0, p2, p3);
+        g.tris += 2;
+      }
+    };
+    // canto exterior: recorre la columna i=ns de abajo a arriba
+    emitStrip(
+      (k) => k * W + ns, (k) => front + k * W + ns, H, ux, 0, uz,
+      (k) => [g.uvs[(k * W + ns) * 2]!, g.uvs[(k * W + ns) * 2 + 1]!],
+    );
+    // corona: recorre la fila j=ny de dentro a fuera
+    emitStrip(
+      (k) => ny * W + k, (k) => front + ny * W + k, W, 0, 1, 0,
+      (k) => [g.uvs[(ny * W + k) * 2]!, g.uvs[(ny * W + k) * 2 + 1]!],
+    );
+    g.verts = g.positions.length / 3;
   }
   return g;
 }

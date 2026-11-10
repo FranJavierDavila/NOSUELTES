@@ -152,7 +152,8 @@
     "impulseSeconds": 0.45,
     "impulseCooldownS": 4.0,
     "impulseCostFatigue": 0.05,
-    "impulseGripPropina": 1
+    "impulseGripPropina": 1,
+    "portableAnchorsPerClimber": 10
   },
   "snow": {
     "snowlineM": 12,

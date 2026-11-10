@@ -118,7 +118,15 @@ export const IDLE_LINES: Record<RichMood, { es: string[]; en: string[] }> = {
 /** T80 — FRASE DE EVENTO → CARA: cuando el ricachón dice una grabación real o
  *  una línea del banco, el CONTEXTO del evento fija el ánimo (y la cara sale
  *  por MOOD_FACE): «la frase identifique la emoción que se corresponde con la
- *  cara». Contextos del banco de voz + eventos del director. */
+ *  cara». Contextos del banco de voz + eventos del director.
+ *  T96 (petición: «no estás colocando todas las expresiones 3d de las 5
+ *  variantes de caras... Deben aparecer todas»): los contextos de voz COTIDIANOS
+ *  ahora reparten las 5 caras — comer es pura ostentación (soberbia/orgulloso),
+ *  mear burla desconfiada (desconfianza/chuleria), el «¡Hostia, te has dormido!»
+ *  del idle es un espanto (sorpresa/asustado) y el banco genérico auto son
+ *  insultos (enfado/enfadado). Con los de siempre (furia/gritando,
+ *  sorpresa/asustado, enfado/enfadado, soberbia/orgulloso) las 5 caras salen en
+ *  una partida normal, no solo en eventos raros. */
 export const MOOD_FOR_CONTEXT: Record<string, RichMood> = {
   rich_fell: "sorpresa",
   fall: "sorpresa",
@@ -126,15 +134,15 @@ export const MOOD_FOR_CONTEXT: Record<string, RichMood> = {
   drone: "sorpresa",
   condor_angry: "furia",
   kick: "furia",
-  eating: "alegre",
+  eating: "soberbia",
   camp_arrival: "soberbia",
   summit: "soberbia",
-  pee: "dudoso",
+  pee: "desconfianza",
   high_tension: "enfado",
   unbalanced_rope: "enfado",
-  idle_too_long: "dudoso",
+  idle_too_long: "sorpresa",
   trash: "enfado",
-  auto: "dudoso",
+  auto: "enfado",
 };
 
 /** Contexto de simulación que alimenta el ánimo (todo plano/serializable). */
@@ -212,6 +220,19 @@ export function desiredRichMood(ctx: RichMoodCtx): RichMood {
     ctx.state === "aplaudiendo" || ctx.gesture === "aplaudiendo" ||
     ctx.state === "durmiendo" || ctx.state === "dormitando"
   ) return "alegre";
+  // 7b. T111 — LAS GRACIAS NUEVAS VISTEN CARA: soberbia contando fajos, la
+  //     pose de poder y la burla; alegría la carcajada y el selfie;
+  //     impaciencia (dudoso) al mirar el reloj de oro.
+  if (
+    ctx.gesture === "contando" || ctx.state === "contando" ||
+    ctx.gesture === "pose_poder" || ctx.state === "pose_poder" ||
+    ctx.gesture === "senialando" || ctx.state === "senialando"
+  ) return "soberbia";
+  if (
+    ctx.gesture === "risa" || ctx.state === "risa" ||
+    ctx.gesture === "selfie" || ctx.state === "selfie"
+  ) return "alegre";
+  if (ctx.gesture === "reloj" || ctx.state === "reloj") return "dudoso";
   // 8. DUDOSO: leyendo/teléfono/mirando y el reposo por defecto — este rico
   //    no se fía ni de su propia tabla.
   return "dudoso";

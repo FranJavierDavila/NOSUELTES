@@ -1,6 +1,6 @@
 {
   "menu": {
-    "title": "SHERPAS AL LÍMITE",
+    "title": "CARRY ME",
     "subtitle": "Dos sherpas, un ricachón en su tabla y el Everest.",
     "start": "¡GO!",
     "difficulty": "Dificultad",
@@ -11,7 +11,9 @@
     "resume": "Continuar desde {camp}",
     "newAscent": "Nueva ascensión",
     "loading": "Preparando la pared…",
-    "soloTest": "Probar solo (controla a ambos)"
+    "soloTest": "Probar solo (controla a ambos)",
+    "seed": "Semilla",
+    "tutorial": "🎓 Tutorial guiado"
   },
   "hud": {
     "altitude": "Altitud",
@@ -46,7 +48,7 @@
     "ropeHaul": "{name} recupera cuerda mano a mano…",
     "summit": "¡CIMA DEL EVEREST!",
     "summitSub": "El ricachón quiere selfi. Tú quieres cobrar.",
-    "voiceOff": "Voz no disponible en esta versión",
+    "voiceOff": "VOZ",
     "birdTelegraph": "¡PÁJARO AL ATACAR! Pulsa espantar",
     "peeTelegraph": "¿Qué hace ese cierre…?",
     "trashTelegraph": "¡Envase volador!",
@@ -96,14 +98,35 @@
     "coopImpulse": "¡{from} da un impulso a {to}!",
     "coopImpulseNeed": "Anclate primero (Q/J) para dar el impulso",
     "coopImpulseScore": "¡El impulso sirvió! Propina +{n}",
-    "ropeMash": "¡{name} COLGADO! PULSAD C (P1) Y N (P2) A SACO PARA TREPARLA",
-    "ropeReleased": "¡LA CUERDA SE ACABÓ! ¡{name} CAE AL ABISMO!"
+    "ropeMash": "¡{name} COLGADO! El COMPAÑERO PULSA SU TECLA (C verde / N rojo): cada tirón lo iza 25 cm, hasta que se ancla SOLO a un agarre cercano",
+    "ropeReleased": "¡LA CUERDA SE ACABÓ! ¡{name} CAE AL ABISMO!",
+    "portablePlaced": "Anclaje portátil colocado — quedan {left}",
+    "portableEmpty": "No quedan anclajes portátiles",
+    "portableArmed": "Anclaje en la mano: muévelo a un hueco libre de la pared y suéltalo",
+    "portableNoSpot": "Aquí no hay sitio factible para un anclaje",
+    "portableNeedFree": "Suelta una extremidad para colocar el anclaje",
+    "portableNeedClimb": "{name} no puede colocar anclajes colgado en caída",
+    "backpackTitle": "Mochila de {name}",
+    "itemAnchor": "Anclaje",
+    "backpackUse": "Clic: coges el anclaje · suéltalo con la mano en un hueco libre",
+    "chatHint": "ENTER · CHAT (Esc cierra)",
+    "chatPlaceholder": "Escribe y pulsa Enter…",
+    "micOff": "Micrófono: activando… (clic para conmutar)",
+    "micLive": "Voz activa — clic para silenciar",
+    "micMuted": "Voz silenciada — clic para activar",
+    "micDenied": "Sin permiso de micrófono — clic para reintentar",
+    "player0": "Sherpa Verde",
+    "player1": "Sherpa Rojo",
+    "voiceLive": "VOZ · activa",
+    "voiceMuted": "VOZ · silenciada",
+    "voiceDenied": "VOZ · sin permiso"
   },
   "limb": {
     "hand_l": "M.Izq",
     "hand_r": "M.Der",
     "foot_l": "P.Izq",
-    "foot_r": "P.Der"
+    "foot_r": "P.Der",
+    "ropeMash": "¡{name} COLGADO! EL COMPAÑERO PULSA C (Verde) O N (Rojo) PARA IZARLO TIRÓN A TIRÓN"
   },
   "anchor": {
     "roca_firme": "roca firme",
@@ -123,8 +146,8 @@
     "pataleando": "Pataleando"
   },
   "keys": {
-    "p1": "RATÓN: pulsa una extremidad y arrástrala hasta una presa (imán verde) · suéltala para fijarla · F: superpoder",
-    "p2": "J2: Flechas apuntar · I/O manos · K/L pies · U espantar · o mando: stick + A/B/X/Y + RB · P: superpoder · stick derecho: órbita de cámara",
+    "p1": "RATÓN: pulsa una extremidad y arrástrala hasta una presa (imán verde) · suéltala para fijarla · Q anclarse · E impulso · T anclaje portátil · F: superpoder",
+    "p2": "J2: Flechas apuntar · I/O manos · K/L pies · U espantar · J anclarse · M impulso · Y anclaje portátil · o mando: stick + A/B/X/Y + RB · P: superpoder · stick derecho: órbita",
     "shared": "Espacio pausa · H ayuda · Z/X órbita lateral · V/B órbita vertical · G vista libre (mantener) · C reencuadrar · F3 depuración"
   },
   "settings": {
@@ -135,7 +158,8 @@
     "daltonism": "Paleta para daltonismo",
     "reduceShake": "Reducir sacudidas de cámara",
     "subtitles": "Subtítulos siempre activos",
-    "bubbles": "Bocadillos del jefe (cara y frases)"
+    "bubbles": "Bocadillos del jefe (cara y frases)",
+    "close": "Listo"
   },
   "save": {
     "saved": "Progreso guardado en {camp}",
@@ -184,15 +208,15 @@
       "keys": "Ancla cooperativa: Q (J1) · J (J2) — el firme frena y tira del compañero"
     },
     "s5": {
-      "title": "¡A SACO! (cuando alguien cae)",
-      "body": "Si un sherpa cae, queda COLGADO de la cuerda sujetándola con las dos manos: machacad la tecla de esfuerzo LOS DOS a la vez. El medidor junto al colgado debe superar la raya para trepar; si no llega, se desliza y gasta la cuerda. Si la cuerda se agota… suelta y cae. Repartir el esfuerzo hace el rescate fácil.",
-      "keys": "A SACO: machaca C (J1) y N (J2) LOS DOS a la vez hasta pasar la raya del medidor"
+      "title": "¡RESCATE! (cuando alguien cae)",
+      "body": "Si un sherpa cae, queda COLGADO en horizontal, con los brazos y las piernas colgando, y sus controles quedan INACTIVOS. Es el COMPAÑERO quien lo sube tirando de la cuerda: CADA PULSACIÓN de su tecla lo sube MEDIO METRO con una pequeña sacudida. Solo cuando el rescate lo sitúa con un anclaje a su alcance recupera la posición erguida y sigue trepando.",
+      "keys": "RESCATE: C (VERDE, J1) · N (ROJO, J2) — pulsa LA TECLA DEL COMPAÑERO"
     }
   },
   "net": {
     "menu": "Jugar online",
     "title": "Jugar online",
-    "subtitle": "Uno escala aquí (naranja, ratón) y el otro conecta desde internet (azul, teclado o mando).",
+    "subtitle": "Uno escala aquí (naranja, ratón) y el otro conecta desde internet (azul: flechas apuntan · I O K L agarran · J ancla · M impulso · Y anclaje · N a saco — o mando).",
     "create": "Crear sesión (anfitrión)",
     "join": "Unirse",
     "codePh": "CÓDIGO",
@@ -203,8 +227,8 @@
     "connecting": "Conectando…",
     "waitingHost": "Conectado. Esperando a que el anfitrión empiece la ascensión…",
     "closed": "La sesión se ha cerrado (el anfitrión salió).",
-    "hostLabel": "ANFITRIÓN (naranja)",
-    "guestLabel": "INVITADO (azul)",
+    "hostLabel": "VERDE (anfitrión)",
+    "guestLabel": "ROJO (invitado)",
     "hostNote": "Eres el anfitrión: juegas al sherpa NARANJA con el ratón. Tu compañero lleva el AZUL.",
     "guestNote": "Eres el invitado: juegas el sherpa AZUL (flechas + I/O/K/L o mando).",
     "err": {
@@ -216,7 +240,10 @@
       "host-gone": "El anfitrión se ha ido.",
       "host-left": "El anfitrión se ha ido.",
       "host-recreated": "El anfitrión creó otra sala."
-    }
+    },
+    "hostName": "Verde",
+    "guestName": "Rojo",
+    "go": "GO — ¡EMPEZAR!"
   },
   "menu.weather": "Clima",
   "menu.weather.clear": "☀️ Despejado",
@@ -234,5 +261,140 @@
   "falling.maceta": "una MACETA con su geranio",
   "falling.termo": "el TERMO de té de mantequilla",
   "falling.momo": "un MOMO gigante",
-  "falling.pez": "un PESCADO CONGELADO"
+  "falling.pez": "un PESCADO CONGELADO",
+  "guiado": {
+    "skip": "Saltar tutorial",
+    "nowSub": "Tu turno con el sherpa ROJO",
+    "flash": "¡Eso es!",
+    "cta": {
+      "ok": "Entendido",
+      "vamos": "¡Vamos allá!",
+      "escalar": "¡A ESCALAR!",
+      "intentar": "Intentar yo"
+    },
+    "arrow": {
+      "arrastra": "ARRASTRA",
+      "suelta": "SUELTA AQUÍ",
+      "clava": "CLÁVALO AQUÍ",
+      "ancla": "ANCLA DE SEGURO",
+      "machaca": "¡MACHACA!",
+      "cima": "¡HASTA LA CIMA!"
+    },
+    "hint": {
+      "mover": "Pulsa y arrastra una extremidad del ROJO hasta un aro verde de la pared",
+      "mochila": "Pulsa Y y suelta una MANO del ROJO sobre la pared",
+      "seguro": "Pulsa J con el sherpa ROJO",
+      "asaco": "Pulsa la tecla del COMPAÑERO sin parar: cada golpe lo sube medio metro"
+    },
+    "s1": {
+      "title": "El objetivo",
+      "body": "**Lleváis al Ricachón, sentado en su tabla, hasta la cima de la pared.**\nSi la tabla se tuerce mucho, se cae y se acaba la partida.\nEl sherpa VERDE te enseña cada movimiento y lo repite hasta que tú digas; luego lo haces tú con el ROJO."
+    },
+    "s2": {
+      "title": "Así se sube: arrastra una presa",
+      "body": "Mira al VERDE:\n**1.** Pulsa una de sus extremidades y mantén el clic.\n**2.** Arrástrala hasta otra presa.\n**3.** Suelta: queda agarrado ahí.\nEso es todo el juego: repetir esto una y otra vez."
+    },
+    "s3": {
+      "title": "Tu turno: mueve al ROJO",
+      "body": "Haz lo mismo con el sherpa ROJO:\n**pulsa una extremidad, arrástrala hasta una presa con aro verde y suelta.**"
+    },
+    "s4": {
+      "title": "La mochila: clavar anclajes",
+      "body": "¿No hay presas cerca? Cada sherpa lleva **10 anclajes en la mochila**.\nEl VERDE pulsa **Y**: el anclaje se arma en su mano.\nLuego **suelta la mano sobre la pared** y el anclaje queda clavado ahí."
+    },
+    "s5": {
+      "title": "Tu turno: clava un anclaje",
+      "body": "Con el ROJO:\n**1.** Pulsa **Y** (el anclaje se arma en la mano).\n**2.** Suelta una de sus manos sobre la pared, donde quieras dejarlo."
+    },
+    "s6": {
+      "title": "El ancla de seguro",
+      "body": "El ancla de seguro te SUSTENTA a la pared: si caes, no llegas al suelo.\nEl VERDE pulsa **J** y queda fijo."
+    },
+    "s7": {
+      "title": "Tu turno: fíjate",
+      "body": "Pulsa **J** con el sherpa ROJO:\n**tu ancla de seguro queda activa.** Ya puedes arriesgarte sin miedo."
+    },
+    "s8": {
+      "title": "¡RESCATE!: tirar de la cuerda",
+      "body": "Si alguien cae, cuelga horizontal de la cuerda y NO puede hacer nada:\n**el COMPAÑERO TIRA DE LA CUERDA CON SU TECLA** (`N` el ROJO, `C` el VERDE): cada golpe lo sube medio metro con una sacudida.\nMira cómo el ROJO rescata al VERDE."
+    },
+    "s9": {
+      "title": "Tu turno: ¡rescata!",
+      "body": "El VERDE cuelga (horizontal e inactivo, él NO puede hacer nada):\n**PULSA `N` SIN PARAR** — cada golpe lo sube medio metro — hasta que tenga un anclaje a su alcance y recupere la posición erguida."
+    },
+    "s10": {
+      "title": "Sorpresas del camino",
+      "body": "La montaña pone trampas: rachas de viento, pájaros, piedras que caen.\nSi alguien cae, ya lo sabes hacer: el compañero tira de la cuerda con su tecla."
+    },
+    "s11": {
+      "title": "¡Todo tuyo!",
+      "body": ""
+    },
+    "loop": "🔁 El sherpa VERDE repite el paso. Pulsa «Intentar yo» cuando quieras probarlo tú."
+  },
+  "dev": {
+    "title": "🛠 MODO DEV · supervisión de tramos",
+    "note": "Panel privado: se abre escribiendo la palabra secreta. Solo como anfitrión o en solitario.",
+    "solo": "Salta a un tramo (re-cuelga el equipo ahí):",
+    "here": "Saltar aquí",
+    "jumped": "→ tramo de supervisión",
+    "guestWarn": "Como invitado no hay salto de tramos."
+  },
+  "pared": {
+    "menu": "Prueba del Campamento (beta)",
+    "title": "Prueba del Campamento",
+    "controls": "Arrastra manos y pies a las presas de cada bloque que levita · los DOS sherpas deben llegar arriba",
+    "win": "¡Prueba superada!",
+    "winSub": "Los sherpas alcanzan la cima de los bloques flotantes. El Ricachón puede descansar tranquilo.",
+    "fail": "¡PARTIDA PERDIDA!",
+    "failSub": "El campamento sigue esperando… inténtalo de nuevo",
+    "retry": "Reintentar",
+    "exit": "Menú",
+    "soloMano": "⚠ ¡Sólo una mano! Afírmate rápido o caerás por fatiga",
+    "finaleTime": "Tiempo",
+    "finaleFalls": "Caídas",
+    "panel": {
+      "titulo": "Panel de ajuste",
+      "velocidad": "Velocidad bloques",
+      "amplitud": "Amplitud",
+      "fase": "Fase",
+      "pasoFilas": "Separación filas",
+      "fatiga": "Fatiga",
+      "fatigaMano": "Fatiga ×1 mano",
+      "fatigaSinApoyo": "Fatiga sin pies",
+      "cambioMano": "Límite cambio mano",
+      "cuerda": "Cuerda",
+      "telemetria": "Telemetría",
+      "reiniciar": "Reiniciar",
+      "cima": "↑ Cima",
+      "irFila": "Ir a fila",
+      "defecto": "Por defecto",
+      "copiar": "Copiar valores",
+      "copiado": "¡Copiado! (también en consola)",
+      "nota": "⟳ se aplica al Reiniciar · F3 cierra",
+      "rotura": "Rotura cajas (s)",
+      "lanzamientos": "Lanzamientos mochila"
+    },
+    "mochila": {
+      "manos": "Ancla las DOS manos para tirar de la mochila",
+      "agotado": "Sin lanzamientos",
+      "rompe": "¡El bloque va a romperse!",
+      "interior": "Muelles de lanzamiento",
+      "selecciona": "Pulsa un muelle para armar el lanzamiento",
+      "usar": "Usar",
+      "armado": "Muelle armado: arrastra la mochila hacia abajo y suelta",
+      "vueloAuto": "¡Vuela! Buscará el anclaje más alto",
+      "sinMuelles": "Sin muelles"
+    },
+    "ricachon": {
+      "enfado": "¡Sacadme de aquí YA!",
+      "furia": "¡¿Quién me ha ATADO aquí abajo?!"
+    },
+    "finaleBotin": "Botín",
+    "dinero": {
+      "titulo": "Dinero",
+      "cogido": "¡+10 $! Billete para el Sherpa {n}",
+      "bolsa": "¡+200 $! Saco del bono para el Sherpa {n}"
+    }
+  }
 }

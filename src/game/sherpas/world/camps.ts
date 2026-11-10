@@ -29,6 +29,16 @@ export class CampSystem {
   isReached(campId: string): boolean { return this.reached.has(campId); }
   reachedCount(): number { return this.reached.size; }
 
+  /** Campamento más alto ALCANZADO (tramo fijado): suelo del respawn — nunca
+   *  se retrocede a un tramo anterior por muchas caídas que haya. */
+  highestReachedZone(): CampZone | null {
+    let best: CampZone | null = null;
+    for (const z of this.gen.layout.campZones) {
+      if (this.reached.has(z.campId) && (!best || z.yBase > best.yBase)) best = z;
+    }
+    return best;
+  }
+
   /** Llamado cada tick con la altitud del equipo (mínima de los dos sherpas). */
   tick(teamY: number, allAnchored: boolean, dt: number): void {
     const zone = this.gen.campAtOrBelow(teamY);

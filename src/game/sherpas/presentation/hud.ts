@@ -9,6 +9,8 @@ import {
   type OnboardingState,
 } from "../gameplay/onboarding";
 import { DAYTIME_IDS } from "../gameplay/daycycle"; // T61: selector de hora del día
+import type { DevTramo } from "../gameplay/devMode"; // T114: panel de supervisión dev
+import { assetUrl } from "../../assetPath"; // T100: portada bajo subruta (GitHub Pages)
 
 export type Lang = "es" | "en";
 export type BalanceUiState = "equilibrado" | "aviso" | "desequilibrado";
@@ -19,15 +21,18 @@ export const WEATHER_PREF_KEY = "ns.weather.v1";
 export const DAYTIME_PREF_KEY = "ns.daytime.v1";
 /** T76: preferencia de bocadillos ("si"/"no") — persiste como el clima. */
 export const BUBBLES_PREF_KEY = "ns.bubbles.v1";
+/** T100: idioma del menú ("es"/"en") — INGLÉS por defecto; el jugador lo
+ *  cambia en el engranaje y persiste entre sesiones. */
+export const LANG_PREF_KEY = "ns.lang.v1";
 
-export interface HudStartChoice { difficulty: string; seed: number; lang: Lang; resume: boolean; mute: boolean; daltonism: boolean; reduceShake: boolean; disablePee: boolean; /** T76: bocadillos del ricachón visibles (cara y frases en el globo). */ bubbles: boolean; /** T61: clima (clear/snow/snow_low) y hora del día (dia/atardecer/noche). */ weather: string; daytime: string }
+export interface HudStartChoice { difficulty: string; seed: number; lang: Lang; resume: boolean; mute: boolean; daltonism: boolean; reduceShake: boolean; disablePee: boolean; /** T76: bocadillos del ricachón visibles (cara y frases en el globo). */ bubbles: boolean; /** T61: clima (clear/snow/snow_low) y hora del día (dia/atardecer/noche). */ weather: string; daytime: string; /** T114: la partida es el TUTORIAL GUIADO (sin banner de «cómo se sube»). */ guiado?: boolean }
 
-export interface HudLimbsState { tension: number; fatigue: number; anchored: boolean }
+export type HudLimbsState = { tension: number; fatigue: number; anchored: boolean }
 
 /** Punto de la réplica de pared del minimapa (petición del jugador: "réplica
  *  de la pared que estamos subiendo, identificando agarres especiales").
  *  x/y normalizados 0..1 (abajo-izquierda = origen), kind = rotulación. */
-export interface MinimapHold {
+export type MinimapHold = {
   x: number; y: number;
   kind: "normal" | "salient" | "recess" | "ice" | "fart" | "camp";
   /** 0 = libre, 1 = ocupada por A (naranja), 2 = ocupada por B (azul). */
@@ -43,7 +48,7 @@ export function chipState(anchored: boolean, fatigue: number, warnAt = 0.45, cri
   if (fatigue >= warnAt) return "warn";
   return "ok";
 }
-export interface HudTickState {
+export type HudTickState = {
   timeS: number;
   players: HudLimbsState[][];
   deltaH: number;
@@ -62,6 +67,8 @@ export interface HudTickState {
   propinaMax: number;
   resting: boolean;
   richState: string;
+  /** T92: anclajes portátiles restantes [A, B] (el chip de carga los muestra). */
+  portable: [number, number];
 }
 
 // ids de anclaje (data) → clave de rotulación en strings.anchor
@@ -72,6 +79,14 @@ const ANCHOR_LABEL_KEY: Record<string, string> = {
 
 const CSS = `
 .sphud { position:absolute; inset:0; font-family:'Segoe UI',system-ui,sans-serif; color:#e8eef4; user-select:none; }
+/* T110 — MÓVIL: toques limpios (sin retardo ni doble-toque) y el input del
+   código de sala a 16px para que iOS NO dispare su zoom automático al
+   enfocarlo (el zoom desplazaba el panel online y los toques caían fuera de
+   los botones: «los botones del modo online no funcionan en móvil»). */
+.sphud button, .sphud input, .sphud label { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+@media (pointer: coarse) {
+  .sphud .panel input { font-size:16px; }
+}
 .sphud * { box-sizing:border-box; }
 .sphud .chip { background:rgba(10,14,18,.72); border:1px solid rgba(255,255,255,.09); border-radius:10px; padding:8px 12px; backdrop-filter:blur(4px); }
 .sphud .p-panel { position:absolute; top:14px; width:214px; }
@@ -116,6 +131,8 @@ const CSS = `
 .sphud .propina .bar { height:8px; border-radius:4px; background:rgba(255,255,255,.12); overflow:hidden; margin-top:4px; }
 .sphud .propina .bar > i { display:block; height:100%; background:var(--pc,#e8c547); border-radius:4px; }
 .sphud .debug { position:absolute; bottom:12px; right:12px; font:10.5px/1.5 ui-monospace,monospace; opacity:.65; text-align:right; white-space:pre; }
+/* T109c: la línea de depuración está OCULTA por defecto (solo ?debug=1). */
+.sphud .debug.hidden { display:none !important; }
 /* VIÑETA DE PELIGRO (juice T38): borde rojo que APARECE cuando la tensión roza
  * el límite o la tabla está al borde — el peligro se SIENTE sin leer un chip. */
 .sphud .danger-vignette { position:absolute; inset:0; pointer-events:none; opacity:0; transition:opacity .28s ease-out;
@@ -128,7 +145,7 @@ const CSS = `
 .sphud .badges { position:absolute; inset:0; pointer-events:none; overflow:hidden; }
 .sphud .lbadge { position:absolute; width:22px; height:22px; border-radius:50%; transform:translate(-50%,-50%); border:2px solid rgba(255,255,255,.35); background:conic-gradient(var(--c) calc(var(--t)*360deg), rgba(10,14,18,.62) 0); box-shadow:0 1px 6px rgba(0,0,0,.55); transition:border-color .15s, opacity .15s; }
 .sphud .lbadge::after { content:''; position:absolute; inset:5px; border-radius:50%; background:#12181e; }
-.sphud .lbadge.p0 { border-color:#d97b2f; } .sphud .lbadge.p1 { border-color:#2f9bd9; }
+.sphud .lbadge.p0 { border-color:#3fae5a; } .sphud .lbadge.p1 { border-color:#e05245; }
 .sphud .lbadge.warn { border-color:#e8c34a; }
 .sphud .lbadge.crit { border-color:#ff5a5a; animation:limbcrit .5s steps(2,end) infinite; }
 .sphud .lbadge.free { opacity:.4; }
@@ -137,6 +154,13 @@ const CSS = `
  * panel con CANVAS que dibuja la pared del tramo (presas por tipo, salientes
  * con borde blanco, hielo, verdes de superpoder, campamento) + metros restantes. */
 .sphud .minimap { position:absolute; right:14px; top:50%; transform:translateY(-50%); width:184px; padding:10px 8px 8px; text-align:center; }
+/* T94 (petición del jugador: «en la versión móvil es mejor ocultar el minimapa
+ * porque ocupa mucha pantalla y no permite jugar bien»): fuera en TÁCTIL con
+ * pantalla de teléfono (angosta en vertical o baja en horizontal) y en cualquier
+ * ventana estrecha; escritorio y tabletas grandes lo conservan entero. */
+@media (max-width: 700px), (pointer: coarse) and (max-width: 950px), (pointer: coarse) and (max-height: 540px) {
+  .sphud .minimap { display: none; }
+}
 .sphud .mm-canvas { width:100%; height:46vh; min-height:300px; max-height:500px; border-radius:8px; display:block; background:#171d24; }
 .sphud .mm-legend { display:flex; gap:8px; justify-content:center; align-items:center; margin-top:6px; font-size:9.5px; opacity:.85; white-space:nowrap; }
 .sphud .mm-legend i { width:7px; height:7px; border-radius:50%; display:inline-block; margin-right:3px; vertical-align:-1px; }
@@ -173,7 +197,90 @@ const CSS = `
 .sphud .ob-foot { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:20px; }
 /* T60 RED: panel de juego online. */
 .sphud .net-code { font:26px/1.2 ui-monospace,monospace; letter-spacing:.35em; text-align:center; background:rgba(255,255,255,.06); border:1px dashed rgba(255,255,255,.3); border-radius:12px; padding:12px 10px 12px 16px; margin:12px 0; user-select:text; }
+/* T100 CARRY ME: portada de arranque — imagen de cabecera + tres botones
+ * (GO grande, «¿Cómo se juega?» y «Jugar online» pequeños); el resto de las
+ * opciones vive en el panel de ajustes que abre el engranaje. */
+.sphud .start-hero { max-width: 460px; width: 100%; max-height: 97%; overflow-y: auto; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 6px; }
+.sphud .hero-art { display: block; width: auto; height: auto; max-width: min(440px, 94vw); max-height: 55vh; border-radius: 18px; box-shadow: 0 12px 48px rgba(0,0,0,.65), 0 0 0 1px rgba(255,255,255,.09); background: #0e141a; -webkit-user-drag: none; }
+.sphud .hero-sub { font-size: 13.5px; opacity: .95; text-align: center; text-shadow: 0 1px 10px rgba(0,0,0,.85); margin: 0; }
+.sphud .hero-go { font-size: 26px; font-weight: 800; padding: 13px 76px; border-radius: 14px; letter-spacing: .22em; text-indent: .22em; background: linear-gradient(180deg, #37a35f, #22663e); border-color: #63c98c; box-shadow: 0 6px 24px rgba(46,125,79,.5); }
+.sphud .hero-go:hover { background: #38985f; }
+.sphud .hero-resume { font-size: 12.5px; padding: 6px 14px; opacity: .95; border-radius: 9px; background: rgba(16,22,28,.82); }
+.sphud .hero-row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+.sphud .hero-row button { font-size: 13.5px; padding: 9px 16px; border-radius: 10px; background: rgba(16,22,28,.82); }
+/* T118: botón provisional del nivel «Prueba del Campamento» */
+.sphud .pared-beta { display: block; margin: 10px auto 0; font-size: 13.5px; padding: 9px 16px; border-radius: 10px; background: rgba(46,125,79,.32); border: 1px dashed #57b17e; color: #cfe9d6; cursor: pointer; }
+.sphud .pared-beta:hover { background: rgba(46,125,79,.5); }
+.sphud .gear { position: absolute; top: 12px; right: 12px; width: 44px; height: 44px; padding: 0; font-size: 21px; line-height: 1; border-radius: 50%; background: rgba(10,14,18,.72); backdrop-filter: blur(4px); }
+.sphud .gear:hover { background: rgba(38,49,61,.9); }
 .sphud .net-status { font-size:13px; min-height:20px; text-align:center; opacity:.9; margin:8px 0; }
+/* T107c CHAT ONLINE: log de mensajes + entrada (Enter abre y envía, Esc
+ * cierra). Colgado abajo-izquierda, sobre la barra de consejo; cada mensaje
+ * es una burbuja con el nombre del escalador en SU color. */
+.sphud .chat { position:absolute; left:14px; bottom:52px; width:min(320px, 46vw); z-index:26; pointer-events:none; }
+.sphud .chat.hidden { display:none; }
+.sphud .chat-log { display:flex; flex-direction:column; gap:4px; margin-bottom:6px; }
+.sphud .chat-log.hidden { display:none; }
+.sphud .chat-msg { max-width:100%; background:rgba(10,14,18,.74); border:1px solid rgba(255,255,255,.09);
+  border-radius:10px; padding:5px 9px; font-size:11.5px; line-height:1.35; color:#e8eef5;
+  backdrop-filter:blur(4px); overflow-wrap:anywhere; }
+.sphud .chat-msg.mine { border-color:rgba(122,162,255,.4); }
+.sphud .chat-msg b { font-weight:700; }
+.sphud .chat-row.hidden { display:none; }
+.sphud .chat-in { width:100%; box-sizing:border-box; background:rgba(10,14,18,.85);
+  border:1px solid rgba(122,162,255,.45); border-radius:10px; padding:7px 10px;
+  color:#f2f6fa; font:inherit; font-size:12px; outline:none; pointer-events:auto; }
+.sphud .chat-in:focus { border-color:#7aa2ff; }
+.sphud .chat-hint { font-size:10.5px; letter-spacing:.06em; color:rgba(232,238,245,.75); padding:4px 8px; text-shadow:0 1px 2px rgba(0,0,0,.7);
+  background:rgba(10,14,18,.6); border:1px solid rgba(255,255,255,.12); border-radius:8px;
+  width:max-content; pointer-events:auto; cursor:pointer; user-select:none; }
+.sphud .chat-hint:hover { border-color:#7aa2ff; color:#fff; }
+.sphud .chat-hint.hidden { display:none; }
+/* T108e MICRÓFONO + T109a: chip de voz PROPIO (fuera del chat, abajo a la
+ * derecha, SIEMPRE visible durante la sesión). Estados: off (gris),
+ * live (verde), muted (ámbar), denied (rojo). El texto del título lo pone
+ * micState (VOZ · tocando = silenciar). */
+.sphud .chat-foot { display:flex; gap:6px; align-items:center; justify-content:flex-end; }
+.sphud .voice { position:absolute; right:14px; bottom:16px; z-index:27; display:flex;
+  gap:7px; align-items:center; pointer-events:auto; }
+.sphud .voice.hidden { display:none; }
+.sphud .voice-label { font-size:10.5px; letter-spacing:.09em; opacity:.75; color:#e8eef5;
+  text-shadow:0 1px 2px rgba(0,0,0,.7); }
+.sphud .buildtag { position:absolute; right:16px; bottom:2px; font-size:9px; letter-spacing:.08em;
+  opacity:.32; color:#e8eef5; z-index:5; pointer-events:none; }
+.sphud .chat-mic { width:34px; height:34px; border-radius:9px; font-size:16px; line-height:1;
+  border:1px solid rgba(255,255,255,.14); background:rgba(10,14,18,.72); color:#e8eef5;
+  pointer-events:auto; cursor:pointer; }
+.sphud .chat-mic.live { border-color:#3fae5a; box-shadow:0 0 0 1px rgba(63,174,90,.5); }
+.sphud .chat-mic.muted { border-color:#d9a53f; }
+.sphud .chat-mic.denied { border-color:#d94a3d; }
+
+/* T101 INVENTARIO DE MOCHILA: ventana con la forma del INTERIOR de la mochila
+ * (tejido ocre, solapa en la boca y costura punteada). Abre al pulsar la
+ * mochila del escalador, se cierra cuando el puntero la abandona y el hueco
+ * del Anclaje muestra el icono con el contador encima. */
+.sphud .bpk { position:absolute; width:236px; padding:30px 12px 12px; border-radius:16px 16px 20px 20px; z-index:30;
+  background: linear-gradient(180deg, #6d5335, #57422a 58%, #4a3823);
+  box-shadow: 0 14px 38px rgba(0,0,0,.6), inset 0 0 0 2px rgba(0,0,0,.35), inset 0 2px 0 rgba(255,225,170,.14);
+  transform-origin: 26px 92%; pointer-events:auto;
+  transition: transform .19s cubic-bezier(.34,1.56,.64,1), opacity .15s ease-out; }
+.sphud .bpk::before { content:""; position:absolute; left:6px; right:6px; top:6px; height:20px; border-radius:12px 12px 6px 6px;
+  background:linear-gradient(180deg,#7d6440,#6a5233); box-shadow: inset 0 -3px 6px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,235,190,.2); }
+.sphud .bpk::after { content:""; position:absolute; inset:34px 8px 8px; border:1px dashed rgba(255,228,170,.28); border-radius:12px; pointer-events:none; }
+.sphud .bpk-title { position:relative; z-index:1; font-size:11.5px; font-weight:700; letter-spacing:.05em; color:#f3e3c2; margin:0 0 8px 2px; text-shadow:0 1px 2px rgba(0,0,0,.55); }
+.sphud .bpk-slot { position:relative; z-index:1; display:block; width:66px; padding:7px 4px 5px; border-radius:12px; background:rgba(30,22,12,.55); border:0; color:inherit; font:inherit; text-align:center; cursor:pointer;
+  box-shadow: inset 0 2px 8px rgba(0,0,0,.55), inset 0 0 0 1px rgba(255,230,180,.12); transition: transform .12s, background .12s; }
+.sphud .bpk-slot:hover { background:rgba(76,56,30,.9); transform:translateY(-1px); }
+.sphud .bpk-slot:disabled { opacity:.45; cursor:default; transform:none; }
+.sphud .bpk-ico { display:block; font-size:26px; line-height:1.15; filter:drop-shadow(0 2px 2px rgba(0,0,0,.5)); }
+.sphud .bpk-name { display:block; font-size:9.5px; font-weight:600; color:#e8d9b8; margin-top:2px; }
+.sphud .bpk-count { position:absolute; top:-8px; right:-8px; min-width:20px; height:20px; padding:0 5px; border-radius:10px; background:linear-gradient(180deg,#ffd76a,#e0a92f); color:#3a2b10; font-size:11px; font-weight:800; line-height:20px;
+  box-shadow:0 2px 6px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.55); }
+.sphud .bpk-hint { position:relative; z-index:1; font-size:10px; color:#cdbd9b; margin:8px 2px 0; opacity:.9; }
+/* pliegue (estado base) → despliegue (.open): crece desde la boca de la mochila */
+.sphud .bpk.hidden { display:none; }
+.sphud .bpk:not(.open) { transform: scale(.5) translateY(10px); opacity:0; }
+.sphud .bpk.open { transform: scale(1) translateY(0); opacity:1; }
 `;
 
 function esc(s: string): string {
@@ -184,7 +291,9 @@ export class SherpaHud {
   private root: HTMLElement;
   private hud: HudData;
   private strings: Record<Lang, StringsData>;
-  lang: Lang = "es";
+  /** T100: idioma del menú — INGLÉS por defecto; el constructor lo carga de
+   *  la preferencia persistida (el jugador puede fijar castellano). */
+  lang: Lang = "en";
   private el: Record<string, HTMLElement | null> = {};
   private bubbles: { node: HTMLElement; until: number }[] = [];
   private subtitleUntil = 0;
@@ -195,8 +304,25 @@ export class SherpaHud {
   private reduceShake = false;
   private mute = false;
   private disablePee = false;
-  private opts?: { onGo: (c: HudStartChoice) => void; onHowToDone?: () => void; onNet?: () => void; onWeather?: (id: string) => void; onDaytime?: (id: string) => void };
-  private choice: Partial<HudStartChoice> = { lang: "es" };
+  private opts?: { onGo: (c: HudStartChoice) => void; onHowToDone?: () => void; onNet?: () => void; onWeather?: (id: string) => void; onDaytime?: (id: string) => void; /** T114: el 🎓 abre el TUTORIAL GUIADO (partida guiada real). */ onTutorial?: () => void; /** T118: nivel provisional «Prueba del Campamento». */ onPared?: () => void };
+  private choice: Partial<HudStartChoice> = { lang: "en" };
+  /** T100: datos del menú que el re-render necesita (cambio de idioma). */
+  private startOpts: { difficulties: string[]; saveCampLabel: string | null } | null = null;
+  /** T101 INVENTARIO DE MOCHILA: escalador con la ventana abierta (y su
+   *  contador vivo, refrescado desde update) + handler de «usar» (mount lo
+   *  conecta con match.requestPortablePlace en partida local). */
+  private bpkPlayer: 0 | 1 | null = null;
+  private bpkCountVal = 0;
+  private bpkUseHandler: ((p: 0 | 1) => void) | null = null;
+  private bpkCloseTimer = 0;
+
+  // ---------- T107c CHAT ONLINE ----------
+  /** quién soy en esta sesión (estilo «mío» de las burbujas). */
+  private chatMe: 0 | 1 = 0;
+  private chatOn = false;       // sesión online activa (sala con par)
+  private chatOpenFlag = false; // entrada de texto visible
+  private chatFadeTimer = 0;
+  private chatSend: ((text: string) => void) | null = null;
 
   // T61 — AJUSTES PERSISTENTES de clima/hora (localStorage defensivo, patrón
   // onboarding: un storage roto NUNCA rompe el menú).
@@ -220,6 +346,8 @@ export class SherpaHud {
     this.root = root;
     this.hud = hud;
     this.strings = strings;
+    this.lang = this.loadPref(LANG_PREF_KEY, ["es", "en"], "en") as Lang;
+    this.choice.lang = this.lang;
     const style = document.createElement("style");
     style.textContent = CSS;
     root.appendChild(style);
@@ -258,12 +386,43 @@ export class SherpaHud {
       <div class="banner" data-e="banner"><h2 data-e="bannerTitle"></h2><p data-e="bannerSub"></p></div>
       <div class="telegraph chip" data-e="telegraph"></div>
       <div class="subtitle-bar hidden" data-e="subtitle"></div>
+      <!-- T107c CHAT ONLINE: log + entrada (Enter abre y envía, Esc cierra).
+           Los mensajes viajan por el canal P2P de la sesión (acción msg). -->
+      <div class="chat hidden" data-e="chat">
+        <div class="chat-log hidden" data-e="chatLog"></div>
+        <div class="chat-row hidden" data-e="chatRow">
+          <input class="chat-in" data-e="chatIn" type="text" maxlength="140" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="chat-foot">
+          <div class="chat-hint hidden" data-e="chatHint"></div>
+        </div>
+      </div>
+      <!-- T109a VOZ: chip SIEMPRE visible durante la sesión (fuera del
+           contenedor del chat: el anfitrión no lo encontraba). -->
+      <div class="voice hidden" data-e="voice">
+        <button class="chat-mic off" data-e="micBtn" type="button" title="Micrófono"></button>
+        <span class="voice-label" data-e="voiceLabel">VOZ</span>
+      </div>
+      <div class="buildtag" data-e="buildTag">vT107</div>
       <div data-e="bubbles" style="position:absolute;inset:0;overflow:hidden"></div>
+      <!-- T101: ventana del INVENTARIO DE MOCHILA (abre al pulsar la mochila
+           del escalador; hueco del Anclaje con icono + contador encima). -->
+      <div class="bpk hidden" data-e="bpk">
+        <div class="bpk-title" data-e="bpkTitle"></div>
+        <button class="bpk-slot" data-e="bpkSlot" type="button">
+          <span class="bpk-count" data-e="bpkCount">0</span>
+          <span class="bpk-ico">⚓</span>
+          <span class="bpk-name" data-e="bpkName"></span>
+        </button>
+        <div class="bpk-hint" data-e="bpkHint"></div>
+      </div>
       <div class="debug" data-e="debug"></div>
       <div class="overlay hidden" data-e="help"><div class="panel" data-e="helpBody"></div></div>
       <div class="overlay hidden" data-e="pause"><div class="panel" style="text-align:center;max-width:340px">
         <h1 style="font-size:24px">⏸</h1><p class="sub" data-e="pauseHint"></p></div></div>
       <div class="overlay hidden" data-e="start"></div>
+      <!-- T100: ajustes del engranaje — sobre la portada, bajo el onboarding. -->
+      <div class="overlay hidden" data-e="settings"></div>
       <div class="overlay hidden" data-e="finale"></div>
       <div class="overlay hidden" data-e="net"><div class="panel" data-e="netBody"></div></div>
       <!-- T59: el onboarding es el ÚLTIMO overlay: desde el menú ("¿Cómo se
@@ -281,6 +440,73 @@ export class SherpaHud {
     this.el.mmLgRecess!.textContent = this.t("hud.mmRecess");
     // VIÑETA DE PELIGRO: color desde datos (hud.json dangerVignette.color).
     if (hud.dangerVignette) this.el.vignette!.style.setProperty("--vc", hud.dangerVignette.color);
+    // T101 INVENTARIO DE MOCHILA: usar el Anclaje del hueco (sin stock → aviso)
+    // y CERRAR cuando el puntero abandona la ventana (petición del jugador).
+    this.el.bpkSlot!.addEventListener("click", () => {
+      if (this.bpkPlayer === null) return;
+      if (this.bpkCountVal <= 0) {
+        this.subtitle(this.t("hud.portableEmpty"), 2.2);
+        return;
+      }
+      this.bpkUseHandler?.(this.bpkPlayer);
+    });
+    this.el.bpk!.addEventListener("pointerleave", () => this.backpackClose());
+
+    // T107c CHAT: Enter envía y cierra; Escape cierra. stopPropagation extra:
+    // NINGUNA tecla de escribir llega al juego aunque el foco entre tarde.
+    this.el.chatIn!.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.code === "Enter") {
+        const v = (this.el.chatIn! as HTMLInputElement).value.trim().slice(0, 140);
+        if (v) this.chatSend?.(v);
+        this.chatClose();
+      } else if (e.code === "Escape") {
+        this.chatClose();
+      }
+    });
+    // T108d: el aviso del chat es TAMBIÉN un botón — si el Enter nunca llega
+    // (foco capturado por otra capa), el chat se abre por ratón igualmente.
+    this.el.chatHint!.addEventListener("click", () => { if (this.chatOn) this.chatToggle(); });
+    // T108e + T109a: el micrófono se silencia/reactiva con un clic (el arranque
+    // lo hace mount al abrirse la sesión). Ya no depende de chatOn: el chip
+    // vive FUERA del contenedor del chat y su clic siempre conmuta.
+    this.el.micBtn!.addEventListener("click", () => { this.micToggleHandler?.(); });
+    // T109c: la línea de DEBUG (fps/draws/estado de cuerda…) SOLO se muestra
+    // con ?debug=1 en la URL o localStorage.ns.debug=1 — el jugador no la ve.
+    const dbgOn = new URLSearchParams(window.location.search).has("debug")
+      || ((): boolean => { try { return localStorage.getItem("ns.debug") === "1"; } catch { return false; } })();
+    this.el.debug!.classList.toggle("hidden", !dbgOn);
+    if (dbgOn) this.el.debug!.classList.add("debug-on");
+  }
+
+  /** T109a: chip de voz visible/invisible (sesión activa / terminada). */
+  voiceVisible(on: boolean): void {
+    this.el.voice!.classList.toggle("hidden", !on);
+    if (!on) this.micState("off");
+  }
+
+  /** T108e VOZ: pinta el estado del micrófono en el chip. */
+  micState(st: "off" | "live" | "muted" | "denied"): void {
+    const b = this.el.micBtn! as HTMLButtonElement;
+    b.className = `chat-mic ${st}`;
+    const labels: Record<string, string> = {
+      off: this.t("hud.micOff"), live: this.t("hud.micLive"),
+      muted: this.t("hud.micMuted"), denied: this.t("hud.micDenied"),
+    };
+    b.title = labels[st] ?? st;
+    b.textContent = st === "live" ? "🎙" : st === "muted" ? "🔇" : st === "denied" ? "🎙✕" : "🎙";
+    const vl = this.el.voiceLabel;
+    if (vl) vl.textContent = st === "live" ? this.t("hud.voiceLive")
+      : st === "muted" ? this.t("hud.voiceMuted")
+      : st === "denied" ? this.t("hud.voiceDenied")
+      : this.t("hud.voiceOff");
+  }
+
+  private micToggleHandler: (() => void) | null = null;
+
+  /** mount conecta el clic del chip con net.muteVoice. */
+  setMicToggle(fn: (() => void) | null): void {
+    this.micToggleHandler = fn;
   }
 
   t(path: string): string {
@@ -314,17 +540,20 @@ export class SherpaHud {
 
   // ---------- paneles de jugador ----------
 
-  bindPlayers(labels: { p1: string; p2: string }, limbLabels: Limb[]): void {
+  bindPlayers(labels: { p1: string; p2: string }, limbLabels: Limb[], opts?: { mostrarFlatulencia?: boolean }): void {
     void limbLabels;
+    const fart = opts?.mostrarFlatulencia !== false;
     // FATIGA SOBRE LAS EXTREMIDADES (petición del jugador): los chips de las
     // esquinas se SUSTITUYEN por insignias proyectadas sobre cada extremidad
     // (setLimbBadges); el panel queda como etiqueta + indicador de superpoder.
+    // T122: el nivel pared pasa mostrarFlatulencia:false (no hay superpoder ahí).
     for (const key of ["p1", "p2"] as const) {
       const player = key === "p1" ? 0 : 1;
-      const color = player === 0 ? "#d97b2f" : "#2f9bd9";
+      const color = player === 0 ? "#3fae5a" : "#e05245";
+      const pname = player === 0 ? this.t("hud.player0") : this.t("hud.player1");
       this.el[key]!.innerHTML = `
-        <div class="p-title"><span><span class="p-dot" style="background:${color}"></span>${esc(this.fmt("hud.player", { n: player + 1 }))}</span><span style="opacity:.6">${esc(labels[key])}</span></div>
-        <div style="font-size:10.5px;opacity:.8;margin-top:3px"><span class="fart-ico" data-fart="${player}">💨 <b style="color:#7dff4a">${esc(this.t("hud.fartReadyShort"))}</b></span></div>`;
+        <div class="p-title"><span><span class="p-dot" style="background:${color}"></span>${esc(pname)}</span><span style="opacity:.6">${esc(labels[key])}</span></div>
+        ${fart ? `<div style="font-size:10.5px;opacity:.8;margin-top:3px"><span class="fart-ico" data-fart="${player}">💨 <b style="color:#7dff4a">${esc(this.t("hud.fartReadyShort"))}</b></span></div>` : ""}`;
     }
     // insignias una por extremidad (8): creadas una sola vez, movidas cada frame.
     const layer = this.el.badges!;
@@ -370,6 +599,18 @@ export class SherpaHud {
     }
   }
 
+  /** T122: nº de insignias de extremidad creadas y VISIBLES ahora (sonda E2E:
+   *  el nivel pared creaba 0 porque nunca llamaba a bindPlayers). */
+  badgesVisibles(): number {
+    const layer = this.el.badges;
+    if (!layer) return 0;
+    let n = 0;
+    for (const node of layer.children as HTMLCollectionOf<HTMLElement>) {
+      if (node.style.display !== "none") n++;
+    }
+    return n;
+  }
+
   /** MINIMAPA v2 (petición del jugador): réplica de la pared del tramo en
    *  canvas — presas por tipo (hielo, verdes de superpoder, salientes con borde
    *  blanco, campamento), escaladores A/B, franja del campamento y metros.
@@ -386,6 +627,10 @@ export class SherpaHud {
     /** COTAS de seguro (Task 37): línea verde discontinua + banderitas al fijar. */
     checkpoints?: { frac: number; reached: boolean }[];
   }): void {
+    // T94 — móvil: con el panel oculto por CSS no se pinta nada (el teléfono
+    // se ahorra el repintado del lienzo cada tick).
+    const mmRoot = this.el.minimap as HTMLElement | undefined;
+    if (mmRoot && mmRoot.offsetParent === null) return;
     this.el.mmLabel!.textContent = m.campId
       ? this.fmt("hud.minimapTo", { m: Math.max(0, Math.round(m.metersLeft)), camp: m.campId })
       : this.t("hud.summit");
@@ -493,8 +738,8 @@ export class SherpaHud {
       ctx.lineWidth = 3;
       ctx.beginPath(); ctx.arc(cx, cy, 9, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
     };
-    climber(m.fracA, m.xA ?? 0.5, "#d97b2f");
-    climber(m.fracB, m.xB ?? 0.5, "#2f9bd9");
+    climber(m.fracA, m.xA ?? 0.5, "#3fae5a");
+    climber(m.fracB, m.xB ?? 0.5, "#e05245");
     // borde del panel
     ctx.strokeStyle = "rgba(255,255,255,.14)";
     ctx.lineWidth = 2;
@@ -555,14 +800,168 @@ export class SherpaHud {
     this.el.level!.textContent = `${this.t(levelKey)} (${state.deltaH.toFixed(1)} m)`;
     const lvlColor = this.hud.levelBubble.colors[state.balanceState === "equilibrado" ? "ok" : state.balanceState === "aviso" ? "warn" : "bad"];
     this.el.level!.style.color = lvlColor;
-    // reparto de carga
-    this.el.share!.innerHTML = `${this.t("hud.loadShare")} <b style="color:${SHERPA_HEX[0]}">${Math.round(state.share[0] * 100)}%</b>/<b style="color:${SHERPA_HEX[1]}">${Math.round(state.share[1] * 100)}%</b>${state.resting ? ` · ${esc(this.t("hud.resting"))}` : ""}`;
+    // reparto de carga + T92: anclajes portátiles restantes por escalador
+    const port = state.portable ?? [0, 0];
+    this.el.share!.innerHTML = `${this.t("hud.loadShare")} <b style="color:${SHERPA_HEX[0]}">${Math.round(state.share[0] * 100)}%</b>/<b style="color:${SHERPA_HEX[1]}">${Math.round(state.share[1] * 100)}%</b>`
+      + ` · ⚓ <b style="color:${SHERPA_HEX[0]}">${port[0]}</b>/<b style="color:${SHERPA_HEX[1]}">${port[1]}</b>`
+      + `${state.resting ? ` · ${esc(this.t("hud.resting"))}` : ""}`;
     // propina
     this.el.propinaVal!.textContent = String(Math.round(state.propina));
     this.el.propinaBar!.style.width = `${Math.round(Math.min(1, state.propina / Math.max(1, state.propinaMax)) * 100)}%`;
+    // T101: badge del inventario abierto — contador VIVO (cada anclaje colocado
+    // lo baja al instante; a cero el hueco se desactiva).
+    if (this.bpkPlayer !== null) this.backpackRefresh(port[this.bpkPlayer]);
     // subtítulos expiran
     if (performance.now() > this.subtitleUntil) this.el.subtitle!.classList.add("hidden");
     if (performance.now() > this.telegraphUntil) this.el.telegraph!.classList.remove("show");
+  }
+
+  // ---------- T101 inventario de mochila ----------
+
+  /** Conecta el «usar» del hueco (mount: match.requestPortablePlace). null
+   *  (invitado) → la ventana ni llega a abrirse. */
+  setBackpackUseHandler(fn: ((p: 0 | 1) => void) | null): void {
+    this.bpkUseHandler = fn;
+  }
+
+  /** ABRE la ventana-interior de la mochila del escalador junto al punto
+   *  pulsado (px CSS del canvas). Despliegue con rebote desde la boca. */
+  backpackOpen(player: 0 | 1, cssX: number, cssY: number, count: number): void {
+    if (this.bpkCloseTimer) {
+      clearTimeout(this.bpkCloseTimer);
+      this.bpkCloseTimer = 0;
+    }
+    const win = this.el.bpk!;
+    const wasHidden = win.classList.contains("hidden") || this.bpkPlayer !== player;
+    this.bpkPlayer = player;
+    this.el.bpkTitle!.innerHTML =
+      `<span class="p-dot" style="background:${SHERPA_HEX[player]}"></span>${esc(this.fmt("hud.backpackTitle", { name: player === 0 ? this.t("net.hostName") : this.t("net.guestName") }))}`;
+    this.el.bpkName!.textContent = this.t("hud.itemAnchor");
+    this.el.bpkHint!.textContent = this.t("hud.backpackUse");
+    this.backpackRefresh(count);
+    if (wasHidden) {
+      win.classList.remove("hidden");
+      win.style.pointerEvents = "auto";
+      void win.offsetWidth; // reflow: el pliegue es estado inicial real
+      win.classList.add("open");
+    }
+    // anclada al clic, dentro del viewport (ventana ~236×150 px)
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    win.style.left = `${Math.round(Math.min(Math.max(cssX + 14, 8), vw - 248))}px`;
+    win.style.top = `${Math.round(Math.min(Math.max(cssY - 46, 8), vh - 170))}px`;
+  }
+
+  /** Contador vivo del hueco (lo llama update con el estado del match). */
+  backpackRefresh(count: number): void {
+    this.bpkCountVal = count;
+    if (this.el.bpkCount) this.el.bpkCount.textContent = String(count);
+    if (this.el.bpkSlot) (this.el.bpkSlot as HTMLButtonElement).disabled = count <= 0;
+  }
+
+  /** CIERRA con animación de pliegue. Lo dispara el pointerleave de la propia
+   *  ventana (petición: «sacar el puntero hace que se cierre»). */
+  backpackClose(): void {
+    if (this.bpkPlayer === null) return;
+    this.bpkPlayer = null;
+    const win = this.el.bpk!;
+    win.classList.remove("open");
+    win.style.pointerEvents = "none";
+    if (this.bpkCloseTimer) clearTimeout(this.bpkCloseTimer);
+    this.bpkCloseTimer = window.setTimeout(() => {
+      this.bpkCloseTimer = 0;
+      win.classList.add("hidden");
+    }, 210);
+  }
+
+  /** ¿Ventana de mochila visible? (sonda E2E / ajustes) */
+  backpackIsOpen(): boolean {
+    return this.bpkPlayer !== null;
+  }
+
+  // ---------- T107c CHAT ONLINE ----------
+
+  /** Activa/desactiva el chat (sala con par conectada). Al desactivar cierra
+   *  la entrada y vacía el log (vuelta al menú / guest se fue). */
+  chatActive(on: boolean): void {
+    this.chatOn = on;
+    const root = this.el.chat!;
+    if (!on) {
+      this.chatClose();
+      this.chatOpenFlag = false;
+      this.el.chatLog!.innerHTML = "";
+      this.el.chatLog!.classList.add("hidden");
+      root.classList.add("hidden");
+      return;
+    }
+    this.el.chatHint!.textContent = this.t("hud.chatHint");
+    (this.el.chatIn! as HTMLInputElement).placeholder = this.t("hud.chatPlaceholder");
+    root.classList.remove("hidden");
+    this.el.chatHint!.classList.remove("hidden");
+  }
+
+  /** ¿Sesión con chat disponible? (guard del listener global de Enter) */
+  chatAvailable(): boolean {
+    return this.chatOn;
+  }
+
+  /** ¿Entrada de texto abierta? (sonda E2E / guard del propio Enter) */
+  chatInputOpen(): boolean {
+    return this.chatOpenFlag;
+  }
+
+  /** Identidad local para el estilo «mío» de las burbujas (0 = anfitrión). */
+  chatIdentity(me: 0 | 1): void {
+    this.chatMe = me;
+  }
+
+  /** Abre/cierra la entrada de texto (listener global de Enter en mount). */
+  chatToggle(): void {
+    if (!this.chatOn) return;
+    if (this.chatOpenFlag) { this.chatClose(); return; }
+    this.chatOpenFlag = true;
+    this.el.chatRow!.classList.remove("hidden");
+    const inp = this.el.chatIn! as HTMLInputElement;
+    inp.value = "";
+    requestAnimationFrame(() => { inp.focus(); }); // el foco tras el reflow
+    this.el.chatLog!.classList.remove("hidden");
+    if (this.chatFadeTimer) { clearTimeout(this.chatFadeTimer); this.chatFadeTimer = 0; }
+  }
+
+  /** Cierra la entrada (Envío, Escape o desactivación). */
+  chatClose(): void {
+    if (this.chatOpenFlag) {
+      this.chatOpenFlag = false;
+      (this.el.chatIn! as HTMLInputElement).blur();
+      this.el.chatRow!.classList.add("hidden");
+    }
+    if (this.chatFadeTimer) clearTimeout(this.chatFadeTimer);
+    this.chatFadeTimer = window.setTimeout(() => {
+      this.chatFadeTimer = 0;
+      if (!this.chatOpenFlag) this.el.chatLog!.classList.add("hidden");
+    }, 8000);
+  }
+
+  /** Muestra un mensaje (los ENVIADOS también: el emisor lo empuja aquí y
+   *  lo manda por red — cada lado solo recibe los del otro). */
+  chatPush(sender: 0 | 1, text: string): void {
+    const log = this.el.chatLog!;
+    const row = document.createElement("div");
+    row.className = "chat-msg" + (sender === this.chatMe ? " mine" : "");
+    const who = document.createElement("b");
+    who.style.color = SHERPA_HEX[sender];
+    who.textContent = (sender === 0 ? this.t("net.hostName") : this.t("net.guestName")) + ": ";
+    row.appendChild(who);
+    row.appendChild(document.createTextNode(text));
+    log.appendChild(row);
+    while (log.children.length > 6) log.removeChild(log.firstChild!);
+    log.classList.remove("hidden");
+    this.chatClose(); // (re)arma el autofade de 8 s
+  }
+
+  /** mount conecta el envío con el canal de la sesión activa. */
+  setChatSend(fn: ((text: string) => void) | null): void {
+    this.chatSend = fn;
   }
 
   // ---------- burbujas / subtítulos / banners ----------
@@ -682,6 +1081,9 @@ export class SherpaHud {
       <div class="row" style="justify-content:center"><input data-a="netCode" placeholder="${esc(this.t("net.codePh"))}" maxlength="8" style="${esc("font:inherit;width:150px;background:#141b22;color:#e8eef4;border:1px solid rgba(255,255,255,.16);border-radius:8px;padding:8px 10px;text-transform:uppercase;letter-spacing:.2em;text-align:center")}"><button data-a="netJoin">${esc(this.t("net.join"))}</button></div>
       <div class="net-status" data-a="netStatus"></div>
       <div class="net-code hidden" data-a="netCodeBox"></div>
+      <!-- T109f: GO DENTRO del panel Online — no hay que volver a la portada
+           para arrancar la partida una vez creada/unida la sala. -->
+      <div class="row" style="justify-content:center;margin-top:12px"><button data-a="netGo" style="font-size:22px;padding:10px 46px;background:#1f7a3d;border-color:#3fae5a">${esc(this.t("net.go"))}</button></div>
       <div class="row" style="justify-content:center;margin-top:10px"><button data-a="netBack">${esc(this.t("net.back"))}</button></div>`;
     body.querySelector<HTMLElement>("[data-a=netHost]")!.onclick = () => opts.onHost();
     body.querySelector<HTMLElement>("[data-a=netJoin]")!.onclick = () => {
@@ -695,6 +1097,13 @@ export class SherpaHud {
       }
     });
     body.querySelector<HTMLElement>("[data-a=netBack]")!.onclick = () => { this.hideNet(); opts.onBack(); };
+    // T109f: GO del panel = mismo flujo que el GO de la portada (misma
+    // elección de dificultad/clima ya hecha) sin volver atrás.
+    body.querySelector<HTMLElement>("[data-a=netGo]")!.onclick = () => {
+      this.hideNet();
+      this.hideStart();
+      this.opts?.onGo?.(this.choice as HudStartChoice);
+    };
     el.classList.remove("hidden");
   }
 
@@ -713,8 +1122,65 @@ export class SherpaHud {
     if (box) { box.textContent = code; box.classList.remove("hidden"); }
   }
 
-  showStart(opts: { difficulties: string[]; defaultPreset: string; seed: number; saveCampLabel: string | null; onGo: (c: HudStartChoice) => void; onHowToDone?: () => void; onNet?: () => void; onWeather?: (id: string) => void; onDaytime?: (id: string) => void; defaultWeather?: string; defaultDaytime?: string }): void {
-    this.opts = { onGo: opts.onGo, onHowToDone: opts.onHowToDone, onNet: opts.onNet, onWeather: opts.onWeather, onDaytime: opts.onDaytime };
+  // ---------- T114 MODO DEV: panel de SUPERVISIÓN de tramos ----------
+  // Se abre escribiendo la palabra secreta (gameplay/devMode.ts). Lista todos
+  // los tramos (campamentos, cotas de seguro y cumbre) y salta a cualquiera.
+
+  private devPanel: HTMLElement | null = null;
+
+  showDevPanel(tramos: DevTramo[], opts: { onJump(t: DevTramo): void; onClose(): void }): void {
+    this.hideDevPanel();
+    const wrap = document.createElement("div");
+    wrap.id = "ns-dev-panel";
+    wrap.style.cssText = "position:fixed;top:0;right:0;bottom:0;width:min(310px,86vw);z-index:9400;"
+      + "display:flex;flex-direction:column;background:rgba(9,11,16,.95);"
+      + "border-left:1px solid rgba(251,191,36,.4);box-shadow:-14px 0 44px rgba(0,0,0,.55);"
+      + "color:#e8eef4;font:13px/1.45 ui-sans-serif,system-ui,sans-serif;backdrop-filter:blur(6px)";
+    const row = (t: DevTramo, i: number): string => {
+      const icon = t.kind === "camp" ? "🏕" : t.kind === "cumbre" ? "🚩" : "✚";
+      return `<button data-i="${i}" style="display:flex;justify-content:space-between;align-items:center;gap:8px;"
+        class="ns-dev-row"><span>${icon} ${esc(t.label)}</span><span style="color:#9aa7b4;font-variant-numeric:tabular-nums">${t.y} m</span></button>`;
+    };
+    wrap.innerHTML = `
+      <header style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.08)">
+        <b style="color:#fbbf24;font-size:14px">${esc(this.t("dev.title"))}</b>
+        <button data-a="devClose" style="pointer-events:auto;background:#1c232c;border:1px solid rgba(255,255,255,.14);color:#cfd8e0;border-radius:8px;padding:4px 10px;cursor:pointer;font:inherit">✕</button>
+      </header>
+      <p style="margin:10px 14px 4px;color:#9aa7b4;font-size:12px">${esc(this.t("dev.note"))}</p>
+      <div style="margin:6px 14px;color:#cfd8e0;font-weight:600;font-size:12px">${esc(this.t("dev.solo"))}</div>
+      <div data-a="devList" style="flex:1;overflow:auto;padding:4px 10px 12px;display:flex;flex-direction:column;gap:4px">
+        ${tramos.map(row).join("")}
+      </div>`;
+    this.root.appendChild(wrap);
+    this.devPanel = wrap;
+    const st = document.createElement("style");
+    st.textContent = `.ns-dev-row{pointer-events:auto;background:#141b22;border:1px solid rgba(255,255,255,.1);color:#e8eef4;border-radius:10px;padding:8px 10px;cursor:pointer;font:inherit;text-align:left;transition:background .15s}
+      .ns-dev-row:hover{background:#1f2a36;border-color:rgba(251,191,36,.45)}`;
+    wrap.appendChild(st);
+    wrap.querySelector("[data-a=devClose]")!.addEventListener("click", () => {
+      this.hideDevPanel();
+      opts.onClose();
+    });
+    for (const b of Array.from(wrap.querySelectorAll("[data-i]")) as HTMLElement[]) {
+      b.addEventListener("click", () => {
+        const t = tramos[Number(b.dataset.i)];
+        if (t) opts.onJump(t);
+      });
+    }
+  }
+
+  hideDevPanel(): void {
+    this.devPanel?.remove();
+    this.devPanel = null;
+  }
+
+  devPanelOpen(): boolean {
+    return !!this.devPanel;
+  }
+
+  showStart(opts: { difficulties: string[]; defaultPreset: string; seed: number; saveCampLabel: string | null; onGo: (c: HudStartChoice) => void; onHowToDone?: () => void; onNet?: () => void; onWeather?: (id: string) => void; onDaytime?: (id: string) => void; defaultWeather?: string; defaultDaytime?: string; /** T114: 🎓 = tutorial guiado (el mount arranca la partida guiada). */ onTutorial?: () => void; /** T118: nivel provisional «Prueba del Campamento» (pared de bloques flotantes). */ onPared?: () => void }): void {
+    this.backpackClose(); // T101: al volver al menú no queda ninguna mochila abierta
+    this.opts = { onGo: opts.onGo, onHowToDone: opts.onHowToDone, onNet: opts.onNet, onWeather: opts.onWeather, onDaytime: opts.onDaytime, onTutorial: opts.onTutorial, onPared: opts.onPared };
     // T61: clima y hora PERSISTEN entre sesiones (localStorage defensivo); la
     // URL (?clima= / ?hora=) manda si el mount la trae — E2E determinista.
     const weather0 = opts.defaultWeather ?? this.loadPref(WEATHER_PREF_KEY, WEATHER_IDS, "clear");
@@ -722,48 +1188,110 @@ export class SherpaHud {
     // T76: bocadillos (cara + frase en el globo) — ON por defecto, persiste.
     const bubbles0 = this.loadPref(BUBBLES_PREF_KEY, ["si", "no"], "si") === "si";
     this.choice = { lang: this.lang, resume: false, mute: false, daltonism: false, reduceShake: false, disablePee: false, bubbles: bubbles0, difficulty: opts.defaultPreset, seed: opts.seed, weather: weather0, daytime: daytime0 };
+    this.startOpts = { difficulties: opts.difficulties, saveCampLabel: opts.saveCampLabel };
+    // T100: portada limpia (3 botones + engranaje) y ajustes en su overlay.
+    this.renderStart();
+    this.renderSettings();
+    this.el.start!.classList.remove("hidden");
+  }
+
+  /** T100 CARRY ME — portada: imagen de cabecera con la marca, subtítulo y
+   *  TRES botones (GO grande; «¿Cómo se juega?» y «Jugar online» pequeños).
+   *  El engranaje abre el panel de ajustes. Los data-a (go/howto/net/resume)
+   *  se conservan: sondas E2E y smoke del CI dependen de ellos. */
+  private renderStart(): void {
+    const o = this.startOpts;
+    if (!o) return;
     const el = this.el.start!;
+    el.innerHTML = `
+      <button class="gear" data-a="settings" title="${esc(this.t("settings.title"))}">⚙️</button>
+      <div class="start-hero">
+        <img class="hero-art" src="${assetUrl("/content/sherpas/portada.jpg")}" alt="CARRY ME" draggable="false">
+        <div class="hero-sub">${esc(this.t("menu.subtitle"))}</div>
+        ${o.saveCampLabel ? `<button class="hero-resume" data-a="resume">⏩ ${esc(this.fmt("menu.resume", { camp: o.saveCampLabel }))}</button>` : ""}
+        <button class="go hero-go" data-a="go">${esc(this.t("menu.start"))}</button>
+        <div class="hero-row">
+          <button data-a="howto">🎓 ${esc(this.t("menu.tutorial"))}</button>
+          <button data-a="net">🌐 ${esc(this.t("net.menu"))}</button>
+        </div>
+        ${this.opts?.onPared ? `<button class="pared-beta" data-a="pared">🧗 ${esc(this.t("pared.menu"))}</button>` : ""}
+      </div>`;
+    el.querySelector<HTMLElement>("[data-a=settings]")!.onclick = () => this.toggleSettings(true);
+    el.querySelector<HTMLElement>("[data-a=howto]")!.onclick = () => {
+      if (this.opts?.onTutorial) { this.hideStart(); this.opts.onTutorial(); return; }
+      this.showOnboarding({ onDone: () => this.opts?.onHowToDone?.() });
+    };
+    el.querySelector<HTMLElement>("[data-a=net]")!.onclick = () => {
+      this.hideStart();
+      this.opts?.onNet?.();
+    };
+    el.querySelectorAll<HTMLElement>("[data-a=resume]").forEach((b) => { b.onclick = () => { this.choice.resume = true; this.hideStart(); this.opts?.onGo?.(this.choice as HudStartChoice); }; });
+    const go = el.querySelector<HTMLElement>("[data-a=go]")!;
+    go.onclick = () => { this.choice.resume = false; this.hideStart(); this.opts?.onGo?.(this.choice as HudStartChoice); };
+    // T118: nivel provisional «Prueba del Campamento» (pared de bloques flotantes)
+    const pared = el.querySelector<HTMLElement>("[data-a=pared]");
+    if (pared) pared.onclick = () => { this.hideStart(); this.opts?.onPared?.(); };
+  }
+
+  /** T100 — panel del engranaje: TODAS las opciones que antes llenaban la
+   *  portada (dificultad, idioma, clima, hora, semilla y accesibilidad). El
+   *  cambio de idioma re-pinta portada y ajustes: todo rota con la lengua. */
+  private renderSettings(): void {
+    const el = this.el.settings!;
+    const c = this.choice;
+    const checks = [
+      ["mute", "settings.mute", c.mute ?? false],
+      ["daltonism", "settings.daltonism", c.daltonism ?? false],
+      ["shake", "settings.reduceShake", c.reduceShake ?? false],
+      ["nopee", "settings.disablePee", c.disablePee ?? false],
+      ["bubbles", "settings.bubbles", c.bubbles ?? false],
+    ] as const;
     el.innerHTML = `<div class="panel">
-      <h1>⛰️ ${esc(this.t("menu.title"))}</h1>
-      <div class="sub">${esc(this.t("menu.subtitle"))}</div>
-      ${opts.saveCampLabel ? `<div class="row"><button data-a="resume">${esc(this.fmt("menu.resume", { camp: opts.saveCampLabel }))}</button><button data-a="new">${esc(this.t("menu.newAscent"))}</button></div>` : ""}
+      <h1 style="font-size:22px">⚙️ ${esc(this.t("settings.title"))}</h1>
       <div class="row" data-a="resumeRow"><label>${esc(this.t("menu.difficulty"))}</label><span data-a="diffs"></span></div>
       <div class="row"><label>${esc(this.t("menu.language"))}</label><span data-a="langs"></span></div>
       <div class="row"><label>${esc(this.t("menu.weather"))}</label><span data-a="weathers"></span></div>
       <div class="row"><label>${esc(this.t("menu.daytime"))}</label><span data-a="daytimes"></span></div>
-      <div class="row"><label>Semilla</label><input type="number" data-a="seed" value="${opts.seed}" step="1" min="0" max="999999"><button data-a="dice">🎲</button></div>
+      <div class="row"><label>${esc(this.t("menu.seed"))}</label><input type="number" data-a="seed" value="${c.seed ?? 0}" step="1" min="0" max="999999"><button data-a="dice">🎲</button></div>
       <div class="row" style="gap:14px">
-        <span class="chk"><input type="checkbox" data-a="mute" id="ck_m"><label for="ck_m">${esc(this.t("settings.mute"))}</label></span>
-        <span class="chk"><input type="checkbox" data-a="daltonism" id="ck_d"><label for="ck_d">${esc(this.t("settings.daltonism"))}</label></span>
-        <span class="chk"><input type="checkbox" data-a="shake" id="ck_s"><label for="ck_s">${esc(this.t("settings.reduceShake"))}</label></span>
-        <span class="chk"><input type="checkbox" data-a="nopee" id="ck_p"><label for="ck_p">${esc(this.t("settings.disablePee"))}</label></span>
-        <span class="chk"><input type="checkbox" data-a="bubbles" id="ck_b" ${bubbles0 ? "checked" : ""}><label for="ck_b">${esc(this.t("settings.bubbles"))}</label></span>
+        ${checks.map(([attr, key, on]) => `<span class="chk"><input type="checkbox" data-a="${attr}" id="ck_${attr}" ${on ? "checked" : ""}><label for="ck_${attr}">${esc(this.t(key))}</label></span>`).join("")}
       </div>
-      <div class="row" style="margin-top:18px"><button class="go" data-a="go">${esc(this.t("menu.start"))}</button></div>
-      <div class="row" style="justify-content:center"><button data-a="howto">🎓 ${esc(this.t("onboarding.menuButton"))}</button>
-      <button data-a="net">🌐 ${esc(this.t("net.menu"))}</button></div>
-      <div class="keys">${esc(this.t("keys.p1"))}<br>${esc(this.t("keys.p2"))}<br>${esc(this.t("keys.shared"))}</div>
+      <div class="row" style="justify-content:center;margin-top:16px"><button class="go" style="font-size:15px;padding:9px 42px" data-a="close">${esc(this.t("settings.close"))}</button></div>
     </div>`;
     const diffs = el.querySelector("[data-a=diffs]")!;
-    for (const d of opts.difficulties) {
+    for (const d of this.startOpts?.difficulties ?? []) {
       const b = document.createElement("button");
       b.textContent = this.t(`menu.difficulty.${d}`);
       b.dataset.d = d;
-      if (d === opts.defaultPreset) b.classList.add("sel");
+      if (d === this.choice.difficulty) b.classList.add("sel");
       b.onclick = () => {
         this.choice.difficulty = d;
         diffs.querySelectorAll("button").forEach((x) => x.classList.toggle("sel", x === b));
       };
       diffs.appendChild(b);
     }
+    // Idioma (ES/EN): persiste y repinta AMBOS paneles en la lengua elegida.
     const langs = el.querySelector("[data-a=langs]")!;
-    // T61 — SELECTOR DE CLIMA (Despejado / Nevada / Nevada de validación)
+    for (const l of ["es", "en"] as Lang[]) {
+      const b = document.createElement("button");
+      b.textContent = l.toUpperCase();
+      if (l === this.lang) b.classList.add("sel");
+      b.onclick = () => {
+        this.lang = l;
+        this.choice.lang = l;
+        this.savePref(LANG_PREF_KEY, l);
+        this.renderStart();
+        this.renderSettings();
+      };
+      langs.appendChild(b);
+    }
+    // T61 — CLIMA (Despejado / Nevada / Nevada de validación): vista previa en vivo
     const weathers = el.querySelector("[data-a=weathers]")!;
     for (const w of WEATHER_IDS) {
       const b = document.createElement("button");
       b.textContent = this.t(`menu.weather.${w}`);
       b.dataset.w = w;
-      if (w === weather0) b.classList.add("sel");
+      if (w === this.choice.weather) b.classList.add("sel");
       b.onclick = () => {
         this.choice.weather = w;
         this.savePref(WEATHER_PREF_KEY, w);
@@ -772,13 +1300,13 @@ export class SherpaHud {
       };
       weathers.appendChild(b);
     }
-    // T61 — SELECTOR DE HORA (Día / Atardecer / Noche): vista previa EN VIVO
+    // T61 — HORA (Día / Atardecer / Noche): el sol se mueve al instante
     const daytimes = el.querySelector("[data-a=daytimes]")!;
     for (const d of DAYTIME_IDS) {
       const b = document.createElement("button");
       b.textContent = this.t(`menu.daytime.${d}`);
       b.dataset.d = d;
-      if (d === daytime0) b.classList.add("sel");
+      if (d === this.choice.daytime) b.classList.add("sel");
       b.onclick = () => {
         this.choice.daytime = d;
         this.savePref(DAYTIME_PREF_KEY, d);
@@ -787,34 +1315,8 @@ export class SherpaHud {
       };
       daytimes.appendChild(b);
     }
-    for (const l of ["es", "en"] as Lang[]) {
-      const b = document.createElement("button");
-      b.textContent = l.toUpperCase();
-      if (l === this.lang) b.classList.add("sel");
-      b.onclick = () => {
-        this.lang = l;
-        this.choice.lang = l;
-        langs.querySelectorAll("button").forEach((x) => x.classList.toggle("sel", x === b));
-        el.querySelector("h1")!.innerHTML = `⛰️ ${esc(this.t("menu.title"))}`;
-        (el.querySelector(".sub") as HTMLElement).textContent = this.t("menu.subtitle");
-        const go = el.querySelector("[data-a=go]") as HTMLElement;
-        go.textContent = this.t("menu.start");
-        const howto = el.querySelector("[data-a=howto]") as HTMLElement | null;
-        if (howto) howto.innerHTML = `🎓 ${esc(this.t("onboarding.menuButton"))}`;
-        const netBtn = el.querySelector("[data-a=net]") as HTMLElement | null;
-        if (netBtn) netBtn.innerHTML = `🌐 ${esc(this.t("net.menu"))}`;
-      };
-      langs.appendChild(b);
-    }
     (el.querySelector("[data-a=seed]") as HTMLInputElement).oninput = (e) => {
       this.choice.seed = Math.abs(Math.floor(Number((e.target as HTMLInputElement).value) || 0)) % 1000000;
-    };
-    el.querySelector<HTMLElement>("[data-a=howto]")!.onclick = () => {
-      this.showOnboarding({ onDone: () => this.opts?.onHowToDone?.() });
-    };
-    el.querySelector<HTMLElement>("[data-a=net]")!.onclick = () => {
-      this.hideStart();
-      this.opts?.onNet?.();
     };
     (el.querySelector("[data-a=dice]") as HTMLElement).onclick = () => {
       const s = Math.floor(Math.random() * 1000000);
@@ -832,19 +1334,14 @@ export class SherpaHud {
       this.choice.bubbles = on;
       this.savePref(BUBBLES_PREF_KEY, on ? "si" : "no");
     };
-    el.querySelectorAll<HTMLElement>("[data-a=resume]").forEach((b) => { b.onclick = () => { this.choice.resume = true; this.hideStart(); opts.onGo(this.choice as HudStartChoice); }; });
-    el.querySelector<HTMLElement>("[data-a=new]")?.addEventListener("click", () => { this.choice.resume = false; this.hideStart(); opts.onGo(this.choice as HudStartChoice); });
-    if (!opts.saveCampLabel) {
-      const go = el.querySelector<HTMLElement>("[data-a=go]")!;
-      go.onclick = () => { this.hideStart(); opts.onGo(this.choice as HudStartChoice); };
-    } else {
-      const go = el.querySelector<HTMLElement>("[data-a=go]")!;
-      go.onclick = () => { this.choice.resume = false; this.hideStart(); opts.onGo(this.choice as HudStartChoice); };
-    }
-    el.classList.remove("hidden");
+    el.querySelector<HTMLElement>("[data-a=close]")!.onclick = () => this.toggleSettings(false);
   }
 
-  hideStart(): void { this.el.start!.classList.add("hidden"); }
+  private toggleSettings(on: boolean): void {
+    this.el.settings!.classList.toggle("hidden", !on);
+  }
+
+  hideStart(): void { this.el.start!.classList.add("hidden"); this.el.settings?.classList.add("hidden"); }
 
   showHelp(): boolean {
     const el = this.el.help!;
@@ -910,4 +1407,6 @@ export class SherpaHud {
   }
 }
 
-const SHERPA_HEX = ["#d97b2f", "#2f9bd9"];
+// T108: identidad de los sherpas — P0 = VERDE (anfitrión, sherpa_verde.jpg),
+// P1 = ROJO (invitado, sherpa_rojo.jpg). Los dots/minimapa/chat los usan.
+const SHERPA_HEX = ["#3fae5a", "#e05245"];

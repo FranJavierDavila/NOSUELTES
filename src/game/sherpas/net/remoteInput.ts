@@ -24,6 +24,8 @@ export function intentFromRemote(m: NetRemoteInput, dt: number): InputIntent {
     fart: !!m.fart,
     anchor: !!m.anchor,
     impulse: !!m.impulse,
+    place: !!m.place,
+    arm: !!m.arm,
     mashCount: Math.max(0, Math.min(MASH_CAP, Math.floor(Number(m.mashCount) || 0))),
   };
 }
@@ -50,10 +52,9 @@ export class RemoteIntentBuffer {
     const merged: NetRemoteInput = {
       ax: 0, ay: 0, speed: 0,
       toggles: [],
-      shoo: false, fart: false, anchor: false, impulse: false,
+      shoo: false, fart: false, anchor: false, impulse: false, place: false,
       mashCount: 0,
-    };
-    for (const m of this.pending) {
+    };    for (const m of this.pending) {
       // el eje MÁS RECIENTE manda (el antigo ya no representa la intención)
       if (typeof m.ax === "number") merged.ax = m.ax;
       if (typeof m.ay === "number") merged.ay = m.ay;
@@ -63,6 +64,8 @@ export class RemoteIntentBuffer {
       merged.fart = merged.fart || !!m.fart;
       merged.anchor = merged.anchor || !!m.anchor;
       merged.impulse = merged.impulse || !!m.impulse;
+      merged.place = merged.place || !!m.place;
+      merged.arm = merged.arm || !!m.arm;
       merged.mashCount += Math.max(0, Math.floor(Number(m.mashCount) || 0));
     }
     merged.mashCount = Math.min(MASH_CAP, merged.mashCount);

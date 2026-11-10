@@ -187,13 +187,13 @@ describe("T56 — pedriz (suelo de piedra)", () => {
   it("las rocas caen FUERA de la franja de caída y del radio de la cabaña", () => {
     const rocks = scatterRocks(BASE_CAMP_DEFAULTS, 2.15, 1.8, 2.3);
     expect(rocks.length).toBeGreaterThan(6);
-    expect(rocks.length).toBeLessThanOrEqual(16);
+    expect(rocks.length).toBeLessThanOrEqual(36); // T98: campo de bloques más poblado
     for (const [x, , z, s] of rocks) {
       const enFranja = Math.abs(x) < BASE_CAMP_DEFAULTS.fallFlatXM + 0.5 && z > BASE_CAMP_DEFAULTS.fallFlatZMinM - 0.5 && z < BASE_CAMP_DEFAULTS.fallFlatZMaxM + 0.5;
       expect(enFranja).toBe(false);
       expect(Math.hypot(x - 2.15, z - 1.8)).toBeGreaterThanOrEqual(2.3);
       expect(s).toBeGreaterThan(0.1);
-      expect(s).toBeLessThan(0.55);
+      expect(s).toBeLessThan(0.65); // T98: rocas algo mayores
     }
   });
 });

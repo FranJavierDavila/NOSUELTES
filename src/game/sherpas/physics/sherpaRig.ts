@@ -23,10 +23,8 @@ import type { CharacterDefinition, BodyProfileDefinition, LimbId } from "../../t
 import type { Limb, ReleaseCause } from "../core/bus";
 import type { LimbTuning, RopeTuning, FartTuning, CoopTuning } from "../core/data";
 import { AnchorSystem, AnchorInstance, type HoldInstance } from "./anchors";
-import {
-  mashMeter01, mashRisePerS, mashSlidePerS, mashThreshold01, openRopeMash, ROPE_MASH_DEFAULTS, stepRopeMash,
-  type RopeMashState, type RopeMashTuning,
-} from "../gameplay/ropeMash"; // T58-E: trepar a pulso
+import { TEST_MODE } from "../gameplay/testMode"; // T89: modo test oculto
+import type { RopeMashTuning } from "../gameplay/ropeMash"; // T96b: tipo de compat del afinado (la mecánica A SACO se retiró)
 
 export const LIMBS: Limb[] = ["hand_l", "hand_r", "foot_l", "foot_r"];
 const isHand = (l: Limb) => l === "hand_l" || l === "hand_r";
@@ -52,12 +50,29 @@ const SPRING_K = 55;            // muelle hacia el objetivo (1/s²)
 const SPRING_C = 13;            // amortiguación (1/s) — ζ≈0.88: swing muere en ~0.6 s
 const MAX_ACC = 60;             // techo de aceleración del muelle (m/s²)
 const MAX_SPEED_HANG = 3.5;     // techo de velocidad colgado (m/s)
-const MAX_SPEED_FALL = 9;       // techo de velocidad en caída (m/s)
+// T123: techo de caída 9 → 22 m/s (el cuerpo tiene PESO REAL — a 9 m/s la
+// caída parecía flotar, petición del jugador) y DAMP_FALL ~1 (el aire no
+// amortigua; el freno real es el tirón de la cuerda, que ya existe).
+const MAX_SPEED_FALL = 22;      // techo de velocidad en caída (m/s)
 const DAMP_HANG = 0.94;         // factor verlet por paso colgado
-const DAMP_FALL = 0.988;        // factor verlet por paso en caída libre
+const DAMP_FALL = 0.998;        // factor verlet por paso en caída libre
 const TRAVEL_SPEED = 3.0;       // velocidad del viaje de extremidad (m/s)
 const TRAVEL_MIN_S = 0.2;
 const TRAVEL_MAX_S = 0.55;
+/** T89 — IMÁN del vuelo en DESCENSO: alcance extra SOLO de manos (×1,35) y
+ *  viaje relámpago (0,1 s): la presa que pasa al alcance se AGARRA, no se
+ *  escapa (petición del jugador: «debe agarrarse para no caer… anclarnos en
+ *  la parte de arriba del movimiento»). Los pies nunca reciben el imán. */
+const IMAN_MANOS_VUELO = 1.35;
+const TRAVEL_RAPIDO_S = 0.1;
+/** T91 — AJUSTE DE POSICIÓN en la caída (dictado del jugador: «al caer se
+ *  debe anclar a algún agarre de forma automática; si tienes que modificar
+ *  un poco su posición es preciso hacerlo»): si el descenso no alcanza
+ *  NINGUNA presa ni con el imán, se buscan candidatas dentro del alcance
+ *  imantado + VUELO_AJUSTE_EXTRA y el cuerpo DESLIZA rígido hacia la presa
+ *  a lo sumo VUELO_AJUSTE_MPS hasta que la mano agarra de verdad. */
+const VUELO_AJUSTE_EXTRA = 0.85; // m de radio extra de búsqueda
+const VUELO_AJUSTE_MPS = 2.3;    // velocidad máx. del deslizamiento del cuerpo
 const LIMB_FOLLOW = 12;         // ganancia del pendejo cosmético (1/s)
 // Huesos cosméticos IGUALADOS al alcance real de juego (fix "escaladores de
 // goma"): colgado, el hombro queda a 0,87 m de la presa y el pie de apoyo a
@@ -178,8 +193,17 @@ export interface SherpaGripTuning {
     /** el recobrado termina justo DEBAJO del punto de despegue (m). */
     haulTopOffsetM?: number;
     /** T58-E TREPAR A PULSO: afinado de la ventana de fuerza (ausente →
-     *  ROPE_MASH_DEFAULTS). */
+     *  ROPE_MASH_DEFAULTS). RETIRADO en T96b (la ventana A SACO ya no existe).
+     *  Se conserva el campo por compatibilidad de datos/tests. */
     ropeMash?: Partial<RopeMashTuning>;
+    /** T96b (dictado: «cada golpe de tecla lo sube medio metro»): metros que
+     *  el COMPAÑERO iza al colgado POR CADA PULSACIÓN de su tecla. */
+    haulStepM?: number;
+    /** T96b: velocidad de la subida hacia el objetivo de izado (m/s) — es la
+     *  «pequeña sacudida ascendente» de cada golpe de tecla. */
+    haulRiseMps?: number;
+    /** T96b: duración del FUNDIDO de incorporación al rescatarse (s). */
+    recobroSeconds?: number;
   };
   /** SUPER FLATULENCIA (opcional en tests: ausente → sin superpoder). */
   fart?: FartTuning;
@@ -289,6 +313,11 @@ export class SherpaRig {
   private dragDeadZone = false;
   /** regla de dos manos: tiempo sin NINGUNA mano comprometida (s). */
   private noHandsTimer = 0;
+  /** T86 — MOCHILA-CHICLE: true MIENTRAS se tira de la mochila (el nivel lo
+   *  fija). En el dibujo, los brazos se vuelven ELÁSTICOS (el tope óseo deja
+   *  de aplicar a las manos): la mano se ve CLAVADA a su presa y el brazo se
+   *  estira como un chicle — nunca una mano separada del agarre. */
+  gomaEstirando = false;
   /** true SOLO el tick en que el resbalón por dos manos suelta los pies. */
   slippedByTwoHands = false;
   /** T80 — cooldown del EMPUJE DE PIERNA (soltar un pie para que la mano
@@ -305,16 +334,35 @@ export class SherpaRig {
   private ropeHaulStartNow = false;
   private dangleSettleT = 0;
   private haulDone = false;
+  /** T97 — la VENTANA de izado abre UNA sola vez por caída (a los 0,9 s):
+   *  el evento haulStart dispara el aviso al jugador y la ESPERA pasa a
+   *  'hauling'; entre ráfagas de golpes el cuerpo vuelve a 'caught' (cuelga
+   *  de verdad) y las pulsaciones NUEVAS re-entran al izado sin re-evento. */
+  private ventanaIzado = false;
+  /** T96b — RESCATE POR PULSACIONES (dictado: «deberá ser el otro sherpa
+   *  quien lo suba tirando de la cuerda por medio de la pulsación de una
+   *  tecla, cada golpe de tecla lo sube medio metro con una pequeña sacudida
+   *  ascendente»): objetivo Y del cuerpo durante el izado (cada pulsación del
+   *  compañero suma haulStepM) y reloj del fundido de incorporación. */
+  private haulTargetY: number | null = null;
+  private recobroT = 0;
+  /** Pulsaciones del compañero pendientes de aplicar (acumuladas entre
+   *  ticks — las pulsaciones durante el choque cuentan en cuanto la ventana
+   *  de izado abre). Cap: el turbo-software no rompe la mecánica. */
+  private haulPressesPend = 0;
+  /** T96b — golpes de izado YA aplicados (sin ellos el colgado jamás se
+   *  recupera: el rescate es la acción del compañero). */
+  private haulPressesDados = 0;
+  /** T93 — lado del DESPLOME del colgado (boceto del jugador: tras una
+   *  caída el cuerpo queda abandonado, casi horizontal): se fija al entrar
+   *  en "caught" con el signo de la velocidad horizontal (por defecto, hacia
+   *  fuera según jugador). */
+  private desplomeLado = -1;
   /** T58-E: borde — este tick la cuerda se AGOTÓ y soltó al colgado. */
   private ropeReleasedNow = false;
-  // T58-E — TREPAR A PULSO: la recuperación ya no es automática: la fuerza la
-  // ponen LOS DOS JUGADORES machacando su tecla (ropeMash.ts). El match inyecta
-  // las pulsaciones del tick con feedRopeMash() justo antes de step().
-  private ropeMash: RopeMashState | null = null;
-  private readonly ropeMashCfg: RopeMashTuning;
-  private feedHangedPresses = 0;
-  private feedPartnerPresses = 0;
-  private feedPartnerAnchored = false;
+  // T96b — la ventana A SACO (fuerza/umbral/deslizamiento/reserva) se RETIRÓ:
+  // el colgado NO se recupera solo (sus controles quedan inactivos) y la
+  // fuerza la pone SOLO el compañero, pulsación a pulsación (+0,5 m cada una).
   /** T58-E: la cuerda se AGOTÓ deslizando → caída libre sin captura (suelo). */
   private ropeReleased = false;
   /** CUERDA COOPERATIVA (Task 37): este escalador está ANCLADO como seguro del
@@ -322,6 +370,26 @@ export class SherpaRig {
    *  El match valida requisitos y lo desactiva si se pierden los agarres. */
   belaying = false;
   private belayCatchDropM = 2.9;
+  /** T97 — CUERDA REAL (dictado: «descienda por efecto de la gravedad hasta
+   *  quedar TODO el largo de la cuerda justo en la perpendicular del compañero
+   *  que aún sigue agarrado al bloque, y no medio flotando en el aire»): el
+   *  nivel alimenta CADA tick el PIVOTE del belay = cintura del compañero SOLO
+   *  si sigue anclado a la escalada, y la longitud real de la cuerda
+   *  (cuerdaMetros). El colgado cae hasta agotar la cuerda y queda EN LA
+   *  ESFERA de radio L en torno al pivote → péndulo amortiguado que se apaga
+   *  en la LÍNEA DE PLOMO bajo el compañero (integración Verlet + restricción
+   *  de distancia, método de Jakobsen/PBD). null = el compañero NO sostiene
+   *  (también cayó): nadie aguantá la cuerda → caída honesta hasta la nieve.
+   *  belayPivotActivo solo se pone con setBelayPivot (el nivel): los rigs de
+   *  tests y match.ts conservan la captura clásica por línea (t95 intacta). */
+  private belayPivot: V3 | null = null;
+  private belayLenM = 5;
+  private belayPivotActivo = false;
+  /** T97 — longitud EFECTIVA mientras el compañero IZA (cada golpe recoge
+   *  cuerda: la cuerda izada NO vuelve a soltar 0,5 m entre golpes). */
+  private belayLenEfectivo = 5;
+  // T89 — el chicle del antebrazo vive en fillSkeleton (codoGoma) y en la
+  // escala de la pieza del puppet: nada de repiñes de partículas aquí.
   /** IMPULSO del compañero (mini-ascensión cinemática): ventana activa (reloj
    *  INTERNO del rig, decrece en step) para el bono de alcance + propina. */
   private impulseWindowT = 0;
@@ -334,8 +402,6 @@ export class SherpaRig {
   constructor(deps: SherpaDeps, startHolds: { hand_l: HoldInstance; hand_r: HoldInstance; foot_l?: HoldInstance; foot_r?: HoldInstance }) {
     this.deps = deps;
     this.player = deps.player;
-    // T58-E: afinado de la ventana A SACO (datos ausentes → defaults)
-    this.ropeMashCfg = { ...ROPE_MASH_DEFAULTS, ...(deps.tuning.fall?.ropeMash ?? {}) };
     const mass = deps.tuning.limb.mass;
     this.rig = { particles: [] };
     for (let i = 0; i < 15; i++) {
@@ -403,15 +469,22 @@ export class SherpaRig {
    *  lo que se acorta es el alcance de JUEGO (imán/agarre/círculo). */
   fatiguedReach(limb: Limb): number {
     const loss = this.deps.tuning.limb.reachFatigueLoss ?? REACH_LOSS_AT_FULL_FATIGUE;
-    const f = Math.min(1, Math.max(0, this.states.get(limb)!.fatigue));
+    // T89 MODO TEST: sin fatiga y alcance multiplicado (agarrar es casi
+    // automático); con el modo apagado la línea es idéntica a la de siempre.
+    const f = TEST_MODE.enabled ? 0 : Math.min(1, Math.max(0, this.states.get(limb)!.fatigue));
     // IMPULSO DEL COMPAÑERO (Task 37): durante la ventana, el tirón del ancla
     // AÑADE alcance de juego (el cuerpo sube Y estira) — el compañero cobra
     // presas que antes quedaban fuera. Los huesos siguen mandando el dibujo.
     const bonus = this.impulseWindowT > 0 ? (this.deps.tuning.coop?.impulseReachBonusM ?? 0) : 0;
-    return this.boneReach(limb) * (1 - loss * f) + bonus;
+    return (this.boneReach(limb) * (1 - loss * f) + bonus) * TEST_MODE.reachMul;
   }
   com(): V3 { return this.solver.centerOfMass(); }
   limbPos(limb: Limb): V3 { return vClone(this.limbPt[limb]); }
+
+  /** T114 TUTORIAL/sondas: id de la presa que AGARRA una extremidad (null si libre). */
+  gripHoldId(limb: Limb): string | null {
+    return this.states.get(limb)?.holdId ?? null;
+  }
   holdIdOf(limb: Limb): string | null { return this.states.get(limb)?.holdId ?? null; }
   anchorsCount(): number { return LIMBS.reduce((n, l) => n + (this.states.get(l)!.anchored ? 1 : 0), 0); }
   maxTension(): number { return Math.max(...LIMBS.map((l) => this.states.get(l)!.tension)); }
@@ -443,6 +516,62 @@ export class SherpaRig {
    *  holgura normal (ropeSlackM) o el seguro CORTO si el compañero está
    *  anclado (el match lo fija cada tick antes de step). */
   setBelayCatch(dropM: number): void { this.belayCatchDropM = Math.max(0.4, dropM); }
+
+  /** T97 — pivote del belay REAL: cintura del compañero anclado (o null si
+   *  nadie sostiene) + longitud fija de la cuerda. Lo llama el nivel cada
+   *  tick ANTES de step; el rig NO mueve al compañero (solo se sujeta de él). */
+  setBelayPivot(p: V3 | null, lenM: number): void {
+    this.belayPivotActivo = true;
+    this.belayPivot = p ? vClone(p) : null;
+    if (lenM >= 1) { this.belayLenM = lenM; this.belayLenEfectivo = lenM; }
+  }
+
+  /** T97 — proyección sobre la esfera del belay (restricción de distancia de
+   *  Jakobsen): la posición vuelve a la esfera de radio L en torno al pivote
+   *  y la velocidad RADIAL muere (solo sobrevive la tangencial, ya
+   *  amortiguada por el llamador) → péndulo creíble sin energía fantasma. */
+  private clampBelay(body: { pos: V3; prev: V3 }): void {
+    if (!this.belayPivot) return;
+    const d = vSub(body.pos, this.belayPivot);
+    const dist = vLen(d);
+    if (dist <= this.belayLenEfectivo) return;
+    const dir = vScale(d, 1 / (dist || 1e-6));
+    body.pos = vAdd(this.belayPivot, vScale(dir, this.belayLenEfectivo));
+    // velocidad implícita nueva (pos − prev): quitar la componente radial
+    const vel = vSub(body.pos, body.prev);
+    const vr = vel.x * dir.x + vel.y * dir.y + vel.z * dir.z;
+    if (vr > 0) {
+      const tang = v3(vel.x - dir.x * vr, vel.y - dir.y * vr, vel.z - dir.z * vr);
+      body.prev = vSub(body.pos, tang);
+    }
+  }
+
+  /** T93 — TIRÓN BRUSCO de la cuerda cuando la CAÍDA DEL COMPAÑERO se
+   *  captura (dictado: «dando un tirón brusco al sherpa que esté anclado
+   *  más arriba, que deberá tener ancladas las 4 extremidades para soportar
+   *  el tirón de la caída»). Con las 4 extremidades ancladas: golpe seco
+   *  hacia abajo + fatiga extra (aguanta el chicote). Con MENOS de 4: el
+   *  tirón lo ARRANCA de sus agarres (cae también — cadena). Solo pega en
+   *  "climbing" con anclajes: colgado/grounded/vuelo no reciben nada. */
+  tironCaptura(dt: number): void {
+    if (dt <= 0 || this.ropeState !== "climbing" || this.anchorsCount() === 0) return;
+    const body = this.rig.particles[P.pelvisC];
+    // impulso HACIA ABAJO (verlet: prev más alto = velocidad descendente)
+    body.prev = v3(body.prev.x, body.prev.y + 1.8 * dt, body.prev.z);
+    if (this.anchorsCount() >= 4) {
+      // aguanta el tirón: golpe de fatiga repartido en las 4 extremidades
+      for (const limb of LIMBS) {
+        const st = this.states.get(limb)!;
+        if (st.anchored) st.fatigue = Math.min(1, st.fatigue + 0.1);
+      }
+      return;
+    }
+    // menos de 4 extremidades: el chicote lo arranca (cae en cadena)
+    for (const limb of LIMBS) {
+      const st = this.states.get(limb)!;
+      if (st.anchored) this.forceRelease(limb, 0.3, "overload");
+    }
+  }
 
   /** Alternar el ANCLA de seguro (el match valida agarres/estado y avisa). */
   setBelayAnchor(active: boolean): void { this.belaying = active; }
@@ -507,8 +636,18 @@ export class SherpaRig {
    *  más cercana a cada presa libre dentro del radio gana el viaje (determi-
    *  nista). upBiasM > 0 (impulso del compañero) PREFIERE presas por encima:
    *  el empujón deja al escalador MÁS ARRIBA, no vuelve a la misma presa. */
-  private autoGripAfterFart(upBiasM = 0): void {
+  autoGripAfterFart(upBiasM = 0): void {
     const r = this.deps.tuning.fart?.autoGripRadiusM ?? 1.5;
+    // limbPt SOLO se refresca dentro del tick (viajes/anclajes/dangle): si el
+    // cuerpo acaba de ser teletransportado (cheat E2E subeSherpa) o lanzado,
+    // medir desde limbPt elegiría presas junto a la posición VIEJA y el
+    // re-agarre devolvería al sherpa a su punto de partida. La verdad en
+    // vuelo/re-agarre es la PARTÍCULA viva de cada extremidad.
+    for (const limb of LIMBS) {
+      if (!this.states.get(limb)!.anchored) {
+        this.limbPt[limb] = vClone(this.rig.particles[LIMB_PARTICLE[limb]].pos);
+      }
+    }
     for (const limb of LIMBS) {
       if (this.states.get(limb)!.anchored) continue;
       let best: HoldInstance | null = null;
@@ -520,6 +659,141 @@ export class SherpaRig {
         if (score < bd) { bd = score; best = hold; }
       }
       if (best) { this.gripWanted[limb] = true; this.startTravel(limb, best); }
+    }
+  }
+
+  /** T123 — RE-AGARRE AUTOMÁTICO (mochila-chicle y caídas, petición del
+   *  jugador: «el sherpa se tratará de agarrar al anclaje más alto que
+   *  encuentre de forma automática… y se deben poder anclar automáticamente
+   *  a algún agarre inferior»). mode "alto": la presa más ALTA de verdad
+   *  alcanzable por una MANO libre (vuelo balístico). mode "bajo": la presa
+   *  alcanzable (mano o pie) por DEBAJO de la cintura (caída: anclarse a lo
+   *  primero que pasa al alcance). Solo presas libres dentro de canReach —
+   *  nunca una extremidad fuera del anclaje. false si no hay nada. */
+  /** T89 — `magnetico` (DESCENSO del vuelo, petición del jugador: «debe
+   *  agarrarse para no caer… anclarnos en la parte de arriba»): el alcance de
+   *  las MANOS se multiplica ×IMAN_MANOS_VUELO (imán de agarre) y el viaje
+   *  de la mano elegida es RÁPIDO para que la presa no se escape en la caída.
+   *  Los pies JAMÁS reciben el imán (dictado: «solo se anclarán las manos»). */
+  autoGripVuelo(mode: "alto" | "bajo", magnetico = false): boolean {
+    const iman = (limb: Limb): number =>
+      magnetico && isHand(limb) ? IMAN_MANOS_VUELO : 1;
+    const alcanzable = (limb: Limb, pos: V3): boolean => {
+      const maxLen = this.fatiguedReach(limb) * iman(limb);
+      if (vLen(vSub(pos, this.rig.particles[CHAIN_ROOT[limb]].pos)) <= maxLen) return true;
+      return vLen(vSub(pos, this.limbPt[limb])) <= maxLen;
+    };
+    const cintura = this.rig.particles[P.pelvisC].pos;
+    // T86 — "alto": primero el ANCLAJE más alto alcanzable por CUALQUIER mano
+    // libre, y después la MANO MÁS PRÓXIMA a ese anclaje (petición del jugador:
+    // «el anclaje será con la mano más próxima al anclaje, nunca con los
+    // pies»); las manos son las únicas candidatas (en el vuelo jamás un pie).
+    // "bajo": lo más CERCANO por debajo, mano o pie (parar la caída ya).
+    if (mode === "alto") {
+      let bestHold: HoldInstance | null = null;
+      let bestY = -Infinity;
+      for (const hold of this.deps.anchorSystem.holds.values()) {
+        if (this.deps.anchorSystem.anchorAtHold(hold.id)) continue;
+        let reached = false;
+        for (const limb of ["hand_l", "hand_r"] as const) {
+          if (this.dragging === limb) continue;
+          const st = this.states.get(limb)!;
+          if (st.anchored || st.traveling || st.lockedFor > 0) continue;
+          if (alcanzable(limb, hold.pos)) { reached = true; break; }
+        }
+        if (reached && hold.pos.y > bestY) { bestY = hold.pos.y; bestHold = hold; }
+      }
+      if (!bestHold) return false;
+      let bestLimb: Limb | null = null;
+      let bestD = Infinity;
+      for (const limb of ["hand_l", "hand_r"] as const) {
+        if (this.dragging === limb) continue;
+        const st = this.states.get(limb)!;
+        if (st.anchored || st.traveling || st.lockedFor > 0) continue;
+        const d = vLen(vSub(bestHold.pos, this.limbPt[limb]));
+        if (d < bestD) { bestD = d; bestLimb = limb; }
+      }
+      if (!bestLimb) return false;
+      this.gripWanted[bestLimb] = true;
+      this.startTravel(bestLimb, bestHold, magnetico);
+      return true;
+    }
+    let bestLimb: Limb | null = null;
+    let bestHold: HoldInstance | null = null;
+    let bestScore = -Infinity;
+    for (const limb of LIMBS) {
+      if (this.dragging === limb) continue;
+      const st = this.states.get(limb)!;
+      if (st.anchored || st.traveling || st.lockedFor > 0) continue;
+      for (const hold of this.deps.anchorSystem.holds.values()) {
+        if (this.deps.anchorSystem.anchorAtHold(hold.id)) continue;
+        if (!this.canReach(limb, hold.pos)) continue;
+        if (hold.pos.y > cintura.y + 0.15) continue;
+        const score = -vLen(vSub(hold.pos, this.limbPt[limb]));
+        if (score > bestScore) { bestScore = score; bestHold = hold; bestLimb = limb; }
+      }
+    }
+    if (!bestHold || !bestLimb) return false;
+    this.gripWanted[bestLimb] = true;
+    this.startTravel(bestLimb, bestHold);
+    return true;
+  }
+
+  /** T91 — AJUSTE DE POSICIÓN EN LA CAÍDA (dictado del jugador: «el sherpa
+   *  cuando se lanza y llega arriba al caer se debe anclar a algún agarre de
+   *  forma automática (si tienes que modificar un poco su posición es preciso
+   *  hacerlo)»). Se llama desde el nivel SOLO en descenso del vuelo, cuando
+   *  autoGripVuelo("alto") devolvió false: elige la presa libre más ALTA
+   *  dentro del alcance imantado + VUELO_AJUSTE_EXTRA de una mano libre
+   *  (nunca muy por debajo de la cintura) y DESLIZA el títere entero hacia
+   *  ella, rígido y a velocidad acotada. El tick siguiente el autoGrip
+   *  normal la agarra. false si no hay candidata (sigue cayendo). */
+  ajusteVuelo(dt: number): boolean {
+    if (dt <= 0) return false;
+    const cintura = this.rig.particles[P.pelvisC].pos;
+    let bestHold: HoldInstance | null = null;
+    let bestLimb: Limb | null = null;
+    let bestD = Infinity;
+    for (const hold of this.deps.anchorSystem.holds.values()) {
+      if (this.deps.anchorSystem.anchorAtHold(hold.id)) continue;
+      if (hold.pos.y < cintura.y - 1.5) continue;
+      for (const limb of ["hand_l", "hand_r"] as const) {
+        if (this.dragging === limb) continue;
+        const st = this.states.get(limb)!;
+        if (st.anchored || st.traveling || st.lockedFor > 0) continue;
+        const maxLen = this.fatiguedReach(limb) * IMAN_MANOS_VUELO + VUELO_AJUSTE_EXTRA;
+        // distancia desde la RAÍZ (hombro) o la PUNTA VIVA de la mano —
+        // nunca desde el punto cosmético (puede estar obsoleto en vuelo)
+        const punta = this.rig.particles[limb === "hand_l" ? P.handL : P.handR].pos;
+        const d = Math.min(
+          vLen(vSub(hold.pos, this.rig.particles[CHAIN_ROOT[limb]].pos)),
+          vLen(vSub(hold.pos, punta)),
+        );
+        if (d > maxLen) continue;
+        if (!bestHold || hold.pos.y > bestHold.pos.y || (hold.pos.y === bestHold.pos.y && d < bestD)) {
+          bestHold = hold;
+          bestLimb = limb;
+          bestD = d;
+        }
+      }
+    }
+    if (!bestHold || !bestLimb) return false;
+    const mano = this.rig.particles[bestLimb === "hand_l" ? P.handL : P.handR].pos;
+    const dx = bestHold.pos.x - mano.x;
+    const dy = bestHold.pos.y - mano.y;
+    const dz = bestHold.pos.z - mano.z;
+    const dist = Math.hypot(dx, dy, dz);
+    if (dist < 1e-4) return false;
+    const paso = Math.min(dist, VUELO_AJUSTE_MPS * dt);
+    this.desplazaRigido(v3((dx / dist) * paso, (dy / dist) * paso, (dz / dist) * paso));
+    return true;
+  }
+
+  /** T91 — traslación RÍGIDA de TODO el títere (ajustes de posición del
+   *  vuelo): cada partícula se mueve el MISMO delta, sin deformar el cuerpo. */
+  desplazaRigido(delta: V3): void {
+    for (const p of this.rig.particles) {
+      p.pos = v3(p.pos.x + delta.x, p.pos.y + delta.y, p.pos.z + delta.z);
     }
   }
 
@@ -569,7 +843,17 @@ export class SherpaRig {
 
   /** Alcance visual máximo de la extremidad desde su raíz MIENTRAS ARRASTRA:
    *  reducido por la fatiga (coherente con el círculo que se dibuja). */
-  dragMaxReach(limb: Limb): number { return this.fatiguedReach(limb); }
+  /** T123 — ALCANCE REALISTA DEL ARRASTRE (petición: «NUNCA puede aparecer un
+   *  pie o una mano fuera del anclaje… si se estira mucho la mano apunta al
+   *  anclaje pero no lo tiene agarrado y eso no puede ser»): el seguimiento
+   *  del puntero se acota a la longitud ÓSEA EXACTA (sin el margen blando del
+   *  8%) — el brazo dibujado jamás pasa de su largo real; lo que quede fuera
+   *  no se permite (el imán/viaje usa el alcance de juego por encima). */
+  dragMaxReach(limb: Limb): number {
+    const loss = this.deps.tuning.limb.reachFatigueLoss ?? REACH_LOSS_AT_FULL_FATIGUE;
+    const f = TEST_MODE.enabled ? 0 : Math.min(1, Math.max(0, this.states.get(limb)!.fatigue));
+    return this.boneLen(limb) * (1 - loss * f) * TEST_MODE.reachMul;
+  }
 
   /** Busca el mejor hold libre para la extremidad cerca del apuntado y dentro del alcance. */
   private findHoldFor(limb: Limb): HoldInstance | null {
@@ -639,11 +923,12 @@ export class SherpaRig {
       if (d < MAGNET_R_DEAD) anyNear = true;
       if (d < bestD && this.canReach(limb, hold.pos)) { best = hold; bestD = d; }
     }
-    if (!best && isHand(limb) && this.simTime - this.footAssistAt > 0.8
-      && this.states.get(limb)!.fatigue < 0.5) {
-      // T80 — con el brazo AGOTADO no hay auto-empuje (el círculo de fatiga
-      // manda: mecanicas2 «las zonas de influencia se reducen con la fatiga»);
-      // el jugador siempre puede soltar el pie a mano y re-arrastrar.
+    if (!best && isHand(limb) && this.simTime - this.footAssistAt > 0.4) {
+      // T80/T86 — EMPUJE DE PIERNA SIN GATES (petición del jugador, captura
+      // zona 2: «si un sherpa marca un agarre alcanzable debe siempre llegar a
+      // él con la mano perfectamente posicionada en el mismo LIBERANDO los
+      // anclajes de los pies si es preciso para que le llegue»): sin puerta de
+      // fatiga (antes el brazo agotado bloqueaba el empuje) y cooldown corto.
       const gain = FOOT_RELEASE_GAIN;
       const maxLen = this.fatiguedReach(limb) + gain;
       let cand: HoldInstance | null = null;
@@ -670,10 +955,12 @@ export class SherpaRig {
   }
 
   /** El pie que conviene soltar para el empuje: el anclado MÁS BAJO (el que
-   *  más tira del cuerpo hacia abajo y menos aporta a la subida) y solo si
-   *  quedan ≥2 anclajes tras soltarlo (nunca colgar de una sola presa). */
+   *  más tira del cuerpo hacia abajo y menos aporta a la subida). T86 — MANOS
+   *  SIEMPRE PRIORITARIAS (petición del jugador): basta con ≥2 anclajes antes
+   *  de soltar (puede quedarse en UNO: la mano sola — la regla de dos manos y
+   *  la fatiga mandan después; jamás se suelta el último anclaje). */
   private footToPushOff(target: V3): Limb | null {
-    if (this.anchorsCount() < 3) return null;
+    if (this.anchorsCount() < 2) return null;
     let pick: Limb | null = null;
     let pickY = Infinity;
     for (const f of ["foot_l", "foot_r"] as const) {
@@ -730,7 +1017,11 @@ export class SherpaRig {
   }
 
   /** Suelta el botón: si hay imán, la extremidad vuela a esa presa (viaje
-   *  determinista: SIEMPRE llega). Si no, queda colgando libre. */
+   *  determinista: SIEMPRE llega). Si no, queda colgando libre.
+   *  T86 — MANOS PRIORITARIAS: si la MANO no llega con los pies anclados, se
+   *  sueltan ANTES de viajar (el más bajo primero): la mano acaba SIEMPRE
+   *  perfectamente colocada en la presa marcada — nunca un brazo apuntando a
+   *  un anclaje que no toca (captura zona 2). */
   endDrag(): { limb: Limb; hold: HoldInstance | null } {
     const limb = this.dragging;
     this.dragging = null;
@@ -739,13 +1030,23 @@ export class SherpaRig {
     this.dragHold = null;
     this.dragPos = null;
     if (!limb) return { limb: "hand_r", hold: null };
-    if (hold && !this.deps.anchorSystem.anchorAtHold(hold.id) && this.canReach(limb, hold.pos)) {
-      // apunta también el apuntado de teclado: si el viaje falla (presa muerta),
-      // el re-intento del esquema teclado busca cerca de un sitio sensato.
-      this.aim = v3(hold.pos.x, hold.pos.y, this.aim.z);
-      this.gripWanted[limb] = true;
-      this.startTravel(limb, hold);
-      return { limb, hold };
+    if (hold && !this.deps.anchorSystem.anchorAtHold(hold.id)) {
+      if (!this.canReach(limb, hold.pos) && isHand(limb)) {
+        // T86: liberar pies hasta que la presa quede al alcance (o no queden).
+        for (let i = 0; i < 2 && !this.canReach(limb, hold.pos); i++) {
+          const foot = this.footToPushOff(hold.pos);
+          if (!foot) break;
+          this.releaseAnchored(foot);
+        }
+      }
+      if (this.canReach(limb, hold.pos)) {
+        // apunta también el apuntado de teclado: si el viaje falla (presa muerta),
+        // el re-intento del esquema teclado busca cerca de un sitio sensato.
+        this.aim = v3(hold.pos.x, hold.pos.y, this.aim.z);
+        this.gripWanted[limb] = true;
+        this.startTravel(limb, hold);
+        return { limb, hold };
+      }
     }
     void pos;
     return { limb, hold: null };
@@ -755,15 +1056,18 @@ export class SherpaRig {
   dragMagnetId(): string | null { return this.dragHold?.id ?? null; }
   dragMagnetPos(): V3 | null { return this.dragHold ? vClone(this.dragHold.pos) : null; }
 
-  /** Viaje determinista: la extremidad SIEMPRE llega (control total del jugador). */
-  private startTravel(limb: Limb, hold: HoldInstance): void {
+  /** Viaje determinista: la extremidad SIEMPRE llega (control total del jugador).
+   *  T89 — `rapido` (imán del descenso): duración mínima 0,1 s. */
+  private startTravel(limb: Limb, hold: HoldInstance, rapido = false): void {
     const st = this.states.get(limb)!;
     const start = vClone(this.limbPt[limb]);
     const mid = vScale(vAdd(start, hold.pos), 0.5);
     const dist = vLen(vSub(hold.pos, start));
     // arco hacia fuera de la pared: se ve "a través del aire", nunca a través de roca.
     const ctrl = v3(mid.x, mid.y + Math.min(0.1, dist * 0.15), mid.z - Math.min(0.35, 0.1 + dist * 0.25));
-    const dur = Math.min(TRAVEL_MAX_S, Math.max(Math.max(TRAVEL_MIN_S, this.deps.tuning.attachSeconds), dist / TRAVEL_SPEED));
+    const dur = rapido
+      ? TRAVEL_RAPIDO_S
+      : Math.min(TRAVEL_MAX_S, Math.max(Math.max(TRAVEL_MIN_S, this.deps.tuning.attachSeconds), dist / TRAVEL_SPEED));
     this.travel[limb] = { start, ctrl, target: vClone(hold.pos), dur, t: 0 };
     st.traveling = true;
     st.travelTime = 0;
@@ -810,6 +1114,11 @@ export class SherpaRig {
   // ---------- paso completo ----------
 
   step(dt: number, loadMult: number): SherpaStepInfo {
+    // T89 MODO TEST (?test=escalada): la fatiga del tick anterior se anula
+    // ANTES de nada — ningún coste (agarre, tirones, choques, golpes de pis)
+    // llega a debilitar el agarre. Único punto de corte: TODA la fatiga del
+    // juego vive en estos estados (match.ts escribe en los mismos).
+    if (TEST_MODE.enabled) for (const st of this.states.values()) st.fatigue = 0;
     const released: SherpaStepInfo["released"] = [];
     const gripped: SherpaStepInfo["gripped"] = [];
     const t = this.deps.tuning;
@@ -825,6 +1134,9 @@ export class SherpaRig {
       if (st.lockedFor > 0) st.lockedFor = Math.max(0, st.lockedFor - dt);
       if (this.dragging === limb) continue;
       if (st.anchored || st.traveling || st.lockedFor > 0 || !this.gripWanted[limb]) continue;
+      // T96b — COLGADO sin recobrar: TODOS sus controles inactivos (dictado)
+      // — tampoco agarra por su cuenta aunque haya presa al alcance.
+      if (this.colgadoSinRecobro()) continue;
       const hold = this.findHoldFor(limb);
       if (hold) this.startTravel(limb, hold);
     }
@@ -890,47 +1202,72 @@ export class SherpaRig {
       this.fartTrailAcc += dt;
       if (this.fartLaunchT <= 0) this.autoGripAfterFart();
     } else if (nAnchored === 0 && this.ropeState === "hauling") {
-      // 2a-bis. RECUPERACIÓN A PULSO (T58-E, petición del jugador: "subir por
-      //    ella a pulso... pulsar una tecla a toda velocidad, los DOS: el
-      //    colgado para trepar y el compañero para tirar de la cuerda hacia
-      //    arriba, con un medidor con umbral"). La fuerza la ponen las
-      //    pulsaciones (ropeMash.ts): sobre el umbral asciende (más fuerza =
-      //    más rápido); debajo, DESLIZA y consume la cuerda de reserva;
-      //    agotada, SUELTA y cae al suelo. Cinemática pura: sin gravedad y
-      //    sin energía fantasma. El jugador puede ADELANTAR el rescate
-      //    arrastrando una mano a una presa (entonces hay anclas y esta rama
-      //    ni se entra).
-      const cfg = this.ropeMashCfg;
-      const rm = this.ropeMash ?? (this.ropeMash = openRopeMash());
-      const wasInGrace = rm.tOpen <= cfg.graceS; // el tick que cruza el descanso no desliza
-      this.ropeMash = stepRopeMash(rm, dt, this.feedHangedPresses, this.feedPartnerPresses, this.feedPartnerAnchored, this.handFatigueAvg(), cfg);
-      this.consumeRopeMashFeed();
-      const st = this.ropeMash;
-      if (st.released) {
-        // ¡SE ACABÓ LA CUERDA!: suelta y cae SIN captura (el suelo es el final)
-        this.ropeState = "falling";
-        this.ropeFallStartY = body.pos.y;
-        this.ropeMash = null;
-        this.ropeReleased = true;
-        this.ropeReleasedNow = true; // borde: el match suena/avisa
-        vAbs = 0; // la caída libre re-lee la velocidad del cuerpo el próximo bloque
-      } else {
-        const start = this.ropeFallStartY ?? body.pos.y;
-        const top = start - (fT?.haulTopOffsetM ?? 0.35);
-        const rising = mashRisePerS(st.force, cfg);
-        const sliding = wasInGrace ? 0 : mashSlidePerS(st.force, cfg);
-        const dy = Math.min(Math.max(0, top - body.pos.y), rising * dt) - sliding * dt;
-        body.pos = vAdd(body.pos, v3(0, dy, 0));
-        body.prev = v3(body.pos.x, body.pos.y - dy * 0.55, body.pos.z);
-        this.clampBody(body);
-        if (rising > 0 && body.pos.y >= top - 1e-4) {
-          // RESCATE COMPLETO: queda colgado bajo su punto de despegue (igual
-          // que el haul automático de siempre) — a un arrastre de las presas.
+      // T97 — el izado KINEMÁTICO SUBE DE FORMA SOSTENIDA hacia el objetivo
+      // (cada golpe del compañero suma haulStepM al objetivo y el cuerpo
+      // sube a haulRiseMps hasta alcanzarlo — la sacudida NO se corta al
+      // primer tick); al alcanzar el objetivo SIN golpes pendientes el
+      // cuerpo vuelve a 'caught' y cuelga DE VERDAD (péndulo amortiguado,
+      // verlet de abajo) en la altura ya izada — el trinquete de la línea
+      // de captura (haulTargetY en el clamp) impide que resbale hacia abajo.
+      this.dangleSettleT += dt;
+      if (this.haulDone) {
+        // T96b — RECUBRO: el cuerpo se INCORPORA con fundido (recobroT →
+        // despT 1→0 en fillSkeleton) y al terminar pasa a 'caught' erguido.
+        this.recobroT += dt;
+        body.prev = vClone(body.pos); // quieto mientras se incorpora
+        if (this.recobroT >= (fT?.recobroSeconds ?? 0.5)) {
           this.ropeState = "caught";
-          this.haulDone = true;
-          this.ropeMash = null;
+          // T126 — ANCLA AUTOMÁTICA DEL RESCATE (dictado: «el escalador caído
+          // si tiene en su radio de acción algún agarre con sus manos se ancla
+          // de forma automática a él»): erguido al fin del recobro, la mano
+          // libre más próxima a una presa libre DENTRO de su radio viaja y
+          // agarra sola — el rescate termina enganchado, no flotando colgado.
+          this.autoAnclaRescate();
         }
-        vAbs = Math.abs(dy) / Math.max(1e-4, dt);
+        vAbs = 0;
+      } else {
+        // T96b — RESCATE POR PULSACIONES DEL COMPAÑERO (dictado: «deberá ser
+        // el otro sherpa quien lo suba tirando de la cuerda por medio de la
+        // pulsación de una tecla» — T126: «cada pulsación de la tecla tira de
+        // la cuerda unos 25 centímetros para izar al escalador... hasta que
+        // consigue agarrarse con sus manos a algún agarre cercano»). La
+        // ventana A SACO de T58-E (fuerza/umbral/deslizamiento/reserva) se
+        // RETIRÓ: el colgado no se recupera solo, sus pulsaciones no hacen
+        // nada; cada pulsación del COMPAÑERO suma haulStepM al objetivo y el
+        // cuerpo sube hacia él rápido (la sacudida) quedándose HORIZONTAL en
+        // la nueva altura.
+        const presses = Math.min(6, this.haulPressesPend);
+        this.haulPressesPend = 0;
+        if (presses > 0) this.haulPressesDados += presses;
+        const top = (this.ropeFallStartY ?? body.pos.y) - (fT?.haulTopOffsetM ?? 0.35);
+        if (this.haulTargetY === null) this.haulTargetY = body.pos.y;
+        if (presses > 0) this.haulTargetY = Math.min(top, this.haulTargetY + presses * (fT?.haulStepM ?? 0.25));
+        const dy0 = this.haulTargetY - body.pos.y;
+        let paso = 0;
+        if (dy0 > 1e-3) {
+          // SUBIDA sostenida hacia el objetivo (la «sacudida ascendente»)
+          paso = Math.min(dy0, (fT?.haulRiseMps ?? 2.6) * dt);
+          body.pos = vAdd(body.pos, v3(0, paso, 0));
+          body.prev = v3(body.pos.x, body.pos.y - paso * 0.55, body.pos.z);
+          this.clampBody(body);
+          // T97 — el izado RECOGE cuerda: la longitud efectiva del belay baja
+          // con la cintura (lo izado NO vuelve a colgar entre golpes).
+          if (this.belayPivot) {
+            const dH = vLen(vSub(body.pos, this.belayPivot));
+            this.belayLenEfectivo = Math.max(0.5, Math.min(this.belayLenEfectivo, dH));
+          }
+        } else if (this.haulPressesPend === 0) {
+          // Objetivo alcanzado sin más golpes: COLGA DE VERDAD en la altura
+          // izada (no congelado a mitad de balanceo) — el verlet de abajo
+          // manda desde el próximo tick; el trinquete mantiene la cota.
+          this.ropeState = "caught";
+        }
+        // SOLO cuando el RESCATE (el izado del compañero) lo ha situado con
+        // un anclaje a su alcance —o en el tope del izado, junto a sus presas
+        // de despegue— recupera la posición erguida (dictado). Sin golpes de
+        // tecla del compañero, PERMANECE colgado horizontal e inactivo.
+        this.chequeaRecobro(body, fT);
+        vAbs = paso / Math.max(1e-4, dt);
       }
     } else {
       // RE-AGARRE: cualquier ancla viva devuelve la cuerda a holgura (Task 36).
@@ -957,10 +1294,14 @@ export class SherpaRig {
         // (Task 36, petición: "cae, la cuerda lo agarra, pierde altura y
         // tiempo pero no vuelve a cero"). El tirón usa el MISMO muelle
         // estable del colgado: frena, rebota una vez y queda colgado.
-        if (this.ropeState !== "falling" && this.ropeState !== "caught" && this.ropeState !== "grounded") {
+        // T97 — la ESPERA del rescate ('hauling' sin golpes) también vive
+        // aquí (verlet colgado): NUNCA re-entra en 'falling' (se ratchetaba
+        // a la baja hasta la nieve).
+        if (this.ropeState !== "falling" && this.ropeState !== "caught" && this.ropeState !== "grounded" && this.ropeState !== "hauling") {
           this.ropeState = "falling";
           this.ropeFallStartY = body.pos.y;
           this.dangleSettleT = 0;
+          this.belayLenEfectivo = this.belayLenM; // nueva caída = cuerda entera
           // T79 — ¿LA CAPTURA CAERÍA JUNTO AL SUELO? Si la línea de captura de
           // la cuerda (inicio − caída absorvida) queda en la banda de suelo
           // (floorY + catchFloorM), el escalador toca la nieve ANTES de que la
@@ -970,23 +1311,53 @@ export class SherpaRig {
           // suelo». A media pared la banda no se toca y la captura de siempre
           // manda (cae, la cuerda lo agarra, cuelga y el compañero iza).
           const floorCatch = this.deps.floorY + (fT?.catchFloorM ?? 0.6);
-          this.groundLanding = (this.ropeFallStartY - this.belayCatchDropM) <= floorCatch + 0.05;
+          // T97 — con belay REAL: si el punto de plomo bajo el compañero
+          // (pivot.y − L) queda en la banda de suelo, la nieve gana ANTES que
+          // la cuerda (cae a tierra); sin compañero anclado NADIE sostiene la
+          // cuerda → también cae a la nieve. Sin nivel (tests/match): línea
+          // clásica por ropeFallStartY − belayCatchDropM (t95 intacto).
+          this.groundLanding = this.belayPivotActivo
+            ? (!this.belayPivot || (this.belayPivot.y - this.belayLenM) <= floorCatch + 0.05)
+            : (this.ropeFallStartY - this.belayCatchDropM) <= floorCatch + 0.05;
         }
         const catchY = Math.max(
           this.deps.floorY + (fT?.catchFloorM ?? 0.6),
           (this.ropeFallStartY ?? body.pos.y) - this.belayCatchDropM,
         );
+        // T97 — captura por CUERDA REAL: con pivote del compañero la cuerda
+        // se agota cuando la DISTANCIA entre cinturas alcanza L (no una línea
+        // horizontal fija) — la caída desciende por gravedad hasta agotarla.
+        const distBelay = this.belayPivot ? vLen(vSub(body.pos, this.belayPivot)) : -1;
+        const catchCuerda = this.belayPivot !== null && distBelay >= this.belayLenM;
+        const catchLegacy = !this.belayPivotActivo && body.pos.y <= catchY;
         // T58-E: si la cuerda se AGOTÓ en la ventana A SACO, NO vuelve a
         // agarrar — el suelo es el final (castigo del rescate fallido).
         // T79: tampoco agarra si va a caer AL SUELO (groundLanding).
-        if (this.ropeState === "falling" && body.pos.y <= catchY && !this.ropeReleased && !this.groundLanding) {
+        if (this.ropeState === "falling" && (catchLegacy || catchCuerda) && !this.ropeReleased && !this.groundLanding) {
           this.ropeState = "caught";
           this.ropeTautNow = true; // evento de borde: el match suena/avisa
           this.dangleSettleT = 0;
-          // EL CHICOTE absorbe energía EN el tirón (parada seca, lectura de
-          // juego: la cuerda AGARRA, no se estira un metro de más). Queda un
-          // 35% de la velocidad para el muelle: un rebote corto y cuelga.
-          vel = v3(vel.x * 0.6, vel.y * 0.35, vel.z * 0.6);
+          // T93 — lado del desplome: hacia donde llevaba la velocidad
+          // (el cuerpo se abandona en la dirección de la caída)
+          const vx = body.pos.x - body.prev.x;
+          this.desplomeLado = Math.abs(vx) > 1e-4 ? Math.sign(vx) : (this.player === 0 ? -1 : 1);
+          // T95 — CUERDA INEXTENSIBLE (dictado: «la cuerda tiene una dimensión
+          // fija NO SE PUEDE ESTIRAR; una vez alcanza su longitud SE FRENA y es
+          // cuando da la sacudida al cuerpo»): la parada es EN la línea y SECA
+          // — la velocidad de bajada muere ENTERA en el mismo tick (el tirón
+          // es la parada), solo sobrevive un poco de vaivén horizontal. FUERA
+          // el muelle que seguía estirando el chicote y rebotando.
+          if (this.belayPivot) {
+            // T97 — captura en la ESFERA del belay: la radial muere entera y
+            // la tangential queda al 50 % (parada seca + vaivén de péndulo).
+            const d = vSub(body.pos, this.belayPivot);
+            const dist = vLen(d) || 1e-6;
+            const dir = vScale(d, 1 / dist);
+            const vr = vel.x * dir.x + vel.y * dir.y + vel.z * dir.z;
+            vel = vScale(v3(vel.x - dir.x * vr, vel.y - dir.y * vr, vel.z - dir.z * vr), 0.5);
+          } else {
+            vel = v3(vel.x * 0.5, 0, vel.z * 0.5);
+          }
           if (!this.ropeTautDone) {
             // EL CHICOTAZO: la parada se paga en las manos (re-agarrar cuesta).
             const shock = fT?.catchFatiguePct ?? 0.16;
@@ -1004,13 +1375,27 @@ export class SherpaRig {
           this.ropeState = "grounded";
           this.ropeTautNow = false;
         }
-        if (this.ropeState === "caught") {
-          const pen = catchY - body.pos.y;
-          if (pen > 0) {
-            acc.y += Math.min(MAX_ACC, pen * SPRING_K * 1.1);
-            // amortiguación vertical extra: el rebote muere en ~0,6 s
-            vel = v3(vel.x, vel.y * Math.max(0, 1 - 6 * dt), vel.z);
-          } else if (this.haulDone) {
+        // T97 — 'caught' Y la ESPERA del rescate ('hauling' sin golpes ni
+        // recobro) cuelgan IGUAL: verlet dinámico con vaivén amortiguado.
+        if (this.ropeState === "caught" || (this.ropeState === "hauling" && !this.haulDone)) {
+          // T95 — CUERDA INEXTENSIBLE: FUERA el muelle de captura
+          // (pen·SPRING_K y el rebote): la cintura cuelga EN la línea (el
+          // clamp duro de tras-integración la mantiene) y solo queda el
+          // vaivén de péndulo, amortiguado.
+          // T97 — con belay REAL el vaivén es el PÉNDULO que ha de llegar a
+          // la LÍNEA DE PLOMO bajo el compañero. El chicote legacy mantiene
+          // su freno fuerte (2,5/s, parada seca de T95).
+          // T98 — PÉNDULO DE VERDAD: la velocidad TANGENCIAL sobrevive ENTERA
+          // (con su componente vertical). Poner vel.y=0 cada tick mataba el
+          // vaivén: el cuerpo solo «creepaba» con el paso seco de gravedad
+          // (g·dt²·sinθ ≈ 1 mm/tick) y quedaba CONGELADO a media esfera,
+          // fuera de la plomo para siempre (captura del jugador: «medio
+          // flotando en una posición físicamente incorrecta»). Ahora el
+          // clampBelay quita la radial hacia fuera y el freno amortigua el
+          // péndulo hasta la vertical (ζ≈0,43: un vaivén visible y frena).
+          const frenoVaiven = this.belayPivot ? 1.2 : 2.5;
+          vel = vScale(vel, Math.max(0, 1 - frenoVaiven * dt));
+          if (this.haulDone) {
             // Recobrado terminado: el escalador SE MANTIENE de la cuerda con
             // las manos — no vuelve a caer (está bajo su punto de despegue,
             // con presas a un arrastre). Sin gravedad, sin vaivén.
@@ -1018,15 +1403,76 @@ export class SherpaRig {
             vel = vScale(vel, Math.max(0, 1 - 10 * dt));
           }
           this.dangleSettleT += dt;
-          if (!this.haulDone && this.dangleSettleT >= (fT?.haulDelaySeconds ?? 0.9)) {
-            this.ropeState = "hauling";
-            this.ropeHaulStartNow = true;
+          // T96b/T97 — la ventana de izado abre a los 0,9 s UNA sola vez por
+          // caída (pestillo ventanaIzado: el evento haulStart avisa al
+          // jugador; los golpes del compañero arrancan el izado).
+          // T98 — la ventana es un AVISO, no un estado de física: poner
+          // ropeState='hauling' sin golpes MATABA el verlet (la rama de izado
+          // no integra el cuerpo y devolvía a 'caught' al tick siguiente —
+          // ping-pong que congelaba el péndulo a media esfera, lejos de la
+          // línea de plomo: la captura «flotando» del jugador). Sin golpes el
+          // cuerpo permanece en 'caught': péndulo vivo CADA tick; con golpes
+          // la rama de abajo pasa a 'hauling' y iza.
+          if (!this.haulDone && this.ropeState === "caught" && this.dangleSettleT >= (fT?.haulDelaySeconds ?? 0.9)) {
+            if (!this.ventanaIzado) {
+              this.ventanaIzado = true;
+              this.ropeHaulStartNow = true;
+            }
           }
+          // T97 — golpes del compañero LLEGANDO durante la espera: el izado
+          // arranca YA — pero SOLO con la ventana ya abierta (el reposo
+          // colgado de haulDelaySeconds manda: la cuerda se asienta primero).
+          if (!this.haulDone && this.ropeState === "caught" && this.ventanaIzado && this.haulPressesPend > 0) {
+            this.ropeState = "hauling";
+          }
+          // T97 — en la ESPERA también puede llegar el recobro: el compañero
+          // ya izó lo suyo y las presas quedaron al alcance (o el tope).
+          this.chequeaRecobro(body, fT);
         }
       }
       body.prev = vClone(body.pos);
       body.pos = vAdd(body.pos, vAdd(vel, vScale(acc, dt * dt)));
       this.clampBody(body);
+      // T98 — NADIE SOSTIENE: con belay real, si el pivote DESAPARECE a mitad
+      // del colgado (el compañero soltó / cayó), la cuerda ya no sostiene a
+      // nadie — caída honesta: volver a 'falling' con groundLanding (el T79
+      // lo recoge en la nieve y el nivel da la derrota). Antes entraba en el
+      // clamp LEGACY de línea y el cuerpo quedaba CONGELADO flotando en la
+      // línea vieja (la captura del jugador: «los dos sherpas flotando»).
+      if (this.belayPivotActivo && !this.belayPivot
+        && (this.ropeState === "caught" || this.ropeState === "hauling")) {
+        this.ropeState = "falling";
+        this.ropeFallStartY = body.pos.y;
+        this.groundLanding = true; // sin rescatador: la nieve es el final
+        this.dangleSettleT = 0;
+        this.belayLenEfectivo = this.belayLenM;
+        this.haulTargetY = null;
+        this.ventanaIzado = false;
+      }
+      // T95/T97 — LA CUERDA ES DURA colgado: con belay real, la cintura vive
+      // EN (o dentro de) la ESFERA de radio L en torno al compañero anclado
+      // (proyección de Jakobsen: radial muerta, tangential amortiguada → el
+      // péndulo se apaga en la LÍNEA DE PLOMO bajo el compañero). Sin nivel
+      // (tests/match), la línea clásica de captura manda (t95 intacto).
+      if ((this.ropeState === "caught" || this.ropeState === "hauling") && this.ropeFallStartY !== null) {
+        if (this.belayPivotActivo && this.belayPivot) {
+          this.clampBelay(body);
+        } else if (!this.belayPivotActivo) {
+          // T98 — el clamp LEGACY solo manda SIN nivel (tests/match): con
+          // belay activo y pivote nulo ya se decidió caída honesta arriba.
+          // T97 — la línea de captura SUBE con lo ya izado (la cuerda recogida
+          // no se re-suelta entre golpes: el rescate no resbala).
+          const cy = Math.max(
+            this.deps.floorY + (fT?.catchFloorM ?? 0.6),
+            this.ropeFallStartY - this.belayCatchDropM,
+            this.haulTargetY ?? -Infinity,
+          );
+          if (body.pos.y < cy) {
+            body.pos = v3(body.pos.x, cy, body.pos.z);
+            body.prev = v3(body.prev.x, cy, body.prev.z);
+          }
+        }
+      }
       this.antiGomaServo(body, dt);
       vAbs = vAbsV;
     }
@@ -1087,6 +1533,20 @@ export class SherpaRig {
           st.lastHoldId = anchor.hold.id;
           this.limbPt[limb] = vClone(anchor.hold.pos);
           gripped.push({ limb, anchor });
+          // T86 — LA MANO QUEDA PERFECTA (captura zona 2: «no visualizamos
+          // poses poco realistas donde se ve un brazo apuntando a un anclaje
+          // al que supuestamente le ha llegado pero que visualmente no puede
+          // alcanzar al estar también anclado por los pies»): si un pie
+          // anclado impide que el cuerpo suba hasta la presa de la mano
+          // (hombro→presa > hueso+margen), se suelta el pie más bajo — uno por
+          // tick; el servo anti-goma y el objetivo de colgado hacen el resto.
+          if (isHand(limb)) {
+            const rootNow = vAdd(this.rig.particles[P.pelvisC].pos, ROOT_OFFSET[limb]);
+            if (vLen(vSub(anchor.hold.pos, rootNow)) > this.boneReach(limb)) {
+              const foot = this.footToPushOff(anchor.hold.pos);
+              if (foot) this.releaseAnchored(foot);
+            }
+          }
           // PRESA SORPRESA VERDE → carga de Super Flatulencia (petición).
           if (anchor.hold.type === "surprise_fart") {
             this.fartCharge = true;
@@ -1139,6 +1599,11 @@ export class SherpaRig {
       // la cuerda vuelve a estar en reserva: el próximo chicote vuelve a doler.
       this.ropeTautDone = false;
       this.haulDone = false;
+      this.recobroT = 0; // T96b: el recobro muere al volver a trepar
+      this.haulTargetY = null;
+      this.haulPressesPend = 0;
+      this.haulPressesDados = 0;
+      this.ventanaIzado = false; // T97: nueva caída = ventana nueva
     }
 
     result.maxSpeed = vAbs / dt;
@@ -1155,38 +1620,127 @@ export class SherpaRig {
     };
   }
 
-  // ---------- T58-E: TREPAR A PULSO (inyección de pulsaciones + medidor) ----------
+  // ---------- T96b: RESCATE POR PULSACIONES (izado por el compañero) ----------
 
-  /** El match inyecta las pulsaciones del tick ANTES de step(): las del
-   *  COLGADO (sus teclas) y las del COMPAÑERO (que izá). Cap 4/tick: el
-   *  turbo-software no rompe la mecánica. */
-  feedRopeMash(hangedPresses: number, partnerPresses: number, partnerAnchored: boolean): void {
-    this.feedHangedPresses = Math.max(0, Math.min(4, hangedPresses));
-    this.feedPartnerPresses = Math.max(0, Math.min(4, partnerPresses));
-    this.feedPartnerAnchored = partnerAnchored;
+  /** El match/nivel inyecta las pulsaciones del tick ANTES de step(): las del
+   *  COLGADO no hacen nada (dictado: «todos sus controles permanecen
+   *  inactivos») y CADA pulsación del COMPAÑERO suma un golpe de izado
+   *  (+haulStepM, por defecto 25 cm — T126). Las pulsaciones que llegan
+   *  durante el chicote cuentan en cuanto la ventana de izado abre. */
+  feedRopeMash(_hangedPresses: number, partnerPresses: number, _partnerAnchored: boolean): void {
+    void _hangedPresses;
+    void _partnerAnchored;
+    this.haulPressesPend = Math.min(10, this.haulPressesPend + Math.max(0, Math.floor(partnerPresses)));
   }
 
-  private consumeRopeMashFeed(): void {
-    this.feedHangedPresses = 0;
-    this.feedPartnerPresses = 0;
+  /** T96b/T97 — recobro: SOLO cuando el izado (golpes YA dados) sitúa al
+   *  colgado con un anclaje a mano —o en el tope del izado— recupera la
+   *  posición erguida. Se chequea en el izado Y en la espera (la presa puede
+   *  quedar al alcance sin más golpes). */
+  private chequeaRecobro(body: { pos: V3 }, fT: NonNullable<ConstructorParameters<typeof SherpaRig>[0]["tuning"]["fall"]> | undefined): void {
+    if (this.haulDone || this.haulPressesDados === 0 || this.ropeState !== "hauling") return;
+    const top = (this.ropeFallStartY ?? body.pos.y) - (fT?.haulTopOffsetM ?? 0.35);
+    if (this.alcanzaAnclajeManos() || body.pos.y >= top - 1e-4) {
+      this.haulDone = true;
+      this.recobroT = 0;
+    }
   }
 
-  /** Fatiga MEDIA de las manos (el chicote se paga: molar menos a saco). */
-  private handFatigueAvg(): number {
-    const a = this.states.get("hand_l")!.fatigue;
-    const b = this.states.get("hand_r")!.fatigue;
-    return (a + b) / 2;
+  /** T96b — ¿hay alguna presa LIBRE al alcance de una mano libre? (dictado:
+   *  «SOLO cuando el sherpa colgado tiene un anclaje a su alcance recupera
+   *  su posición erguida»). true si existe una presa alcanzable. */
+  private alcanzaAnclajeManos(): boolean {
+    for (const limb of ["hand_l", "hand_r"] as const) {
+      if (this.dragging === limb) continue;
+      const st = this.states.get(limb)!;
+      if (st.anchored || st.traveling || st.lockedFor > 0) continue;
+      const maxLen = this.fatiguedReach(limb);
+      for (const hold of this.deps.anchorSystem.holds.values()) {
+        if (this.deps.anchorSystem.anchorAtHold(hold.id)) continue;
+        if (vLen(vSub(hold.pos, this.rig.particles[CHAIN_ROOT[limb]].pos)) <= maxLen) return true;
+        if (vLen(vSub(hold.pos, this.limbPt[limb])) <= maxLen) return true;
+      }
+    }
+    return false;
   }
 
-  /** Medidor leído por el match para el HUD/escena (null = sin ventana). */
-  ropeMashMeter(): { force01: number; threshold01: number; climbing: boolean } | null {
-    return this.ropeMash
-      ? {
-          force01: mashMeter01(this.ropeMash.force, this.ropeMashCfg),
-          threshold01: mashThreshold01(this.ropeMashCfg),
-          climbing: this.ropeMash.force >= this.ropeMashCfg.threshold,
+  /** T96b — COLGADO sin recobrar: TODOS sus controles quedan INACTIVOS
+   *  (dictado) hasta que el compañero lo izo cerca de un anclaje. El nivel
+   *  consulta esto para rechazar arrastres sobre SUS extremidades. */
+  colgadoSinRecobro(): boolean {
+    return this.anchorsCount() === 0 && !this.haulDone
+      && (this.ropeState === "caught" || this.ropeState === "hauling");
+  }
+
+  /** T126 — ANCLA AUTOMÁTICA DEL RESCATE (dictado: «el escalador caído si
+   *  tiene en su radio de acción algún agarre con sus manos se ancla de forma
+   *  automática a él»): cada mano libre busca la presa LIBRE más próxima
+   *  DENTRO de su radio (el MISMO criterio doble de alcanzaAnclajeManos:
+   *  partícula viva o último punto de la extremidad) y viaja sola hacia ella.
+   *  PREFIERE presas a la altura de la cintura o por encima: agarrarse es
+   *  SOSTENERSE — una presa muy por debajo lo arrastraría hacia abajo y
+   *  desperdiciaría todo el izado (medido en test: el cuerpo llegaba al clamp
+   *  del suelo). Solo si NADA hay al nivel de la cintura se toma la más
+   *  cercana aunque sea baja (mejor anclado que flotando). Determinista:
+   *  menor distancia; empate exacto → presa de menor id. Sin presa al
+   *  alcance (recobro por el tope del izado) no ancla nada: el jugador
+   *  agarra a mano como siempre. */
+  private autoAnclaRescate(): void {
+    const cintura = this.rig.particles[P.pelvisC].pos;
+    for (const limb of ["hand_l", "hand_r"] as const) {
+      if (this.dragging === limb) continue;
+      const st = this.states.get(limb)!;
+      if (st.anchored || st.traveling || st.lockedFor > 0) continue;
+      const maxLen = this.fatiguedReach(limb);
+      const cand = this.rig.particles[LIMB_PARTICLE[limb]].pos;
+      const pt = this.limbPt[limb];
+      let best: HoldInstance | null = null;
+      let bd = Infinity;
+      let bestBajo: HoldInstance | null = null;
+      let bdBajo = Infinity;
+      for (const hold of this.deps.anchorSystem.holds.values()) {
+        if (this.deps.anchorSystem.anchorAtHold(hold.id)) continue;
+        const d = Math.min(vLen(vSub(hold.pos, cand)), vLen(vSub(hold.pos, pt)));
+        if (d > maxLen) continue;
+        if (hold.pos.y >= cintura.y - 0.2) {
+          if (d < bd || (d === bd && best !== null && hold.id < best.id)) { bd = d; best = hold; }
+        } else if (d < bdBajo || (d === bdBajo && bestBajo !== null && hold.id < bestBajo.id)) {
+          bdBajo = d; bestBajo = hold;
         }
-      : null;
+      }
+      const elegida = best ?? bestBajo;
+      if (elegida) { this.gripWanted[limb] = true; this.startTravel(limb, elegida); }
+    }
+  }
+
+  /** T96b — el rescate TERMINÓ (recobrado erguido, a un arrastre de las
+   *  presas): controles de nuevo activos. Sonda/E2E. */
+  haulHecho(): boolean {
+    return this.haulDone;
+  }
+
+  /** T126 — sonda/E2E del rescate: golpes de izado YA dados, objetivo de
+   *  altura actual y cintura (para medir los ~25 cm por tirón). */
+  haulInfo(): { presses: number; targetY: number | null; waistY: number } {
+    return {
+      presses: this.haulPressesDados,
+      targetY: this.haulTargetY === null ? null : +this.haulTargetY.toFixed(3),
+      waistY: +this.waist().y.toFixed(3),
+    };
+  }
+
+  /** Medidor leído por el match/escena para el HUD (null = sin izado).
+   *  T96b — muestra el PROGRESO del izado por pulsaciones (0..1 hacia el
+   *  tope); la raya del umbral va AL FINAL (la meta). */
+  ropeMashMeter(): { force01: number; threshold01: number; climbing: boolean } | null {
+    if (this.ropeState !== "hauling" || this.haulDone || this.ropeFallStartY === null) return null;
+    const fT = this.deps.tuning.fall;
+    const start = this.ropeFallStartY;
+    const catchY = Math.max(this.deps.floorY + (fT?.catchFloorM ?? 0.6), start - this.belayCatchDropM);
+    const top = start - (fT?.haulTopOffsetM ?? 0.35);
+    const span = Math.max(0.3, top - catchY);
+    const prog = Math.min(1, Math.max(0, (this.rig.particles[P.pelvisC].pos.y - catchY) / span));
+    return { force01: prog, threshold01: 1, climbing: false };
   }
 
   // ---------- cargas (falseadas, suaves, con techo) ----------
@@ -1369,23 +1923,14 @@ export class SherpaRig {
 
   /** Objetivo de colgajo de una extremidad libre. */
   private dangleTarget(limb: Limb): V3 {
-    // T58-E: COLGADO DE LA CUERDA — petición literal: "debería quedarse
-    // colgado de la cuerda sujetándola con ambas manos". En caught/hauling
-    // (sin cuerda agotada) las MANOS suben a la cuerda, los pies cuelgan.
-    // T81 — POSTURA REAL DE COLGADO (petición: «que extienda las dos manos
-    // hacia arriba cogiendo la cuerda con las mismas»): ya no a media altura
-    // del pecho (+0.52, brazos encogidos) — las dos manos van JUNTAS (±0.045)
-    // a la LÍNEA DE CUERDA sobre la cabeza, con el brazo EXTENDIDO (el tope
-    // del esqueleto: hombro +0.28 → objetivo +1.18 sobre la cadera; el clamp
-    // del hueso deja el brazo recto hacia arriba). El cuerpo pende de la
-    // cuerda: la línea sobre el arnés es vertical y el vaivén la sigue.
-    if ((this.ropeState === "caught" || this.ropeState === "hauling") && isHand(limb) && !this.ropeReleased) {
-      const body = this.rig.particles[P.pelvisC];
-      const vx = (body.pos.x - body.prev.x) * 8;
-      const sway = Math.max(-0.12, Math.min(0.12, -vx));
-      const s = sideOf(limb);
-      return v3(body.pos.x + s * 0.045 + sway, body.pos.y + 1.18, body.pos.z - 0.06);
-    }
+    // T86 — COLGADO DE PESO MUERTO DESDE EL ESTÓMAGO (petición del jugador,
+    // captura: «cae a peso muerto colgando de forma realista quedando colgado
+    // de la zona central de su cuerpo como suspendido desde su estómago y las
+    // extremidades colgando hacia abajo por efecto de la gravedad en una
+    // postura creíble»): la cuerda lo retiene POR EL ARNÉS (la cintura — el
+    // estómago) y TODAS las extremidades cuelgan RELAJADAS hacia abajo — el
+    // pendejo por defecto de abajo ES la postura. Fuera la postura T81 de
+    // manos arriba agarrando la cuerda (el jugador la sustituyó por esta).
     const root = this.rig.particles[CHAIN_ROOT[limb]].pos;
     const len = (isHand(limb) ? ARM.upper + ARM.fore : LEG.thigh + LEG.shin) * 0.92;
     const body = this.rig.particles[P.pelvisC];
@@ -1445,8 +1990,42 @@ export class SherpaRig {
 
     const set = (i: number, p: V3): void => { ps[i].prev = vClone(ps[i].pos); ps[i].pos = p; };
     const waist = body.pos;
-    const chest = v3(waist.x + lean * 0.4, waist.y + CHEST_H, waist.z + 0.02);
-    const head = v3(waist.x + lean, waist.y + HEAD_H, waist.z + 0.04);
+    // T93/T95 — DESPLOME del colgado (boceto + FOTO del jugador: tras una
+    // caída el cuerpo queda abandonado HORIZONTAL, suspendido del arnés de la
+    // cintura, la cara al cielo y las extremidades colgando por gravedad — el
+    // dangleTarget ya las cuelga desde sus raíces, que viajan con la espina).
+    // NUNCA erguido (dictado). Solo en "caught" sin recobro; al rescatarse
+    // (hauling) se INCORPORA con fundido durante la subida (antes chocab de
+    // golpe a vertical). Asienta en ~0,6 s con dangleSettleT; la dirección la
+    // da desplomeLado (el signo de la velocidad al ser capturado). T95 —
+    // 1,63 rad (~93°): horizontal con la ligera arqueación de la foto
+    // (caderas arriba, cabeza y pecho un pelo por debajo de la cintura).
+    let despT = 0;
+    const fT = this.deps.tuning.fall;
+    if (this.ropeState === "caught") {
+      despT = this.haulDone ? 0 : Math.min(1, this.dangleSettleT / 0.6);
+    } else if (this.ropeState === "hauling") {
+      // T96b — el izado NO incorpora (dictado: «debe permanecer en la misma
+      // posición horizontal con extremidades caídas y NO recuperar la
+      // posición de ascenso»): horizontal SIEMPRE mientras sube por golpes
+      // de tecla; el FUNDIDO de incorporación corre SOLO en el recobro
+      // (haulDone: anclaje al alcance o tope del izado).
+      despT = this.haulDone ? Math.max(0, 1 - this.recobroT / (fT?.recobroSeconds ?? 0.5)) : 1;
+    }
+    const desplome = despT * 1.63;
+    const despFrac = desplome / 1.63;
+    const despX = Math.sin(desplome) * this.desplomeLado;
+    const despY = Math.cos(desplome);
+    const chest = v3(
+      waist.x + despX * CHEST_H + lean * 0.4 * (1 - despFrac),
+      waist.y + despY * CHEST_H,
+      waist.z + 0.02,
+    );
+    const head = v3(
+      waist.x + despX * HEAD_H + lean * (1 - despFrac),
+      waist.y + despY * HEAD_H,
+      waist.z + 0.04,
+    );
     const shL = v3(chest.x - SH_X, chest.y - 0.04, chest.z);
     const shR = v3(chest.x + SH_X, chest.y - 0.04, chest.z);
     const hipL = v3(waist.x - HIP_X, waist.y - 0.02, waist.z);
@@ -1466,17 +2045,38 @@ export class SherpaRig {
       // Techo duro del dibujo: la punta dibujada nunca supera huesos × STRETCH_HARD
       // desde su raíz (garantía anti-goma incluso en configuraciones patológicas;
       // la física de agarre sigue en limbPt exacto).
+      // T89 — EXCEPCIÓN del dictado (5ª vez que lo pide el jugador): con la
+      // goma del lanzamiento tirando, una MANO anclada es un CLAVO en su
+      // presa: la punta dibujada ES limbPt exacto — NUNCA se acota, y el
+      // brazo se alarga para seguir alcanzándola mientras el cuerpo se hunde.
+      const anclada = this.states.get(limb)?.anchored ?? false;
+      const clavo = this.gomaEstirando && isHand(limb) && anclada;
       const rootS = vAdd(body.pos, ROOT_OFFSET[limb]);
       let tip = this.limbPt[limb];
-      const dTip = vLen(vSub(tip, rootS));
-      const hardMax = this.boneLen(limb) * STRETCH_HARD;
-      if (dTip > hardMax) tip = vAdd(rootS, vScale(vSub(tip, rootS), hardMax / dTip));
+      if (!clavo) {
+        const dTip = vLen(vSub(tip, rootS));
+        const hardMax = this.boneLen(limb) * STRETCH_HARD;
+        if (dTip > hardMax) tip = vAdd(rootS, vScale(vSub(tip, rootS), hardMax / dTip));
+      }
       drawnTip[limb] = tip;
       set(i, tip);
     }
     // codos (afuera y separados de la pared) y rodillas (hacia la pared).
-    set(P.elbowL, ik(shL, drawnTip.hand_l, ARM.upper, ARM.fore, v3(-0.85, -0.3, -0.35)));
-    set(P.elbowR, ik(shR, drawnTip.hand_r, ARM.upper, ARM.fore, v3(0.85, -0.3, -0.35)));
+    // T89 — GOMA DEL ANTEBRAZO (el dibujo que el jugador trazó en rojo):
+    // mientras la mano clavada quede fuera del alcance natural, el CODO se
+    // coloca en la línea hombro→mano a la longitud EXACTA del hueso superior
+    // (el brazo no cambia de escala ni se desplaza de su sitio) y TODO el
+    // estiramiento lo absorbe el antebrazo (codo→mano > reposo): el sherpa
+    // parece un chicle con las manos soldadas a las presas.
+    const codoGoma = (S: V3, H: V3, upper: number, fore: number, bend: V3): V3 => {
+      const delta = vSub(H, S);
+      const d0 = vLen(delta);
+      if (d0 <= (upper + fore) * 0.995) return ik(S, H, upper, fore, bend); // pose normal
+      const dir = vScale(delta, 1 / d0);
+      return vAdd(S, vScale(dir, upper)); // codo en línea, hueso superior intacto
+    };
+    set(P.elbowL, codoGoma(shL, drawnTip.hand_l, ARM.upper, ARM.fore, v3(-0.85, -0.3, -0.35)));
+    set(P.elbowR, codoGoma(shR, drawnTip.hand_r, ARM.upper, ARM.fore, v3(0.85, -0.3, -0.35)));
     set(P.kneeL, ik(hipL, drawnTip.foot_l, LEG.thigh, LEG.shin, v3(-0.08, 0.22, 0.97)));
     set(P.kneeR, ik(hipR, drawnTip.foot_r, LEG.thigh, LEG.shin, v3(0.08, 0.22, 0.97)));
   }
@@ -1528,8 +2128,11 @@ export class SherpaRig {
     this.ropeTautDone = false;
     this.dangleSettleT = 0;
     this.haulDone = false;
-    // T58-E: respawn = cuerda nueva (la ventana A SACO y el desenroque mueren)
-    this.ropeMash = null;
+    // T96b: el izado por pulsaciones muere con el respawn.
+    this.haulTargetY = null;
+    this.recobroT = 0;
+    this.haulPressesPend = 0;
+    this.haulPressesDados = 0;
     this.ropeReleased = false;
     this.ropeReleasedNow = false;
     // Task 37 (cuerda cooperativa): el respawn deshace ancla e impulso, y la

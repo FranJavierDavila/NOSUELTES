@@ -79,7 +79,7 @@ describe("T60 SnapBuffer — interpolación del guest", () => {
 describe("T60 RemoteIntentBuffer — input del guest en el host", () => {
   const proto: NetRemoteInput = {
     ax: 0, ay: 0, speed: 1.8, toggles: [],
-    shoo: false, fart: false, anchor: false, impulse: false, mashCount: 0,
+    shoo: false, fart: false, anchor: false, impulse: false, place: false, mashCount: 0,
   };
 
   const msg = (over: Partial<NetRemoteInput>): NetRemoteInput => ({ ...proto, ...over });
@@ -121,12 +121,49 @@ describe("T60 RemoteIntentBuffer — input del guest en el host", () => {
     expect(it.mashCount).toBe(0);
   });
   const LIMBS_MAP = { hand_l: 1, hand_r: 1, foot_l: 1, foot_r: 1 };
+
+  it("T102: el flanco PLACE (usar la mochila del invitado) sobrevive a la fusión", () => {
+    const b = new RemoteIntentBuffer();
+    // el «usar» viaja como su propio mensaje (o incrustado en el periódico);
+    // el eje MÁS RECIENTE manda, como en cualquier fusión del buffer
+    b.push(msg({ ax: 0.3 }));
+    b.push(msg({ place: true, ax: 0.6 }));
+    const it = b.drain(1 / 60)!;
+    expect(it.place).toBe(true);
+    expect(it.anchor).toBe(false); // flancos independientes
+    expect(it.aimDelta.x).toBeCloseTo(0.6 * 1.8 / 60, 9);
+  });
+});
+
+describe("T102 HostInputMixer — el «usar» de la mochila en red", () => {
+  const base = {
+    aimDelta: { x: 0, y: 0 }, gripToggles: [], shoo: false, fart: false,
+    anchor: false, impulse: false, place: false, mashCount: 0,
+  };
+  const local = {
+    poll: (dt: number) => [
+      { playerId: 0 as const, ...base },
+      { playerId: 1 as const, ...base, place: true }, // tecla T local de P2
+    ],
+    orbitAxis: () => ({ x: 0, y: 0 }),
+    freeViewHeld: () => false,
+  };
+
+  it("con guest: el place LOCAL de P2 no pasa; el flanco remoto sí coloca", () => {
+    const rb = new RemoteIntentBuffer();
+    rb.push({ ax: 0, ay: 0, speed: 1.8, toggles: [], shoo: false, fart: false, anchor: false, impulse: false, place: true, mashCount: 0 });
+    const m = new HostInputMixer(local, rb, () => true);
+    const intents = m.poll(1 / 60);
+    const p1 = intents.find((i) => i.playerId === 1)!;
+    expect(p1.place).toBe(true); // SOLO el del invitado (el local fue descartado)
+    expect(intents.filter((i) => i.playerId === 1).length).toBe(1);
+  });
 });
 
 describe("T60 HostInputMixer — propiedad del jugador 2", () => {
   const localIntent = (playerId: 0 | 1, mash = 0) => ({
     playerId, aimDelta: { x: 0, y: 0 }, gripToggles: [], shoo: false, fart: false,
-    anchor: false, impulse: false, mashCount: mash,
+    anchor: false, impulse: false, place: false, mashCount: mash,
   });
   const local = {
     poll: (dt: number) => [localIntent(0), localIntent(1, 2)],
@@ -136,7 +173,7 @@ describe("T60 HostInputMixer — propiedad del jugador 2", () => {
 
   it("con guest: P2 local se DESCARTA y entra el remoto; órbita sigue local", () => {
     const rb = new RemoteIntentBuffer();
-    rb.push({ ax: 1, ay: 0, speed: 1.8, toggles: ["foot_r"], shoo: false, fart: false, anchor: false, impulse: false, mashCount: 1 });
+    rb.push({ ax: 1, ay: 0, speed: 1.8, toggles: ["foot_r"], shoo: false, fart: false, anchor: false, impulse: false, place: false, mashCount: 1 });
     const m = new HostInputMixer(local, rb, () => true);
     const intents = m.poll(1 / 60);
     expect(intents.map((i) => i.playerId).sort()).toEqual([0, 1]);

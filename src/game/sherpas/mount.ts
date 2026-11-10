@@ -1,4 +1,4 @@
-// Arranque de SHERPAS AL LÍMITE (variación cooperativa, doc 0/2.1).
+// Arranque de CARRY ME (antes «Sherpas al límite», variación cooperativa).
 // Carga el pack de datos (/content/sherpas), el personaje del prototipo,
 // monta menú → partida y gestiona el ciclo de vida desde React.
 import { loadSherpasData } from "./core/data";
@@ -11,14 +11,22 @@ import { InputManager } from "./input/input";
 import { SherpasMatch } from "./gameplay/match";
 import { browserStore, markOnboardingSeen, shouldShowOnboarding } from "./gameplay/onboarding";
 import { resolveDayPreset } from "./gameplay/daycycle"; // T61: hora del día (vista previa del menú)
-import { HostNet, GuestNet } from "./net/netClient";
+import { HostNet, GuestNet, debugRelays } from "./net/netClient";
 import { HostInputMixer } from "./net/remoteInput";
 import { GuestRunner } from "./net/guestRunner";
-import type { NetSessionParams } from "./net/protocol";
+import { TEST_MODE } from "./gameplay/testMode"; // T89: modo test oculto (?test=escalada)
+import { NIVEL_MODE } from "./gameplay/nivelMode"; // T118: nivel provisional (?nivel=pared)
+import { ParedNivel } from "./gameplay/paredNivel"; // T118: nivel «Prueba del Campamento»
+import type { NetJson, NetSessionParams } from "./net/protocol";
+import type { Limb } from "./core/bus";
 import { WallGenerator } from "./world/wallGenerator";
 import { loadAscent, clearAscent, type SavedAscent } from "./world/camps";
 import { v3, type V3 } from "../physics/pbd/math";
 import { Vector3, Matrix } from "@babylonjs/core/Maths/math.vector";
+import { assetUrl } from "../assetPath";
+import { showLoading } from "./ui/loading"; // T110: pantalla de carga con pico + barra + mensajes
+import { buildDevTramos, feedDevKey, isTypingTarget, type DevTramo, type DevLayoutInfo } from "./gameplay/devMode"; // T114
+import { TutorialDirector, TutorialMixer } from "./gameplay/tutorialGuiado"; // T114
 
 export interface SherpasMountOptions {
   canvas: HTMLCanvasElement;
@@ -30,12 +38,18 @@ export interface SherpasHandles {
 }
 
 const fetchJson = async (path: string): Promise<unknown> => {
-  const res = await fetch(path);
+  const res = await fetch(assetUrl(path));
   if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
   return res.json();
 };
 
 export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<SherpasHandles> {
+  // T110 — PANTALLA DE CARGA: nada se ve hasta que el mundo está montado
+  // (petición: «la pantalla no debe mostrarse hasta que esté todo cargado… un
+  // texto tipo barra de progreso o un pico de sherpa y mensajes de espera
+  // graciosos relativos a la escalada»). Se muestra ANTES de cualquier carga.
+  const loading = showLoading();
+  loading.set(6, "Llamando a los sherpas…");
   // StrictMode/HMR pueden montar dos veces: una UNICA instancia viva.
   const w = window as unknown as { __NS_SHERPAS?: { dispose(): void } };
   if (w.__NS_SHERPAS) {
@@ -44,8 +58,20 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
   }
 
   const data = await loadSherpasData(fetchJson, "/content/sherpas");
+  loading.set(24, "Leyendo el cuaderno de ruta…");
+  // T89 MODO TEST: insignia fija mientras la depuración esté activa.
+  if (TEST_MODE.enabled && !document.getElementById("sherpas-test-badge")) {
+    const badge = document.createElement("div");
+    badge.id = "sherpas-test-badge";
+    badge.textContent = "🧪 MODO TEST · sin fatiga · alcance x1.8";
+    badge.style.cssText = "position:fixed;top:8px;right:10px;z-index:9999;padding:4px 10px;" +
+      "border-radius:8px;background:rgba(154,60,20,.82);color:#ffe9d6;font:600 13px/1.4 sans-serif;" +
+      "pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.4)";
+    document.body.appendChild(badge);
+  }
   const repo = new ContentRepository();
   const bundle = await repo.load(browserJsonLoader, "/content");
+  loading.set(34, "Repartiendo el material entre los sherpas…");
   const character = bundle.characters.get("prototype_climber");
   const profile = bundle.bodyProfiles.get("standard_humanoid");
   if (!character || !profile) throw new Error("el personaje del prototipo no está en /content (manifest)");
@@ -66,7 +92,25 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     snapTimer: number;
     unSubNet: (() => void) | null;
     guestBuilding: boolean;
-  } = { match: null, scene: null, disposed: false, menuRaf: 0, previewSeed: 0, hostNet: null, guestNet: null, guest: null, snapTimer: 0, unSubNet: null, guestBuilding: false };
+    /** T102 NET: a quién deja arrastrar el ratón el match (compartido con él). */
+    dragLock: { player: 0 | 1 | null };
+    /** T102 NET: elección de arranque vigente, para mandar la sesión al guest
+     *  que entre a MITAD de partida (después del GO del anfitrión). */
+    netChoice: HudStartChoice | null;
+    netResumeSeed: number | null;
+    /** T114 TUTORIAL GUIADO: director+mixer vivos (null fuera del tutorial). */
+    tutorial: { director: TutorialDirector; mixer: TutorialMixer } | null;
+    tutorialOn: boolean;
+    tutMixer: TutorialMixer | null;
+    /** T114 MODO DEV: tramo pendiente al arrancar desde el menú + buffer de la
+     *  palabra secreta + layout de la pared del menú (para listar tramos). */
+    devJump: DevTramo | null;
+    devBuf: string;
+    previewLayout: DevLayoutInfo | null;
+    devKeyHandler: ((e: KeyboardEvent) => void) | null;
+    /** T118 NIVEL «PRUEBA DEL CAMPAMENTO»: instancia viva (null fuera del nivel). */
+    pared: ParedNivel | null;
+  } = { match: null, scene: null, disposed: false, menuRaf: 0, previewSeed: 0, hostNet: null, guestNet: null, guest: null, snapTimer: 0, unSubNet: null, guestBuilding: false, dragLock: { player: null }, netChoice: null, netResumeSeed: null, tutorial: null, tutorialOn: false, tutMixer: null, devJump: null, devBuf: "", previewLayout: null, devKeyHandler: null, pared: null };
 
   const input = new InputManager(data.inputMaps, {
     onPause: () => { if (state.guest) state.guest.togglePause(); else state.match?.togglePause(); },
@@ -75,13 +119,177 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
   });
   input.attach(window);
 
+  // ---------- T114 MODO DEV (secreto): escribir la palabra → panel de tramos ----------
+  const toggleDevPanel = (): void => {
+    if (hud.devPanelOpen()) { hud.hideDevPanel(); return; }
+    if (!state.previewLayout) return;
+    const stepM = data.tuning.checkpoint?.stepM ?? 10;
+    hud.showDevPanel(buildDevTramos(state.previewLayout, stepM), {
+      onJump: (t) => {
+        if (state.guest) { hud.subtitle(hud.t("dev.guestWarn"), 3.2); return; }
+        hud.hideDevPanel();
+        if (state.match) {
+          if (state.match.devRespawn(t.kind, t.index)) hud.subtitle(hud.t("dev.jumped"), 2.6);
+          return;
+        }
+        // en el MENÚ: arranca una partida local de supervisión en ese tramo
+        state.devJump = t;
+        startAscent({
+          lang: hud.lang, resume: false, mute: false, daltonism: false, reduceShake: false,
+          disablePee: false, bubbles: true, difficulty: data.difficulty.defaultPreset,
+          seed: state.previewSeed, weather: "clear", daytime: "dia",
+        });
+      },
+      onClose: () => { /* solo cerrar */ },
+    });
+  };
+  const devKeyHandler = (e: KeyboardEvent): void => {
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+    if (isTypingTarget(e.target)) return; // escribiendo en chat/semilla: NO cuenta
+    const r = feedDevKey(state.devBuf, e.key);
+    state.devBuf = r.buf;
+    if (r.matched) toggleDevPanel();
+  };
+  document.addEventListener("keydown", devKeyHandler, true);
+  state.devKeyHandler = devKeyHandler;
+
+  // T101 INVENTARIO DE MOCHILA: el «usar» del hueco coloca el anclaje por la
+  // misma vía que la tecla. T102: en el invitado el «usar» VIAJA POR RED
+  // (flanco de colocación al host); la ventana local solo muestra el contador.
+  hud.setBackpackUseHandler((p) => {
+    if (state.guest) state.guest.requestPortablePlace(p);
+    else state.match?.requestPortablePlace(p);
+  });
+  // ---------- T108e CHAT DE VOZ (T109a: ruta de audio ROBUSTA) ----------
+  // Sesión activa → micrófono ON automáticamente (ambos lados, el MISMO canal
+  // P2P que el resto). T115 — reproducción ROBUSTA del audio remoto: un
+  // <audio> oculto por stream. El camino anterior (solo WebAudio) se quedaba
+  // MUDO en producción: el AudioContext nacía suspendido (aún sin gesto) y un
+  // MediaStreamSource creado mientras el contexto NO corre pierde el stream
+  // para siempre (Chrome con streams WebRTC remotos). El <audio srcObject> es
+  // la vía que todos los navegadores reproducen; como exige gesto para sonar,
+  // cada toque/tecla vuelve a pedir .play() mientras siga pausado.
+  const remoteAudios = new Map<MediaStream, HTMLAudioElement>();
+  let webaudioRescue = false; // el rescate WebAudio solo se intenta una vez
+  const voiceNet = (): import("./net/netClient").NetEndpoint | null =>
+    state.hostNet ?? state.guestNet;
+  const voicePlayRemote = (stream: MediaStream): void => {
+    try {
+      if (remoteAudios.has(stream)) return;
+      const el = document.createElement("audio");
+      el.srcObject = stream;
+      el.autoplay = true;
+      el.muted = false;
+      el.volume = 1;
+      el.setAttribute("playsinline", "");
+      el.style.cssText = "position:fixed;left:-2px;top:-2px;width:1px;height:1px;opacity:0;pointer-events:none;";
+      document.body.appendChild(el);
+      remoteAudios.set(stream, el);
+      // rescate: si el navegador NUNCA deja arrancar el elemento, el mismo
+      // gesto que intenta .play() monta la cadena WebAudio (a estas alturas
+      // el gesto ya ha resumido cualquier contexto).
+      const rescue = (): void => {
+        if (webaudioRescue) return;
+        webaudioRescue = true;
+        try {
+          const Ctor: typeof AudioContext | undefined =
+            window.AudioContext ??
+            (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+          if (!Ctor) return;
+          const ctx = new Ctor();
+          const src = ctx.createMediaStreamSource(stream);
+          const gain = ctx.createGain();
+          gain.gain.value = 1.5; // el mic del portátil llega flojo
+          src.connect(gain);
+          gain.connect(ctx.destination);
+          if (ctx.state !== "running") void ctx.resume();
+        } catch { /* sin WebAudio */ }
+      };
+      const kick = (): void => {
+        if (el.paused && !el.ended) el.play().catch(() => rescue());
+      };
+      kick();
+      document.addEventListener("pointerdown", kick, true);
+      document.addEventListener("keydown", kick, true);
+      stream.getAudioTracks()[0]?.addEventListener("ended", () => {
+        document.removeEventListener("pointerdown", kick, true);
+        document.removeEventListener("keydown", kick, true);
+        el.remove();
+        remoteAudios.delete(stream);
+      });
+    } catch { /* stream ya cerrado o sin DOM */ }
+  };
+  const startVoice = (): void => {
+    const net = voiceNet();
+    if (!net) return;
+    net.onVoiceStream = voicePlayRemote;
+    hud.voiceVisible(true); // T109a: chip SIEMPRE visible en sesión
+    hud.micState(net.voiceState);
+    void net.enableVoice().then(() => hud.micState(net.voiceState));
+  };
+  const stopVoice = (): void => {
+    voiceNet()?.stopVoice();
+    hud.voiceVisible(false);
+  };
+  hud.setMicToggle(() => {
+    const net = voiceNet();
+    if (!net) return;
+    if (net.voiceState === "live") net.muteVoice(true);
+    else void net.enableVoice().then(() => hud.micState(net.voiceState));
+    hud.micState(net.voiceState);
+  });
+  // T107c CHAT ONLINE: el envío sale por el canal de la sesión activa y el
+  // mensaje enviado se muestra en el log LOCAL (cada lado solo recibe los del
+  // otro). Enter abre la entrada — el propio HUD la cierra al enviar (Esc).
+  hud.setChatSend((text) => {
+    hud.chatPush(state.hostNet ? 0 : 1, text);
+    if (state.hostNet) state.hostNet.sendChat(text);
+    else state.guestNet?.sendChat(text);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.code !== "Enter") return;
+    if (!state.hostNet && !state.guestNet) return;
+    const t = e.target;
+    if (t instanceof HTMLElement && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    if (!hud.chatAvailable() || hud.chatInputOpen()) return;
+    hud.chatToggle();
+    e.preventDefault();
+  });
+  // Clic sobre la mochila de un escalador → ventana-interior de la mochila.
+  // Hit-test por proyección a coordenadas de pantalla (sin scene.pick, la
+  // escena decide 500+ instancias con otro sistema). En menú (sin match) el
+  // clic no hace nada; el invitado abre SOLO la mochila de su azul.
+  opts.canvas.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || state.disposed || !state.scene) return;
+    const rect = opts.canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const p = state.scene.backpackAt(x, y);
+    if (p === null) return;
+    if (state.guest) {
+      if (p !== 1) return; // la naranja es del anfitrión
+      hud.backpackOpen(p, x, y, state.guest.portableRemaining(p));
+      return;
+    }
+    if (!state.match) return;
+    hud.backpackOpen(p, x, y, state.match.portableRemaining(p));
+  });
+
   const makePreviewScene = async (seed?: number): Promise<SherpaScene> => {
+    loading.phase("Fijando cuerdas en la pared…", 55);
     const scene = await SherpaScene.create(opts.canvas, data.camera, data.hud, data.tuning.perf, data.vfx, data.wallGen.relief ?? null, data.climber);
     const gen = new WallGenerator(
       { phases: data.phases, wallGen: data.wallGen, safePathRockRatio: 0.4 },
       seed ?? Math.floor(Math.random() * 1000000),
     );
+    loading.phase("Levantando la pared del Everest…", 72);
     scene.buildWorld(gen.layout);
+    state.previewLayout = gen.layout; // T114: tramos del panel dev
+    // T110: la pantalla de carga aguanta hasta que la cabaña GLB del campamento
+    // termina de cargar (con red de seguridad de 15 s por si un asset cuelga).
+    loading.phase("Montando el campamento base…", 86);
+    await Promise.race([scene.whenReady, new Promise<void>((r) => setTimeout(r, 15000))]);
+    loading.set(94, "Afinando los mosquetones…");
     scene.updateCamera(1 / 60, [v3(0, 2.2, -0.4)], 1.5);
     return scene;
   };
@@ -93,7 +301,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
   state.scene = await makePreviewScene(state.previewSeed);
   const menuFrame = (): void => {
     state.menuRaf = requestAnimationFrame(menuFrame);
-    if (state.match || state.guest || !state.scene) return; // la partida/guest llevan su propio bucle
+    if (state.match || state.guest || state.pared || !state.scene) return; // la partida/guest/nivel llevan su propio bucle
     state.scene.render();
   };
   menuFrame();
@@ -105,33 +313,84 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     if (state.unSubNet) { state.unSubNet(); state.unSubNet = null; }
   };
 
+  /** T102 NET: candados de rol según haya invitado — con guest, el ratón del
+   *  anfitrión SOLO arrastra a su naranja (el azul es del invitado) y el mixer
+   *  ya desvía el teclado de P2 al remoto; sin guest, relevo local de ambos. */
+  const syncNetLocks = (): void => {
+    state.dragLock.player = state.hostNet?.hasGuest ? 0 : null;
+  };
+
+  /** T102 NET: sesión + publicación de snapshots. Vale al pulsar GO con el
+   *  guest ya dentro Y cuando el guest entra a MITAD de partida. */
+  const publishNetSession = (): void => {
+    if (!state.match || !state.hostNet?.hasGuest) return;
+    const choice = state.netChoice;
+    if (!choice) return;
+    stopSnapshots();
+    const info = state.match.netWorldInfo();
+    state.hostNet.sendSession({
+      wallSeed: state.previewSeed,
+      seed: state.netResumeSeed ?? choice.seed,
+      difficulty: choice.difficulty,
+      lang: choice.lang,
+      resume: choice.resume,
+      daytime: choice.daytime ?? "dia", // T61: el guest replica el ambiente
+      snow: choice.weather ?? "clear",
+      ...info,
+    });
+    const evs: { n: string; p: Record<string, NetJson> }[] = [];
+    state.unSubNet = bus.onAny((n, p) => { if (evs.length < 40) evs.push({ n, p: p as Record<string, NetJson> }); });
+    const hz = data.net?.snapshotHz ?? 30;
+    state.snapTimer = window.setInterval(() => {
+      if (!state.match || !state.hostNet?.hasGuest) return;
+      const ev = evs.splice(0, evs.length);
+      state.hostNet.sendSnapshot(state.match.captureSnapshot({ ev }));
+    }, Math.max(20, Math.round(1000 / hz)));
+  };
+
   const endGuestToMenu = async (): Promise<void> => {
     state.guest?.dispose(); state.guest = null;
     state.guestNet?.disconnect(); state.guestNet = null;
+    hud.chatActive(false);
+              hud.voiceVisible(false); // T109a: sin sesión, sin chip // T107c: sesión terminada, chat fuera
+    stopVoice(); // T108e: y la voz
     // el guest montó una escena PROPIA (pared del host): volver a la local
     if (state.scene) { state.scene.dispose(); state.scene = null; }
     if (!state.disposed) {
       if (!state.scene) state.scene = await makePreviewScene();
       await showMenu();
+      await showLoading().hide(); // T110: la vuelta al menú también rehace escena
     }
   };
 
   const beginGuest = async (params: NetSessionParams): Promise<void> => {
     if (state.guestBuilding || state.guest || !state.guestNet) return;
     state.guestBuilding = true;
+    const gLoad = showLoading(); // T110: el invitado también construye SU pared
     try {
       hud.hideNet();
       hud.hideStart();
       // el guest NO reutiliza la escena del menú: su pared debe coincidir con
       // la que el host REUTILIZA de SU menú (semilla de pared de la sesión).
       if (state.scene) { state.scene.dispose(); state.scene = null; }
+      gLoad.phase("Fijando cuerdas en la pared…", 55);
       state.scene = await SherpaScene.create(opts.canvas, data.camera, data.hud, data.tuning.perf, data.vfx, data.wallGen.relief ?? null, data.climber);
       const mkGen = (seed: number): WallGenerator => new WallGenerator(
         { phases: data.phases, wallGen: data.wallGen, safePathRockRatio: 0.4 }, seed,
       );
+      gLoad.phase("Levantando la pared del anfitrión…", 72);
       state.scene.buildWorld(mkGen(params.wallSeed).layout);
-      state.scene.addHolds(mkGen(params.seed).allGeneratedHolds(), data.hud.anchorTypeColors);
+      // T103: PARED HORNEADA también en el invitado — el generador es PEREZOZO
+      // (sin ensureUpToY, allGeneratedHolds() nacía VACÍO y el invitado NO
+      // veía las presas de la pared). Toda la pared se genera y registra de
+      // una vez, igual que el anfitrión (misma semilla → misma pared).
+      const genGuest = mkGen(params.seed);
+      genGuest.ensureUpToY(genGuest.layout.totalHeightM);
+      gLoad.phase("Clavando las presas…", 84);
+      state.scene.addHolds(genGuest.allGeneratedHolds(), data.hud.anchorTypeColors);
       state.scene.setCheckpoints(params.cpsYs, params.wallFrontZ, params.wallWidthM);
+      gLoad.phase("Montando el campamento base…", 90);
+      await Promise.race([state.scene.whenReady, new Promise<void>((r) => setTimeout(r, 15000))]);
       await audio.start();
       audio.setMuted(false);
       const runner = await GuestRunner.create({
@@ -143,7 +402,16 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
       // sonda E2E del extremo invitado (solo lectura + hold de render E2E)
       (window as unknown as Record<string, unknown>).__NS_GUEST = () => state.guest?.debug() ?? null;
       (window as unknown as Record<string, unknown>).__NS_GUEST_HOLD = (v: boolean) => { if (state.guest) state.guest.holdRender = !!v; };
+      // T102: proyección de la mochila del invitado (sonda E2E de la ventana)
+      (window as unknown as Record<string, unknown>).__NS_GUEST_BPK = (p: number) => state.scene?.backpackScreenPx(p as 0 | 1) ?? null;
+      // T105: extremidad del snapshot → píxeles CSS (clic REAL sobre SU sherpa)
+      (window as unknown as Record<string, unknown>).__NS_GUEST_LIMB = (p: number, limb: string) =>
+        state.guest?.limbScreenPx(p as 0 | 1, limb as Limb) ?? null;
+      // T105: anillos de agarre/alcance vistos por el invitado (replicados)
+      (window as unknown as Record<string, unknown>).__NS_GUEST_RINGS = () => state.scene?.gripRingsDebug() ?? null;
+      await gLoad.hide(); // T110: partida remota lista → se descubre la pantalla
     } catch (err) {
+      await gLoad.hide();
       console.error("fallo al montar la partida remota:", err instanceof Error ? err.stack : err);
       hud.subtitle(`Error: ${String(err instanceof Error ? err.message : err)}`, 8);
       await endGuestToMenu();
@@ -159,11 +427,33 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
           try {
             hud.netStatus(hud.t("net.connecting"));
             if (!state.hostNet) state.hostNet = new HostNet();
+            hud.chatIdentity(0); // T107c: yo soy el anfitrión en el chat
+            state.hostNet.onChat = (from, text) => hud.chatPush(from, text);
+            // T105: el drag del invitado aplica SIEMPRE al match vivo (si lo
+            // hay) y el aviso de escena lista fuerza el reenvío del minimapa.
+            state.hostNet.onDrag = (m) => state.match?.remoteDrag(m);
+            state.hostNet.onGuestReady = () => state.match?.forceMinimapResend();
             const code = await state.hostNet.create();
             hud.netWaiting(code);
             hud.netStatus(hud.t("net.waitingGuest"));
-            state.hostNet.onGuestJoined = () => hud.netStatus(hud.t("net.guestJoined"));
-            state.hostNet.onGuestLeft = () => hud.netStatus(hud.t("net.guestLeft"));
+            state.hostNet.onGuestJoined = () => {
+              hud.netStatus(hud.t("net.guestJoined"));
+              hud.chatActive(true);
+              hud.voiceVisible(true); // T109a: chip de voz junto al chat // T107c: chat disponible en cuanto hay par
+              startVoice(); // T108e: voz sincronizada en cuanto hay par
+              syncNetLocks();
+              // T102: el guest puede entrar con la partida YA empezada
+              publishNetSession();
+            };
+            state.hostNet.onGuestLeft = () => {
+              hud.netStatus(hud.t("net.guestLeft"));
+              hud.chatActive(false);
+              hud.voiceVisible(false); // T109a: sin sesión, sin chip // T107c: sin par, sin chat
+              stopVoice(); // T108e: sin par, sin voz
+              syncNetLocks();
+              state.match?.cancelRemoteDrag(); // T105: sin dueño, suelto SU drag
+              stopSnapshots(); // nadie recibe ya; el host sigue con ambos (relevo)
+            };
           } catch {
             hud.netStatus(hud.t("net.err.timeout-creando-sala"));
           }
@@ -175,10 +465,15 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
             hud.netStatus(hud.t("net.connecting"));
             state.guestNet?.disconnect();
             state.guestNet = new GuestNet(); // conexión fresca por intento
+            hud.chatIdentity(1); // T107c: yo soy el invitado en el chat
+            state.guestNet.onChat = (from, text) => hud.chatPush(from, text);
             await state.guestNet.join(code);
             hud.netStatus(hud.t("net.waitingHost"));
             state.guestNet.onSession = (p) => {
               if (!p) { void endGuestToMenu(); return; }
+              hud.chatActive(true);
+              hud.voiceVisible(true); // T109a: chip de voz junto al chat // T107c: sesión aceptada → chat disponible
+              startVoice(); // T108e: voz sincronizada
               void beginGuest(p);
             };
             state.guestNet.onClosed = () => {
@@ -196,12 +491,40 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         // el guest sí corta su conexión; el HOST conserva la sala abierta
         // (puede volver a entrar cuando quiera: GO arranca con quien haya)
         state.guestNet?.disconnect(); state.guestNet = null;
+        hud.chatActive(false);
+              hud.voiceVisible(false); // T109a: sin sesión, sin chip // T107c: sin conexión, sin chat
         void showMenu();
       },
     });
   };
 
+  /** T114: arranque de ascensión compartido (menú, GO y panel dev). */
+  const startAscent = (choice: HudStartChoice): void => {
+    void begin(choice).catch((err) => {
+      console.error("fallo al iniciar la ascensión:", err instanceof Error ? err.stack : err);
+      hud.subtitle(`Error: ${String(err instanceof Error ? err.message : err)}`, 8);
+    });
+  };
+
+  /** T114 TUTORIAL GUIADO: partida real tranquila con el director montado.
+   *  La primera vez que se va a jugar Y el botón 🎓 del menú entran aquí. */
+  const startTutorial = (): void => {
+    hud.hideStart();
+    hud.hideNet();
+    state.tutorialOn = true;
+    startAscent({
+      lang: hud.lang, resume: false, mute: false, daltonism: false, reduceShake: false,
+      disablePee: false, bubbles: true, difficulty: "tranquilo",
+      seed: state.previewSeed, weather: "clear", daytime: "dia", guiado: true,
+    });
+  };
+
   const backToMenu = async (): Promise<void> => {
+    // T114: fuera director/mixer del tutorial y salto dev pendiente
+    if (state.tutorial) { state.tutorial.director.dispose(); state.tutorial = null; }
+    state.tutMixer = null;
+    state.tutorialOn = false;
+    state.devJump = null;
     if (state.match) { state.match.dispose(); state.match = null; }
     stopSnapshots();
     // T60: si había guest, avisarle del fin de sesión (volverá a esperar)
@@ -209,6 +532,49 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     // la escena (y su motor) SOBREVIVEN: son la misma que usará la próxima partida.
     if (!state.scene) state.scene = await makePreviewScene();
     await showMenu();
+    await showLoading().hide(); // T110: si se rehizo la escena, ya está lista
+  };
+
+  // T118 — NIVEL PROVISIONAL «PRUEBA DEL CAMPAMENTO» (pared de bloques flotantes).
+  // El juego principal NO se toca: el nivel crea SU PROPIA escena (patrón
+  // endGuestToMenu: un canvas = un motor) y al salir se rehace la del menú.
+  const startPared = async (): Promise<void> => {
+    if (state.disposed || state.pared || state.match || state.guest) return;
+    hud.hideStart();
+    hud.hideNet();
+    const gLoad = showLoading();
+    gLoad.set(30, "Atando los bloques que levitan…");
+    try {
+      if (state.scene) { state.scene.dispose(); state.scene = null; }
+      gLoad.set(55, "Levantando la prueba del campamento…");
+      const scene = await SherpaScene.create(opts.canvas, data.camera, data.hud, data.tuning.perf, data.vfx, data.wallGen.relief ?? null, data.climber);
+      state.scene = scene;
+      state.pared = new ParedNivel({
+        data, scene, hud, input, canvas: opts.canvas, hudRoot: opts.hudRoot,
+        character, profile,
+        rockwallStyle: (data.wallGen.relief as unknown as { rockwall?: Partial<import("./world/rockwall").RockwallStyle> } | null)?.rockwall ?? null,
+        onExit: () => { void exitPared(); },
+      });
+      state.pared.start();
+      gLoad.set(90, "Cuerda lista…");
+    } catch (err) {
+      console.error("fallo al iniciar la prueba del campamento:", err instanceof Error ? err.stack : err);
+      hud.subtitle(`Error: ${String(err instanceof Error ? err.message : err)}`, 8);
+      state.pared?.dispose();
+      state.pared = null;
+    } finally {
+      await gLoad.hide();
+    }
+  };
+
+  const exitPared = async (): Promise<void> => {
+    if (state.pared) { state.pared.dispose(); state.pared = null; }
+    if (state.scene) { state.scene.dispose(); state.scene = null; }
+    if (!state.disposed) {
+      state.scene = await makePreviewScene();
+      await showMenu();
+      await showLoading().hide();
+    }
   };
 
   const begin = async (choice: HudStartChoice): Promise<void> => {
@@ -245,38 +611,59 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     const scene = state.scene;
     // T76: bocadillos del ricachón (cara + frases) — opción del menú inicial.
     scene.setRichBubbles(choice.bubbles ?? true);
-    // T60 RED: con guest conectado, el jugador 2 es DEL GUEST — el mixer
-    // sustituye el input local de P2 por el que llega por socket.
-    const netMixer = state.hostNet?.hasGuest
+    // T60 RED: el mixer SUSTITUYE el input local de P2 por el que llega por
+    // red. T102: se instala SIEMPRE que el anfitrión tenga sala (aunque el
+    // guest entre DESPUÉS de pulsar GO) — el candado consulta hasGuest en
+    // cada poll, así que el relevo funciona en los dos sentidos.
+    const netMixer = state.hostNet
       ? new HostInputMixer(input, state.hostNet.remote, () => state.hostNet?.hasGuest ?? false)
       : null;
+    // T114: en tutorial el input del match pasa por el MIXER del director
+    // (en demo bloquea al jugador y guioniza al profesor; en turno deja pasar
+    // solo el sherpa azul). La órbita/vista libre siguen con el input real.
+    const tutMixer = state.tutorialOn ? new TutorialMixer(netMixer ?? input) : null;
+    state.tutMixer = tutMixer;
     state.match = new SherpasMatch({
-      data, scene, audio, hud, bus, input: netMixer ?? input, character, profile, choice, resumeSave,
+      data, scene, audio, hud, bus, input: tutMixer ?? netMixer ?? input, character, profile, choice, resumeSave,
       onRestart: () => { void backToMenu(); },
+      dragLock: state.dragLock, // T102: en red el ratón del host solo mueve al naranja
     });
-    if (netMixer && state.hostNet?.hasGuest) {
-      // sesión para el guest (dos semillas: pared reutilizada + presas) y
-      // publicación de snapshots a data.net.snapshotHz con el tap del bus.
-      const info = state.match.netWorldInfo();
-      state.hostNet.sendSession({
-        wallSeed: state.previewSeed,
-        seed: resumeSave?.seed ?? choice.seed,
-        difficulty: choice.difficulty,
-        lang: choice.lang,
-        resume: choice.resume,
-        daytime: choice.daytime ?? "dia", // T61: el guest replica el ambiente
-        snow: choice.weather ?? "clear",
-        ...info,
+    state.netChoice = choice;
+    // T114: director del tutorial sobre la partida recién nacida
+    if (tutMixer) {
+      state.tutorialOn = false;
+      const m = state.match;
+      const projectWorld = (x: number, y: number, z: number): { x: number; y: number } | null => {
+        try {
+          const vp = scene.camera.viewport.toGlobal(scene.engine.getRenderWidth(), scene.engine.getRenderHeight());
+          const pr = Vector3.Project(new Vector3(x, y, z), Matrix.Identity(), scene.scene.getTransformMatrix(), vp);
+          const canvas = scene.engine.getRenderingCanvas();
+          if (!canvas) return null;
+          return { x: pr.x * (canvas.clientWidth / scene.engine.getRenderWidth()), y: pr.y * (canvas.clientHeight / scene.engine.getRenderHeight()) };
+        } catch { return null; }
+      };
+      const director = new TutorialDirector(m, {
+        match: m,
+        hud,
+        hudRoot: opts.hudRoot,
+        project: projectWorld,
+        camPin: (p, dist) => { try { scene.setCamPin(p, dist); } catch { /* escena fuera */ } },
+        resetOrbit: () => { try { scene.resetOrbitFront(); } catch { /* escena fuera */ } }, // T117
+        dragLock: state.dragLock,
+        onDone: () => markOnboardingSeen(browserStore()),
       });
-      const evs: { n: string; p: Record<string, unknown> }[] = [];
-      state.unSubNet = bus.onAny((n, p) => { if (evs.length < 40) evs.push({ n, p: p as Record<string, unknown> }); });
-      const hz = data.net?.snapshotHz ?? 30;
-      state.snapTimer = window.setInterval(() => {
-        if (!state.match || !state.hostNet?.hasGuest) return;
-        const ev = evs.splice(0, evs.length);
-        state.hostNet.sendSnapshot(state.match.captureSnapshot({ ev }));
-      }, Math.max(20, Math.round(1000 / hz)));
+      tutMixer.attach(director);
+      state.tutorial = { director, mixer: tutMixer };
     }
+    // T114 MODO DEV: salto a tramo pendiente (panel usado desde el menú)
+    if (state.devJump && state.match) {
+      const t = state.devJump;
+      state.devJump = null;
+      if (state.match.devRespawn(t.kind, t.index)) hud.subtitle(hud.t("dev.jumped"), 2.6);
+    }
+    state.netResumeSeed = resumeSave?.seed ?? null;
+    syncNetLocks();
+    if (state.hostNet?.hasGuest) publishNetSession();
     installDebug();
   };
 
@@ -290,16 +677,43 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         intents: state.hostNet?.intentCount ?? -1,
         snaps: state.hostNet?.snapshotCount ?? -1,
         pend: state.hostNet?.remote.size ?? -1,
+        relays: debugRelays(),
       }),
       waist: (p: number) => state.match?.["sherpas"][p]?.waist() ?? null,
+      /** T102: posición mundo de una extremidad (sonda del candado de arrastre). */
+      limb: (p: number, limb: "hand_l" | "hand_r" | "foot_l" | "foot_r") => state.match?.["sherpas"][p]?.limbPos(limb) ?? null,
+      /** T102: ¿match congelado (caída/cumbre)? (la sonda no debe arrastrar). */
+      frozen: () => (state.match as unknown as { frozen?: boolean } | null)?.frozen ?? false,
+      /** T102: ensayo DETERMINISTA de la unión tardía sin señalización real
+       *  (SwiftShader ahoga los offers WebRTC con la partida en marcha):
+       *  dispara los MISMOS handlers que un peer real de Trystero. */
+      netFake: (on: boolean) => {
+        if (!state.hostNet) return;
+        state.hostNet.hasGuest = on;
+        if (on) state.hostNet.onGuestJoined();
+        else state.hostNet.onGuestLeft();
+      },
       anchors: (p: number) => state.match?.["sherpas"][p]?.anchorsCount() ?? null,
       tension: (p: number) => state.match?.["sherpas"][p]?.maxTension() ?? null,
+      /** pausa el rAF del menú (E2E T86: con SwiftShader el render sofware
+       *  ahoga el event loop — p50 ~2,3 s — y los offers WebRTC caducan antes
+       *  de procesarse; congelando el menú la señalización responde al instante).
+       *  La partida/guest llevan bucle propio y no les afecta. */
+      netIdle: (on: boolean) => {
+        if (on) {
+          if (state.menuRaf) { cancelAnimationFrame(state.menuRaf); state.menuRaf = 0; }
+        } else if (!state.menuRaf && !state.match && !state.guest) {
+          menuFrame();
+        }
+      },
       aim: (p: number) => state.match?.["sherpas"][p]?.aim ? { x: state.match!["sherpas"][p].aim.x, y: state.match!["sherpas"][p].aim.y } : null,
       setAim: (p: number, x: number, y: number) => {
         const rig = state.match?.["sherpas"][p];
         if (rig) rig.aim = { x, y, z: rig.aim.z } as typeof rig.aim;
       },
       holds: () => state.match ? [...state.match["anchors"].holds.values()].map((h) => ({ id: h.id, x: h.pos.x, y: h.pos.y })) : [],
+      /** T92: anclajes portátiles (inventario + colocados) para el E2E. */
+      portables: () => state.match?.portableProbe?.() ?? null,
       rich: () => state.match?.["rich"] ? state.match["rich"].pelvis() : null,
       particles: (p: number) => state.match?.["sherpas"][p]?.rig.particles.map((q) => [q.pos.x, q.pos.y, q.pos.z]) ?? null,
       /** proyección mundo→pantalla CSS (E2E a prueba de cámara móvil). */
@@ -331,6 +745,45 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         const rig = state.match?.["sherpas"][p] as unknown as { dragging?: string | null; dragHold?: { id: string } | null } | undefined;
         return rig ? { dragging: rig.dragging ?? null, hold: rig.dragHold?.id ?? null } : null;
       },
+      /** T105: recepción de drags del invitado (diagnóstico E2E). */
+      netHost: (): { hasGuest: boolean; dragCount: number; intents: number } | null =>
+        state.hostNet ? { hasGuest: state.hostNet.hasGuest, dragCount: state.hostNet.dragCount, intents: state.hostNet.intentCount } : null,
+      /** T105: drag remoto visto por el match (estado separado del local). */
+      remoteDrag: () => state.match?.dragDebug() ?? null,
+      /** T107d ANCLAS DEL INVITADO: inyecta un intent remoto SIN red (el MISMO
+       *  camino que remote.push → drain → applyIntents) para reproducir el
+       *  flujo de colocación del invitado de forma determinista en el E2E. */
+      netInject: (m: Record<string, unknown>): boolean => {
+        if (!state.hostNet) return false;
+        (state.hostNet.remote as unknown as { push(m: unknown): void }).push(m);
+        return true;
+      },
+      /** T107d: drag remoto SINTÉTICO (el MISMO handler que un drag real del
+       *  invitado por Trystero) — armado + soltar mano = ancla clavada. */
+      rd: (m: Record<string, unknown>): boolean => {
+        if (!state.match) return false;
+        state.match.remoteDrag(m as never);
+        return true;
+      },
+      /** T108e VOZ: estado del canal P2P (chip + streams remotos recibidos). */
+      voiceNet: (): Record<string, unknown> | null => {
+        const net = state.hostNet ?? state.guestNet;
+        return net ? { st: net.voiceState, remote: net.remoteStreams.size, room: !!net } : null;
+      },
+      /** T109a E2E: primer stream de audio REMOTO (para medir RMS de verdad
+       *  con el dispositivo falso de Chromium — el tono debe llegar). */
+      voiceRemoteStream: (): MediaStream | null => {
+        const net = state.hostNet ?? state.guestNet;
+        if (!net) return null;
+        for (const s of net.remoteStreams) return s;
+        return null;
+      },
+      /** T115 E2E: estado de los <audio> remotos (deben estar playing con el
+       *  tiempo avanzando — no basta con que el stream llegue). */
+      voiceDiag: (): { paused: boolean; t: number; ready: number }[] =>
+        [...remoteAudios.values()].map((el) => ({
+          paused: el.paused, t: +el.currentTime.toFixed(2), ready: el.readyState,
+        })),
       /** T47 SOL ORBITAL: dirección/posición del sol (E2E: el azimut sigue el
        *  yaw de la órbita y a yaw 0 restaura EXACTO). null si aún no hay luz. */
       sun: (): { dx: number; dy: number; dz: number; px: number; py: number; pz: number } | null => {
@@ -430,12 +883,18 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
         } | null;
         return sc?.getRichFaceInfo?.() ?? null;
       },
+      // T109b: por MATCH (bocadillo + snapshot → el INVITADO también lo ve);
+      // el de escena directa no viaja por red.
       richSay: (text: string): boolean => {
-        const sc = (state.match?.["d"]?.scene ?? state.scene) as unknown as {
-          sayRichLine?: (text: string, durS?: number) => boolean;
-        } | null;
-        return sc?.sayRichLine?.(text, 8) ?? false;
+        const m = state.match;
+        if (!m) return false;
+        m.debugRichSay(text);
+        return true;
       },
+      /** T110 VOZ DEL RICACHÓN: fichero real que suena AHORA en el host
+       *  (lo mismo que el invitado recibe por snapshot y reproduce). */
+      richVoice: (): { kind: string; file: string; live: boolean } | null =>
+        (state.match as unknown as { richVoiceLive?(): { kind: string; file: string; live: boolean } } | null)?.richVoiceLive?.() ?? null,
       /** T84 RIG ARTICULADO: las 11 articulaciones del ricachón (mundo, mm
        *  redondeados) para medir AMPLITUD DE MOVIMIENTO desde la sonda E2E. */
       richPose: (): [string, number, number, number][] | null => {
@@ -463,7 +922,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
           rich?: { setGesture(kind: string, time: number): void; gesture: string; gesturePin: string | null };
           simTime?: number;
         } | null;
-        const VALIDAS = ["ninguno", "dormitando", "insultando", "comiendo", "tirando_basura", "aplaudiendo", "brindando", "mirando", "pataleando", "durmiendo", "bailando", "leyendo", "telefono", "exaltado"];
+        const VALIDAS = ["ninguno", "dormitando", "insultando", "comiendo", "tirando_basura", "aplaudiendo", "brindando", "mirando", "pataleando", "durmiendo", "bailando", "leyendo", "telefono", "exaltado", "contando", "senialando", "pose_poder", "selfie", "reloj", "risa"];
         if (!m?.rich || !VALIDAS.includes(g)) return false;
         m.rich.gesturePin = pin ? (g as typeof m.rich.gesturePin) : null;
         m.rich.setGesture(g, m.simTime ?? 0); // la MISMA base de tiempo del match
@@ -696,12 +1155,6 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
     const qp = new URLSearchParams(window.location.search);
     const qpWeather = qp.get("clima") ?? qp.get("weather") ?? undefined;
     const qpDaytime = qp.get("hora") ?? qp.get("daytime") ?? undefined;
-    const startAscent = (choice: HudStartChoice): void => {
-      void begin(choice).catch((err) => {
-        console.error("fallo al iniciar la ascensión:", err instanceof Error ? err.stack : err);
-        hud.subtitle(`Error: ${String(err instanceof Error ? err.message : err)}`, 8);
-      });
-    };
     hud.showStart({
       difficulties: Object.keys(data.difficulty.presets),
       defaultPreset: data.difficulty.defaultPreset,
@@ -709,6 +1162,7 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
       saveCampLabel,
       onHowToDone: () => markOnboardingSeen(store),
       onNet: showNetPanel,
+      onTutorial: () => startTutorial(), // T114: 🎓 = tutorial guiado (partida real)
       // T61 — VISTA PREVIA EN VIVO: cambiar clima/hora en el menú se VE en la
       // pared de fondo (la nevada cae y el sol se mueve al instante).
       onWeather: (id) => {
@@ -719,28 +1173,38 @@ export async function bootstrapSherpasGame(opts: SherpasMountOptions): Promise<S
       defaultWeather: qpWeather ?? undefined,
       defaultDaytime: qpDaytime ?? undefined,
       onGo: (choice) => {
+        // T114: la PRIMERA vez abre el TUTORIAL GUIADO (partida guiada real);
+        // el botón 🎓 lo reabre siempre. Al terminar/saltar queda «visto».
         if (shouldShowOnboarding(store)) {
-          hud.showOnboarding({
-            onDone: () => { markOnboardingSeen(store); startAscent(choice); },
-          });
+          startTutorial();
           return;
         }
         startAscent(choice);
       },
+      // T118: nivel provisional «Prueba del Campamento» (pared de bloques flotantes)
+      onPared: () => { void startPared(); },
     });
   };
 
   installDebug(); // T61: sonda disponible también en el MENÚ (graphics/baseCamp/sun)
   await showMenu();
+  await loading.hide(); // T110: mundo montado y menú pintado → se descubre la pantalla
+
+  // T118: ?nivel=pared → el nivel se abre DIRECTO (selección provisional por URL)
+  if (NIVEL_MODE.id === "pared") { hud.hideStart(); void startPared(); }
 
   return {
     dispose(): void {
       state.disposed = true;
+      if (state.devKeyHandler) { document.removeEventListener("keydown", state.devKeyHandler, true); state.devKeyHandler = null; }
+      if (state.tutorial) { state.tutorial.director.dispose(); state.tutorial = null; }
+      state.tutMixer = null;
       cancelAnimationFrame(state.menuRaf);
       stopSnapshots();
       if (state.guest) { state.guest.dispose(); state.guest = null; }
       state.hostNet?.disconnect(); state.hostNet = null;
       state.guestNet?.disconnect(); state.guestNet = null;
+      if (state.pared) { state.pared.dispose(); state.pared = null; }
       if (state.match) { state.match.dispose(); state.match = null; }
       if (state.scene) { state.scene.dispose(); state.scene = null; }
       input.dispose();

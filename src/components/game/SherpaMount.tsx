@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Monte de SHERPAS AL LÍMITE: canvas + capas HUD y arranque en el cliente.
+ * Monte de CARRY ME: canvas + capas HUD y arranque en el cliente.
  * Babylon y los datos se importan dinámicamente para evitar SSR.
  */
 import { useEffect, useRef } from "react";

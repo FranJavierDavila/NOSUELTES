@@ -438,7 +438,11 @@ export class WallGenerator {
     const area = this.widthM * bandH * this.patternWidthFrac(pzone);
     const attempts = Math.floor((area * density) / (minDist * minDist) * 1.9);
     const marginX = g.sample.marginXM;
-    const yLo = yMin + (isCampBand ? g.camp.zoneHeightM : g.sample.marginYM);
+    // T92: las bandas de campamento ANTES no muestreaban sus primeros 2,2 m
+    // (desierto artificial: la entrada del campamento quedaba a un solo puente
+    // y el flujo de la pareja se estrangulaba). Ahora muestrean como cualquier
+    // banda — la zona plana segura sigue en el techo (camp holds aparte).
+    const yLo = yMin + g.sample.marginYM;
     for (let i = 0; i < attempts; i++) {
       const x = rng.range(-this.widthM / 2 + marginX, this.widthM / 2 - marginX);
       const y = rng.range(yLo, yMax - g.sample.marginYM);
@@ -486,10 +490,25 @@ export class WallGenerator {
     //    de la zona del patrón. Sin esto, una banda escasa (p. ej. "juntos")
     //    puede acabar sin presas altas y la banda SIGUIENTE nace sin semillas
     //    de BFS → tramo huérfano e in escalable.
+    //    T92: corona SIEMPRE y DOBLE — dos columnas firmes en el techo de la
+    //    banda (y = yMax−0.35): son las fuentes de la ENTRADA de la banda
+    //    siguiente; sin altura suficiente en el techo, esa entrada queda a un
+    //    solo hold (corte en fuente) y la pareja no puede entrar a la par.
+    //    El guarda anti-solape (0.3 m) evita duplicar presas ya existentes.
     const topTail = holds.filter((h) => h.pos.y > yMax - 1.2 && !h.camp);
-    if (topTail.length < 2) {
+    const topCols = topTail.map((h) => h.pos.x);
+    const singleColumn = topTail.length < 2 || topCols.every((x) => Math.abs(x - topCols[0]!) < 0.6);
+    {
+      const crownXs: number[] = [];
       for (const cx of this.patternFallbackXs(pzone)) {
-        for (const dy of [0.35, 1.05]) {
+        crownXs.push(cx);
+        for (const side of [-1, 1] as const) {
+          const cx2 = Math.max(-this.widthM / 2 + marginX, Math.min(this.widthM / 2 - marginX, cx + side * 0.8));
+          if (this.xInPatternZone(cx2, yMax - 0.35, yMin, pzone)) { crownXs.push(cx2); break; }
+        }
+      }
+      for (const cx of crownXs) {
+        for (const dy of (singleColumn ? [0.35, 1.05] as const : [0.35] as const)) {
           const y = yMax - dy;
           if (placed.some((p) => Math.hypot(p.x - cx, p.y - y) < 0.3)) continue;
           holds.push(this.makeHold(`crown${index}_${cx.toFixed(1)}_${y.toFixed(2)}`, cx, y, "rock_firm", index, false));
@@ -503,8 +522,25 @@ export class WallGenerator {
     const prevTail = index > 0 ? this.ensureBand(index - 1).filter((h) => h.pos.y > yMin - 1.2) : [];
     this.validateAndPatch(holds, placed, prevTail, yMin, yMax, rng, phase, index, isCampBand);
 
+    // 5b. T92 — ENTRADA DOBLE: la franja de entrada (primeros 1,2 m) debe dejar
+    //     ≥2 presas alcanzables desde la banda anterior: la pareja ENTRA a la
+    //     par (con una sola, el segundo escalador se queda colgado fuera).
+    this.ensureDoubleEntry(holds, prevTail, yMin, yMax, index);
+
     // 6. ruta segura con ratio de roca firme (doc 8.1.4) por dificultad.
     this.enforceSafePath(holds, prevTail, yMin, yMax);
+
+    // 6b. T92 — ESCALERA DEL COMPAÑERO: segunda columna paralela a la ruta
+    //     segura (los holds no son compartibles: sin ella, una línea única es
+    //     imposible para la pareja que sube a la par).
+    this.ensureCompanionLadder(holds, prevTail, yMin, yMax, index, isCampBand);
+
+    // 6c. T92 — COMPUERTA DE FLUJO ≥2: en cada banda deben existir DOS rutas
+    //     por VÉRTICES disjuntas (capacidad 1 por presa) desde la banda
+    //     anterior hasta su tercio superior. Si el flujo es 1, clona el nodo
+    //     del corte (presa gemela a 0.8 m lateral) hasta que la pareja pueda
+    //     ir A LA PAR en todo el tramo.
+    this.ensurePairFlow(holds, prevTail, yMin, yMax, index);
 
     // 7. PRESA SORPRESA (SUPER FLATULENCIA, petición del jugador): con
     //    probabilidad por banda, UNA presa normal se vuelve VERDE superpoder.
@@ -524,12 +560,33 @@ export class WallGenerator {
     return { id, pos: v3(x, y, this.zHold), radius: g.sample.holdRadiusMax, type, bandIndex: band, camp };
   }
 
+  /** Plano z de la pared en esa (x,y): el plano base, ADELANTADO en salientes
+   *  o METIDO en entrantes — la misma regla que aplica generateBand a sus
+   *  presas. La usa la colocación de anclajes portátiles (T92) para que un
+   *  anclaje colocado en un saliente/entrante nazca EN el plano correcto. */
+  zAt(x: number, y: number): number {
+    const sal = this.layout.salientes.find((s) => x >= s.xMin && x <= s.xMax && Math.abs(y - s.yMid) <= s.heightM * 0.5 + 0.3);
+    if (sal) return sal.z;
+    const ent = this.layout.entrantes.find((e) => x >= e.xMin && x <= e.xMax && Math.abs(y - e.yMid) <= e.heightM * 0.5 + 0.25);
+    if (ent) return this.zHold + (ent.holdSetbackM ?? 0);
+    return this.zHold;
+  }
+
+  /** Paso máximo de UNA jugada de escalada (doc 8.1.3). T92: por defecto usa
+   *  gameStepM (dato, ~1.1 m — lo que el rig alcanza DE VERDAD en un movimiento
+   *  con fatiga cero); sin dato cae al teórico antiguo (alcance + medio cuerpo,
+   *  1.675 m) que era INALCANZABLE en juego: la pareja se quedaba clavada ante
+   *  cadenas que el validador daba por buenas. */
+  private stepMax(): number {
+    const r = this.deps.wallGen.reach;
+    if (r.gameStepM && r.gameStepM > 0.4) return r.gameStepM;
+    return Math.max(r.legReachM, r.armReachM) + r.marginM + r.verticalBodySpanM * 0.5;
+  }
+
   /** grafo: dos holds conectan si un paso de escalada es posible entre ellos. */
   private climbStep(a: HoldInstance, b: HoldInstance): boolean {
-    const reach = this.deps.wallGen.reach;
     const d = vLen(vSub(a.pos, b.pos));
-    const maxStep = Math.max(reach.legReachM, reach.armReachM) + reach.marginM + reach.verticalBodySpanM * 0.5;
-    return d >= 0.12 && d <= maxStep;
+    return d >= 0.12 && d <= this.stepMax();
   }
 
   private validateAndPatch(
@@ -582,7 +639,7 @@ export class WallGenerator {
           const d = vLen(vSub(r.pos, orphan.pos));
           if (d < nearD) { nearD = d; near = r; }
         }
-        const reachMax = Math.max(g.reach.legReachM, g.reach.armReachM) + g.reach.marginM + g.reach.verticalBodySpanM * 0.5;
+        const reachMax = this.stepMax();
         if (near && nearD > reachMax) {
           const m = g.sample.marginXM;
           // t deja el tramo DESDE near a ≤ 0,95·paso; el resto se cierra en
@@ -627,25 +684,35 @@ export class WallGenerator {
       }
       // GARANTÍA DE ENTRADA: la franja de márgenes entre bandas (0,3+0,3 m) más
       // los laterales puede dejar el salto prevTail→banda a > maxStep (huérfano
-      // aunque el interior sea escalable). Presa firme de entrada en el PUENTE
-      // (siempre en zona), clavada a ≤ climbStep de la presa más alta previa.
+      // aunque el interior sea escalable). T92: PAR de presas firmes de entrada
+      // (una por escalador: los holds no son compartibles) en el PUENTE, a ≤
+      // 0.72·paso de la presa previa y separadas 0.8 m lateralmente.
       if (prevTail.length && !holds.some((h) => prevTail.some((p) => this.climbStep(p, h)))) {
         const from = prevTail.reduce((best, h) => (h.pos.y > best.pos.y ? h : best));
         const m = g.sample.marginXM;
-        const ex = Math.max(-this.widthM / 2 + m, Math.min(this.widthM / 2 - m, from.pos.x));
-        const ey = yMin + 0.4;
-        const hold = this.makeHold(`entry${index}`, ex, ey, "rock_firm", index, false);
-        holds.push(hold);
-        placed.push(v3(ex, ey, this.zHold));
-        all.push(hold);
+        const clampEntryX = (x: number): number => Math.max(-this.widthM / 2 + m, Math.min(this.widthM / 2 - m, x));
+        // T92: la entrada queda a ≤ 0.72·paso de la presa previa (con el paso
+        // real de juego, yMin+0.4 fijo podía seguir fuera de alcance) y el PAR
+        // a 0.8 lateral: sqrt(0.8² + 0.72²·paso²) sigue dentro del paso.
+        const ey = Math.min(yMin + 0.4, from.pos.y + this.stepMax() * 0.72);
+        const ex = clampEntryX(from.pos.x);
+        const side: -1 | 1 = ex > 0 ? -1 : 1;
+        const ex2 = clampEntryX(ex + side * 0.8);
+        const holdA = this.makeHold(`entry${index}`, ex, ey, "rock_firm", index, false);
+        holds.push(holdA); placed.push(v3(ex, ey, this.zHold)); all.push(holdA);
+        const dy2 = Math.abs(ex2 - ex) > 0.4 ? ey : Math.min(yMin + 0.8, from.pos.y + this.stepMax() * 0.55);
+        const holdB = this.makeHold(`entry${index}b`, ex2, dy2, "rock_firm", index, false);
+        if (!placed.some((p) => Math.hypot(p.x - ex2, p.y - dy2) < 0.25)) {
+          holds.push(holdB); placed.push(v3(ex2, dy2, this.zHold)); all.push(holdB);
+        }
       }
     }
   }
 
-  /** ruta segura (greedy ascendente) con ratio mínimo de roca firme. */
-  private enforceSafePath(holds: HoldInstance[], prevTail: HoldInstance[], yMin: number, yMax: number): void {
+  /** ruta segura (greedy ascendente) — el ESQUELETO que la pareja puede seguir. */
+  private buildSafePath(holds: HoldInstance[], prevTail: HoldInstance[], yMin: number, yMax: number): HoldInstance[] {
     const band = holds.filter((h) => h.pos.y >= yMin - 0.01 && h.pos.y <= yMax);
-    if (band.length < 2) return;
+    if (band.length < 2) return [];
     const all = [...prevTail, ...band];
     let cur = prevTail.length
       ? prevTail.reduce((best, h) => (h.pos.y > best.pos.y ? h : best))
@@ -662,6 +729,13 @@ export class WallGenerator {
       visited.add(next.id);
       cur = next;
     }
+    return path;
+  }
+
+  /** ruta segura con ratio mínimo de roca firme (doc 8.1.4) por dificultad. */
+  private enforceSafePath(holds: HoldInstance[], prevTail: HoldInstance[], yMin: number, yMax: number): void {
+    const path = this.buildSafePath(holds, prevTail, yMin, yMax);
+    if (path.length < 2) return;
     const firm = path.filter((h) => h.type === "rock_firm").length;
     const ratio = path.length ? firm / path.length : 1;
     if (ratio < this.deps.safePathRockRatio) {
@@ -671,6 +745,257 @@ export class WallGenerator {
         if (changed >= need) break;
         if (h.type !== "rock_firm" && !h.camp) { h.type = "rock_firm"; changed++; }
       }
+    }
+  }
+
+  /** T92 — ESCALERA DEL COMPAÑERO (petición: "una sola línea de subida… al
+   *  tener que ir a la par es un camino imposible"). Los holds NO son
+   *  compartibles (un hold ocupado por una extremidad no se puede agarrar),
+   *  así que la ruta segura necesita una SEGUNDA columna paralela: cada
+   *  escalador sube por la suya y pueden cruzarse/trazarse en cualquier
+   *  altura (la separación lateral queda dentro del paso de juego). */
+  private ensureCompanionLadder(holds: HoldInstance[], prevTail: HoldInstance[], yMin: number, yMax: number, index: number, isCampBand: boolean): void {
+    const c = this.deps.wallGen.companion;
+    if (!c || isCampBand) return; // los campamentos ya son zonas anchas y firmes
+    const path = this.buildSafePath(holds, prevTail, yMin, yMax);
+    if (path.length < 2) return;
+    const base = path[0]!;
+    const m = this.deps.wallGen.sample.marginXM;
+    const clampX = (x: number): number => Math.max(-this.widthM / 2 + m, Math.min(this.widthM / 2 - m, x));
+    // lado hacia el CENTRO de la pared: en clústeres estrechos la columna
+    // compañera siempre cae dentro de la zona (el path no supera |x| ≤ half).
+    const zone = this.patternZoneOf(this.patternOfBand(index));
+    // T92: sondeo la zona POR ENCIMA del puente — en la base todo x es válido
+    // (puente de entrada) y elegir ahí la columna de la escalera la colocaría
+    // en el HUECO de las vías "separadas" (rompe el patrón de ruta).
+    const probeY = zone.kind === "full" ? base.pos.y : yMin + zone.bridge + 0.4;
+    const sideOf = (x: number): -1 | 1 => (x > 0 ? -1 : 1);
+    const candidatesX = [clampX(base.pos.x + sideOf(base.pos.x) * c.offsetM), clampX(base.pos.x - sideOf(base.pos.x) * c.offsetM)];
+    let cx: number | null = null;
+    for (const cand of candidatesX) {
+      if (!this.xInPatternZone(cand, probeY, yMin, zone)) continue;
+      cx = cand;
+      break;
+    }
+    if (cx === null) return; // zona sin hueco lateral (raro): la validación general sigue garantizando 1 ruta
+    // Columna CONTINUA por construcción: cada peldaño (nuevo o existente que
+    // sirva) queda a ≤ stepMax del anterior, desde la base de la ruta. Sube
+    // hasta el TOPE de la banda (no solo el de la ruta): en cada franja
+    // vertical deben quedar ≥2 presas alcanzables (una por escalador).
+    const stepMax = this.stepMax();
+    const dy = Math.min(c.maxDyM, stepMax * 0.85);
+    const placed = holds.map((h) => h.pos);
+    // T92: la columna sube 0.6 m DENTRO de la banda siguiente — la entrada de
+    // esa banda hereda una segunda columna y su fuente nunca queda monocolumna.
+    const yTop = yMax + 0.6;
+    let lastX = base.pos.x;
+    let lastY = base.pos.y;
+    let guard = 0;
+    while (lastY < yTop && guard++ < 80) {
+      // 1) ¿presa existente cerca de la línea que sirve de peldaño (subiendo
+      //    y dentro de paso)? Se usa ANTES de crear una nueva.
+      const ex = placed
+        .filter((p) => Math.abs(p.x - cx) <= c.offsetM * 0.7 && p.y > lastY + 0.15
+          && p.y <= lastY + stepMax && Math.hypot(p.x - lastX, p.y - lastY) <= stepMax)
+        .sort((a, b) => a.y - b.y)[0];
+      if (ex) { lastX = ex.x; lastY = ex.y; continue; }
+      // 2) peldaño nuevo en la y deseada; si choca con el mínimo de separación,
+      //    se busca hueco subiendo/bajando SIEMPRE dentro del paso desde last.
+      //    El PRIMER peldaño es más bajo (0.4·dy): con el offset lateral 0.8 la
+      //    diagonal base→compañero queda holgadamente dentro del paso de juego.
+      const wantY = Math.min(lastY + (lastY === base.pos.y ? dy * 0.4 : dy), yTop);
+      let py = wantY;
+      while (py <= lastY + stepMax && placed.some((p) => Math.hypot(p.x - cx, p.y - py) < c.minDistM)) py += 0.15;
+      if (py > lastY + stepMax) {
+        py = wantY - 0.15;
+        while (py > lastY + 0.2 && placed.some((p) => Math.hypot(p.x - cx, p.y - py) < c.minDistM)) py -= 0.15;
+        if (py <= lastY + 0.2) return; // aquí no cabe columna continua: mejor nada que rota
+      }
+      const hold = this.makeHold(`mate${index}_${py.toFixed(2)}`, cx, py, "rock_firm", index, false);
+      holds.push(hold);
+      placed.push(hold.pos);
+      lastX = cx;
+      lastY = py;
+    }
+  }
+
+  /** T92 — ENTRADA DOBLE: si la franja de entrada de la banda (primeros 1,2 m,
+   *  alcanzables desde prevTail) deja menos de 2 presas, añade una COMPAÑERA
+   *  junto a la existente (lateral 0.8 u offset diagonal), alcanzable TAMBIÉN
+   *  desde la banda anterior. Determinista. */
+  private ensureDoubleEntry(holds: HoldInstance[], prevTail: HoldInstance[], yMin: number, yMax: number, index: number): void {
+    if (!prevTail.length) return;
+    const g = this.deps.wallGen;
+    const zone = this.patternZoneOf(this.patternOfBand(index));
+    const m = g.sample.marginXM;
+    const clampX = (x: number): number => Math.max(-this.widthM / 2 + m, Math.min(this.widthM / 2 - m, x));
+    const entrantes = holds.filter((h) => !h.camp && h.pos.y < yMin + 1.2 && prevTail.some((p) => this.climbStep(p, h)));
+    if (entrantes.length >= 2) return;
+    const base = entrantes[0]
+      ?? prevTail.reduce((best, h) => (h.pos.y > best.pos.y ? h : best));
+    const side: -1 | 1 = base.pos.x > 0 ? -1 : 1;
+    const cands: [number, number][] = [
+      [base.pos.x + side * 0.8, base.pos.y + 0.1],
+      [base.pos.x, base.pos.y + 0.35],
+      [base.pos.x - side * 0.8, base.pos.y + 0.1],
+      [base.pos.x + side * 0.55, base.pos.y + 0.4],
+    ];
+    const placed = holds.map((h) => h.pos);
+    for (const [cx, cy] of cands) {
+      const x = clampX(cx);
+      const y = Math.min(yMax - 0.15, Math.max(yMin + 0.1, cy));
+      if (!this.xInPatternZone(x, y, yMin, zone)) continue;
+      const pos = v3(x, y, this.zHold);
+      if (vLen(vSub(base.pos, pos)) > this.stepMax()) continue;
+      if (!prevTail.some((p) => this.climbStep(p, { pos } as HoldInstance))) continue;
+      if (placed.some((p) => Math.hypot(p.x - x, p.y - y) < g.sample.minDistanceM * 0.6)) continue;
+      const hold = this.makeHold(`entry${index}c`, x, y, "rock_firm", index, false);
+      holds.push(hold);
+      placed.push(hold.pos);
+      return;
+    }
+  }
+
+  /** T92 — flujo máximo con capacidad de VÉRTICE 1 (red dividida #in/#out,
+   *  2 aumentaciones BFS) entre sources (banda anterior o arranques) y sinks
+   *  (tercio superior de la banda). Si el flujo es 1 devuelve el nodo CORTADO
+   *  (in→out saturado y alcanzable en residual): el cuello de botella. */
+  private pairFlow(nodes: HoldInstance[], sources: HoldInstance[], sinks: HoldInstance[]): { flow: number; cut: HoldInstance | null } {
+    const cap = new Map<string, number>();
+    const adj = new Map<string, string[]>();
+    const addEdge = (u: string, v: string, c: number): void => {
+      const k = `${u}|${v}`;
+      cap.set(k, (cap.get(k) ?? 0) + c);
+      if (!adj.has(u)) adj.set(u, []);
+      adj.get(u)!.push(v);
+      // red residual: el reverso EXISTE en adyacencia (capacidad 0 al inicio)
+      if (!adj.has(v)) adj.set(v, []);
+      if (!adj.get(v)!.includes(u)) adj.get(v)!.push(u);
+    };
+    for (const n of nodes) addEdge(`${n.id}#in`, `${n.id}#out`, 1);
+    for (const s of sources) addEdge("S", `${s.id}#in`, 2);
+    for (const t of sinks) addEdge(`${t.id}#out`, "T", 2);
+    const stepMax = this.stepMax();
+    for (const a of nodes) {
+      for (const b of nodes) {
+        if (a.id === b.id) continue;
+        const d = vLen(vSub(a.pos, b.pos));
+        if (d >= 0.12 && d <= stepMax) addEdge(`${a.id}#out`, `${b.id}#in`, 2);
+      }
+    }
+    const bfs = (): Map<string, string> => {
+      const prev = new Map<string, string>([["S", "S"]]);
+      const q = ["S"];
+      while (q.length) {
+        const u = q.shift()!;
+        for (const v of adj.get(u) ?? []) {
+          if (prev.has(v)) continue;
+          if ((cap.get(`${u}|${v}`) ?? 0) <= 0) continue;
+          prev.set(v, u);
+          q.push(v);
+        }
+      }
+      return prev;
+    };
+    let flow = 0;
+    let cut: HoldInstance | null = null;
+    while (flow < 2) {
+      const prev = bfs();
+      if (!prev.has("T")) {
+        if (flow === 1) {
+          // corte de vértices REAL: #in alcanzable en residual y #out NO (la
+          // capacidad del vértice separa S de T). Los vértices solo saturados
+          // EN el camino no son cortes (su #out sí queda alcanzable).
+          for (const n of nodes) {
+            const kin = `${n.id}#in`, kout = `${n.id}#out`;
+            if ((cap.get(`${kin}|${kout}`) ?? 0) <= 0 && prev.has(kin) && !prev.has(kout)) { cut = n; break; }
+          }
+        }
+        break;
+      }
+      flow++;
+      let v = "T";
+      while (v !== "S") {
+        const u = prev.get(v)!;
+        cap.set(`${u}|${v}`, (cap.get(`${u}|${v}`) ?? 0) - 1);
+        cap.set(`${v}|${u}`, (cap.get(`${v}|${u}`) ?? 0) + 1);
+        v = u;
+      }
+    }
+    return { flow, cut };
+  }
+
+  /** T92 — COMPUERTA DE FLUJO ≥2 (petición: "debe existir siempre una ruta de
+   *  subida posible… al tener que ir a la par es un camino imposible"). Con
+   *  capacidad 1 por presa (los holds no son compartibles), flujo 1 = tramo
+   *  que la pareja NO puede pasar junta. Detecta el cuello de botella y añade
+   *  una presa GEMELA junto al corte (hereda sus conexiones: está a ≤ paso de
+   *  él) hasta que fluyen 2 rutas por vértices disjuntas. */
+  private ensurePairFlow(holds: HoldInstance[], prevTail: HoldInstance[], yMin: number, yMax: number, index: number): void {
+    const g = this.deps.wallGen;
+    // fuentes = SOLO la franja de entrada real (y < yMin): los peldaños de la
+    // escalera anterior filtrados por ENCIMA de yMin son vértices de paso, no
+    // entradas (contarlos haría pasar el flujo sin cruzar la banda).
+    const sources = index === 0 ? holds.filter((h) => h.id.startsWith("start_")) : prevTail.filter((h) => h.pos.y < yMin);
+    if (!sources.length) return;
+    const valH = g.reach.bandValidateHeightM;
+    const zone = this.patternZoneOf(this.patternOfBand(index));
+    const m = g.sample.marginXM;
+    const clampX = (x: number): number => Math.max(-this.widthM / 2 + m, Math.min(this.widthM / 2 - m, x));
+    const stepMax = this.stepMax();
+    const placed = holds.map((h) => h.pos);
+    for (let iter = 0; iter < 12; iter++) {
+      // ventana GEOMÉTRICA: incluye peldaños de la escalera filtrados por encima
+      // de yMax (la física no sabe de bandas, solo de distancias).
+      const window = [...prevTail, ...holds.filter((h) => h.pos.y <= yMax + 0.6)];
+      const sinks = window.filter((h) => h.pos.y > yMax - valH && h.pos.y >= yMin - 0.01);
+      if (!sinks.length) return;
+      const { flow, cut } = this.pairFlow(window, sources, sinks);
+      if (flow >= 2 || !cut) return;
+      const side: -1 | 1 = cut.pos.x > 0 ? -1 : 1;
+      // enganchar hacia arriba: el gemelo SOLO sirve si queda a ≤ paso de una
+      // presa de la mitad superior (si no, nace huérfano y no añade flujo).
+      const upHolds = window.filter((h) => h.pos.y > yMin + 0.6);
+      const linksUp = (x: number, y: number): boolean =>
+        upHolds.some((u) => vLen(vSub(u.pos, v3(x, y, this.zHold))) <= stepMax);
+      const tryPlace = (cx: number, cy: number, from: HoldInstance): boolean => {
+        const x = clampX(cx);
+        const y = Math.min(yMax - 0.15, Math.max(yMin + 0.1, cy));
+        if (!this.xInPatternZone(x, y, yMin, zone)) return false;
+        if (vLen(vSub(from.pos, v3(x, y, this.zHold))) > stepMax) return false;
+        if (placed.some((p) => Math.hypot(p.x - x, p.y - y) < g.sample.minDistanceM * 0.6)) return false;
+        if (!linksUp(x, y)) return false;
+        const hold = this.makeHold(`pair${index}_${iter}`, x, y, "rock_firm", index, false);
+        holds.push(hold);
+        placed.push(hold.pos);
+        return true;
+      };
+      let added = false;
+      // 1) clona el corte: vertical primero (progresa), luego lateral/diagonal.
+      const cands: [number, number][] = cut.pos.y < yMin
+        ? [[cut.pos.x, yMin + 0.3], [cut.pos.x + side * 0.6, yMin + 0.45], [cut.pos.x - side * 0.6, yMin + 0.45],
+           [cut.pos.x + side * 0.35, yMin + 0.7], [cut.pos.x - side * 0.35, yMin + 0.7]]
+        : [[cut.pos.x, cut.pos.y + 0.35], [cut.pos.x, cut.pos.y - 0.35], [cut.pos.x + side * 0.8, cut.pos.y], [cut.pos.x - side * 0.8, cut.pos.y],
+           [cut.pos.x + side * 0.55, cut.pos.y + 0.3], [cut.pos.x - side * 0.55, cut.pos.y + 0.3],
+           [cut.pos.x + side * 0.55, cut.pos.y - 0.3], [cut.pos.x - side * 0.55, cut.pos.y - 0.3]];
+      for (const [cx, cy] of cands) {
+        if (tryPlace(cx, cy, cut)) { added = true; break; }
+      }
+      // 2) corte en FUENTE (la entrada entera funela por un hold de la banda
+      //    anterior): clonar el corte no añade flujo — abre SEGUNDA entrada con
+      //    una malla 3×3 alrededor de cada fuente, enganchada hacia arriba.
+      if (!added && cut.pos.y < yMin) {
+        for (const s of sources) {
+          for (const dx of [-0.4, 0, 0.4]) {
+            for (const dy of [0.2, 0.5, 0.8]) {
+              if (tryPlace(s.pos.x + dx, yMin + dy, s)) { added = true; break; }
+            }
+            if (added) break;
+          }
+          if (added) break;
+        }
+      }
+      if (!added) return; // sin sitio factible: lo mejor posible
     }
   }
 }

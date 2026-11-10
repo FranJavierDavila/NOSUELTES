@@ -38,14 +38,14 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
     titleKey: "onboarding.s2.title",
     bodyKey: "onboarding.s2.body",
     keysKey: "keys.p1",
-    accent: "#d97b2f",
+    accent: "#3fae5a",
   },
   {
     id: "p2",
     titleKey: "onboarding.s3.title",
     bodyKey: "onboarding.s3.body",
     keysKey: "keys.p2",
-    accent: "#2f9bd9",
+    accent: "#e05245",
   },
   {
     id: "cuerda",

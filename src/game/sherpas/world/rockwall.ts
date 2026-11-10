@@ -231,9 +231,12 @@ export const ROCKWALL_STYLE_DEFAULTS: RockwallStyle = {
   grainFine: 0.004,
   holdScale: 1.0,
   anchorPad: 0.035,
-  color: [0.5, 0.46, 0.4],
+  // T110 — PIEDRA TERRACOTA (el tono de las piedras del suelo de los GLB del
+  // jugador, #bd7e6e): la hornada base vira de gris pardo a rojizo (misma
+  // luma y contraste; el relieve no cambia).
+  color: [0.55, 0.43, 0.36],
   tint: [0.1, 0.09, 0.08],
-  stain: [0.3, 0.22, 0.15],
+  stain: [0.3, 0.2, 0.13],
   stainAmount: 0.55,
   moss: [0.34, 0.38, 0.2],
   mossAmount: 0.55,

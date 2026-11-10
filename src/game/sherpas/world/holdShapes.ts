@@ -134,9 +134,11 @@ export function holdShapeRecipe(type: string, variant: number, typeHex?: string)
 
   if (type === "rock_loose") {
     // LOSA ASTILLADA (frágil SE VEE frágil): placa más plana e inclinada,
-    // tinte oxidado, 2-3 grietas oscuras y una lasca que sobresale.
-    const ox = tintToward(typeHex, 0.45, [0.62, 0.5, 0.38]);
-    const ox2 = tintToward(typeHex, 0.3, [0.52, 0.42, 0.33]);
+    // tinte OXIDADO ROJIZO (T111: la presa nace de la misma roca terracota
+    // que el muro — antes el óxido gris-marrón destonaba), 2-3 grietas
+    // oscuras y una lasca que sobresale.
+    const ox = tintToward(typeHex, 0.45, [0.72, 0.45, 0.34]);
+    const ox2 = tintToward(typeHex, 0.3, [0.6, 0.37, 0.28]);
     rec.tilt = [(jit(type, v, 1) - 0.5) * 0.34, (jit(type, v, 2) - 0.5) * 0.4];
     rec.rough = 0.8;
     rec.parts.push(
@@ -206,10 +208,11 @@ export function holdShapeRecipe(type: string, variant: number, typeHex?: string)
     return rec;
   }
 
-  // Roca firme (y cualquier tipo desconocido): BULTO DE PIEDRA con hombro
-  // agarrable + mancha de MAGNESIO (la señal de "buen agarre" de los rocos).
-  const rock = tintToward(typeHex, 0.32, [0.66, 0.6, 0.5]);
-  const rock2 = tintToward(typeHex, 0.22, [0.52, 0.47, 0.4]);
+  // Roca firme (y cualquier tipo desconocido): BULTO DE PIEDRA ROJIZA (T111:
+  // la familia terracota del muro) con hombro agarrable + mancha de MAGNESIO
+  // (la señal de "buen agarre" de los rocos).
+  const rock = tintToward(typeHex, 0.32, [0.78, 0.5, 0.4]);
+  const rock2 = tintToward(typeHex, 0.22, [0.6, 0.4, 0.32]);
   rec.rough = 0.7;
   const j1 = jit(type, v, 14), j2 = jit(type, v, 15), j3 = jit(type, v, 16);
   rec.parts.push(

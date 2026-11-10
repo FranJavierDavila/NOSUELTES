@@ -20,6 +20,7 @@ import { InsultSystem } from "../events/insults";
 import { EventDirector, type DirectorContext } from "../events/director";
 import { spawnTrash, stepTrash, spawnUrine, stepUrine, type TrashProjectile, type UrineEffect } from "../events/effects";
 import { BalanceMonitor, TeamFallWatcher, PropinaMeter, newStats } from "./coop";
+import { choosePortableSpot, directPlaceCheck, PortableInventory, PORTABLE_PER_CLIMBER_DEFAULT } from "./portableAnchor"; // T92+T103
 import { WeatherSystem } from "./weather";
 import { SnowSystem } from "./snow"; // T61: nevada a cotas altas
 import { resolveDayPreset } from "./daycycle"; // T61: hora del día
@@ -41,12 +42,17 @@ import type { SherpaScene } from "../presentation/scene";
 import type { SherpaHud, HudStartChoice, HudTickState, MinimapHold } from "../presentation/hud";
 import type { SherpaAudio } from "../presentation/audio";
 import type { InputManager, InputIntent, OrbitAxis } from "../input/input";
-import type { NetSnapSherpa, NetSnapshot } from "../net/protocol";
+import type { NetRemoteDrag, NetSnapSherpa, NetSnapshot } from "../net/protocol";
 
 // física de juego (reescritura): sin preset PBD — el rig es estable por construcción.
 const SHOO_COOLDOWN_S = 3;
 const REST_RECOVER_MULT = 3;
 const REGISTRATION_INTERVAL_TICKS = 30;
+
+/** T108 NOMBRES DE LOS SHERPAS (petición del jugador): P0 (anfitrión) = VERDE
+ *  — su ropa nueva sherpa_verde.jpg, escala por la izquierda; P1 (invitado) =
+ *  ROJO — sherpa_rojo.jpg. Los subtítulos y avisos los usan en vez de P1/P2. */
+export const sherpaName = (p: 0 | 1): string => (p === 0 ? "Verde" : "Rojo");
 
 /** T60 RED: lo que el match necesita del input. InputManager lo cumple al
  *  dedillo; en partida online lo cumple HostInputMixer (local + remoto). */
@@ -68,6 +74,10 @@ export interface SherpasMatchDeps {
   choice: HudStartChoice;
   resumeSave: SavedAscent | null;
   onRestart(): void;
+  /** T102 NET: jugador que el RATÓN puede arrastrar (null = ambos, co-op
+   *  local). En red el anfitrión solo mueve al SUYO: el azul es del invitado.
+   *  Mutado por mount cuando el guest entra o se va (el objeto es compartido). */
+  dragLock?: { player: 0 | 1 | null };
 }
 
 export class SherpasMatch {
@@ -99,6 +109,14 @@ export class SherpasMatch {
   private cps: CheckpointSystem;
   /** CUERDA COOPERATIVA: cooldown del impulso por jugador (simTime). */
   private impulseReadyAt: [number, number] = [0, 0];
+  /** T101 INVENTARIO DE MOCHILA: «usar anclaje» pedido desde la ventana del
+   *  HUD (clic en el hueco del Anclaje). Se consume en applyIntents como si
+   *  fuera el intent.place de teclado (mismas reglas y avisos). */
+  private uiPlacePending: [boolean, boolean] = [false, false];
+  /** T103 COLOCACIÓN DIRECTA (petición del jugador): el anclaje SELECCIONADO
+   *  en la mochila queda "en la mano" — se clava donde sueltes una MANO sobre
+   *  un hueco vacío de la pared. Un flag por escalador. */
+  private portableArmed: [boolean, boolean] = [false, false];
   /** Último respawn (sonda E2E): desde dónde continuó la ascensión. */
   private lastRespawn: { kind: "camp" | "checkpoint" | "start"; y: number } | null = null;
   /** Última altura del equipo CON agarres (referencia PRE-caída para elegir la
@@ -130,6 +148,9 @@ export class SherpasMatch {
   private unsubscribes: (() => void)[] = [];
   /** T60 RED: último estado de HUD construido (a 10 Hz) para el snapshot. */
   private lastHud: HudTickState | null = null;
+  /** T92 ANCLAJES PORTÁTILES: inventario por escalador + presas colocadas. */
+  private portableInv = new PortableInventory(PORTABLE_PER_CLIMBER_DEFAULT);
+  private placedPortables: HoldInstance[] = [];
   private lastMmMeta: { key: string; fracA: number; fracB: number; campFrac: number; metersLeft: number; campId: string | null; xA: number; xB: number; cps: { frac: number; reached: boolean }[] } | null = null;
   /** T60 RED: tramo del minimapa ya enviado (holdsStatic solo al cambiar). */
   private mmSentKey = "";
@@ -180,7 +201,35 @@ export class SherpasMatch {
   private rngIdle: Rng = makeRng(0x1d0e);
   /** T80 — frase pendiente de pronunciar EN EL RENDER (tras setRichMood): la
    *  cara del globo sale del ánimo NUEVO, no del que la escena tenía al sonar. */
-  private pendingRichLine: { text: string; durS: number } | null = null;
+  private pendingRichLine: { text: string; durS: number; retryUntilMs: number } | null = null;
+  // T109b BOCADILLO EN EL INVITADO: la frase viva del ricachón viaja en el
+  // snapshot (t = texto, i = id incremental, rs = segundos restantes).
+  // T110 — VOZ EN AMBOS (petición: «no se escucha al ricachón para los dos
+  // jugadores, solo en uno»): la voz real también viaja (vf = fichero del
+  // banco o grito protegido; vk = "bank"|"path") y el invitado la reproduce
+  // localmente — el MISMO fichero que suena en el anfitrión.
+  private richLineLive: { id: number; text: string; untilMs: number; voice?: { kind: "bank" | "path"; file: string } } | null = null;
+  private richLineId = 0;
+
+  /** T110 SONDA E2E: voz viva (el fichero que suena ahora del ricachón).
+   *  `live` = la frase sigue dentro de su ventana (lo que viaja al invitado). */
+  richVoiceLive(): { kind: string; file: string; live: boolean } | null {
+    const l = this.richLineLive;
+    const v = l?.voice;
+    if (!v) return null;
+    return { kind: v.kind, file: v.file, live: performance.now() < l.untilMs };
+  }
+
+  /** T109b SONDA E2E: el ricachón dice UNA frase (bocadillo + snapshot). */
+  debugRichSay(text: string): void {
+    this.queueRichLine(text, 4.5, 6000);
+  }
+
+  private queueRichLine(text: string, durS: number, retryMs: number, voice?: { kind: "bank" | "path"; file: string }): void {
+    this.pendingRichLine = { text, durS, retryUntilMs: performance.now() + retryMs };
+    this.richLineId++;
+    this.richLineLive = { id: this.richLineId, text, untilMs: performance.now() + durS * 1000 + 700, voice };
+  }
   private plankCenterPrev: V3 | null = null;
   private plankSpeedMs = 0;
   private lastReachRings: ReachRingEntry[] = []; // para el snapshot de red (rr)
@@ -192,6 +241,8 @@ export class SherpasMatch {
     this.data = deps.data;
     this.wallFrontZ = this.data.wallGen.wall.zFront;
     this.wallWidthM = this.data.wallGen.wall.widthM;
+    // T92: el tuning puede ajustar los anclajes portátiles por escalador.
+    this.portableInv = new PortableInventory(this.data.tuning.coop?.portableAnchorsPerClimber ?? PORTABLE_PER_CLIMBER_DEFAULT);
     const preset = this.preset;
     const seed = deps.choice.resume && deps.resumeSave ? deps.resumeSave.seed : deps.choice.seed;
 
@@ -251,8 +302,15 @@ export class SherpasMatch {
       wallFrontZ: this.wallFrontZ,
       rope: this.data.tuning.rope,
     });
-    this.gen.ensureUpToY(16);
-    this.registerNewHolds();
+    this.gen.ensureUpToY(16); // arranque: presas del pie de pared para nacer colgado
+    // SOLO las presas de arranque entran aquí en el sistema de anclajes
+    // (acquire las exige para nacer colgado) y SIN marcar knownHolds: el
+    // registro completo de toda la pared ocurre tras buildWorld (hornada
+    // única de semillas del relieve) vía registerNewHolds().
+    this.anchors.registerHolds([
+      ...Object.values(this.gen.startHolds()),
+      ...Object.values(this.gen.secondStartHolds()),
+    ]);
     this.sherpas = [
       new SherpaRig(mkDeps(0), this.gen.startHolds()),
       new SherpaRig(mkDeps(1), this.gen.secondStartHolds()),
@@ -333,7 +391,13 @@ export class SherpasMatch {
     // escena: mundo + visuales
     deps.scene.buildWorld(this.gen.layout);
     deps.scene.setCheckpoints(this.cps.list.map((c) => c.y), this.wallFrontZ, this.wallWidthM);
-    deps.scene.addHolds(this.gen.allGeneratedHolds(), this.holdColors());
+    // PARED HORNEADA DE UNA VEZ (petición del jugador: "la pared no se
+    // modifica, solo el anclaje"): TODAS las presas de toda la ascensión se
+    // registran AQUÍ, con el mundo ya construido y antes de la primera losa —
+    // la pared se tesela con su geometría DEFINITIVA (asientos incluidos) y
+    // durante la partida jamás se recalcula ni redibuja por presas nuevas.
+    this.gen.ensureUpToY(this.gen.layout.totalHeightM);
+    this.registerNewHolds();
     deps.scene.spawnSherpa(0, this.sherpas[0].rig);
     deps.scene.spawnSherpa(1, this.sherpas[1].rig);
     deps.scene.spawnRichMan();
@@ -355,7 +419,10 @@ export class SherpasMatch {
     });
     if (canvas) this.pointerDrag.attach(canvas);
     // mini-tutorial al empezar (doc 9: legibilidad): cómo se sube, en 1 línea.
-    this.d.hud.banner(this.d.hud.t("hud.howToTitle"), this.d.hud.t("hud.howToSub"), 10);
+    // T114: en el TUTORIAL GUIADO sobra (enseña lo mismo, paso a paso).
+    if (!deps.choice.guiado) {
+      this.d.hud.banner(this.d.hud.t("hud.howToTitle"), this.d.hud.t("hud.howToSub"), 10);
+    }
 
     // continuar guardado: reaparece en el campamento y restaura estadísticas.
     if (deps.choice.resume && deps.resumeSave) {
@@ -422,7 +489,182 @@ export class SherpasMatch {
       // CUERDA COOPERATIVA (petición del jugador): anclarse / dar impulso.
       if (intent.anchor) this.doToggleAnchor(intent.playerId);
       if (intent.impulse) this.doGiveImpulse(intent.playerId);
+      // T92 ANCLAJES PORTÁTILES (petición del jugador): colocar uno en la pared.
+      // T101: la ventana de la mochila también lo pide (clic en el Anclaje).
+      // T107d: el ARMADO de la mochila del INVITADO llega como flanco `arm` →
+      // mismo flujo que el anfitrión (queda en la mano y se clava al soltar
+      // una MANO por el drag remoto — match.remoteDrag, rama "e").
+      if (intent.place) this.doPlacePortableAnchor(intent.playerId);
+      if (intent.arm) this.requestPortablePlace(intent.playerId);
+      if (this.uiPlacePending[intent.playerId]) {
+        this.uiPlacePending[intent.playerId] = false;
+        this.doPlacePortableAnchor(intent.playerId);
+      }
     }
+  }
+
+  // ---------- T92 anclajes portátiles ----------
+
+  /** T107d AVISO DE ANCLAJE: los subtítulos de la mochila/anclajes solo se
+   *  pintan en el HUD del ANFITRIÓN — el invitado no se enteraba de por qué
+   *  su ancla no se colocaba. Cada aviso viaja como evento PortableMsg en el
+   *  snapshot (el guestRunner lo muestra si p === 1). left ≥ 0 → formato con
+   *  {left} (portablePlaced). */
+  private portableMsg(p: 0 | 1, key: string, left = -1): void {
+    this.d.bus.emit("PortableMsg", { p, key, left });
+  }
+
+  /** T101 INVENTARIO DE MOCHILA: anclajes portátiles sin usar del escalador
+   *  (la ventana del HUD lee aquí el contador del badge). */
+  portableRemaining(p: 0 | 1): number {
+    return this.portableInv.remaining(p);
+  }
+
+  /** T103 COLOCACIÓN DIRECTA: «selecciono el anclaje» en la mochila — el clic
+   *  del hueco ARMA el anclaje (queda en la mano). Se clava soltando una MANO
+   *  sobre un hueco vacío de la pared (onDragUp → doPlacePortableAnchorAt):
+   *  pulso mochila → selecciono → mano al hueco → colocado. Sin más pasos. */
+  requestPortablePlace(p: 0 | 1): void {
+    if (this.portableInv.remaining(p) <= 0) {
+      this.d.audio.play("release");
+      this.d.hud.subtitle(this.d.hud.t("hud.portableEmpty"), 2.2);
+      this.portableMsg(p, "hud.portableEmpty");
+      return;
+    }
+    this.portableArmed[p] = true;
+    this.d.audio.play("grab");
+    this.d.hud.subtitle(this.d.hud.t("hud.portableArmed"), 3.4);
+    this.portableMsg(p, "hud.portableArmed");
+  }
+
+  /** COLOCAR ANCLAJE PORTÁTIL: gasta 1 del inventario del escalador y nace una
+   *  presa firme en una posición FACTIBLE de la pared — alcanzable por una de
+   *  sus extremidades libres (misma sonda que canReach), separada de las presas
+   *  existentes y sobre el plano z correcto (salientes/entrantes incluidos).
+   *  A partir de ahí se agarra como CUALQUIER anclaje (y sirve de seguro). */
+  private doPlacePortableAnchor(p: 0 | 1): void {
+    const rig = this.sherpas[p];
+    const g = this.data.wallGen;
+    if (this.portableInv.remaining(p) <= 0) {
+      this.d.audio.play("release");
+      this.d.hud.subtitle(this.d.hud.t("hud.portableEmpty"), 2.2);
+      this.portableMsg(p, "hud.portableEmpty");
+      return;
+    }
+    if (rig.ropeState !== "climbing") {
+      this.d.hud.subtitle(this.d.hud.fmt("hud.portableNeedClimb", { name: sherpaName(p) }), 2.2);
+      this.portableMsg(p, "hud.portableNeedClimb");
+      return;
+    }
+    // sondas de las extremidades LIBRES (las ancladas no pueden alcanzar nada)
+    const probes = LIMBS
+      .filter((l) => !rig.states.get(l)!.anchored)
+      .map((l) => {
+        const pr = rig.reachProbe(l);
+        return { ax: pr.a.x, ay: pr.a.y, az: pr.a.z, bx: pr.b.x, by: pr.b.y, bz: pr.b.z, reachM: pr.reachM };
+      });
+    if (!probes.length) {
+      this.d.hud.subtitle(this.d.hud.t("hud.portableNeedFree"), 2.4);
+      this.portableMsg(p, "hud.portableNeedFree");
+      return;
+    }
+    const spot = choosePortableSpot({
+      aimX: rig.aim.x,
+      aimY: rig.aim.y,
+      probes,
+      holds: [...this.anchors.holds.values()].map((h) => h.pos),
+      halfWidthM: this.wallWidthM / 2,
+      marginXM: g.sample.marginXM,
+      yMin: 1.2,
+      yMax: this.gen.layout.totalHeightM - 0.2,
+      zOf: (y: number): number => this.gen.zAt(rig.aim.x, y),
+      minDistM: Math.max(0.42, g.sample.minDistanceM * 0.85),
+    });
+    if (!spot) {
+      this.d.hud.subtitle(this.d.hud.t("hud.portableNoSpot"), 2.4);
+      this.portableMsg(p, "hud.portableNoSpot");
+      return;
+    }
+    this.portableInv.consume(p);
+    const hold: HoldInstance = {
+      id: `pa${this.placedPortables.length}_${p}`,
+      pos: v3(spot.x, spot.y, spot.z),
+      radius: g.sample.holdRadiusMax,
+      type: "rock_firm",
+      bandIndex: this.gen.bandIndexOf(spot.y),
+      camp: false,
+      portable: true,
+    };
+    this.anchors.registerHolds([hold]);
+    this.placedPortables.push(hold);
+    this.mmCache = null; // el minimapa del tramo ahora incluye el anclaje nuevo
+    this.d.scene.addHolds([hold], this.holdColors());
+    this.d.audio.play("grab");
+    this.d.hud.subtitle(this.d.hud.fmt("hud.portablePlaced", { left: String(this.portableInv.remaining(p)) }), 2.6);
+    this.portableMsg(p, "hud.portablePlaced", this.portableInv.remaining(p));
+    this.d.bus.emit("PortableAnchorPlaced", { id: hold.id, x: spot.x, y: spot.y, z: spot.z, p });
+    this.portableArmed[p] = false; // si estaba armado, se acaba de usar
+  }
+
+  /** COLOCACIÓN DIRECTA en el PUNTO EXACTO (T103, petición del jugador:
+   *  "muevo una de las dos manos a un sitio vacío y se coloca en ese punto el
+   *  anclaje, sin más complicaciones"). Mismas reglas que la vía de tecla:
+   *  inventario, escalando, dentro de pared y separado de otras presas; el
+   *  alcance lo pone la MANO que sueltas (canReach, sin goma). La pared NO se
+   *  toca: la presa nace con la profundidad justa hasta la roca (addHolds).
+   *  Devuelve true si clavó el anclaje. */
+  private doPlacePortableAnchorAt(p: 0 | 1, x: number, y: number, limb: Limb): boolean {
+    const rig = this.sherpas[p];
+    const g = this.data.wallGen;
+    if (this.portableInv.remaining(p) <= 0) {
+      this.d.hud.subtitle(this.d.hud.t("hud.portableEmpty"), 2.2);
+      this.portableMsg(p, "hud.portableEmpty");
+      return false;
+    }
+    if (rig.ropeState !== "climbing") {
+      this.d.hud.subtitle(this.d.hud.fmt("hud.portableNeedClimb", { name: sherpaName(p) }), 2.2);
+      this.portableMsg(p, "hud.portableNeedClimb");
+      return false;
+    }
+    // validación PURA (testeable): límites de pared, altura mínima y separación
+    // de presas existentes (sitio VACÍO). Alcance: canReach anti-goma, PERO si
+    // la mano está ARRASTRANDO, el punto ES donde el jugador la tiene (el
+    // clamp del esqueleto garantiza que el cuerpo puede honrar esa posición —
+    // y sin esto, un soltar rápido con la punta un pelín atrás se rechaza).
+    if (!directPlaceCheck({
+      x, y,
+      halfWidthM: this.wallWidthM / 2,
+      marginXM: g.sample.marginXM,
+      yMin: 1.2,
+      yMax: this.gen.layout.totalHeightM - 0.2,
+      minDistM: Math.max(0.42, g.sample.minDistanceM * 0.85),
+      holds: [...this.anchors.holds.values()].map((h) => ({ x: h.pos.x, y: h.pos.y })),
+      reachOk: rig.canReach(limb, v3(x, y, this.wallFrontZ)) || rig.dragging === limb,
+    })) {
+      this.d.hud.subtitle(this.d.hud.t("hud.portableNoSpot"), 2.4);
+      this.portableMsg(p, "hud.portableNoSpot");
+      return false;
+    }
+    this.portableInv.consume(p);
+    const hold: HoldInstance = {
+      id: `pa${this.placedPortables.length}_${p}`,
+      pos: v3(x, y, this.gen.zAt(x, y)),
+      radius: g.sample.holdRadiusMax,
+      type: "rock_firm",
+      bandIndex: this.gen.bandIndexOf(y),
+      camp: false,
+      portable: true,
+    };
+    this.anchors.registerHolds([hold]);
+    this.placedPortables.push(hold);
+    this.mmCache = null; // el minimapa del tramo ahora incluye el anclaje nuevo
+    this.d.scene.addHolds([hold], this.holdColors());
+    this.d.audio.play("grab");
+    this.d.hud.subtitle(this.d.hud.fmt("hud.portablePlaced", { left: String(this.portableInv.remaining(p)) }), 2.6);
+    this.portableMsg(p, "hud.portablePlaced", this.portableInv.remaining(p));
+    this.d.bus.emit("PortableAnchorPlaced", { id: hold.id, x: hold.pos.x, y: hold.pos.y, z: hold.pos.z, p });
+    this.portableArmed[p] = false;
+    return true;
   }
 
   // ---------- cuerda cooperativa (Task 37, petición del jugador) ----------
@@ -436,16 +678,16 @@ export class SherpasMatch {
     if (rig.belaying) {
       rig.setBelayAnchor(false);
       this.d.audio.play("release");
-      this.d.hud.subtitle(this.d.hud.fmt("hud.coopAnchorOff", { name: `P${p + 1}` }), 2.2);
+      this.d.hud.subtitle(this.d.hud.fmt("hud.coopAnchorOff", { name: sherpaName(p) }), 2.2);
       return;
     }
     if (rig.anchorsCount() < (coop?.anchorMinGrips ?? 2) || rig.ropeState !== "climbing" || rig.dragging !== null) {
-      this.d.hud.subtitle(this.d.hud.fmt("hud.coopAnchorNeed", { name: `P${p + 1}` }), 2.2);
+      this.d.hud.subtitle(this.d.hud.fmt("hud.coopAnchorNeed", { name: sherpaName(p) }), 2.2);
       return;
     }
     rig.setBelayAnchor(true);
     this.d.audio.play("grab");
-    this.d.hud.subtitle(this.d.hud.fmt("hud.coopAnchorOn", { name: `P${p + 1}` }), 2.6);
+    this.d.hud.subtitle(this.d.hud.fmt("hud.coopAnchorOn", { name: sherpaName(p) }), 2.6);
   }
 
   /** IMPULSO: el ANCLA da un tirón al compañero — subida cinemática corta que
@@ -473,7 +715,7 @@ export class SherpasMatch {
       st.fatigue = Math.min(1, st.fatigue + cost);
     }
     this.d.audio.play("zip");
-    this.d.hud.subtitle(this.d.hud.fmt("hud.coopImpulse", { from: `P${p + 1}`, to: `P${2 - p}` }), 2.2);
+    this.d.hud.subtitle(this.d.hud.fmt("hud.coopImpulse", { from: sherpaName(p), to: sherpaName((2 - p) as 0 | 1) }), 2.2);
     return true;
   }
 
@@ -503,13 +745,17 @@ export class SherpasMatch {
   }
 
   private onDragDown(xCss: number, yCss: number): void {
-    if (this.frozen || this.paused) return;
+    if (this.frozen || this.paused || this.tutLock) return;
     const p = this.wallPointFromPointer(xCss, yCss);
     if (!p) return;
     // candidatas: extremidad más cercana al clic en el plano de pared
     // (radios generosos en metros de escalada, no píxeles: 0,55 manos / 0,7 pies).
+    // T102 NET: con candado (invitado conectado) el ratón SOLO arranca
+    // extremidades del jugador designado — el azul es del invitado.
     const cands: { player: 0 | 1; limb: Limb; d: number }[] = [];
-    for (const pi of [0, 1] as const) {
+    const lock = this.d.dragLock?.player ?? null;
+    const pis: readonly (0 | 1)[] = lock === null ? [0, 1] : [lock];
+    for (const pi of pis) {
       for (const limb of LIMBS) {
         const lp = this.sherpas[pi].limbPos(limb);
         const d = Math.hypot(lp.x - p.x, lp.y - p.y);
@@ -538,11 +784,87 @@ export class SherpasMatch {
 
   private onDragUp(): void {
     if (this.dragLimb !== null && this.dragPlayer !== null) {
-      this.sherpas[this.dragPlayer].endDrag();
+      const p = this.dragPlayer;
+      const limb = this.dragLimb;
+      const cur = this.dragCursor;
+      // COLOCACIÓN DIRECTA (T103): anclaje ARMADO en la mochila + soltar una
+      // MANO sobre un hueco VACÍO = anclaje clavado EXACTAMENTE ahí. Si nace,
+      // el imán de endDrag agarra la presa recién colocada (viaje normal).
+      if (this.portableArmed[p] && cur && (limb === "hand_l" || limb === "hand_r")
+        && this.doPlacePortableAnchorAt(p, cur.x, cur.y, limb)) {
+        this.sherpas[p].moveDrag(cur); // el imán ya ve la presa recién nacida
+      }
+      this.sherpas[p].endDrag();
     }
     this.dragPlayer = null;
     this.dragLimb = null;
     this.dragCursor = null;
+  }
+
+  // ---------- T105 ARRASTRE REMOTO (el ratón del invitado, vía red) ----------
+
+  /** Estado del drag REMOTO SEPARADO del local (el anfitrión puede arrastrar
+   *  SU escalador con el ratón mientras el invitado arrastra el suyo: campos
+   *  compartidos harían que el onDragUp local borrara el drag remoto vivo). */
+  private remoteDragLimb: Limb | null = null;
+  private remoteDragCursor: V3 | null = null;
+
+  /** Aplica un mensaje de arrastre del GUEST sobre SU escalador (jugador 1).
+   *  Mismo camino físico que el drag local (beginDrag/moveDrag/endDrag del
+   *  rig) con sanitize estricto del mensaje (entra por red). */
+  remoteDrag(m: NetRemoteDrag): void {
+    if (this.frozen || this.paused) return;
+    if (m.k === "b") {
+      const limb = LIMBS.find((l) => l === m.l);
+      if (!limb) return;
+      const x = Number(m.x), y = Number(m.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      if (this.remoteDragLimb) return; // ya hay un drag remoto en curso
+      if (this.sherpas[1].beginDrag(limb)) {
+        this.remoteDragLimb = limb;
+        this.remoteDragCursor = v3(x, y, this.wallFrontZ);
+        this.sherpas[1].moveDrag(this.remoteDragCursor);
+      }
+    } else if (m.k === "m") {
+      if (!this.remoteDragLimb) return;
+      const x = Number(m.x), y = Number(m.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      this.remoteDragCursor = v3(x, y, this.wallFrontZ);
+      this.sherpas[1].moveDrag(this.remoteDragCursor);
+    } else if (m.k === "e") {
+      if (!this.remoteDragLimb) return;
+      const cur = this.remoteDragCursor;
+      // COLOCACIÓN DIRECTA (T103) también desde el invitado: anclaje armado
+      // por SU ventana de mochila + soltar mano sobre hueco = clavado ahí.
+      if (this.portableArmed[1] && cur && (this.remoteDragLimb === "hand_l" || this.remoteDragLimb === "hand_r")
+        && this.doPlacePortableAnchorAt(1, cur.x, cur.y, this.remoteDragLimb)) {
+        this.sherpas[1].moveDrag(cur);
+      }
+      this.sherpas[1].endDrag();
+      this.remoteDragLimb = null;
+      this.remoteDragCursor = null;
+    }
+  }
+
+  /** Sonda E2E T105: drag remoto en curso (extremidad del jugador 1). */
+  dragDebug(): { remoteLimb: string | null } {
+    return { remoteLimb: this.remoteDragLimb };
+  }
+
+  /** T105: el invitado se fue en pleno arrastre → soltar SU extremidad (si el
+   *  rig quedara en drag sin dueño, la extremidad seguiría al último punto). */
+  cancelRemoteDrag(): void {
+    if (!this.remoteDragLimb) return;
+    this.sherpas[1].endDrag();
+    this.remoteDragLimb = null;
+    this.remoteDragCursor = null;
+  }
+
+  /** T105 MINIMAPA: fuerza el reenvío del listado de presas del tramo actual
+   *  (holdsStatic) en el próximo snapshot — el invitado avisó de que su escena
+   *  está lista (el primer bloque hud se perdió mientras construía). */
+  forceMinimapResend(): void {
+    this.mmSentKey = "";
   }
 
   // ---------- tick de simulación (doc 3.2) ----------
@@ -587,7 +909,7 @@ export class SherpasMatch {
       if (info.slippedByTwoHands) {
         // regla de dos manos: aviso legible + susto del ricachón (doc 6.2).
         this.d.audio.play("fall");
-        this.d.hud.subtitle(this.d.hud.fmt("hud.twoHandsFall", { name: `P${p + 1}` }), 2.8);
+        this.d.hud.subtitle(this.d.hud.fmt("hud.twoHandsFall", { name: sherpaName(p) }), 2.8);
         this.d.scene.shake(this.d.hud.wantsReduceShake ? 0.015 : 0.05);
         this.brain.panic();
         this.richScareVoice();
@@ -601,14 +923,14 @@ export class SherpasMatch {
         if (partner.belaying) {
           // CUERDA COOPERATIVA: el seguro CORTO del compañero anclado detuvo la
           // caída — el ancla TAMBIÉN paga el tirón (fatiga en sus manos).
-          this.d.hud.subtitle(this.d.hud.fmt("hud.belayCatch", { name: `P${2 - p}` }), 2.6);
+          this.d.hud.subtitle(this.d.hud.fmt("hud.belayCatch", { name: sherpaName((2 - p) as 0 | 1) }), 2.6);
           const bf = coopT?.belayCatchFatigue ?? 0.08;
           for (const h of ["hand_l", "hand_r"] as const) {
             const st = partner.states.get(h)!;
             st.fatigue = Math.min(1, st.fatigue + bf);
           }
         } else {
-          this.d.hud.subtitle(this.d.hud.fmt("hud.ropeCatch", { name: `P${p + 1}` }), 2.6);
+          this.d.hud.subtitle(this.d.hud.fmt("hud.ropeCatch", { name: sherpaName(p) }), 2.6);
         }
         this.d.scene.shake(this.d.hud.wantsReduceShake ? 0.02 : 0.055);
         // JUICE T38: chispas ámbar en la cintura — el chicote se VE agarrar.
@@ -622,13 +944,13 @@ export class SherpasMatch {
       }
       if (info.rope.haulStart) {
         // T58-E: la ventana A SACO abre — instrucciones legibles con las teclas.
-        this.d.hud.subtitle(this.d.hud.fmt("hud.ropeMash", { name: `P${p + 1}` }), 3.4);
+        this.d.hud.subtitle(this.d.hud.fmt("hud.ropeMash", { name: sherpaName(p) }), 3.4);
         this.d.bus.emit("RopeHaulStart", { playerId: p });
       }
       // T58-E: la cuerda se AGOTÓ deslizando — suelta y cae al abismo.
       if (info.rope.releasedNow) {
         this.d.audio.play("fall");
-        this.d.hud.subtitle(this.d.hud.fmt("hud.ropeReleased", { name: `P${p + 1}` }), 3.2);
+        this.d.hud.subtitle(this.d.hud.fmt("hud.ropeReleased", { name: sherpaName(p) }), 3.2);
         this.d.scene.shake(this.d.hud.wantsReduceShake ? 0.02 : 0.06);
         this.d.bus.emit("RopeReleased", { playerId: p });
         this.brain.panic();
@@ -654,7 +976,7 @@ export class SherpasMatch {
       // el ANCLA se cae sola: sin agarres o colgado no sostiene el seguro.
       if (this.sherpas[p].belaying && (this.sherpas[p].anchorsCount() === 0 || this.sherpas[p].ropeState !== "climbing")) {
         this.sherpas[p].setBelayAnchor(false);
-        this.d.hud.subtitle(this.d.hud.fmt("hud.coopAnchorLost", { name: `P${p + 1}` }), 2.2);
+        this.d.hud.subtitle(this.d.hud.fmt("hud.coopAnchorLost", { name: sherpaName(p) }), 2.2);
       }
       // PLACAS DE HIELO: aviso UNA vez por partida (luego lo aprende el cuerpo).
       if (!this.icePlateWarned) {
@@ -860,7 +1182,9 @@ export class SherpasMatch {
       wobble,
       ropeWindX,
       windShake,
-      ropeHeld: [heldA, heldB],
+      // T115 tutorial: el ricachón se agarra a la tabla (no resbala nunca;
+      // recentrado fuerte — el mecanismo ya existente del seguro de cuerda).
+      ropeHeld: [heldA || this.tutorialCling, heldB || this.tutorialCling],
       moveSherpa: (p, delta) => {
         const w = this.sherpas[p].rig.particles[P.pelvisC];
         w.pos = vAdd(w.pos, delta);
@@ -905,7 +1229,7 @@ export class SherpasMatch {
     if (this.richMood.spokeIdle) {
       this.richMood.spokeIdle = false; // borde: se consume al decir la frase
       const line = pickIdleLine(this.richMood.mood, this.d.hud.lang, this.rngIdle.next);
-      if (line) this.pendingRichLine = { text: line, durS: 3.2 };
+      if (line) this.queueRichLine(line, 3.2, 3000);
     }
     // T44 — VOZ REAL POR ESCORA (petición: "...o la tabla se inclina bastante"):
     // al alcanzar la escora dramática UNA VEZ por episodio suelta una voz real
@@ -1003,7 +1327,11 @@ export class SherpasMatch {
       // la tabla se sacudía con el viento y el rico iba con el ángulo SECO —
       // vibrieren uno contra otro (el «temblequeo raro»). Un solo ángulo:
       // tabla + ricachón + cajas se mueven como UN cuerpo sólido.
-      this.rich.pose(ps.center, ps.angle + ps.angleShake, ps.slide, this.simTime);
+      // T116 — SERENO en el tutorial: sin sacudida visual y con el filtro de
+      // calm activo — las demos recentraban la tabla a saco (cling) y el
+      // ragdoll latigaba (manos retorcidas, articulaciones rotas).
+      this.rich.calm = this.tutorialCling;
+      this.rich.pose(ps.center, this.tutorialCling ? ps.angle : ps.angle + ps.angleShake, ps.slide, this.simTime);
     }
     const rmInfo = this.rich.step(dt);
     if (rmInfo.bumpWall > 1) {
@@ -1063,8 +1391,14 @@ export class SherpasMatch {
     }
     this.lastMinY = minY;
     // referencia PRE-caída para el respawn por cotas: mientras ALGUIEN agarra,
-    // la altura del equipo es "progreso" (Task 37).
-    if (totalAnchors > 0) this.lastProgressY = Math.min(wa.y, wb.y);
+    // la altura del equipo es "progreso" (Task 37). PETICIÓN DEL JUGADOR: el
+    // progreso es un FIJO que solo SUBE — la caída (aunque sea con anclajes
+    // puestos y sigáis colgando más abajo) NO reescribe la referencia hacia
+    // abajo, así el respawn jamás elige un tramo anterior al alcanzado.
+    if (totalAnchors > 0) {
+      const progY = Math.min(wa.y, wb.y);
+      if (progY > this.lastProgressY) this.lastProgressY = progY;
+    }
 
     // 10. director de caos + pájaros + DRON + proyectiles.
     this.director.tick(dt, this.currentPhase());
@@ -1108,7 +1442,12 @@ export class SherpasMatch {
     if (this.respawnTimer > 0) {
       this.respawnTimer -= dt;
       if (this.respawnTimer <= 0) {
-        const refY = this.lastProgressY;
+        // TRAMOS SIN RETROCESO (petición del jugador): el suelo del respawn es
+        // el tramo más alto ALCANZADO — una vez pisado el campamento, ninguna
+        // caída (ni repetida) devuelve a un tramo anterior. Dentro del tramo
+        // siguen mandando las cotas/campamento por debajo de la referencia.
+        const floorCamp = this.camps.highestReachedZone();
+        const refY = Math.max(this.lastProgressY, floorCamp ? floorCamp.yBase : -1);
         const camp = this.gen.campAtOrBelow(refY);
         const cp = this.cps.highestAtOrBelow(refY);
         const target: CampZone | Checkpoint | null = cp && cp.y > (camp ? camp.yBase : -1) ? cp : camp;
@@ -1557,8 +1896,12 @@ export class SherpasMatch {
       // BRAZOS EN ALTO mientras suena SU voz (se le ve hablar: petición)
       this.rich.ostentate(this.simTime, dur + 0.4);
       this.d.scene.fxRage(this.rich.bodies[RM.head].pos);
-      const line = rvCfg.lines[this.d.audio.realLastFile() ?? ""];
+      const file = this.d.audio.realLastFile() ?? "";
+      const line = rvCfg.lines[file];
       if (line) this.d.hud.subtitle(line, dur + 0.8);
+      // T110: la voz por escora también VIAJA — el invitado reproduce el MISMO
+      // fichero y ve la misma transcripción (antes solo sonaba en el anfitrión).
+      if (file) this.queueRichLine(line || "…", Math.max(2.6, dur + 0.7), 4000, { kind: "bank", file });
     });
     return true;
   }
@@ -1609,49 +1952,68 @@ export class SherpasMatch {
     // CÓNDOR (petición del jugador): landed → peso visible + ricachón NERVIOSO.
     on("CondorLanded", () => {
       this.d.hud.subtitle(this.d.hud.t("hud.condorLanded"), 2.6);
-      const line = this.insults.pick("condor_angry");
-      // T80: la frase ELEGIDA viaja (antes se tiraba y el bocadillo salía mudo)
-      if (line) this.d.bus.emit("InsultSaid", { lineId: "condor_angry", context: "condor_angry", text: line });
+      // T97: SIN texto pre-elegido — el handler de InsultSaid dice la
+      // transcripción de la grabación que suena (voz ↔ texto).
+      this.d.bus.emit("InsultSaid", { lineId: "condor_angry", context: "condor_angry", text: "" });
     });
     on("CondorLeft", () => { /* se va solo: la carga desaparece con él */ });
     on("InsultSaid", (p) => {
       // VOZ DEL RICACHÓN — SOLO GRABACIONES REALES DEL JUGADOR (petición:
       // "Solo usar las audios que he subido yo, no uses los que generas tú").
       // El fichero viene por evento o se elige por CONTEXTO (audio.json →
-      // realVoice.contexts); el subtítulo SIEMPRE es la transcripción de la
-      // grabación que suena. Cero TTS / speechSynthesis / gibberish.
-      // T80 — LA FRASE SIEMPRE SE VE (petición: «en los bocadillos no aparecen
-      // los textos de las frases, solo CABRONEESSS»): solo 6 grabaciones tienen
-      // transcripción; sin ella, el texto cae al BANCO DE INSULTOS escrito
-      // (data.insults) del contexto — nunca más una frase muda.
+      // realVoice.contexts). Cero TTS / speechSynthesis / gibberish.
+      // T97 (petición: «los audios vayan en consonancia con los textos de los
+      // bocadillos, no tiene sentido que diga por voz una cosa y en el texto
+      // otra diferente»): el bocadillo es SIEMPRE la transcripción de la
+      // grabación que de verdad SUENA — nunca el banco escrito (que era la
+      // fuente del desajuste: texto de un lado, voz de otro) — y si la voz es
+      // RECHAZADA (otra grabación en curso) no se estampa texto nuevo: el
+      // subtítulo en pantalla ya es el de la voz que suena. Solo sin audio
+      // posible (mudo / fichero ausente) la transcripción se ve igual para no
+      // perder la frase (T80).
       const rvCfg = this.d.audio.realVoiceCfg;
-      const isScream = p.context === "rich_fell";
-      const text = isScream
-        ? p.text || (this.d.hud.lang === "en" ? "YOU BASTAAAARDS!!!" : "¡¡CABRONEEEEESSSS!!!!")
-        : (p.text
-          || this.d.audio.realLineFor(p.file ?? null, this.d.hud.lang)
-          || this.insults.pick(p.context)
-          || this.insults.pick("auto")
-          || "");
+      const lang = this.d.hud.lang;
+      if (p.context === "rich_fell") {
+        // grito protegido: grabación original fuera del banco; su texto fijo
+        // (la transcripción de ESA grabación).
+        this.richMood = forceRichMood(this.richMood, MOOD_FOR_CONTEXT.rich_fell ?? "sorpresa", 3.8);
+        this.d.scene.fxRage(this.rich.bodies[RM.head].pos);
+        const scream = rvCfg?.screamPath ?? "/audio/rico/es/cd0e9f33.mp3";
+        const dS = this.d.audio.shoutPath(scream);
+        const text = p.text || (lang === "en" ? "YOU BASTAAAARDS!!!" : "¡¡CABRONEEEEESSSS!!!!");
+        void Promise.resolve(dS).then((dur) => {
+          if (dur > 0) this.rich.ostentate(this.simTime, dur + 0.35);
+          // T110: el grito también VIAJA (el invitado lo reproduce localmente)
+          this.queueRichLine(text, 3.8, 4000, dur > 0 ? { kind: "path", file: scream } : undefined);
+        });
+        return;
+      }
       // T80 — LA FRASE MANDA LA CARA (petición: «la frase identifique la
       // emoción que se corresponde con la cara»): el contexto del evento fija
       // el ánimo (y MOOD_FACE pone la cara) por encima de la histéresis.
       const ctxMood = MOOD_FOR_CONTEXT[p.context];
       if (ctxMood) this.richMood = forceRichMood(this.richMood, ctxMood, 3.8);
-      const dS = isScream
-        ? this.d.audio.shoutPath(rvCfg?.screamPath ?? "/audio/rico/es/cd0e9f33.mp3")
-        : this.d.audio.shoutRealFile(p.file ?? this.d.audio.pickBankFile(p.context) ?? "");
       // JUICE T38: bocanadas de furia sobre su cabeza — el enojo se VE.
       this.d.scene.fxRage(this.rich.bodies[RM.head].pos);
-      // T80 — la frase se dice EN EL RENDER (tras setRichMood): así el globo
-      // compone con la cara del ánimo FORZADO por el contexto, no con el que
-      // la escena tenía al sonar la grabación.
-      if (text) this.pendingRichLine = { text, durS: 3.8 };
-      // T44 — BRAZOS EN ALTO mientras EMITE UN SONIDO (petición: "para saber
-      // que el ricachón habla... de forma muy clara y ostentosa"): gesto
-      // "exaltado" durante la duración EFECTIVA del clip.
+      // 1º el FICHERO (evento o contexto), después su TRANSCRIPCIÓN: texto y
+      // voz salen del MISMO file — imposible que discrepen.
+      const file = p.file ?? this.d.audio.pickBankFile(p.context) ?? "";
+      const trans = this.d.audio.realLineFor(file || null, lang)
+        || (lang !== "es" ? this.d.audio.realLineFor(file || null, "es") : "");
+      const dS = this.d.audio.shoutRealFile(file);
       void Promise.resolve(dS).then((dur) => {
-        if (dur > 0) this.rich.ostentate(this.simTime, dur + 0.35);
+        if (dur > 0) {
+          // T44 — BRAZOS EN ALTO mientras EMITE (petición: "para saber que el
+          // ricachón habla... de forma muy clara y ostentosa").
+          this.rich.ostentate(this.simTime, dur + 0.35);
+          // T110: el fichero suena también en el invitado (misma grabación)
+          this.queueRichLine(trans, Math.max(2.6, dur + 0.7), 4000, { kind: "bank", file });
+        } else if (!this.d.audio.realBusy() && trans) {
+          // la voz no sonó Y nada más está sonando (mudo/fichero ausente):
+          // la frase se ve — es exactamente lo que la grabación diría.
+          this.queueRichLine(trans, 3.2, 4000);
+        }
+        // dur === 0 con otra voz en curso: SIN texto nuevo (voz ↔ texto).
       });
     });
     on("Telegraph", (p) => {
@@ -1787,12 +2149,20 @@ export class SherpasMatch {
     // T66 — ÁNIMO del ricachón: la escena SOLO muestra el bocadillo mientras
     // "habla" (ventana say tras cada cambio de ánimo; el pin de E2E manda).
     s.setRichMood(this.richMood.mood, false, richBubbleVisible(this.richMood));
-    // T80 — la frase pendiente se dice AHORA: la cara del globo es la del
-    // ánimo recién aplicado (frase ↔ cara, petición del jugador).
+    // T80 — la frase pendiente se dice EN EL RENDER (tras setRichMood): así el
+    // globo compone con la cara del ánimo recién aplicado (frase ↔ cara).
+    // T97 — CON REINTENTO: el PNG del ánimo carga async (richFaceRaw); si el
+    // primer tick aún no está en crudo, la frase se REINTENTA unos frames
+    // antes de caer al subtítulo — no se pierde y sale como BOCADILLO.
     if (this.pendingRichLine) {
       const line = this.pendingRichLine;
-      this.pendingRichLine = null;
-      if (!s.sayRichLine(line.text, line.durS)) this.d.hud.subtitle(line.text, line.durS);
+      if (s.sayRichLine(line.text, line.durS)) {
+        this.pendingRichLine = null;
+      } else if (performance.now() > line.retryUntilMs) {
+        this.pendingRichLine = null;
+        this.d.hud.subtitle(line.text, line.durS);
+      }
+      // aún con ventana de gracia: se reintenta el próximo frame
     }
     const t0 = this.trash[0];
     s.syncTrash(t0 && t0.alive ? t0.pos : null, this.simTime * 6);
@@ -1868,6 +2238,15 @@ export class SherpasMatch {
 
   /** Info de mundo que el GUEST necesita ANTES del primer snapshot (construye
    *  la MISMA pared desde la semilla; los checkpoints van aparte). */
+  /** Sonda E2E T92: inventario de anclajes portátiles y colocados. */
+  portableProbe(): { left: [number, number]; armed: [boolean, boolean]; placed: { id: string; x: number; y: number }[] } {
+    return {
+      left: [this.portableInv.remaining(0), this.portableInv.remaining(1)],
+      armed: [this.portableArmed[0], this.portableArmed[1]],
+      placed: this.placedPortables.map((h) => ({ id: h.id, x: h.pos.x, y: h.pos.y })),
+    };
+  }
+
   netWorldInfo(): { cpsYs: number[]; wallFrontZ: number; wallWidthM: number; wallHeightM: number } {
     return {
       cpsYs: this.cps.list.map((c) => c.y),
@@ -1955,6 +2334,13 @@ export class SherpasMatch {
       rich: {
         b: rb, g: this.rich.gesture, seated: this.rich.seated, m: this.richMood.mood,
         s: Math.round(this.richMood.say * 10) / 10,
+        // T109b: la frase viva para el BOCADILLO del invitado
+        t: this.richLineLive && performance.now() < this.richLineLive.untilMs ? this.richLineLive.text : "",
+        i: this.richLineLive?.id ?? 0,
+        rs: this.richLineLive ? Math.max(0, Math.round(((this.richLineLive.untilMs - performance.now()) / 1000) * 10) / 10) : 0,
+        // T110: la VOZ real viaja con la frase (el invitado la reproduce)
+        vf: this.richLineLive && performance.now() < this.richLineLive.untilMs ? (this.richLineLive.voice?.file ?? "") : "",
+        vk: this.richLineLive?.voice?.kind ?? "bank",
       },
       // T66-FB: anillos de alcance (presas cercanas con círculo blanco) — el
       // guest replica EXACTAMENTE lo que ve el host sin repetir la física.
@@ -2001,6 +2387,7 @@ export class SherpasMatch {
       propinaMax: this.data.hud.propina.maxValue,
       resting: this.camps.resting,
       richState: this.brain.state,
+      portable: [this.portableInv.remaining(0), this.portableInv.remaining(1)], // T92
     };
     this.lastHud = st; // T60 RED: el snapshot reutiliza este estado
     this.d.hud.update(st);
@@ -2046,6 +2433,13 @@ export class SherpasMatch {
                     : "normal",
           occupied: 0,
         });
+      }
+      // T92: los anclajes PORTÁTILES colocados también salen en el minimapa.
+      for (const h of this.placedPortables) {
+        if (h.pos.y < yLow - 0.4 || h.pos.y > yHigh + 0.4) continue;
+        if (idx.has(h.id)) continue;
+        idx.set(h.id, base.length);
+        base.push({ x: normX(h.pos.x), y: (h.pos.y - yLow) / span, kind: "normal", occupied: 0 });
       }
       this.mmCache = { key: mmKey, holds: base, idx };
     }
@@ -2101,6 +2495,7 @@ export class SherpasMatch {
       `A(${waD.x.toFixed(2)},${waD.y.toFixed(2)}) B(${wbD.x.toFixed(2)},${wbD.y.toFixed(2)}) R(${rD.x.toFixed(2)},${rD.y.toFixed(2)}) anclas ${this.sherpas[0].anchorsCount()}+${this.sherpas[1].anchorsCount()}` +
       ` · cuerda A:${this.sherpas[0].ropeState} B:${this.sherpas[1].ropeState}` +
       ` · cota ${this.cps.reachedCount()}/${this.cps.list.length} · ancla A:${this.sherpas[0].belaying ? "SÍ" : "no"} B:${this.sherpas[1].belaying ? "SÍ" : "no"}` +
+      ` · portátiles A:${this.portableInv.remaining(0)} B:${this.portableInv.remaining(1)} (puestos ${this.placedPortables.length})` +
       (this.dragLimb ? ` · arrastre ${this.dragLimb}` : ""),
     );
     // sonda E2E (DOM compartido: los eval del agente no ven globals de la página).
@@ -2248,12 +2643,17 @@ export class SherpasMatch {
 
   /** Sonda E2E (solo pruebas, como setAim): fuerza los eventos del Task 31
    *  para verificar su presentación sin esperar al azar del director. */
-  debugForce(what: "boxes" | "condor" | "storm" | "fart" | "drone" | "subir" | "subir2" | "caida_rico" | "caida" | "ancla" | "impulso" | "voz" | "nieve" | "nieve_off" | "rockfall" | "dia" | "atardecer" | "noche", player: 0 | 1 = 0): boolean {
+  debugForce(what: "boxes" | "condor" | "storm" | "fart" | "drone" | "subir" | "subir2" | "caida_rico" | "caida" | "ancla" | "impulso" | "voz" | "voz_red" | "nieve" | "nieve_off" | "rockfall" | "dia" | "atardecer" | "noche", player: 0 | 1 = 0): boolean {
     switch (what) {
       case "voz":
         // SONDA E2E T44: suelta UNA voz real del banco (ignora cooldown) —
         // el gesto de brazos en alto se dispara solo por el pipeline.
         this.fireRealVoice(true);
+        return true;
+      case "voz_red":
+        // SONDA E2E T110: el pipeline REAL del insulto (InsultSaid → fichero
+        // del banco + transcripción + viaje vf/vk al invitado) sin red.
+        this.d.bus.emit("InsultSaid", { lineId: "e2e_voz_red", context: "condor_angry", text: "" });
         return true;
       case "subir2": {
         // SONDA E2E Task 37: como "subir" pero SIN redirigir al entrante —
@@ -2391,6 +2791,114 @@ export class SherpasMatch {
   }
 
   toggleHelp(): boolean { return this.d.hud.showHelp(); }
+
+  // ---------- T114 MODO DEV (supervisión) + TUTORIAL GUIADO ----------
+
+  /** T114: bloquea la entrada del JUGADOR (fases cinemática/demo del tutorial):
+   *  el ratón no arranca drags y el mixer del tutorial filtra el teclado. */
+  tutLock = false;
+
+  /** T115 TUTORIAL: el Ricachón SE AGARRA a la tabla mientras dura el tutorial
+   *  (el mismo mecanismo «cling» del seguro de cuerda, Task 36): las demos y
+   *  los turnos escoran la tabla y antes el rico resbalaba y se caía a mitad
+   *  del guion — la demo era imposible de terminar. El director lo activa al
+   *  crearse y lo apaga al terminar/saltar. */
+  tutorialCling = false;
+
+  /** T114 DEV: re-cuelga el equipo en un tramo concreto (panel de supervisión).
+   *  camp/cp/cumbre usan el MISMO doRespawn que caídas y guardados (tabla
+   *  nivelada, ricachón sentado, cámara re-centrada); «inicio» vuelve al pie.
+   *  En cotas y cumbre marca antes las inferiores como alcanzadas. */
+  devRespawn(kind: "camp" | "cp" | "cumbre" | "inicio", index: number): boolean {
+    let target: CampZone | Checkpoint | null = null;
+    if (kind === "camp") {
+      target = this.gen.layout.campZones[index] ?? null;
+      if (!target) return false;
+    } else if (kind === "cp") {
+      const cp = this.cps.list[index];
+      if (!cp) return false;
+      this.cps.markUpTo(cp.y);
+      target = cp;
+    } else if (kind === "cumbre") {
+      const top = this.gen.layout.totalHeightM;
+      this.cps.markUpTo(top);
+      target = { index: 9999, y: Math.max(2, top - 2.5), reached: true };
+    }
+    try {
+      this.doRespawn(target);
+      return true;
+    } catch {
+      return false; // sin presas para ese tramo (no debería pasar: ventana creciente)
+    }
+  }
+
+  /** T114 DEV/TUTORIAL: vuelve a colgar UN solo escalador en las presas de
+   *  arranque (rescate del guion del tutorial si el colgado toca el suelo). */
+  devRecallRig(p: 0 | 1): void {
+    const hs = this.gen.startHolds();
+    this.sherpas[p].respawnAt(hs);
+    this.d.scene.spawnSherpa(p, this.sherpas[p].rig);
+  }
+
+  /** T114 TUTORIAL: la presa firme más cercana a un punto (para elegir la
+   *  presa objetivo de la demo y para las flechas). Filtra por franja de
+   *  altura relativa al punto (minDy/maxDy). */
+  devHoldNear(
+    x: number, y: number,
+    opts: { maxDist?: number; minDy?: number; maxDy?: number } = {},
+  ): { id: string; x: number; y: number; z: number } | null {
+    const maxDist = opts.maxDist ?? 2.2;
+    let best: HoldInstance | null = null;
+    let bd = maxDist;
+    for (const h of this.anchors.holds.values()) {
+      const dy = h.pos.y - y;
+      if (opts.minDy !== undefined && dy < opts.minDy) continue;
+      if (opts.maxDy !== undefined && dy > opts.maxDy) continue;
+      const d = Math.hypot(h.pos.x - x, h.pos.y - y);
+      if (d < bd) { bd = d; best = h; }
+    }
+    return best ? { id: best.id, x: best.pos.x, y: best.pos.y, z: best.pos.z } : null;
+  }
+
+  /** T114 TUTORIAL: el anclaje portátil YA CLAVADO más cercano a un punto
+   *  (el colocado por la demo — para apuntarle con la flecha). */
+  devPortableNear(x: number, y: number, maxDist = 3): { x: number; y: number; z: number } | null {
+    let best: V3 | null = null;
+    let bd = maxDist;
+    for (const h of this.placedPortables) {
+      const d = Math.hypot(h.pos.x - x, h.pos.y - y);
+      if (d < bd) { bd = d; best = h.pos; }
+    }
+    return best ? { x: best.x, y: best.y, z: best.z } : null;
+  }
+
+  /** T114 TUTORIAL: rellena las mochilas (repetir el tutorial con equipo completo). */
+  devRefillPortables(): void {
+    this.portableInv.refill(this.data.tuning.coop?.portableAnchorsPerClimber ?? PORTABLE_PER_CLIMBER_DEFAULT);
+  }
+
+  /** T114 TUTORIAL: acceso al rig para la DEMO del profesor (mover aim, drag,
+   *  toggles: las mismas primitivas que el ratón y el teclado). */
+  devRig(p: 0 | 1): SherpaRig {
+    return this.sherpas[p];
+  }
+
+  /** T114 TUTORIAL: métricas de pared para el guion (cámara de la cumbre, z
+   *  del plano de pared para los drags guionizados). */
+  tutorialTotalHeightM(): number { return this.gen.layout.totalHeightM; }
+  tutorialWallFrontZ(): number { return this.wallFrontZ; }
+
+  /** T114 TUTORIAL: suelta un drag GUIONIZADO por la MISMA vía que el ratón
+   *  (incluida la colocación directa T103: anclaje armado + mano = clavado). */
+  devDragUp(p: 0 | 1, limb: Limb, x: number, y: number): void {
+    const cur = v3(x, y, this.wallFrontZ);
+    if (this.portableArmed[p] && (limb === "hand_l" || limb === "hand_r")
+      && this.doPlacePortableAnchorAt(p, cur.x, cur.y, limb)) {
+      this.sherpas[p].moveDrag(cur); // el imán ya ve la presa recién nacida
+    }
+    this.sherpas[p].endDrag();
+  }
+
 
   recenterCamera(): void {
     const pts = this.plankState

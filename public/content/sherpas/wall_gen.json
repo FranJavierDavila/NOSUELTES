@@ -18,7 +18,13 @@
     "legReachM": 0.9,
     "bandValidateHeightM": 1.5,
     "verticalBodySpanM": 1.35,
-    "marginM": 0.1
+    "marginM": 0.1,
+    "gameStepM": 1.1
+  },
+  "companion": {
+    "offsetM": 0.8,
+    "maxDyM": 0.9,
+    "minDistM": 0.42
   },
   "validator": {
     "maxAddsPerBand": 24,
@@ -43,7 +49,7 @@
       {
         "id": "juntos",
         "weight": 2,
-        "clusterHalfWidthM": 0.85,
+        "clusterHalfWidthM": 1.5,
         "clusterBridgeM": 1.6
       },
       {
@@ -177,7 +183,7 @@
     "textureSizePx": 512,
     "textureTileM": 1.0,
     "textureContrast": 0.95,
-    "backColor": "#2e353d",
+    "backColor": "#e7edf6",
     "naturalMaxM": 0.18,
     "bumpStrength": 1.0,
     "strataTones": [
@@ -265,9 +271,9 @@
       "holdScale": 1.0,
       "anchorPad": 0.035,
       "color": [
-        0.5,
-        0.46,
-        0.4
+        0.55,
+        0.43,
+        0.36
       ],
       "tint": [
         0.1,
@@ -276,8 +282,8 @@
       ],
       "stain": [
         0.3,
-        0.22,
-        0.15
+        0.2,
+        0.13
       ],
       "stainAmount": 0.34,
       "moss": [

@@ -46,7 +46,7 @@ const perpUnit = (v: V3T, axis: V3T): V3T | null => {
 // EXACTAMENTE la misma del exportador de la plantilla
 // (scripts/exportar_plantilla_escalador.mjs): el usuario esculpió las piezas
 // sobre ESTA pose, así que las direcciones de reposo salen de aquí.
-const CANON: V3T[] = (() => {
+export const CANON: V3T[] = (() => { // T89: exportada para el chicle del antebrazo (fábrica)
   const addS = (a: V3T, d: V3T, len: number): V3T =>
     v3t(a.x + d.x * len, a.y + d.y * len, a.z + d.z * len);
   const pelvisC = v3t(0, 0.98, 0);

@@ -2,7 +2,7 @@
 // La comunicación hacia arriba es SIEMPRE por EventBus (doc 3.1).
 
 export type Limb = "hand_l" | "hand_r" | "foot_l" | "foot_r";
-export type ReleaseCause = "overload" | "exhaustion" | "bird" | "trash" | "player" | "broken_anchor" | "transfer" | "slip";
+export type ReleaseCause = "overload" | "exhaustion" | "bird" | "trash" | "player" | "broken_anchor" | "transfer" | "slip" | "cruce";
 export type AnchorTypeId = "rock_firm" | "rock_loose" | "ice" | "ice_thin" | "snow" | "ice_urine" | string;
 
 export interface SherpasEvents {
@@ -42,6 +42,13 @@ export interface SherpasEvents {
   // SUPER FLATULENCIA (presa verde → pedo-propulsor)
   FartGained: { playerId: 0 | 1 };
   FartLaunched: { playerId: 0 | 1; fromY: number };
+  // T92 ANCLAJES PORTÁTILES: el guest replica la presa colocada por el host
+  PortableAnchorPlaced: { id: string; x: number; y: number; z: number; p: 0 | 1 };
+  // T107d: aviso de mochila/anclaje dirigido a UN escalador — viaja en el
+  // snapshot para que el INVITADO vea los mismos avisos que el anfitrión
+  // (antes los rechazos solo salían en el HUD del host y el guest no sabía
+  // por qué su ancla no se colocaba). key = clave de strings (hud.*).
+  PortableMsg: { p: 0 | 1; key: string; left: number };
   // Progresión
   PlayerFell: { playerId: 0 | 1; cause?: "two_hands" | "no_grips" };
   TeamFell: { record: unknown };

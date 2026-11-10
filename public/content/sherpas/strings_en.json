@@ -1,6 +1,6 @@
 {
   "menu": {
-    "title": "SHERPAS AT THE LIMIT",
+    "title": "CARRY ME",
     "subtitle": "Two sherpas, a rich man on his plank, and Everest.",
     "start": "GO!",
     "difficulty": "Difficulty",
@@ -11,7 +11,9 @@
     "resume": "Continue from {camp}",
     "newAscent": "New ascent",
     "loading": "Preparing the wall…",
-    "soloTest": "Solo test (control both)"
+    "soloTest": "Solo test (control both)",
+    "seed": "Seed",
+    "tutorial": "🎓 Guided tutorial"
   },
   "hud": {
     "altitude": "Altitude",
@@ -38,7 +40,7 @@
     "ropeHaul": "{name} hauls back up the rope…",
     "summit": "EVEREST SUMMIT!",
     "summitSub": "The rich man wants a selfie. You want your pay.",
-    "voiceOff": "Voice not available in this version",
+    "voiceOff": "VOICE",
     "birdTelegraph": "BIRD INCOMING! Press shoo",
     "peeTelegraph": "What's that zipper doing…?",
     "trashTelegraph": "Flying wrapper!",
@@ -96,14 +98,35 @@
     "coopImpulse": "{from} boosts {to}!",
     "coopImpulseNeed": "Anchor yourself first (Q/J) to give a boost",
     "coopImpulseScore": "The boost paid off! Tip +{n}",
-    "ropeMash": "{name} IS HANGING! MASH C (P1) AND N (P2) TO CLIMB THE ROPE",
-    "ropeReleased": "THE ROPE RAN OUT! {name} FALLS INTO THE VOID!"
+    "ropeMash": "{name} IS HANGING! The PARTNER PRESSES HIS KEY (C green / N red): each pull hoists him 25 cm, until he auto-grabs a nearby hold",
+    "ropeReleased": "THE ROPE RAN OUT! {name} FALLS INTO THE VOID!",
+    "portablePlaced": "Portable anchor placed — {left} left",
+    "portableEmpty": "No portable anchors left",
+    "portableArmed": "Anchor in hand: move it to a free wall spot and release",
+    "portableNoSpot": "No feasible spot for an anchor here",
+    "portableNeedFree": "Release a limb to place the anchor",
+    "portableNeedClimb": "{name} cannot place anchors while falling",
+    "backpackTitle": "{name}'s backpack",
+    "itemAnchor": "Anchor",
+    "backpackUse": "Click: grab the anchor · release it with a hand on a free spot",
+    "chatHint": "ENTER · CHAT (Esc closes)",
+    "chatPlaceholder": "Type and press Enter…",
+    "micOff": "Microphone: starting… (click to toggle)",
+    "micLive": "Voice live — click to mute",
+    "micMuted": "Voice muted — click to unmute",
+    "micDenied": "No microphone permission — click to retry",
+    "player0": "Green Sherpa",
+    "player1": "Red Sherpa",
+    "voiceLive": "VOICE · on",
+    "voiceMuted": "VOICE · muted",
+    "voiceDenied": "VOICE · no access"
   },
   "limb": {
     "hand_l": "L.Hand",
     "hand_r": "R.Hand",
     "foot_l": "L.Foot",
-    "foot_r": "R.Foot"
+    "foot_r": "R.Foot",
+    "ropeMash": "{name} IS HANGING! THE PARTNER PRESSES C (Green) OR N (Red) TO HOIST HIM PULL BY PULL"
   },
   "anchor": {
     "roca_firme": "firm rock",
@@ -123,8 +146,8 @@
     "pataleando": "Kicking"
   },
   "keys": {
-    "p1": "MOUSE: press a limb and drag it onto a hold (green ring) · release to fix it · F: superpower",
-    "p2": "P2: Arrows aim · I/O hands · K/L feet · U shoo · or gamepad: stick + A/B/X/Y + RB · P: superpower · right stick: camera orbit",
+    "p1": "MOUSE: press a limb and drag it to a hold (green magnet) · release to lock it · Q belay · E impulse · T portable anchor · F: superpower",
+    "p2": "P2: Arrows aim · I/O hands · K/L feet · U shoo · J belay · M impulse · Y portable anchor · or gamepad: stick + A/B/X/Y + RB · P: superpower · right stick: camera orbit",
     "shared": "Space pause · H help · Z/X lateral orbit · V/B vertical orbit · G free look (hold) · C recenter · F3 debug"
   },
   "settings": {
@@ -135,7 +158,8 @@
     "daltonism": "Colorblind palette",
     "reduceShake": "Reduce camera shake",
     "subtitles": "Subtitles always on",
-    "bubbles": "Boss speech bubbles (face and lines)"
+    "bubbles": "Boss speech bubbles (face and lines)",
+    "close": "Done"
   },
   "save": {
     "saved": "Progress saved at {camp}",
@@ -184,15 +208,15 @@
       "keys": "Coop anchor: Q (P1) · J (P2) — the firm one stops and pulls the partner"
     },
     "s5": {
-      "title": "MASH! (when someone falls)",
-      "body": "If a sherpa falls, he hangs from the rope holding it with BOTH hands: mash the effort key TOGETHER at the same time. The meter next to the hanger must pass the notch to climb; below it he slides down and burns rope. If the rope runs out… he lets go and falls. Sharing the effort makes the rescue easy.",
-      "keys": "MASH: hammer C (P1) and N (P2) TOGETHER until the meter passes the notch"
+      "title": "RESCUE! (when someone falls)",
+      "body": "If a sherpa falls, he hangs HORIZONTAL from the rope with arms and legs dangling, and his controls go INACTIVE. The PARTNER hauls him up by pulling the rope: EACH PRESS of his key lifts him HALF A METRE with a small jolt. Only once the rescue brings him within reach of an anchor does he get upright and climb again.",
+      "keys": "RESCUE: C (GREEN, P1) · N (RED, P2) — press THE PARTNER key"
     }
   },
   "net": {
     "menu": "Play online",
     "title": "Play online",
-    "subtitle": "One climbs here (orange, mouse), the other connects from the internet (blue, keyboard or gamepad).",
+    "subtitle": "One climbs here (orange, mouse), the other joins online (blue: arrows aim · I O K L grip · J anchor · M impulse · Y piton · N heave — or gamepad).",
     "create": "Create session (host)",
     "join": "Join",
     "codePh": "CODE",
@@ -203,8 +227,8 @@
     "connecting": "Connecting…",
     "waitingHost": "Connected. Waiting for the host to start the ascent…",
     "closed": "The session was closed (host left).",
-    "hostLabel": "HOST (orange)",
-    "guestLabel": "GUEST (blue)",
+    "hostLabel": "GREEN (host)",
+    "guestLabel": "RED (guest)",
     "hostNote": "You are the host: you play the ORANGE sherpa with the mouse. Your partner takes the BLUE one.",
     "guestNote": "You are the guest: you play the BLUE sherpa (arrows + I/O/K/L or gamepad).",
     "err": {
@@ -216,7 +240,10 @@
       "host-gone": "The host is gone.",
       "host-left": "The host is gone.",
       "host-recreated": "The host created another room."
-    }
+    },
+    "hostName": "Green",
+    "guestName": "Red",
+    "go": "GO — ¡EMPEZAR!"
   },
   "menu.weather": "Weather",
   "menu.weather.clear": "☀️ Clear",
@@ -234,5 +261,140 @@
   "falling.maceta": "a FLOWERPOT with its geranium",
   "falling.termo": "the BUTTER TEA THERMOS",
   "falling.momo": "a GIANT MOMO",
-  "falling.pez": "a FROZEN FISH"
+  "falling.pez": "a FROZEN FISH",
+  "guiado": {
+    "skip": "Skip tutorial",
+    "nowSub": "Your turn with the RED sherpa",
+    "flash": "That's it!",
+    "cta": {
+      "ok": "Got it",
+      "vamos": "Let's go!",
+      "escalar": "GO CLIMB!",
+      "intentar": "I'll try it"
+    },
+    "arrow": {
+      "arrastra": "DRAG",
+      "suelta": "DROP HERE",
+      "clava": "HAMMER IT HERE",
+      "ancla": "SAFETY ANCHOR",
+      "machaca": "MASH IT!",
+      "cima": "TO THE SUMMIT!"
+    },
+    "hint": {
+      "mover": "Press and drag a RED limb to a green ring on the wall",
+      "mochila": "Press Y and release a RED HAND on the wall",
+      "seguro": "Press J with the RED sherpa",
+      "asaco": "Mash the PARTNER key non-stop: each press lifts him half a metre"
+    },
+    "s1": {
+      "title": "The goal",
+      "body": "**Carry the Rich Man, seated on his plank, to the top of the wall.**\nIf the plank tips too far, he falls and the run ends.\nThe GREEN sherpa shows you every move — on repeat — until you say when; then you do it with the RED one."
+    },
+    "s2": {
+      "title": "How you climb: drag a hold",
+      "body": "Watch the GREEN sherpa:\n**1.** Press one of his limbs and hold the click.\n**2.** Drag it to another hold.\n**3.** Release: he grips there.\nThat is the whole game: repeat this over and over."
+    },
+    "s3": {
+      "title": "Your turn: move the RED one",
+      "body": "Do the same with the RED sherpa:\n**press a limb, drag it to a hold with a green ring and release.**"
+    },
+    "s4": {
+      "title": "The backpack: placing anchors",
+      "body": "No holds nearby? Each sherpa carries **10 anchors in his backpack**.\nThe GREEN one presses **Y**: the anchor arms in his hand.\nThen he **releases the hand on the wall** and the anchor stays hammered there."
+    },
+    "s5": {
+      "title": "Your turn: place an anchor",
+      "body": "With the RED one:\n**1.** Press **Y** (the anchor arms in the hand).\n**2.** Release one of his hands on the wall, wherever you want it."
+    },
+    "s6": {
+      "title": "The safety anchor",
+      "body": "The safety anchor HOLDS you to the wall: if you fall, you never reach the ground.\nThe GREEN one presses **J** and stays put."
+    },
+    "s7": {
+      "title": "Your turn: anchor up",
+      "body": "Press **J** with the RED sherpa:\n**your safety anchor is ON.** Now you can take risks without fear."
+    },
+    "s8": {
+      "title": "RESCUE! pulling the rope",
+      "body": "If anyone falls, he hangs horizontal and CANNOT do anything:\n**the PARTNER PULLS THE ROPE WITH HIS KEY** (`N` for RED, `C` for GREEN): each press lifts him half a metre with a jolt.\nWatch the RED one rescue the GREEN one."
+    },
+    "s9": {
+      "title": "Your turn: rescue him!",
+      "body": "The GREEN one hangs (horizontal, inactive — he CANNOT do anything):\n**MASH `N` NON-STOP** — each press lifts him half a metre — until an anchor is within his reach and he gets upright again."
+    },
+    "s10": {
+      "title": "Surprises ahead",
+      "body": "The mountain sets traps: wind gusts, birds, falling rocks.\nIf anyone falls, you know the drill: the partner pulls the rope with his key."
+    },
+    "s11": {
+      "title": "It's all yours!",
+      "body": ""
+    },
+    "loop": "🔁 The GREEN sherpa repeats the step. Press «I'll try it» whenever you want a go."
+  },
+  "dev": {
+    "title": "🛠 DEV MODE · wall sections",
+    "note": "Private panel: opens by typing the secret word. Host or solo only.",
+    "solo": "Jump to a section (re-hangs the team there):",
+    "here": "Jump here",
+    "jumped": "→ supervision section",
+    "guestWarn": "No section jumps as the guest."
+  },
+  "pared": {
+    "menu": "Camp Test (beta)",
+    "title": "Camp Test",
+    "controls": "Drag hands and feet to the holds of each floating block · BOTH sherpas must reach the top",
+    "win": "Test passed!",
+    "winSub": "The sherpas reach the top of the floating blocks. The rich man can rest easy.",
+    "fail": "GAME OVER",
+    "failSub": "The camp is still waiting… try again",
+    "retry": "Retry",
+    "exit": "Menu",
+    "soloMano": "⚠ One hand only! Secure yourself fast or you will fall from fatigue",
+    "finaleTime": "Time",
+    "finaleFalls": "Falls",
+    "panel": {
+      "titulo": "Tuning panel",
+      "velocidad": "Block speed",
+      "amplitud": "Amplitude",
+      "fase": "Phase",
+      "pasoFilas": "Row spacing",
+      "fatiga": "Fatigue",
+      "fatigaMano": "Fatigue ×1 hand",
+      "fatigaSinApoyo": "Fatigue no feet",
+      "cambioMano": "Hand-change limit",
+      "cuerda": "Rope",
+      "telemetria": "Telemetry",
+      "reiniciar": "Restart",
+      "cima": "↑ Summit",
+      "irFila": "Go to row",
+      "defecto": "Defaults",
+      "copiar": "Copy values",
+      "copiado": "Copied! (also in console)",
+      "nota": "⟳ applies on Restart · F3 closes",
+      "rotura": "Box break (s)",
+      "lanzamientos": "Backpack launches"
+    },
+    "mochila": {
+      "manos": "Anchor BOTH hands to pull the backpack",
+      "agotado": "No launches left",
+      "rompe": "The block is about to break!",
+      "interior": "Launch springs",
+      "selecciona": "Tap a spring to arm the launch",
+      "usar": "Use",
+      "armado": "Spring armed: drag the backpack down and release",
+      "vueloAuto": "Flying! It will grab the highest hold",
+      "sinMuelles": "Out of springs"
+    },
+    "ricachon": {
+      "enfado": "Get me out of here NOW!",
+      "furia": "Who TIED me down here?!"
+    },
+    "finaleBotin": "Loot",
+    "dinero": {
+      "titulo": "Money",
+      "cogido": "+10 $! Bill for Sherpa {n}",
+      "bolsa": "+200 $! Bonus bag for Sherpa {n}"
+    }
+  }
 }

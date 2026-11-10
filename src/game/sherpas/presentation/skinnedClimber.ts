@@ -27,6 +27,7 @@ import {
   mat4FromQuatPos, mat4Invert, matchBoneName, v3t, vNorm, xfDir, xfPoint,
   type BoneKey, type BoneRest, type Mat4, type V3T,
 } from "./climberPoseMath";
+import { assetUrl } from "../../assetPath";
 
 export interface ClimberLoadOpts {
   /** Giro del modelo sobre su eje vertical (grados): corrige la orientación
@@ -55,7 +56,7 @@ export class SkinnedClimberFactory {
   ) {}
 
   static async load(scene: Scene, url: string, opts: ClimberLoadOpts): Promise<SkinnedClimberFactory> {
-    const container = await SceneLoader.LoadAssetContainerAsync("", url, scene);
+    const container = await SceneLoader.LoadAssetContainerAsync("", assetUrl(url), scene);
     // Diagnóstico: alto del modelo (bounding de las mallas fuente en mundo).
     let minY = Infinity, maxY = -Infinity, meshes = 0;
     for (const m of container.meshes) {

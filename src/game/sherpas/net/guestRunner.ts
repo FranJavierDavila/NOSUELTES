@@ -8,11 +8,15 @@ import type { SherpaScene, RichManRenderView } from "../presentation/scene";
 import type { SherpaHud, MinimapHold } from "../presentation/hud";
 import type { SherpaAudio } from "../presentation/audio";
 import type { InputManager } from "../input/input";
+import type { Limb } from "../core/bus";
 import { LIMBS } from "../core/data";
 import { P } from "../../physics/pbd/ragdoll";
 import { PLANK_DEFAULTS } from "../physics/plank";
-import { SnapBuffer, type NetSessionParams, type NetSnapshot } from "./protocol";
+import { SnapBuffer, type NetRemoteDrag, type NetSessionParams, type NetSnapshot } from "./protocol";
 import type { GuestNet } from "./netClient";
+import { pickLimbNear, type DragPickPts } from "./dragPick";
+import { PointerDrag } from "../input/drag";
+import { Matrix } from "@babylonjs/core/Maths/math.vector";
 import { SnowSystem } from "../gameplay/snow"; // T61: nevada replicada
 import { resolveDayPreset } from "../gameplay/daycycle"; // T61: hora del día replicada
 
@@ -63,6 +67,21 @@ export class GuestRunner {
   private ropeA: { x: number; y: number; z: number }[] = [];
   private ropeB: { x: number; y: number; z: number }[] = [];
 
+  // ---- T105 ARRASTRE REMOTO (el ratón/táctil del invitado mueve SU escalador)
+  /** extremidad agarrada por el puntero del invitado (null = sin arrastre). */
+  private dragLimb: Limb | null = null;
+  /** punto de pared pendiente de enviar (coalescencia del move). */
+  private dragPending: { x: number; y: number } | null = null;
+  private lastDragSendMs = 0;
+  private dragBeginSent = false;
+  /** throttling del move: ~30 Hz como el resto del input. */
+  private static DRAG_SEND_MS = 30;
+  private pointerDrag: PointerDrag;
+  /** T105 MINIMAPA: «escena lista» enviada y hora del último reintento (el
+   *  primer bloque hud con holdsStatic se pierde mientras el guest monta SU
+   *  escena: se pide reenvío hasta tener el tramo cacheado). */
+  private lastReadyMs = -1e9;
+
   private flatToVecs(flat: number[], out: { x: number; y: number; z: number }[]): { x: number; y: number; z: number }[] {
     const n = Math.floor(flat.length / 3);
     out.length = n;
@@ -75,6 +94,8 @@ export class GuestRunner {
   }
   private lastAim: [string, string] = ["", ""];
   private aimShownAt: [number, number] = [-1e9, -1e9];
+  /** T92: ids de anclajes portátiles ya replicados (los ev se re-envían). */
+  private portableSeen = new Set<string>();
 
   private constructor(private d: GuestRunnerDeps) {
     const hz = d.data.net?.snapshotHz ?? 30;
@@ -89,6 +110,15 @@ export class GuestRunner {
       this.d.params.daytime ?? "dia",
       resolveDayPreset(this.d.data.tuning.daycycle, this.d.params.daytime ?? "dia"),
     );
+    // T105 — ARRASTRE REMOTO: mismo esquema que el anfitrión (pulsar extremidad
+    // → arrastrar hasta presa → soltar), pero cada gesto sale por red y la
+    // simulación del host mueve al escalador del invitado (jugador 1).
+    this.pointerDrag = new PointerDrag({
+      down: (x, y) => this.onDragDown(x, y),
+      move: (x, y) => this.onDragMove(x, y),
+      up: () => this.onDragUp(false),
+      cancel: () => this.onDragUp(true),
+    });
   }
 
   static async create(d: GuestRunnerDeps): Promise<GuestRunner> {
@@ -98,6 +128,9 @@ export class GuestRunner {
       { p1: r.d.hud.t("net.hostLabel"), p2: r.d.hud.t("net.guestLabel") },
       ["hand_l", "hand_r", "foot_l", "foot_r"],
     );
+    // T105: el arrastre del invitado escucha en el MISMO canvas que el anfitrión
+    const canvas = r.d.scene.engine.getRenderingCanvas();
+    if (canvas) r.pointerDrag.attach(canvas);
     return r;
   }
 
@@ -111,8 +144,9 @@ export class GuestRunner {
   holdRender = false;
 
   /** Sonda E2E/diagnóstico: estado compacto del último snapshot. `hud` es
-   *  PEGAJOSO (el bloque viaja a 10 Hz: 1 de cada 3 snapshots). */
-  debug(): { tick: number; wa: [number, number, number]; wb: [number, number, number]; hud: boolean; size: number; sent: number; got: number } | null {
+   *  PEGAJOSO (el bloque viaja a 10 Hz: 1 de cada 3 snapshots). T105: añade el
+   *  estado del caché del minimapa (tramos con presas) y el drag en curso. */
+  debug(): { tick: number; wa: [number, number, number]; wb: [number, number, number]; hud: boolean; size: number; sent: number; got: number; mmCached: number; mmKey: string; drag: string | null; richSaid: string | null; richVoices: number; richSnap: { t: string; i: number; vf: string; vk: string } } | null {
     const s = this.lastSnap;
     if (!s) return null;
     return {
@@ -123,6 +157,12 @@ export class GuestRunner {
       size: this.buf.size,
       sent: this.sentCount,
       got: this.gotCount,
+      mmCached: this.mmCache.size,
+      mmKey: s.hud?.mm?.key ?? "",
+      richSaid: this.lastSaidText, // T109b sonda E2E
+      richVoices: this.richVoiceCount, // T110 sonda E2E: voces del ricachón reproducidas
+      richSnap: { t: s.rich?.t ?? "", i: s.rich?.i ?? 0, vf: s.rich?.vf ?? "", vk: s.rich?.vk ?? "" }, // T110 diag
+      drag: this.dragLimb,
     };
   }
   private everHud = false;
@@ -136,7 +176,40 @@ export class GuestRunner {
     }
   }
 
+  /** T102: anclajes portátiles restantes (del HudTickState del snapshot).
+   *  Alimenta el badge de la ventana de mochila del invitado. */
+  portableRemaining(p: 0 | 1): number {
+    return this.lastSnap?.hud?.portable?.[p] ?? 0;
+  }
+
+  /** T102: «usar» del hueco ⚓ de SU mochila (solo el azul) → flanco de ARMADO
+   *  hacia el host (T107d): el anclaje queda en la mano en la simulación del
+   *  host y se clava cuando el invitado SUELTA una mano presa sobre un hueco
+   *  (su drag remoto, rama "e" de remoteDrag) — el MISMO flujo T103 del
+   *  anfitrión, que es el único que funciona con las 4 extremidades agarradas.
+   *  El host emite PortableMsg con cada aviso y aquí se muestra en SU HUD. */
+  requestPortablePlace(p: 0 | 1): void {
+    if (p !== 1 || this.disposed) return;
+    this.d.net.sendIntent({
+      ax: 0, ay: 0, speed: 0, toggles: [],
+      shoo: false, fart: false, anchor: false, impulse: false,
+      place: false, arm: true, mashCount: 0,
+    });
+  }
+
   private lastSnap: NetSnapshot | null = null;
+  // T109b BOCADILLO: última frase recibida + pendiente de pintar (la textura
+  // de la cara carga async; se reintenta en cada snapshot hasta expirar).
+  private richLineId = 0;
+  private pendingLine: { text: string; durS: number; untilMs: number } | null = null;
+  private lastSaidText: string | null = null; // T109b sonda E2E
+  // T110 — VOZ DEL RICACHÓN EN EL INVITADO: el snapshot trae el fichero real
+  // (vf/vk) que suena en el anfitrión; aquí se reproduce localmente para que
+  // AMBOS jugadores lo oigan. Guard aparte del id del bocadillo: la voz puede
+  // llegar en un snapshot posterior al texto (el anfitrión la adjunta cuando
+  // la grabación de verdad arranca).
+  private richVoiceId = 0;
+  private richVoiceCount = 0; // sonda E2E: voces reproducidas por red
 
   private onSnap(s: NetSnapshot): void {
     if (s.hud) this.everHud = true;
@@ -157,6 +230,10 @@ export class GuestRunner {
     this.lastFrame = performance.now();
     // input del guest → host a 30 Hz (eje crudo + flancos + mash contador)
     this.sendTimer = window.setInterval(() => this.sendInput(), 33);
+    // T105 MINIMAPA: SU escena ya está montada → pide el listado de presas del
+    // tramo (el bloque hud con holdsStatic viajó mientras construía y se perdió)
+    this.d.net.sendReady();
+    this.lastReadyMs = performance.now();
     const frame = (ms: number): void => {
       if (this.disposed) return;
       this.raf = requestAnimationFrame(frame);
@@ -190,6 +267,7 @@ export class GuestRunner {
       fart: mine.fart,
       anchor: mine.anchor,
       impulse: mine.impulse,
+      place: mine.place,
       mashCount: mine.mashCount,
     });
   }
@@ -200,6 +278,80 @@ export class GuestRunner {
     const pads = typeof navigator !== "undefined" && navigator.getGamepads ? navigator.getGamepads() : [];
     if (padIdx !== undefined && pads[padIdx]) return maps.players.p2?.gamepad?.aim.aimSpeed ?? 2.4;
     return maps.players.p2?.keyboard.aimSpeed ?? 1.8;
+  }
+
+  // ---------- T105 ARRASTRE REMOTO (ratón/táctil del invitado) ----------
+
+  /** Punto del plano de pared bajo el puntero (misma sonda analítica que el
+   *  anfitrión: rayo cámara→pared en z = wallFrontZ). */
+  private wallPointFromPointer(xCss: number, yCss: number): { x: number; y: number } | null {
+    const s = this.d.scene;
+    const ray = s.scene.createPickingRay(xCss, yCss, Matrix.Identity(), s.camera);
+    const o = ray.origin;
+    const dir = ray.direction;
+    if (Math.abs(dir.z) < 1e-4) return null;
+    const t = (this.d.params.wallFrontZ - o.z) / dir.z;
+    if (t <= 0) return null;
+    return { x: o.x + dir.x * t, y: o.y + dir.y * t };
+  }
+
+  /** Extremidades de SU escalador (jugador 1) en el último snapshot: el guest
+   *  no tiene rigs (pinta lo que recibe), así que el clic se coteja con las
+   *  partículas del snapshot (fresco a ≤1 envío de red). */
+  private myLimbPts(): DragPickPts {
+    const s = this.lastSnap;
+    if (!s) return {};
+    const out: DragPickPts = {};
+    for (const limb of LIMBS) {
+      const pi = LIMB_PARTICLE[limb]!;
+      out[limb] = { x: s.b.p[pi * 3]!, y: s.b.p[pi * 3 + 1]! };
+    }
+    return out;
+  }
+
+  private onDragDown(xCss: number, yCss: number): void {
+    if (this.disposed || this.paused) return;
+    const p = this.wallPointFromPointer(xCss, yCss);
+    if (!p) return;
+    // escala 1.7: el snapshot va POR DELANTE de lo pintado (interp 100 ms +
+    // frames de render) — el radio generoso absorbe el hueco de lag
+    const limb = pickLimbNear(this.myLimbPts(), p.x, p.y, 1.7);
+    if (!limb) return; // clic al aire: igual que el anfitrión (nada)
+    this.dragLimb = limb;
+    this.dragBeginSent = false;
+    this.dragPending = p;
+    this.flushDrag(true); // el begin sale YA, con su punto
+  }
+
+  private onDragMove(xCss: number, yCss: number): void {
+    if (!this.dragLimb) return;
+    const p = this.wallPointFromPointer(xCss, yCss);
+    if (p) this.dragPending = p;
+    this.flushDrag(false);
+  }
+
+  private onDragUp(_cancel: boolean): void {
+    if (!this.dragLimb) return;
+    this.flushDrag(true); // el último punto conocido sale antes del end
+    this.d.net.sendDrag({ k: "e" });
+    this.dragLimb = null;
+    this.dragPending = null;
+  }
+
+  /** Envía el begin/move pendiente respetando el throttle (~30 Hz, el mismo
+   *  ritmo que el resto del input; el begin y el end salen SIEMPRE). */
+  private flushDrag(force: boolean): void {
+    if (!this.dragLimb || !this.dragPending) return;
+    const now = performance.now();
+    if (!force && now - this.lastDragSendMs < GuestRunner.DRAG_SEND_MS) return;
+    this.lastDragSendMs = now;
+    const { x, y } = this.dragPending;
+    if (this.dragBeginSent) {
+      this.d.net.sendDrag({ k: "m", x, y });
+    } else {
+      this.dragBeginSent = true;
+      this.d.net.sendDrag({ k: "b", l: this.dragLimb, x, y });
+    }
   }
 
   private renderFrame(frameDt: number, now: number): void {
@@ -238,6 +390,34 @@ export class GuestRunner {
     // T66: el guest ve la MISMA cara del ricachón (ánimo + ventana de habla
     // viajan en el snapshot: bocadillo visible SOLO mientras rich.s > 0)
     s.setRichMood(cur.rich.m ?? null, false, (cur.rich.s ?? 0) > 0);
+    // T109b BOCADILLO: la frase viva viaja en el snapshot (t/i/rs). Con
+    // REINTENTO: la textura de la cara carga async, así que la frase pendiente
+    // se repite en cada snapshot hasta que sayRichLine la pinta o expira.
+    {
+      const line = cur.rich.t ?? "";
+      if (line && cur.rich.i && cur.rich.i !== this.richLineId) {
+        this.richLineId = cur.rich.i;
+        this.pendingLine = {
+          text: line,
+          durS: Math.min(8, Math.max(1.5, cur.rich.rs ?? 3)),
+          untilMs: performance.now() + ((cur.rich.rs ?? 3) + 1.2) * 1000,
+        };
+      }
+      if (this.pendingLine) {
+        if (s.sayRichLine(this.pendingLine.text, this.pendingLine.durS)) {
+          this.lastSaidText = this.pendingLine.text; // T109b sonda E2E
+          this.pendingLine = null;
+        } else if (performance.now() > this.pendingLine.untilMs) this.pendingLine = null;
+      }
+      // T110 — VOZ: el fichero que suena en el anfitrión suena AQUÍ también.
+      if (cur.rich.vf && cur.rich.i && cur.rich.i !== this.richVoiceId) {
+        this.richVoiceId = cur.rich.i;
+        this.richVoiceCount++;
+        void (cur.rich.vk === "path"
+          ? this.d.audio.shoutPath(cur.rich.vf)
+          : this.d.audio.shoutRealFile(cur.rich.vf));
+      }
+    }
     s.syncRichMan(this.richView, 1);
     // T65: anillos de agarre del guest — las presas ocupadas por LAS MANOS del
     // snapshot pintan la fatiga de su extremidad (mismo rampa que el host). El
@@ -322,6 +502,12 @@ export class GuestRunner {
       const mm = cur.hud.mm;
       if (mm) {
         if (mm.holdsStatic) this.mmCache.set(mm.key, mm.holdsStatic.map((h) => ({ ...h })));
+        // T105: tramo SIN caché local = el holdsStatic de ese tramo se perdió
+        // (montando la escena) → pide reenvío cada 2 s hasta tenerlo
+        if (!this.mmCache.has(mm.key) && now - this.lastReadyMs > 2000) {
+          this.lastReadyMs = now;
+          this.d.net.sendReady();
+        }
         const holds = this.mmCache.get(mm.key) ?? [];
         for (const h of holds) h.occupied = 0;
         for (let i = 0; i + 1 < mm.occ.length; i += 2) {
@@ -358,9 +544,49 @@ export class GuestRunner {
         const name = (e.p as { name?: string })?.name;
         if ((p === 0 || p === 1) && typeof name === "string") s.setEmote(p, name);
       }
+      // T107d: avisos de mochila/anclaje del host → SU subtítulo (los
+      // rechazos ya no son invisibles: "suelta una mano", "no hay sitio"…)
+      if (e.n === "PortableMsg") {
+        const q = e.p as { p?: number; key?: string; left?: number };
+        if (q.p === 1 && typeof q.key === "string" && q.key.startsWith("hud.")) {
+          const msg = q.left !== undefined && q.left >= 0
+            ? this.d.hud.fmt(q.key, { left: String(q.left) })
+            : this.d.hud.t(q.key);
+          this.d.hud.subtitle(msg, 2.8);
+        }
+      }
+      // T92: anclaje portátil colocado por el host → el guest REPLICA la presa
+      // (solo visual: el agarre/ocupación lo decide la simulación del host).
+      if (e.n === "PortableAnchorPlaced" && !this.portableSeen.has(String(e.p.id))) {
+        this.portableSeen.add(String(e.p.id));
+        const x = Number(e.p.x), y = Number(e.p.y), z = Number(e.p.z);
+        if ([x, y, z].every(Number.isFinite)) {
+          s.addHolds([{
+            id: String(e.p.id), pos: { x, y, z }, radius: 0.14,
+            type: "rock_firm", bandIndex: 0, camp: false, portable: true,
+          }], this.d.data.hud.anchorTypeColors);
+        }
+      }
     }
 
     s.render();
+  }
+
+  /** Sonda E2E T105: extremidad del snapshot (0=anfitrión, 1=invitado) →
+   *  píxeles CSS en pantalla (para hacer clic de verdad sobre SU sherpa).
+   *  projectToScreenCss devuelve PORCENTAJES (×100): igual que backpackScreenPx,
+   *  se convierte a px del canvas con el mismo guard de fuera de cámara. */
+  limbScreenPx(p: 0 | 1, limb: Limb): { x: number; y: number } | null {
+    const s = this.lastSnap;
+    if (!s) return null;
+    const pi = LIMB_PARTICLE[limb]!;
+    const flat = p === 0 ? s.a.p : s.b.p;
+    const pct = this.d.scene.projectToScreenCss({ x: flat[pi * 3]!, y: flat[pi * 3 + 1]!, z: flat[pi * 3 + 2]! });
+    if (!Number.isFinite(pct.x) || !Number.isFinite(pct.y)) return null;
+    if (pct.x < -5 || pct.x > 105 || pct.y < -5 || pct.y > 105) return null;
+    const canvas = this.d.scene.engine.getRenderingCanvas();
+    if (!canvas) return null;
+    return { x: (pct.x / 100) * canvas.clientWidth, y: (pct.y / 100) * canvas.clientHeight };
   }
 
   dispose(): void {

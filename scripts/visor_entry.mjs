@@ -1,0 +1,21 @@
+import * as BABYLON from "@babylonjs/core/index.js";
+import "@babylonjs/loaders/glTF/index.js";
+const canvas = document.getElementById("c");
+const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true });
+const scene = new BABYLON.Scene(engine);
+scene.clearColor = new BABYLON.Color4(0.53, 0.68, 0.82, 1);
+const cam = new BABYLON.ArcRotateCamera("cam", -1.5708, 1.15, 2.6, new BABYLON.Vector3(0, 0.1, 0), scene);
+new BABYLON.HemisphericLight("h", new BABYLON.Vector3(0, 1, 0), scene).intensity = 0.85;
+const d = new BABYLON.DirectionalLight("d", new BABYLON.Vector3(-0.5, -1, 0.4), scene);
+d.intensity = 0.75;
+BABYLON.MeshBuilder.CreateGround("g", { width: 4, height: 4 }, scene);
+const mk = (n, c, dx, dy, dz) => { const l = BABYLON.MeshBuilder.CreateLines(n, { points: [BABYLON.Vector3.Zero(), new BABYLON.Vector3(dx, dy, dz)] }, scene); l.color = c; };
+mk("ax", BABYLON.Color3.Red(), 0.6, 0, 0);
+mk("ay", BABYLON.Color3.Green(), 0, 0.6, 0);
+mk("az", BABYLON.Color3.Blue(), 0, 0, 0.6);
+window.__CAM = cam;
+BABYLON.SceneLoader.ImportMesh("", "./", "upload/Base.glb", scene, (meshes) => {
+  window.__MESHES = meshes;
+  document.title = "LOADED " + meshes.length;
+}, null, (e) => { document.title = "ERROR " + e; });
+engine.runRenderLoop(() => scene.render());

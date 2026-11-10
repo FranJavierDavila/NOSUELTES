@@ -1,7 +1,18 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
+
+// T110 — MÓVIL: sin zoom automático ni pinch. El zoom de iOS al enfocar el
+// input del código de sala (fuente <16px) DESPLAZABA el panel online y los
+// toques caían fuera de los botones: «en la versión de móvil los botones del
+// modo online no funcionan».
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+};
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -14,17 +25,17 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "SHERPAS AL LÍMITE",
+  title: "CARRY ME",
   description:
     "Cooperativo de escalada para 2 jugadores: dos sherpas ragdoll suben al Everest cargando con un ricachón colgado de la cuerda. TypeScript + Babylon.js, contenido data-driven.",
-  keywords: ["SHERPAS AL LÍMITE", "cooperativo", "ragdoll", "fisica", "Babylon.js", "escalada", "videojuego", "Everest"],
+  keywords: ["CARRY ME", "SHERPAS AL LÍMITE", "cooperativo", "ragdoll", "fisica", "Babylon.js", "escalada", "videojuego", "Everest"],
   icons: {
     icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
   },
   openGraph: {
-    title: "SHERPAS AL LÍMITE",
-    description: "Dos sherpas ragdoll suben al Everest cargando con un ricachón colgado de la cuerda",
-    siteName: "SHERPAS AL LÍMITE",
+    title: "CARRY ME",
+    description: "Two sherpas, a rich man on his plank, and Everest",
+    siteName: "CARRY ME",
     type: "website",
   },
 };

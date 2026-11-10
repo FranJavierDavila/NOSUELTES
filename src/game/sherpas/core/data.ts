@@ -186,6 +186,9 @@ export interface CoopTuning {
   impulseCostFatigue: number;
   /** propina cuando el compañero GRABA una presa gracias al impulso. */
   impulseGripPropina: number;
+  /** T92: anclajes portátiles que lleva CADA escalador (colocables en pared
+   *  factible y agarrables como una presa firme). Ausente → 10. */
+  portableAnchorsPerClimber?: number;
 }
 export interface PerfTuning {
   /** RESOLUCIÓN ADAPTATIVA: si el fps medio baja de targetFps−10 el motor
@@ -216,7 +219,11 @@ export interface WallGenData {
   bandHeightM: number;
   wall: { widthM: number; zFront: number; depthM: number; holdProudM: number };
   sample: { minDistanceM: number; marginXM: number; marginYM: number; holdRadiusMin: number; holdRadiusMax: number };
-  reach: { armReachM: number; legReachM: number; bandValidateHeightM: number; verticalBodySpanM: number; marginM: number };
+  reach: { armReachM: number; legReachM: number; bandValidateHeightM: number; verticalBodySpanM: number; marginM: number; /** T92: paso máximo de UNA jugada real (m). Ausente → teórico antiguo. */ gameStepM?: number };
+  /** T92 — ESCALERA DEL COMPAÑERO: segunda columna paralela a la ruta segura
+   *  (los holds no son compartibles; sin ella, una línea única es imposible
+   *  para la pareja que sube a la par). Ausente → sin escalera. */
+  companion?: { offsetM: number; maxDyM: number; minDistM: number };
   validator: { maxAddsPerBand: number; minHoldsPerBand: number };
   camp: { zoneHeightM: number; zoneWidthM: number; restRingRadiusM: number };
   start: { yBaseM: number; maxStartSeparationM: number };
@@ -299,8 +306,8 @@ export interface DifficultyData { presets: Record<string, DifficultyPresetData>;
 export interface InputMapData {
   players: Record<string, {
     label: string;
-    keyboard: { aimUp: string; aimDown: string; aimLeft: string; aimRight: string; aimSpeed: number; grip: Record<string, string>; shoo: string; fart?: string; anchor?: string; impulse?: string; /** T58-E: tecla A SACO para trepar por la cuerda. */ mash?: string };
-    gamepad?: { index: number; aim: { stick: number; deadzone: number; aimSpeed: number }; grip: Record<string, number>; shoo: number; fart?: number; anchor?: number; impulse?: number; /** T58-E: botón A SACO. */ mash?: number; gripNames: Record<string, string>; cameraOrbit?: { stick: number; deadzone: number } };
+    keyboard: { aimUp: string; aimDown: string; aimLeft: string; aimRight: string; aimSpeed: number; grip: Record<string, string>; shoo: string; fart?: string; anchor?: string; impulse?: string; /** T58-E: tecla A SACO para trepar por la cuerda. */ mash?: string; /** T92: colocar anclaje portátil en la pared. */ place?: string };
+    gamepad?: { index: number; aim: { stick: number; deadzone: number; aimSpeed: number }; grip: Record<string, number>; shoo: number; fart?: number; anchor?: number; impulse?: number; /** T58-E: botón A SACO. */ mash?: number; /** T92: colocar anclaje portátil. */ place?: number; gripNames: Record<string, string>; cameraOrbit?: { stick: number; deadzone: number } };
   }>;
   shared: { pause: string; help: string; cameraRecenter: string; cameraOrbitLeft?: string; cameraOrbitRight?: string; cameraOrbitUp?: string; cameraOrbitDown?: string; /** T47: MANTENER → vista libre temporal (límites ampliados, retorno al soltar). */ cameraFreeView?: string };
 }
@@ -513,6 +520,7 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
           anchorMinGrips: { type: "integer", minimum: 1, maximum: 8 }, belayCatchDropM: posNum, belayCatchFatigue: posNum,
           impulseRisePerSecondM: posNum, impulseReachBonusM: posNum, impulseSeconds: posNum, impulseCooldownS: posNum,
           impulseCostFatigue: posNum, impulseGripPropina: num,
+          portableAnchorsPerClimber: { type: "integer", minimum: 0, maximum: 40 },
         } },
         perf: { type: "object", required: ["targetFps", "minScale", "maxScale", "step", "checkSeconds", "shadowQuality"], properties: {
           targetFps: posNum, minScale: posNum, maxScale: posNum, step: posNum, checkSeconds: posNum,
@@ -542,7 +550,8 @@ const SCHEMAS: Record<string, ValidateFunction> = (() => {
         bandHeightM: posNum,
         wall: { type: "object", required: ["widthM", "zFront"], properties: { widthM: posNum, zFront: num, tiltDegByPhase: { type: "object" } } },
         sample: { type: "object", required: ["minDistanceM"], properties: { minDistanceM: posNum, marginXM: num, marginYM: num, holdRadiusMin: posNum, holdRadiusMax: posNum } },
-        reach: { type: "object", required: ["armReachM", "legReachM", "bandValidateHeightM"], properties: { armReachM: posNum, legReachM: posNum, bandValidateHeightM: posNum, verticalBodySpanM: posNum, marginM: num } },
+        reach: { type: "object", required: ["armReachM", "legReachM", "bandValidateHeightM"], properties: { armReachM: posNum, legReachM: posNum, bandValidateHeightM: posNum, verticalBodySpanM: posNum, marginM: num, gameStepM: posNum } },
+        companion: { type: "object", required: ["offsetM", "maxDyM", "minDistM"], properties: { offsetM: posNum, maxDyM: posNum, minDistM: posNum } },
         validator: { type: "object", properties: { maxAddsPerBand: { type: "integer", minimum: 1 }, minHoldsPerBand: { type: "integer", minimum: 1 } } },
         camp: { type: "object", required: ["zoneHeightM"], properties: { zoneHeightM: posNum, zoneWidthM: posNum, restRingRadiusM: posNum } },
         start: { type: "object", required: ["yBaseM"], properties: { yBaseM: posNum, maxStartSeparationM: posNum } },

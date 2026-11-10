@@ -1,0 +1,48 @@
+# T99 — Smoke test tras cada despliegue: la sonda entra en partida en la web
+# publicada y exige TODO VERDE (arranque, suelo nevado T98, rocas/anillo/gorros/
+# tarros, 0 errores JS, 0 peticiones fallidas y todos los assets clave servidos).
+# Si algo se rompe, este job queda en rojo inmediatamente después del deploy.
+name: Smoke test del juego publicado
+on:
+  workflow_run:
+    workflows: ["Despliegue a GitHub Pages"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: smoke
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install playwright==1.57.0
+      - run: playwright install --with-deps chromium
+      - name: Sonda smoke contra producción
+        run: |
+          set -o pipefail
+          python scripts/sonda-smoke.py \
+            --url "https://franjavierdavila.github.io/NOSUELTES/?test=escalada" \
+            --out-dir out --intentos 2 | tee salida.txt
+          grep -q "RESULTADO: TODO VERDE" salida.txt
+      - name: Resumen en el job
+        if: always()
+        run: |
+          if [ -f salida.txt ]; then tail -50 salida.txt >> "$GITHUB_STEP_SUMMARY"; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke
+          path: |
+            out/
+            salida.txt
+          if-no-files-found: ignore

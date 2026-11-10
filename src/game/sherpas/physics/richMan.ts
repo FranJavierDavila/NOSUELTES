@@ -39,14 +39,20 @@ export const RM_PARTICLES = 11;
 /** Gesto visible mientras está sentado (cinemática; el FSM del cerebro lo manda).
  *  POSTURAS CÓMICAS (petición del jugador: "ponerse a dormir acostado en la
  *  tabla, realizar un bailecito, ponerse a leer, a llamar por teléfono"):
- *  durmiendo (TUMBADO con sombrero en la cara), bailando, leyendo, telefono. */
+ *  durmiendo (TUMBADO con sombrero en la cara), bailando, leyendo, telefono.
+ *  T111 — MÁS VARIEDAD Y MÁS GRACIA (petición: «debe tener más variedad de
+ *  poses y gestos, está muy soso, debe ser un personaje gracioso»): contando
+ *  (fajos), senialando (se ríe de los escaladores), pose_poder (soberbio),
+ *  selfie, reloj (mira la hora de oro) y risa (carcajada con panza). */
 export type RichGesture =
   | "ninguno" | "dormitando" | "insultando" | "comiendo" | "tirando_basura"
   | "aplaudiendo" | "brindando" | "mirando" | "pataleando"
   | "durmiendo" | "bailando" | "leyendo" | "telefono"
   // T44 (petición del jugador: "que mueva los brazos en alto de forma muy
   // clara y ostentosa"): se ve HABLAR — los DOS brazos en alto meneando.
-  | "exaltado";
+  | "exaltado"
+  // T111 (variedad cómica del ricachón):
+  | "contando" | "senialando" | "pose_poder" | "selfie" | "reloj" | "risa";
 
 interface Body { pos: V3; prev: V3; mass: number; invMass: number; radius: number; share: number }
 interface RMStick { a: number; b: number; rest: number; min: number }
@@ -82,6 +88,14 @@ export class RichManSim {
   private gestureKind: RichGesture = "ninguno";
   private gestureStart = 0;
   private walkPhase = 0;
+  /** T116 — MODO SERENO (tutorial): la pose FILTRA su entrada (slide/ángulo
+   *  con paso lento de ~0,9 s) y suprime gestos. Con el cling activo la tabla
+   *  recentraba el deslizamiento a saco y las demos la sacudían: el ragdoll
+   *  latigaba (manos retorcidas, articulaciones rotas). El filtro hace que el
+   *  cuerpo solo vea movimiento perezoso — sentado tranquilo, respirando. */
+  calm = false;
+  private calmSlide = 0;
+  private calmAngle = 0;
   /** 0 = sentado, 1 = de pie (fundido suave entre poses — ahora en OBJETIVOS:
    *  los huesos miden lo mismo durante todo el fundido). */
   private blend = 0;
@@ -209,6 +223,8 @@ export class RichManSim {
     this.standing = false;
     this.walkDir = 0;
     this.blend = 0;
+    this.calmSlide = slide; // T116: reset del filtro (sin arrastre del pasado)
+    this.calmAngle = angle;
     this.setGesture("ninguno", time);
     this.rig.snap(this.baseTargets(slide, angle, time, 0));
     this.pose(center, angle, slide, time);
@@ -225,10 +241,21 @@ export class RichManSim {
     let dt = time - this.lastPoseTime;
     if (!(dt > 0) || dt > 0.25) dt = 1 / 60;
     this.lastPoseTime = time;
+    if (this.calm) {
+      // T116 — filtro de entrada: el cuerpo NUNCA ve el tirón seco de la
+      // tabla (recentre del cling, sacudidas de demo), solo su media lenta.
+      const k = 1 - Math.exp(-dt / 0.9);
+      this.calmSlide += (slide - this.calmSlide) * k;
+      this.calmAngle += (angle - this.calmAngle) * k;
+      slide = this.calmSlide;
+      angle = this.calmAngle;
+    }
     this.blend += ((this.standing ? 1 : 0) - this.blend) * Math.min(1, dt * 3.4);
     this.walkPhase += dt * (this.walkDir !== 0 ? 7.5 : 1.2);
     const g = this.gestureKind;
-    const kind: RichGesture = time < this.ostentateUntil ? "exaltado" : g;
+    const kind: RichGesture = this.calm
+      ? "ninguno" // sereno: sin gestos que retuerzan manos/brazos
+      : (time < this.ostentateUntil ? "exaltado" : g);
     const target = this.baseTargets(slide, angle, time, this.blend, this.walkPhase, this.walkDir);
     this.applyGesture(target, kind, time - this.gestureStart, time);
     this.rig.step(dt, target);
@@ -406,15 +433,18 @@ export class RichManSim {
         break;
       }
       case "brindando": {
-        // copa en alto-adelante: sorbo (la mano VA a la boca) y brinde a cámara
+        // BRINDE con la copa EN ALTO (frente a la cara) y sorbo que la lleva
+        // a la boca alternando (ciclo ~3,7 s: brinde → sorbo → brinde)
         const sip = Math.max(0, Math.sin(ph * 1.7));
-        const glass = at(chest, fr, -0.18, 0.14, 0.34);
-        const mouth = at(head, fr, -0.03, -0.02, 0.11);
-        const m = 0.55 * sip;
-        t.handR = v3(glass.x + (mouth.x - glass.x) * m, glass.y + (mouth.y - glass.y) * m, glass.z + (mouth.z - glass.z) * m);
-        t.elbLiftR = 0.25 + 0.25 * sip;
-        t.handL = at(chest, fr, 0.10, -0.20, 0.20);
-        t.neck = { ...t.neck, pitch: t.neck.pitch - 0.18 * sip };
+        const alto = at(chest, fr, -0.18, 0.42, 0.30);
+        // la copa llega a los labios INCLINADA (por encima de la boca): el
+        // interpolar alto↔boca nunca baja de la cabeza (regla de silueta T78)
+        const mouth = at(head, fr, -0.03, 0.02, 0.11);
+        t.handR = v3(alto.x + (mouth.x - alto.x) * sip, alto.y + (mouth.y - alto.y) * sip, alto.z + (mouth.z - alto.z) * sip);
+        t.elbLiftR = 0.45 + 0.25 * sip;
+        t.handL = at(chest, fr, 0.10, -0.14, 0.20);
+        t.elbLiftL = 0.15;
+        t.neck = { ...t.neck, pitch: t.neck.pitch - 0.22 * sip + 0.06 * (1 - sip) };
         break;
       }
       case "mirando": {
@@ -486,6 +516,82 @@ export class RichManSim {
         t.handR = at(head, fr, -0.14, 0.02 + chat, -0.02);
         t.elbLiftR = 1.0;
         t.neck = { ...t.neck, roll: t.neck.roll - 0.16, yaw: t.neck.yaw - 0.10 };
+        break;
+      }
+      case "contando": {
+        // T111 — CUENTA FAJOS de billetes: las dos manos DELANTE del pecho con
+        // frotado alterno (dedos rápidos), cabeza metida mirando la contabilidad
+        // y el cuerpo inclinado hacia adelante; de vez en cuando alza la vista
+        // satisfecho (el pico de la sinusoidal).
+        const rub = Math.sin(ph * 11);
+        const up = Math.max(0, Math.sin(ph * 0.9));
+        t.handL = at(chest, fr, 0.09, -0.04 + 0.02 * rub, 0.26);
+        t.handR = at(chest, fr, -0.09, -0.04 - 0.02 * rub, 0.29);
+        t.elbLiftL = 0.22; t.elbLiftR = 0.22;
+        t.neck = { ...t.neck, pitch: 0.34 - 0.3 * up };
+        t.spine = { ...t.spine, pitch: t.spine.pitch + 0.1 - 0.08 * up };
+        break;
+      }
+      case "senialando": {
+        // T111 — SE RÍE DE LOS ESCALADORES: brazo extendido delante-arriba
+        // (señalando la pared), la otra mano en la tripa, cabeza atrás con
+        // carcajada (la espina acompaña con una sacudida de risa).
+        const jolt = Math.abs(Math.sin(ph * 6.5));
+        t.handR = at(chest, fr, -0.17, 0.3, 0.44);
+        t.elbLiftR = 0.85;
+        t.handL = at(chest, fr, 0.13, -0.16, 0.13);
+        t.elbLiftL = 0.1;
+        t.neck = { ...t.neck, pitch: -0.24 + 0.05 * jolt };
+        t.spine = { ...t.spine, pitch: t.spine.pitch - 0.07, roll: t.spine.roll + 0.025 * jolt };
+        break;
+      }
+      case "pose_poder": {
+        // T111 — POSE DE PODER: manos EN LA CADERA, pecho fuera, mentón arriba
+        // y respiración ancha (el señor de la montaña). Casi estática: la gracia
+        // es la soberbia en silueta.
+        const breath = Math.sin(ph * 1.4);
+        t.handL = at(chest, fr, 0.31, -0.32, 0.03);
+        t.handR = at(chest, fr, -0.31, -0.32, 0.03);
+        t.elbLiftL = 0.5; t.elbLiftR = 0.5;
+        t.spine = { ...t.spine, pitch: t.spine.pitch - 0.13 + 0.012 * breath };
+        t.neck = { ...t.neck, pitch: t.neck.pitch - 0.14, yaw: t.neck.yaw + 0.06 * Math.sin(ph * 0.5) };
+        break;
+      }
+      case "selfie": {
+        // T111 — SELFIE: brazo derecho extendido delante-arriba con el móvil,
+        // la izquierda hace la V junto a la cabeza, cabeza ladeada con sonrisa;
+        // micro-reposicionado del encuadre.
+        const frame = Math.sin(ph * 2.2) * 0.02;
+        t.handR = at(head, fr, -0.12 + frame, 0.1, 0.32);
+        t.elbLiftR = 0.7;
+        t.handL = at(head, fr, 0.12, 0.07, 0.18);
+        t.elbLiftL = 0.6;
+        t.neck = { ...t.neck, roll: t.neck.roll + 0.13, pitch: t.neck.pitch - 0.06 };
+        t.spine = { ...t.spine, roll: t.spine.roll + 0.04 };
+        break;
+      }
+      case "reloj": {
+        // T111 — MIRA EL RELOJ DE ORO: antebrazo derecho cruzando el pecho,
+        // cabeza metida hacia la muñeca; el pie derecho marca la impaciencia.
+        const tap = Math.max(0, Math.sin(ph * 5.5));
+        t.handR = at(chest, fr, -0.11, 0.02, 0.24);
+        t.elbLiftR = 0.55;
+        t.handL = at(chest, fr, 0.2, -0.24, 0.02);
+        t.elbLiftL = 0.08;
+        t.neck = { ...t.neck, pitch: 0.36, yaw: t.neck.yaw - 0.08 };
+        t.footR = v3(t.footR.x, t.footR.y + 0.045 * tap, t.footR.z);
+        break;
+      }
+      case "risa": {
+        // T111 — CARCAJADA: las dos manos en la panza, cabeza bien atrás,
+        // pecho temblando con la risa (sacudida rápida de espina+raíz).
+        const jolt = Math.abs(Math.sin(ph * 7.3));
+        t.handL = at(chest, fr, 0.14, -0.13, 0.15);
+        t.handR = at(chest, fr, -0.14, -0.13, 0.15);
+        t.elbLiftL = 0.14; t.elbLiftR = 0.14;
+        t.spine = { ...t.spine, pitch: t.spine.pitch - 0.09 - 0.03 * jolt, roll: t.spine.roll + 0.02 * Math.sin(ph * 7.3) };
+        t.neck = { ...t.neck, pitch: t.neck.pitch - 0.3 - 0.06 * jolt };
+        t.root = v3(t.root.x, t.root.y + 0.012 * jolt, t.root.z);
         break;
       }
       default:

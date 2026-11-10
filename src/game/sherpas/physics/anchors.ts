@@ -18,6 +18,10 @@ export interface HoldInstance {
   /** ENTRANTES jugables (petición: "presas retrasadas"): profundidad METIDA
    *  respecto al plano de pared (m). >0 → agarre más incómodo (fatiga extra). */
   recessed?: number;
+  /** T92 ANCLAJE PORTÁTIL: presa colocada por un escalador de su inventario
+   *  (actúa como un anclaje normal tipo rock_firm; la escena la dibuja con
+   *  su propio aspecto de empotrador metálico). */
+  portable?: boolean;
 }
 
 export interface WearTuning {
